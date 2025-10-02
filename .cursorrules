@@ -1,0 +1,299 @@
+# Employee Time Tracking System - Cursor Rules
+
+## Project Overview
+This application is designed to track employee time and worker availability for PDS, replacing manual processes with a compliant, automated system.
+
+## Business Divisions
+- **PDS Vendor** - Primary staffing and event services
+- **CWT Trailers** - Trailer Rental Division (only affects Module 1 - clock in/out)
+
+## Current Risks (Manual Process)
+- Onboarding via paper/email → PII stored without encryption, not compliant
+- Managers entering time instead of employees → not FLSA-compliant
+- Spreadsheets for payroll closeout → no audit trail, risk under IRS/DOL rules
+- Gmail used for company email → not SOC2/PII compliant
+- No enterprise backups or monitoring → exposure to data loss and breach liability
+
+---
+
+## System Modules
+
+### Module 1 – Onboarding, Availability & Time Tracking (Custom Portal)
+
+**Regulations:**
+- I-9, W-4, W-9, handbook acknowledgments must be securely stored
+- FLSA requires employees to record their own hours
+
+**Scope:**
+- Applies to **all employees**: PDS Vendor, CWT Trailers, and salaried employees from both divisions
+- **Onboarding packets provided by State** - each state requires different packages for tax purposes
+
+**Features:**
+- Secure electronic onboarding with encrypted storage
+- Employee-driven login/logout with QR code or PIN
+- Break attestation for CA/state wage law compliance
+- Workers see gross pay visibility per event, per pay date
+- Audit-ready exports: payroll CSV and PDF logs
+
+**Gains:**
+- Eliminates manual onboarding packets
+- Reduces manager data entry
+- Streamlines compliance checks
+- Operational Efficiency: Eliminates manual onboarding packets, reduces manager data entry, streamlines compliance checks
+
+---
+
+### Module 2 – Event Creation & Staffing (Custom Portal)
+
+**Created By:** Room Managers
+
+**Features:**
+- Event creation with required details (venue, date/time, type)
+- Staff pulled from compliant worker directory
+  - **Vendor compliance requirement:** Workers must have completed onboarding process and submitted all required documents
+- Invites sent via email/SMS/in-app with 24h acceptance window
+- Event dashboard showing: assigned, confirmed, open slots
+- Ticket sales per event entry for right-size staff planning
+
+**Event Dashboard Fields:**
+- Event name
+- Artist
+- Artist Share %
+- Venue Share %
+- PDS Share %
+- Tax bracket by city, state
+
+**Gains:**
+- Operational Efficiency: Replaces ad-hoc scheduling with automated workflows, reducing errors and back-and-forth communication
+
+---
+
+### Module 3 – Global Calendar (Custom Portal)
+
+**Features:**
+- Consolidated view across all venues/managers
+- Visibility by venue and globally
+- Calendar views: day/week/month
+- Color-coded by venue/type/status
+- Overlays for staffing coverage
+
+**Permissions by Role:**
+- **Execs** = global view
+- **Managers** = venue-only
+- **Workers** = "My Events"
+
+**Gains:**
+- Operational Efficiency: Provides real-time scheduling visibility across the entire organization, eliminating duplicate planning and manual spreadsheets
+
+---
+
+### Module 4 – Event Closeout & Payments (Custom Portal)
+
+**Inputs:**
+- Sales
+- Commission pool
+- Tips
+- Reg/OT/DT hours
+
+**Payout Logic:**
+- Wages + commission should not exceed 4% commission pool (unless exception occurs)
+- Tips distributed separately
+- Any deficit flagged if wages fall below minimum wage floor
+
+**Approval Chain:**
+- Manager → Finance
+
+**Integration:**
+- Approved payouts exported as CSV upload to ADP for payroll processing
+- Workers see approved gross pay lines by event/paydate in "My Pay"
+- **Note:** Payroll continues to process in ADP; payouts approved in system first, then uploaded as CSV
+
+**Gains:**
+- Operational Efficiency: Eliminates manual payroll calculations and spreadsheet reconciliations; ensures faster, more accurate payroll closeout
+
+---
+
+## IT & Security Layer (Interop IT LLC)
+
+**Infrastructure Changes:**
+- Migration of PDS email from Gmail to Microsoft for SOC2/PII-compliant hosting
+- Shared Google Docs/Sheets migrated to Microsoft Word/Excel for secure storage
+- Microsoft Email fee included in monthly IT/Security fee
+
+**Security Features:**
+- 24×7 endpoint monitoring & patching
+- Local + cloud backups with restore testing
+- Ransomware/malware defense with rollback protection
+- SOC2-compliant Vercel hosting for portal
+- Monthly compliance reports for insurers/regulators
+
+**Gains:**
+- Operational Efficiency: Reduces IT overhead, consolidates platforms (Gmail/Google Drive → Microsoft Outlook/Word/Excel), automates system health monitoring
+
+---
+
+## Compliance Standards
+
+**Regulations Addressed:**
+- FLSA (Fair Labor Standards Act)
+- I-9 (Employment Eligibility Verification)
+- W-4 (Employee's Withholding Certificate)
+- W-9 (Request for Taxpayer Identification)
+- CA/State wage law compliance
+- IRS/DOL audit requirements
+- SOC2 compliance
+- PII (Personally Identifiable Information) protection
+
+---
+
+## Timeline
+Estimated 4–6 weeks including testing before full deployment
+
+---
+
+## System Summary
+
+**Current State:** Manual process = not compliant (PII handling, wage/hour tracking, Gmail for PII, payroll audit gaps)
+
+**New Platform Ensures:**
+1. Secure onboarding & time tracking (FLSA/CA compliant)
+2. Ticket-driven staffing forecasts
+3. Venue + global scheduling visibility
+4. Audit-ready payroll closeout with CSV upload to ADP
+5. Microsoft email + secure Word/Excel storage replacing Google Docs/Sheets included in IT/Security fee
+6. Payroll continues in ADP with approved payouts uploaded as CSV for accuracy and compliance
+
+---
+
+## Development Guidelines
+
+### Security First
+- All PII must be encrypted at rest and in transit
+- Implement secure authentication (QR code/PIN for workers)
+- Follow SOC2 compliance standards
+- Ensure audit trails for all critical operations
+
+---
+
+## 🔐 PII Data Handling & Security Compliance
+
+### PII Data Collection & Classification
+
+| Category              | Examples                                               | Sensitivity Level |
+| --------------------- | ------------------------------------------------------ | ----------------- |
+| 📋 Employment Forms   | I-9, W-4, W-9, Direct Deposit, Handbook acknowledgment | **High**          |
+| 👤 Worker Identifiers | Worker ID, Name, Email, Phone                          | **Moderate**      |
+| 📊 Onboarding Status  | Onboarding completion status, timestamps               | **Low**           |
+
+**Note:** I-9, W-4, W-9, and bank information (from direct deposit) qualify as **high-sensitivity PII** and **financial information**, requiring secure handling and compliance.
+
+---
+
+### Data Security Requirements
+
+| Requirement                  | Implementation                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| 🔐 **Encryption in transit** | Use TLS 1.2+ for all data transfers, API calls, and uploads                      |
+| 🔒 **Encryption at rest**    | AES-256 encryption for all stored documents and database fields                  |
+| 🗂️ **Data separation**      | Store sensitive forms (I-9/W-4/etc.) in a separate storage container             |
+| 🛡️ **Access control**       | Implement **RBAC** (Role-Based Access Control) with principle of least privilege |
+| 🔑 **Audit logs**            | Track document access, changes, and administrative actions                       |
+
+---
+
+### Data Retention & Lifecycle Management
+
+| Form/Field              | Legal Requirement                                                                   |
+| ----------------------- | ----------------------------------------------------------------------------------- |
+| I-9                     | Keep for **3 years after hire** OR **1 year after termination**, whichever is later |
+| W-4                     | Keep for at least **4 years**                                                       |
+| W-9                     | Retain **at least 4 years**                                                         |
+| Direct Deposit          | Securely retained only **as long as necessary** for payroll use                     |
+| Handbook acknowledgment | Retain during employment + additional 3–6 years (legal risk management)             |
+| Onboarding status       | No legal rule; app-level policy sufficient                                          |
+
+---
+
+### Compliance Frameworks Alignment
+
+| Regulation                   | Applies | Reason                                                     |
+| ---------------------------- | ------- | ---------------------------------------------------------- |
+| **PII/GLBA/FISMA (Federal)** | ✅ Yes   | Handling payroll-related financial info & identifiers      |
+| **CPRA (California)**        | ✅ Maybe | If users are in CA or app serves California employees      |
+| **GDPR**                     | ✅ Maybe | If any EU/EEA users onboard through the app                |
+| **IRS/Tax Compliance**       | ✅ Yes   | For forms like W-9, W-4                                    |
+
+---
+
+### System Design for PII Handling
+
+#### Backend/Database Security
+- Encrypt all sensitive fields (name, phone, email, onboarding status)
+- Store files (W-4, I-9, etc.) in **encrypted object storage** (e.g., AWS S3 with SSE-KMS)
+- Use environment-based access segregation (dev/staging/prod)
+- Implement database-level encryption for PII columns
+
+#### Access Control & Admin UI
+- Admin views must use **2FA (Two-Factor Authentication)**
+- Logs must be immutable and timestamped
+- Field-level permissions (e.g., payroll staff can access Direct Deposit, not I-9)
+- Principle of least privilege for all user roles
+- Session management with automatic timeout
+
+#### Logging & Monitoring
+- Log all access to high-sensitivity forms with user identification
+- Use anomaly detection (e.g., excessive downloads, off-hours access)
+- Real-time alerts for suspicious activity
+- Quarterly security audits and access reviews
+- Immutable audit trail for compliance verification
+
+---
+
+### User Privacy Obligations (CPRA/GDPR-Aligned)
+
+For users in California or EU, implement:
+
+| Feature                 | Description                                           |
+| ----------------------- | ----------------------------------------------------- |
+| 🔍 Data access request  | Let users request what data you store about them      |
+| ❌ Data deletion request | Allow full deletion, respecting form retention laws   |
+| 📝 Purpose limitation   | Collect only data necessary for onboarding/compliance |
+| 📑 Privacy notice       | Explain collection, storage, and usage clearly        |
+
+---
+
+### Security Implementation Checklist
+
+| Area                              | Required Practice                                    |
+| --------------------------------- | ---------------------------------------------------- |
+| 🔒 Encryption (at rest + transit) | AES-256 + TLS 1.2+                                   |
+| 🎯 Access control                 | Role-based, scoped access to forms                   |
+| 🗃️ Document storage              | Encrypted, audit-logged, retention-policy enforced   |
+| 🧾 Legal retention policies       | Based on IRS & USCIS guidelines                      |
+| 📄 Privacy policy                 | CPRA/GDPR-style notice, even if not legally mandated |
+| 🧯 Incident response              | Breach plan + user notification workflow             |
+
+---
+
+### User Roles
+- **Workers/Vendors** - Clock in/out, view their events, view their pay
+- **Room Managers** - Create events, staff events, approve timesheets
+- **Finance** - Final approval on payouts
+- **Execs** - Global visibility
+
+### Data Integrity
+- Employee-driven time entry (not manager-driven)
+- Break attestation requirements
+- Wage floor validation
+- Commission pool calculations with exception handling
+
+### Integration Points
+- ADP payroll system (CSV export)
+- Email/SMS notifications
+- State-specific onboarding packet systems
+- Microsoft Office integration
+
+### Hosting & Infrastructure
+- Vercel for SOC2-compliant portal hosting
+- Microsoft 365 for email and document storage
+- Automated backups with restore testing
