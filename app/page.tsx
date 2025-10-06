@@ -12,6 +12,7 @@ export default function Home() {
             Secure, compliant employee time tracking and worker availability management
           </p>
         </div>
+        
 
         {/* Login Button */}
         <div className="text-center mb-8">
