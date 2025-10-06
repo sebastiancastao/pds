@@ -1,269 +1,227 @@
 // PDS Time Tracking System - Audit Logging
-// Immutable audit trail for compliance
+// Immutable audit trail for compliance (SOC2, FLSA, IRS/DOL)
 
-import { createServerClient } from './supabase';
+import { supabase } from './supabase';
 
-export enum AuditAction {
-  // Authentication
-  USER_LOGIN = 'user_login',
-  USER_LOGOUT = 'user_logout',
-  USER_LOGIN_FAILED = 'user_login_failed',
-  USER_2FA_ENABLED = 'user_2fa_enabled',
-  USER_2FA_DISABLED = 'user_2fa_disabled',
-  
-  // User Management
-  USER_CREATED = 'user_created',
-  USER_UPDATED = 'user_updated',
-  USER_DELETED = 'user_deleted',
-  USER_ROLE_CHANGED = 'user_role_changed',
-  
-  // Document Access
-  DOCUMENT_UPLOADED = 'document_uploaded',
-  DOCUMENT_VIEWED = 'document_viewed',
-  DOCUMENT_DOWNLOADED = 'document_downloaded',
-  DOCUMENT_DELETED = 'document_deleted',
-  
-  // Time Tracking
-  CLOCK_IN = 'clock_in',
-  CLOCK_OUT = 'clock_out',
-  TIMESHEET_APPROVED = 'timesheet_approved',
-  TIMESHEET_REJECTED = 'timesheet_rejected',
-  
-  // Events
-  EVENT_CREATED = 'event_created',
-  EVENT_UPDATED = 'event_updated',
-  EVENT_DELETED = 'event_deleted',
-  EVENT_STAFF_ASSIGNED = 'event_staff_assigned',
-  
-  // Payroll
-  PAYOUT_APPROVED = 'payout_approved',
-  PAYOUT_REJECTED = 'payout_rejected',
-  PAYROLL_EXPORTED = 'payroll_exported',
-  
-  // Security
-  SECURITY_ALERT = 'security_alert',
-  EXCESSIVE_LOGIN_ATTEMPTS = 'excessive_login_attempts',
-  SUSPICIOUS_ACTIVITY = 'suspicious_activity',
-  ACCESS_DENIED = 'access_denied',
-}
-
-export enum ResourceType {
-  USER = 'user',
-  PROFILE = 'profile',
-  DOCUMENT = 'document',
-  TIMESHEET = 'timesheet',
-  EVENT = 'event',
-  PAYOUT = 'payout',
-  SECURITY = 'security',
-}
-
-interface AuditLogEntry {
+interface AuditLogEvent {
   userId?: string | null;
-  action: AuditAction;
-  resourceType: ResourceType;
+  action: string;
+  resourceType: string;
   resourceId?: string | null;
-  ipAddress?: string | null;
-  userAgent?: string | null;
+  success: boolean;
   metadata?: Record<string, any>;
+  ipAddress?: string;
+  userAgent?: string;
+  errorMessage?: string;
 }
 
 /**
- * Create an immutable audit log entry
- * @param entry - Audit log data
+ * Log audit event to database
+ * 
+ * Creates immutable audit trail for:
+ * - User authentication events
+ * - Account creation/modification
+ * - Data access
+ * - System operations
+ * 
+ * Required for:
+ * - SOC2 compliance
+ * - FLSA audit trail
+ * - IRS/DOL requirements
+ * 
+ * @param event - Audit event details
+ * @returns Promise that resolves when log is saved
  */
-export const logAudit = async (entry: AuditLogEntry): Promise<void> => {
+export async function logAuditEvent(event: AuditLogEvent): Promise<void> {
   try {
-    const supabase = createServerClient();
-    
-    const { error } = await supabase.from('audit_logs').insert({
-      user_id: entry.userId,
-      action: entry.action,
-      resource_type: entry.resourceType,
-      resource_id: entry.resourceId,
-      ip_address: entry.ipAddress,
-      user_agent: entry.userAgent,
-      metadata: entry.metadata || {},
-    });
-    
+    const { error } = await (supabase
+      .from('audit_logs') as any)
+      .insert({
+        user_id: event.userId || null,
+        action: event.action,
+        resource_type: event.resourceType,
+        resource_id: event.resourceId || null,
+        ip_address: event.ipAddress || null,
+        user_agent: event.userAgent || null,
+        metadata: event.metadata || {},
+        success: event.success,
+        error_message: event.errorMessage || null,
+      });
+
     if (error) {
-      console.error('Audit log error:', error);
-      // Don't throw - logging shouldn't break the main flow
-      // But log to monitoring service
+      // Log to console but don't throw - audit logging should not break app flow
+      console.error('Failed to log audit event:', error);
+      console.error('Event details:', event);
     }
   } catch (error) {
-    console.error('Audit log exception:', error);
+    // Catch any unexpected errors
+    console.error('Unexpected error logging audit event:', error);
+    console.error('Event details:', event);
   }
-};
+}
 
 /**
- * Log user authentication attempt
+ * Log authentication events
  */
-export const logAuthAttempt = async (
+export async function logAuthEvent(
+  action: 'login_attempt' | 'login_success' | 'login_failed' | 'logout' | 'password_reset',
   userId: string | null,
   success: boolean,
-  ipAddress: string,
-  userAgent: string,
-  metadata?: Record<string, any>
-): Promise<void> => {
-  await logAudit({
-    userId,
-    action: success ? AuditAction.USER_LOGIN : AuditAction.USER_LOGIN_FAILED,
-    resourceType: ResourceType.USER,
-    resourceId: userId,
-    ipAddress,
-    userAgent,
-    metadata: {
-      ...metadata,
-      success,
-      timestamp: new Date().toISOString(),
-    },
-  });
-};
-
-/**
- * Log document access
- */
-export const logDocumentAccess = async (
-  userId: string,
-  documentId: string,
-  action: AuditAction.DOCUMENT_VIEWED | AuditAction.DOCUMENT_DOWNLOADED,
-  ipAddress: string,
-  userAgent: string
-): Promise<void> => {
-  await logAudit({
+  metadata?: Record<string, any>,
+  ipAddress?: string,
+  userAgent?: string
+): Promise<void> {
+  await logAuditEvent({
     userId,
     action,
-    resourceType: ResourceType.DOCUMENT,
-    resourceId: documentId,
+    resourceType: 'authentication',
+    success,
+    metadata,
     ipAddress,
     userAgent,
-    metadata: {
-      sensitivityLevel: 'high',
-      complianceRequired: true,
-    },
   });
-};
+}
 
 /**
- * Log security alert
+ * Log user management events
  */
-export const logSecurityAlert = async (
-  userId: string | null,
-  alertType: string,
-  severity: 'low' | 'medium' | 'high' | 'critical',
-  ipAddress: string,
+export async function logUserEvent(
+  action: 'user_created' | 'user_updated' | 'user_deleted' | 'user_activated' | 'user_deactivated',
+  userId: string,
+  performedBy: string | null,
+  success: boolean,
   metadata?: Record<string, any>
-): Promise<void> => {
-  await logAudit({
-    userId,
-    action: AuditAction.SECURITY_ALERT,
-    resourceType: ResourceType.SECURITY,
-    ipAddress,
+): Promise<void> {
+  await logAuditEvent({
+    userId: performedBy,
+    action,
+    resourceType: 'user',
+    resourceId: userId,
+    success,
     metadata: {
-      alertType,
-      severity,
-      requiresReview: severity === 'high' || severity === 'critical',
       ...metadata,
+      targetUserId: userId,
     },
   });
-  
-  // If critical, send real-time alert
-  if (severity === 'critical' && process.env.ENABLE_SECURITY_ALERTS === 'true') {
-    // TODO: Implement email/SMS alert to security team
-    console.error('CRITICAL SECURITY ALERT:', { userId, alertType, metadata });
-  }
-};
+}
 
 /**
- * Get audit logs for a user (admin only)
- * @param userId - User ID to query
- * @param limit - Number of records to return
+ * Log data access events
  */
-export const getUserAuditLogs = async (userId: string, limit: number = 100) => {
-  const supabase = createServerClient();
-  
-  const { data, error } = await supabase
-    .from('audit_logs')
-    .select('*')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  
-  if (error) {
-    throw new Error(`Failed to fetch audit logs: ${error.message}`);
-  }
-  
-  return data;
-};
-
-/**
- * Get audit logs for a resource (admin only)
- * @param resourceType - Resource type
- * @param resourceId - Resource ID
- * @param limit - Number of records to return
- */
-export const getResourceAuditLogs = async (
-  resourceType: ResourceType,
+export async function logDataAccessEvent(
+  action: string,
+  userId: string,
+  resourceType: string,
   resourceId: string,
-  limit: number = 100
-) => {
-  const supabase = createServerClient();
-  
-  const { data, error } = await supabase
-    .from('audit_logs')
-    .select('*')
-    .eq('resource_type', resourceType)
-    .eq('resource_id', resourceId)
-    .order('created_at', { ascending: false })
-    .limit(limit);
-  
-  if (error) {
-    throw new Error(`Failed to fetch audit logs: ${error.message}`);
-  }
-  
-  return data;
-};
+  metadata?: Record<string, any>
+): Promise<void> {
+  await logAuditEvent({
+    userId,
+    action,
+    resourceType,
+    resourceId,
+    success: true,
+    metadata,
+  });
+}
 
 /**
- * Detect anomalous activity patterns
- * @param userId - User ID to check
- * @returns True if suspicious activity detected
+ * Log security events
  */
-export const detectAnomalousActivity = async (userId: string): Promise<boolean> => {
-  const supabase = createServerClient();
-  
-  // Check for excessive login attempts in last hour
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  
-  const { data: loginAttempts, error } = await supabase
-    .from('audit_logs')
-    .select('id')
-    .eq('user_id', userId)
-    .eq('action', AuditAction.USER_LOGIN_FAILED)
-    .gte('created_at', oneHourAgo);
-  
-  if (error) {
-    console.error('Anomaly detection error:', error);
-    return false;
-  }
-  
-  const maxAttempts = parseInt(process.env.PIN_MAX_ATTEMPTS || '3');
-  
-  if (loginAttempts && loginAttempts.length >= maxAttempts) {
-    await logSecurityAlert(
-      userId,
-      'excessive_login_attempts',
-      'high',
-      '',
-      {
-        attemptCount: loginAttempts.length,
-        timeWindow: '1 hour',
-      }
-    );
-    return true;
-  }
-  
-  return false;
-};
+export async function logSecurityEvent(
+  action: string,
+  userId: string | null,
+  success: boolean,
+  metadata?: Record<string, any>,
+  ipAddress?: string
+): Promise<void> {
+  await logAuditEvent({
+    userId,
+    action,
+    resourceType: 'security',
+    success,
+    metadata,
+    ipAddress,
+  });
+}
 
+/**
+ * Query audit logs for a specific user
+ */
+export async function getUserAuditLogs(
+  userId: string,
+  limit: number = 100
+): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
 
+    if (error) {
+      console.error('Failed to fetch audit logs:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    return [];
+  }
+}
+
+/**
+ * Query audit logs for a specific action
+ */
+export async function getActionAuditLogs(
+  action: string,
+  limit: number = 100
+): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from('audit_logs')
+      .select('*')
+      .eq('action', action)
+      .order('created_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('Failed to fetch audit logs:', error);
+      return [];
+    }
+
+    return data || [];
+  } catch (error) {
+    console.error('Error fetching audit logs:', error);
+    return [];
+  }
+}
+
+/**
+ * Query failed authentication attempts
+ */
+export async function getFailedAuthAttempts(
+  email: string,
+  since: Date
+): Promise<number> {
+  try {
+    const { count, error } = await supabase
+      .from('audit_logs')
+      .select('*', { count: 'exact', head: true })
+      .eq('action', 'login_failed')
+      .gte('created_at', since.toISOString())
+      .eq('metadata->>email', email);
+
+    if (error) {
+      console.error('Failed to count failed auth attempts:', error);
+      return 0;
+    }
+
+    return count || 0;
+  } catch (error) {
+    console.error('Error counting failed auth attempts:', error);
+    return 0;
+  }
+}

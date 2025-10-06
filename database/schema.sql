@@ -11,7 +11,14 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ============================================
 -- Custom Types (Enums)
 -- ============================================
+-- Drop existing types if they exist (safe rerun)
+DROP TYPE IF EXISTS user_role CASCADE;
+DROP TYPE IF EXISTS division_type CASCADE;
+DROP TYPE IF EXISTS document_type CASCADE;
+DROP TYPE IF EXISTS onboarding_status CASCADE;
+DROP TYPE IF EXISTS clock_action CASCADE;
 
+-- Create types
 CREATE TYPE user_role AS ENUM ('worker', 'manager', 'finance', 'exec');
 CREATE TYPE division_type AS ENUM ('vendor', 'trailers', 'both');
 CREATE TYPE document_type AS ENUM ('i9', 'w4', 'w9', 'direct_deposit', 'handbook', 'other');
@@ -30,7 +37,15 @@ CREATE TABLE public.users (
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  last_login TIMESTAMPTZ
+  last_login TIMESTAMPTZ,
+  -- Account security
+  failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+  account_locked_until TIMESTAMPTZ,
+  -- Temporary Password Management
+  is_temporary_password BOOLEAN NOT NULL DEFAULT false,
+  must_change_password BOOLEAN NOT NULL DEFAULT false,
+  password_expires_at TIMESTAMPTZ,
+  last_password_change TIMESTAMPTZ
 );
 
 -- Index for faster lookups
@@ -54,12 +69,11 @@ CREATE TABLE public.profiles (
   state CHAR(2) NOT NULL,
   zip_code VARCHAR(10),
   
-  -- Authentication
-  pin_hash TEXT, -- Hashed 6-digit PIN for workers
-  pin_salt TEXT,
-  qr_code_data TEXT, -- QR code for worker auth
-  totp_secret TEXT, -- 2FA secret for admins
-  totp_enabled BOOLEAN NOT NULL DEFAULT false,
+  -- Authentication (MFA for all users)
+  password_hash TEXT NOT NULL, -- Bcrypt hashed password
+  mfa_secret TEXT, -- TOTP secret for multi-factor authentication
+  mfa_enabled BOOLEAN NOT NULL DEFAULT false,
+  backup_codes TEXT[], -- Array of hashed backup codes for MFA recovery
   
   -- Onboarding
   onboarding_status onboarding_status NOT NULL DEFAULT 'pending',

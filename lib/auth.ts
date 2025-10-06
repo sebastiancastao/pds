@@ -1,85 +1,107 @@
 // PDS Time Tracking System - Authentication Utilities
-// PIN, QR Code, and 2FA authentication helpers
+// Email/Password + MFA authentication for all users
 
 import speakeasy from 'speakeasy';
 import QRCode from 'qrcode';
-import { hash, verify } from './encryption';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 
 /**
- * Generate a 6-digit PIN for worker authentication
- * @returns 6-digit PIN string
+ * Password strength levels
  */
-export const generatePIN = (): string => {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-};
+export type PasswordStrength = 'weak' | 'medium' | 'strong' | 'very-strong';
 
 /**
- * Hash PIN for secure storage
- * @param pin - 6-digit PIN
- * @returns Hashed PIN with salt
+ * Password validation result
  */
-export const hashPIN = (pin: string): { hash: string; salt: string } => {
-  if (!/^\d{6}$/.test(pin)) {
-    throw new Error('PIN must be exactly 6 digits');
+export interface PasswordValidation {
+  isValid: boolean;
+  strength: PasswordStrength;
+  errors: string[];
+}
+
+/**
+ * Validate password strength and requirements
+ * @param password - Password to validate
+ * @returns Validation result with strength and errors
+ */
+export const validatePassword = (password: string): PasswordValidation => {
+  const errors: string[] = [];
+  let strengthScore = 0;
+
+  // Length checks
+  if (password.length < 12) {
+    errors.push('Password must be at least 12 characters long');
+  } else {
+    strengthScore++;
+    if (password.length >= 16) strengthScore++;
+    if (password.length >= 20) strengthScore++;
   }
-  
-  return hash(pin);
-};
 
-/**
- * Verify PIN against stored hash
- * @param pin - PIN to verify
- * @param hashedPIN - Stored hash
- * @param salt - Stored salt
- * @returns True if PIN is valid
- */
-export const verifyPIN = (pin: string, hashedPIN: string, salt: string): boolean => {
-  if (!/^\d{6}$/.test(pin)) {
-    return false;
+  // Character type checks
+  if (!/[a-z]/.test(password)) {
+    errors.push('Password must contain at least one lowercase letter');
+  } else {
+    strengthScore++;
   }
-  
-  return verify(pin, hashedPIN, salt);
-};
 
-/**
- * Generate QR code data for worker authentication
- * @param userId - User ID
- * @returns QR code data string
- */
-export const generateQRCodeData = (userId: string): string => {
-  const timestamp = Date.now();
-  const random = Math.random().toString(36).substring(2, 15);
-  
-  return `PDS-${userId}-${timestamp}-${random}`;
-};
-
-/**
- * Generate QR code image as data URL
- * @param data - QR code data
- * @returns Promise resolving to data URL
- */
-export const generateQRCodeImage = async (data: string): Promise<string> => {
-  try {
-    const dataUrl = await QRCode.toDataURL(data, {
-      errorCorrectionLevel: 'H',
-      type: 'image/png',
-      width: 300,
-      margin: 2,
-    });
-    
-    return dataUrl;
-  } catch (error) {
-    console.error('QR code generation error:', error);
-    throw new Error('Failed to generate QR code');
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Password must contain at least one uppercase letter');
+  } else {
+    strengthScore++;
   }
+
+  if (!/\d/.test(password)) {
+    errors.push('Password must contain at least one number');
+  } else {
+    strengthScore++;
+  }
+
+  if (!/[@$!%*?&#^()_+\-=\[\]{};':"\\|,.<>\/]/.test(password)) {
+    errors.push('Password must contain at least one special character (@$!%*?&#^()_+-=[]{};\':"|,.<>/)');
+  } else {
+    strengthScore++;
+  }
+
+  // Determine strength
+  let strength: PasswordStrength = 'weak';
+  if (strengthScore >= 7) strength = 'very-strong';
+  else if (strengthScore >= 5) strength = 'strong';
+  else if (strengthScore >= 4) strength = 'medium';
+
+  return {
+    isValid: errors.length === 0,
+    strength,
+    errors,
+  };
 };
 
 /**
- * Generate 2FA secret for admin users
+ * Hash password using bcrypt
+ * @param password - Plain text password
+ * @returns Hashed password
+ */
+export const hashPassword = async (password: string): Promise<string> => {
+  const saltRounds = 12; // Increased from default 10 for better security
+  return bcrypt.hash(password, saltRounds);
+};
+
+/**
+ * Verify password against hash
+ * @param password - Plain text password
+ * @param hash - Stored hash
+ * @returns True if password matches
+ */
+export const verifyPassword = async (password: string, hash: string): Promise<boolean> => {
+  return bcrypt.compare(password, hash);
+};
+
+/**
+ * Generate MFA secret for user
  * @param userEmail - User's email
- * @returns TOTP secret
+ * @returns MFA secret and QR code URL
  */
-export const generate2FASecret = (userEmail: string): {
+export const generateMFASecret = (userEmail: string): {
   secret: string;
   otpauthUrl: string;
 } => {
@@ -96,21 +118,33 @@ export const generate2FASecret = (userEmail: string): {
 };
 
 /**
- * Generate QR code for 2FA setup
+ * Generate QR code for MFA setup
  * @param otpauthUrl - TOTP URL
  * @returns Promise resolving to QR code data URL
  */
-export const generate2FAQRCode = async (otpauthUrl: string): Promise<string> => {
-  return generateQRCodeImage(otpauthUrl);
+export const generateMFAQRCode = async (otpauthUrl: string): Promise<string> => {
+  try {
+    const dataUrl = await QRCode.toDataURL(otpauthUrl, {
+      errorCorrectionLevel: 'H',
+      type: 'image/png',
+      width: 300,
+      margin: 2,
+    });
+    
+    return dataUrl;
+  } catch (error) {
+    console.error('QR code generation error:', error);
+    throw new Error('Failed to generate QR code');
+  }
 };
 
 /**
- * Verify 2FA token
+ * Verify MFA token
  * @param token - 6-digit TOTP token
- * @param secret - User's 2FA secret
+ * @param secret - User's MFA secret
  * @returns True if token is valid
  */
-export const verify2FAToken = (token: string, secret: string): boolean => {
+export const verifyMFAToken = (token: string, secret: string): boolean => {
   if (!/^\d{6}$/.test(token)) {
     return false;
   }
@@ -121,6 +155,61 @@ export const verify2FAToken = (token: string, secret: string): boolean => {
     token: token,
     window: parseInt(process.env.TOTP_WINDOW || '1'),
   });
+};
+
+/**
+ * Generate backup codes for MFA
+ * @returns Array of 10 backup codes (format: A1B2C3D4)
+ */
+export const generateBackupCodes = (): string[] => {
+  const codes: string[] = [];
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  
+  for (let i = 0; i < 10; i++) {
+    let code = '';
+    for (let j = 0; j < 8; j++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    codes.push(code);
+  }
+  
+  return codes;
+};
+
+/**
+ * Hash backup codes for secure storage
+ * @param codes - Array of backup codes
+ * @returns Array of hashed codes
+ */
+export const hashBackupCodes = async (codes: string[]): Promise<string[]> => {
+  return Promise.all(codes.map(code => bcrypt.hash(code, 10)));
+};
+
+/**
+ * Verify backup code against stored hashes
+ * @param code - Backup code to verify
+ * @param hashedCodes - Array of hashed backup codes
+ * @returns Index of matching code, or -1 if not found
+ */
+export const verifyBackupCode = async (
+  code: string,
+  hashedCodes: string[]
+): Promise<number> => {
+  for (let i = 0; i < hashedCodes.length; i++) {
+    const isMatch = await bcrypt.compare(code, hashedCodes[i]);
+    if (isMatch) {
+      return i;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Generate password reset token
+ * @returns Secure random token
+ */
+export const generatePasswordResetToken = (): string => {
+  return crypto.randomBytes(32).toString('hex');
 };
 
 /**

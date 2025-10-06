@@ -30,7 +30,7 @@ This application is designed to track employee time and worker availability for 
 
 **Features:**
 - Secure electronic onboarding with encrypted storage
-- Employee-driven login/logout with QR code or PIN
+- Employee-driven login/logout with email/password and MFA (Multi-Factor Authentication)
 - Break attestation for CA/state wage law compliance
 - Workers see gross pay visibility per event, per pay date
 - Audit-ready exports: payroll CSV and PDF logs
@@ -169,7 +169,7 @@ Estimated 4–6 weeks including testing before full deployment
 
 ### Security First
 - All PII must be encrypted at rest and in transit
-- Implement secure authentication (QR code/PIN for workers)
+- Implement secure authentication (email/password with MFA for all users)
 - Follow SOC2 compliance standards
 - Ensure audit trails for all critical operations
 
@@ -183,9 +183,10 @@ Estimated 4–6 weeks including testing before full deployment
 | --------------------- | ------------------------------------------------------ | ----------------- |
 | 📋 Employment Forms   | I-9, W-4, W-9, Direct Deposit, Handbook acknowledgment | **High**          |
 | 👤 Worker Identifiers | Worker ID, Name, Email, Phone                          | **Moderate**      |
+| 🔑 Authentication     | Email, hashed password, MFA secret, backup codes       | **High**          |
 | 📊 Onboarding Status  | Onboarding completion status, timestamps               | **Low**           |
 
-**Note:** I-9, W-4, W-9, and bank information (from direct deposit) qualify as **high-sensitivity PII** and **financial information**, requiring secure handling and compliance.
+**Note:** I-9, W-4, W-9, bank information, and authentication credentials (passwords, MFA secrets) qualify as **high-sensitivity PII** and **financial information**, requiring secure handling and compliance.
 
 ---
 
@@ -233,12 +234,16 @@ Estimated 4–6 weeks including testing before full deployment
 - Use environment-based access segregation (dev/staging/prod)
 - Implement database-level encryption for PII columns
 
-#### Access Control & Admin UI
-- Admin views must use **2FA (Two-Factor Authentication)**
+#### Access Control & Authentication
+- All users must use **MFA (Multi-Factor Authentication)** - required for all roles
+- Email/password authentication with TOTP-based MFA (Time-based One-Time Password)
 - Logs must be immutable and timestamped
 - Field-level permissions (e.g., payroll staff can access Direct Deposit, not I-9)
 - Principle of least privilege for all user roles
 - Session management with automatic timeout
+- Password requirements: minimum 12 characters, uppercase, lowercase, number, special character
+- Account lockout after 5 failed login attempts
+- MFA backup codes provided during setup
 
 #### Logging & Monitoring
 - Log all access to high-sensitivity forms with user identification
@@ -276,10 +281,12 @@ For users in California or EU, implement:
 ---
 
 ### User Roles
-- **Workers/Vendors** - Clock in/out, view their events, view their pay
-- **Room Managers** - Create events, staff events, approve timesheets
-- **Finance** - Final approval on payouts
-- **Execs** - Global visibility
+- **Workers/Vendors** - Clock in/out, view their events, view their pay (MFA required)
+- **Room Managers** - Create events, staff events, approve timesheets (MFA required)
+- **Finance** - Final approval on payouts (MFA required)
+- **Execs** - Global visibility (MFA required)
+
+**Note:** All users require email/password authentication with MFA enabled for enhanced security.
 
 ### Data Integrity
 - Employee-driven time entry (not manager-driven)
