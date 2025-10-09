@@ -167,6 +167,10 @@ export default function ChangePasswordPage() {
       // Success!
       setSuccess(true);
       
+      // Clear password change requirement flag
+      sessionStorage.removeItem('requires_password_change');
+      console.log('[DEBUG] Cleared requires_password_change flag');
+      
       // Redirect to MFA setup after 2 seconds (give time for session to persist)
       setTimeout(() => {
         console.log('[DEBUG] Redirecting to /mfa-setup');

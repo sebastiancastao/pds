@@ -219,37 +219,47 @@ export default function LoginPage() {
       console.log('  - currentUserData?.is_temporary_password:', currentUserData?.is_temporary_password);
       console.log('  - Final decision (isTemporaryPassword):', isTemporaryPassword);
       
+      // CRITICAL: Check temporary password FIRST before any MFA checks
       if (isTemporaryPassword === true) {
         console.log('🔄 [DEBUG] ✅ REDIRECTING TO /password (temporary password detected)');
-        console.log('🔄 [DEBUG] User must change their temporary password');
-        router.push('/password');
-      } else {
-        // Verify session is persisted before redirecting
-        console.log('🔍 [DEBUG] Step 7: Verifying session before MFA redirect...');
+        console.log('🔄 [DEBUG] User must change their temporary password BEFORE MFA');
         
-        // Small delay to ensure session is fully persisted to storage
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Set flag to prevent redirect loops
+        sessionStorage.setItem('requires_password_change', 'true');
+        sessionStorage.removeItem('mfa_checkpoint'); // Clear any MFA checkpoint
+        sessionStorage.removeItem('mfa_verified'); // Clear any MFA verification
         
-        const { data: { session } } = await supabase.auth.getSession();
-        console.log('🔍 [DEBUG] Session verification:', {
-          hasSession: !!session,
-          userId: session?.user?.id,
-          accessToken: session?.access_token ? 'present' : 'missing'
-        });
-        
-        if (!session) {
-          console.error('🔍 [DEBUG] ❌ ERROR: Session not found after authentication!');
-          setError('Session error. Please try logging in again.');
-          setIsLoading(false);
-          return;
-        }
-        
-        // Always redirect to verify-mfa for MFA verification
-        console.log('🔄 [DEBUG] ✅ Session verified, REDIRECTING TO /verify-mfa');
-        // Set checkpoint flag so user cannot navigate away without verifying
-        sessionStorage.setItem('mfa_checkpoint', 'true');
-        router.push('/verify-mfa');
+        // Use replace to prevent back navigation
+        router.replace('/password');
+        return;
       }
+      
+      // Only proceed to MFA if no temporary password
+      // Verify session is persisted before redirecting
+      console.log('🔍 [DEBUG] Step 7: Verifying session before MFA redirect...');
+      
+      // Small delay to ensure session is fully persisted to storage
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log('🔍 [DEBUG] Session verification:', {
+        hasSession: !!session,
+        userId: session?.user?.id,
+        accessToken: session?.access_token ? 'present' : 'missing'
+      });
+      
+      if (!session) {
+        console.error('🔍 [DEBUG] ❌ ERROR: Session not found after authentication!');
+        setError('Session error. Please try logging in again.');
+        setIsLoading(false);
+        return;
+      }
+      
+      // Redirect to verify-mfa for MFA verification (only if no temporary password)
+      console.log('🔄 [DEBUG] ✅ Session verified, REDIRECTING TO /verify-mfa');
+      // Set checkpoint flag so user cannot navigate away without verifying
+      sessionStorage.setItem('mfa_checkpoint', 'true');
+      router.replace('/verify-mfa');
 
     } catch (err: any) {
       console.error('Login error:', err);

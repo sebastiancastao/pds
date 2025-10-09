@@ -15,11 +15,6 @@ function VerifyMFAContent() {
   const [backupCode, setBackupCode] = useState('');
 
   useEffect(() => {
-    // Set MFA checkpoint flag - user has reached MFA verification
-    // This prevents accessing any other page without verifying MFA
-    sessionStorage.setItem('mfa_checkpoint', 'true');
-    console.log('[DEBUG] MFA checkpoint set - user cannot access other pages until verified');
-    
     // Check if user is authenticated using session (more reliable after login)
     const checkAuth = async () => {
       console.log('[DEBUG] Checking authentication status on verify-mfa page...');
@@ -51,17 +46,57 @@ function VerifyMFAContent() {
           router.push('/login');
           return;
         }
+
+        // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
+        const { data: userData } = await (supabase
+          .from('users')
+          .select('is_temporary_password, must_change_password')
+          .eq('id', retrySession.user.id)
+          .single() as any);
+
+        if (userData?.is_temporary_password || userData?.must_change_password) {
+          console.log('[DEBUG] ❌ User has temporary password - redirecting to /password');
+          console.log('[DEBUG] User must change password BEFORE MFA verification');
+          router.replace('/password');
+          return;
+        }
         
         console.log('[DEBUG] ✅ User authenticated (after retry), ready for MFA verification');
         console.log('[DEBUG] User ID:', retrySession.user.id);
         console.log('[DEBUG] User Email:', retrySession.user.email);
+        
+        // Set MFA checkpoint flag - user has reached MFA verification
+        sessionStorage.setItem('mfa_checkpoint', 'true');
         return;
       }
 
-      // User is authenticated and on verify-mfa page
+      // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
+      const { data: userData } = await (supabase
+        .from('users')
+        .select('is_temporary_password, must_change_password')
+        .eq('id', session.user.id)
+        .single() as any);
+
+      console.log('[DEBUG] Temporary password check:', {
+        is_temporary_password: userData?.is_temporary_password,
+        must_change_password: userData?.must_change_password,
+      });
+
+      if (userData?.is_temporary_password || userData?.must_change_password) {
+        console.log('[DEBUG] ❌ User has temporary password - redirecting to /password');
+        console.log('[DEBUG] User must change password BEFORE MFA verification');
+        router.replace('/password');
+        return;
+      }
+
+      // User is authenticated and has no temporary password - ready for MFA
       console.log('[DEBUG] ✅ User authenticated, ready for MFA verification');
       console.log('[DEBUG] User ID:', session.user.id);
       console.log('[DEBUG] User Email:', session.user.email);
+      
+      // Set MFA checkpoint flag - user has reached MFA verification
+      sessionStorage.setItem('mfa_checkpoint', 'true');
+      console.log('[DEBUG] MFA checkpoint set - user cannot access other pages until verified');
     };
 
     checkAuth();
