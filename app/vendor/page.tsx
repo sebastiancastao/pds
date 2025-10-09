@@ -1,8 +1,12 @@
+'use client';
+
 import Link from 'next/link';
+import { AuthGuard } from '@/lib/auth-guard';
 
 export default function VendorPortal() {
   return (
-    <div className="min-h-screen bg-gray-50">
+    <AuthGuard requireMFA={true}>
+      <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
@@ -103,6 +107,7 @@ export default function VendorPortal() {
         </div>
       </main>
     </div>
+    </AuthGuard>
   );
 }
 

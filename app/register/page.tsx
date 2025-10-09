@@ -1,7 +1,9 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { AuthGuard } from '@/lib/auth-guard';
 
 const US_STATES = [
   { value: '', label: 'Select State' },
@@ -118,6 +120,7 @@ interface ValidationErrors {
 }
 
 export default function RegisterPage() {
+  const router = useRouter();
   const [formData, setFormData] = useState({
     firstName: '',
     lastName: '',
@@ -132,6 +135,29 @@ export default function RegisterPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+
+  // Check if MFA verification code has been validated
+  useEffect(() => {
+    console.log('[REGISTER] Checking MFA verification status...');
+    
+    const mfaCheckpoint = sessionStorage.getItem('mfa_checkpoint');
+    const mfaVerified = sessionStorage.getItem('mfa_verified');
+    
+    console.log('[REGISTER] MFA status:', {
+      checkpoint: mfaCheckpoint,
+      verified: mfaVerified
+    });
+    
+    // If checkpoint is set but not verified, user needs to verify MFA
+    if (mfaCheckpoint === 'true' && mfaVerified !== 'true') {
+      console.log('[REGISTER] ❌ MFA verification required but not completed');
+      console.log('[REGISTER] Redirecting to /login');
+      router.push('/login');
+      return;
+    }
+    
+    console.log('[REGISTER] ✅ MFA verification check passed');
+  }, [router]);
 
   /**
    * Validate a single field using regex patterns
@@ -294,7 +320,8 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
+    <AuthGuard requireMFA={true} allowTemporaryPassword={true} onboardingOnly={true}>
+      <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
         <div className="relative z-10">
@@ -672,5 +699,6 @@ export default function RegisterPage() {
         </div>
       </div>
     </div>
+    </AuthGuard>
   );
 }

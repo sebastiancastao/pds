@@ -187,23 +187,11 @@ export default function LoginPage() {
       console.log('  - Will redirect to:', currentUserData?.is_temporary_password === true ? '/register' : '/');
       console.log('═══════════════════════════════════════');
 
-      // Check if MFA is enabled
-      console.log('🔍 [DEBUG] Step 5: Checking MFA status...');
-      
-      const { data: profileData, error: profileError } = await (supabase
-        .from('profiles')
-        .select('mfa_enabled')
-        .eq('user_id', authData.user.id)
-        .single() as any);
-
-      console.log('🔍 [DEBUG] Profile data:', {
-        found: !!profileData,
-        error: profileError,
-        mfa_enabled: profileData?.mfa_enabled
-      });
+      // REMOVED: First MFA check - causes duplicate variable names and uses .single()
+      // This check is redundant since we do a more robust check below with .limit(1)
 
       // Log successful authentication
-      console.log('🔍 [DEBUG] Step 6: Logging audit event...');
+      console.log('🔍 [DEBUG] Step 5: Logging audit event...');
       
       // Use pre-login data for accurate temporary password status
       const tempPasswordStatus = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
@@ -215,13 +203,12 @@ export default function LoginPage() {
         success: true,
         metadata: { 
           email, 
-          mfaRequired: profileData?.mfa_enabled || false,
           temporaryPassword: tempPasswordStatus
         }
       });
 
-      // Step 7: Redirect based on temporary password status
-      console.log('🔍 [DEBUG] Step 7: Making redirect decision...');
+      // Step 6: Redirect based on temporary password status and MFA
+      console.log('🔍 [DEBUG] Step 6: Making redirect decision...');
       
       // Use data from pre-login check (most reliable source)
       // Fallback to currentUserData if pre-login data is unavailable
@@ -231,16 +218,37 @@ export default function LoginPage() {
       console.log('  - preLoginData.isTemporaryPassword:', preLoginData?.isTemporaryPassword);
       console.log('  - currentUserData?.is_temporary_password:', currentUserData?.is_temporary_password);
       console.log('  - Final decision (isTemporaryPassword):', isTemporaryPassword);
-      console.log('  - Will redirect to:', isTemporaryPassword ? '/register' : '/');
       
       if (isTemporaryPassword === true) {
-        console.log('🔄 [DEBUG] ✅ REDIRECTING TO /register (temporary password detected)');
+        console.log('🔄 [DEBUG] ✅ REDIRECTING TO /password (temporary password detected)');
         console.log('🔄 [DEBUG] User must change their temporary password');
-        router.push('/register');
+        router.push('/password');
       } else {
-        console.log('🔄 [DEBUG] ✅ REDIRECTING TO / (normal login - no temporary password)');
-        console.log('🔄 [DEBUG] User has permanent password');
-        router.push('/');
+        // Verify session is persisted before redirecting
+        console.log('🔍 [DEBUG] Step 7: Verifying session before MFA redirect...');
+        
+        // Small delay to ensure session is fully persisted to storage
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const { data: { session } } = await supabase.auth.getSession();
+        console.log('🔍 [DEBUG] Session verification:', {
+          hasSession: !!session,
+          userId: session?.user?.id,
+          accessToken: session?.access_token ? 'present' : 'missing'
+        });
+        
+        if (!session) {
+          console.error('🔍 [DEBUG] ❌ ERROR: Session not found after authentication!');
+          setError('Session error. Please try logging in again.');
+          setIsLoading(false);
+          return;
+        }
+        
+        // Always redirect to verify-mfa for MFA verification
+        console.log('🔄 [DEBUG] ✅ Session verified, REDIRECTING TO /verify-mfa');
+        // Set checkpoint flag so user cannot navigate away without verifying
+        sessionStorage.setItem('mfa_checkpoint', 'true');
+        router.push('/verify-mfa');
       }
 
     } catch (err: any) {
