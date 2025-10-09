@@ -1,6 +1,3 @@
-// Updated verify-mfa page for SMS-based MFA
-// Replace the content of app/verify-mfa/page.tsx with this
-
 'use client';
 
 import { useState, useEffect, Suspense } from 'react';
@@ -13,16 +10,26 @@ function VerifyMFAContent() {
   const searchParams = useSearchParams();
   const [code, setCode] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [isSendingCode, setIsSendingCode] = useState(false);
   const [error, setError] = useState('');
-  const [useBackupCode, setUseBackupCode] = useState(false);
-  const [backupCode, setBackupCode] = useState('');
+  const [success, setSuccess] = useState('');
+  const [userEmail, setUserEmail] = useState('');
   const [codeSent, setCodeSent] = useState(false);
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [canResend, setCanResend] = useState(false);
+  const [countdown, setCountdown] = useState(60);
 
   useEffect(() => {
     checkAuthAndSendCode();
   }, [router]);
+
+  // Countdown timer for resend button
+  useEffect(() => {
+    if (codeSent && countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (countdown === 0) {
+      setCanResend(true);
+    }
+  }, [countdown, codeSent]);
 
   const checkAuthAndSendCode = async () => {
     console.log('[DEBUG] Checking authentication status on verify-mfa page...');
@@ -58,7 +65,7 @@ function VerifyMFAContent() {
       // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
       const { data: userData } = await (supabase
         .from('users')
-        .select('is_temporary_password, must_change_password, phone_number')
+        .select('is_temporary_password, must_change_password')
         .eq('id', retrySession.user.id)
         .single() as any);
 
@@ -69,30 +76,27 @@ function VerifyMFAContent() {
         return;
       }
       
-      console.log('[DEBUG] ✅ User authenticated (after retry), ready for SMS MFA verification');
+      console.log('[DEBUG] ✅ User authenticated (after retry), ready for MFA verification');
+      setUserEmail(retrySession.user.email || '');
       
-      // Set MFA checkpoint flag
+      // Set MFA checkpoint flag - user has reached MFA verification
       sessionStorage.setItem('mfa_checkpoint', 'true');
       
-      // Send SMS code automatically
-      if (userData?.phone_number) {
-        setPhoneNumber(formatPhoneForDisplay(userData.phone_number));
-        await sendSMSCode(retrySession);
-      }
+      // Automatically send email code
+      sendVerificationEmail(retrySession);
       return;
     }
 
     // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
     const { data: userData } = await (supabase
       .from('users')
-      .select('is_temporary_password, must_change_password, phone_number')
+      .select('is_temporary_password, must_change_password')
       .eq('id', session.user.id)
       .single() as any);
 
     console.log('[DEBUG] Temporary password check:', {
       is_temporary_password: userData?.is_temporary_password,
       must_change_password: userData?.must_change_password,
-      phone_number: userData?.phone_number,
     });
 
     if (userData?.is_temporary_password || userData?.must_change_password) {
@@ -103,55 +107,35 @@ function VerifyMFAContent() {
     }
 
     // User is authenticated and has no temporary password - ready for MFA
-    console.log('[DEBUG] ✅ User authenticated, ready for SMS MFA verification');
+    console.log('[DEBUG] ✅ User authenticated, ready for MFA verification');
+    setUserEmail(session.user.email || '');
     
-    // Set MFA checkpoint flag
+    // Set MFA checkpoint flag - user has reached MFA verification
     sessionStorage.setItem('mfa_checkpoint', 'true');
     console.log('[DEBUG] MFA checkpoint set - user cannot access other pages until verified');
     
-    // Send SMS code automatically
-    if (userData?.phone_number) {
-      setPhoneNumber(formatPhoneForDisplay(userData.phone_number));
-      await sendSMSCode(session);
-    } else {
-      setError('No phone number on file. Please contact support.');
-    }
+    // Automatically send email code
+    sendVerificationEmail(session);
   };
 
-  const formatPhoneForDisplay = (phone: string) => {
-    // Format phone numbers for display
-    const numbers = phone.replace(/\D/g, '');
-    
-    // Colombian format: +57 3XX XXX XXXX
-    if (numbers.length === 12 && numbers.startsWith('57')) {
-      const withoutCountry = numbers.slice(2);
-      return `+57 ${withoutCountry.slice(0, 3)} ${withoutCountry.slice(3, 6)} ${withoutCountry.slice(6)}`;
-    }
-    
-    // US format with country code: +1 (555) 123-4567
-    if (numbers.length === 11 && numbers.startsWith('1')) {
-      const areaCode = numbers.slice(1, 4);
-      const first = numbers.slice(4, 7);
-      const last = numbers.slice(7);
-      return `(${areaCode}) ${first}-${last}`;
-    }
-    
-    // US format without country code: (555) 123-4567
-    if (numbers.length === 10) {
-      const areaCode = numbers.slice(0, 3);
-      const first = numbers.slice(3, 6);
-      const last = numbers.slice(6);
-      return `(${areaCode}) ${first}-${last}`;
-    }
-    
-    return phone;
-  };
-
-  const sendSMSCode = async (session: any) => {
-    setIsSendingCode(true);
+  const sendVerificationEmail = async (session: any = null) => {
+    setIsLoading(true);
     setError('');
-    
+    setSuccess('');
+
     try {
+      // Get session if not provided
+      if (!session) {
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+        session = currentSession;
+      }
+      
+      if (!session) {
+        setError('Session expired. Please log in again.');
+        setIsLoading(false);
+        return;
+      }
+
       const response = await fetch('/api/auth/mfa/send-login-code', {
         method: 'POST',
         headers: { 
@@ -163,51 +147,29 @@ function VerifyMFAContent() {
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setError(data.error || 'Failed to send verification code. Please try again.');
-        setIsSendingCode(false);
+        setError(data.error || 'Failed to send verification email. Please try again.');
+        setIsLoading(false);
         return;
       }
 
       setCodeSent(true);
-      setIsSendingCode(false);
-      console.log('[DEBUG] SMS code sent successfully');
+      setCanResend(false);
+      setCountdown(60);
+      setSuccess(`Verification code sent to ${userEmail || 'your email'}`);
     } catch (err: any) {
-      console.error('Send code error:', err);
+      console.error('Email send error:', err);
       setError('An unexpected error occurred. Please try again.');
-      setIsSendingCode(false);
-    }
-  };
-
-  const handleResendCode = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
-      setError('Session expired. Please log in again.');
-      return;
-    }
-    await sendSMSCode(session);
-    
-    // Show success message briefly
-    const successDiv = document.getElementById('resend-success');
-    if (successDiv) {
-      successDiv.classList.remove('hidden');
-      setTimeout(() => {
-        successDiv.classList.add('hidden');
-      }, 3000);
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
 
-    const codeToVerify = useBackupCode ? backupCode : code;
-
-    if (!codeToVerify) {
-      setError('Please enter a code');
-      return;
-    }
-
-    if (!useBackupCode && codeToVerify.length !== 6) {
+    if (!code || code.length !== 6) {
       setError('Please enter a valid 6-digit code');
       return;
     }
@@ -223,16 +185,14 @@ function VerifyMFAContent() {
         return;
       }
 
-      // Use the SMS verification endpoint
-      const response = await fetch('/api/auth/mfa/verify-sms-login', {
+      const response = await fetch('/api/auth/mfa/verify-login-code', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({ 
-          code: codeToVerify,
-          isBackupCode: useBackupCode
+          code: code
         }),
       });
 
@@ -245,7 +205,7 @@ function VerifyMFAContent() {
       }
 
       // Success! Set MFA verification flag in session storage
-      console.log('[DEBUG] SMS MFA verified successfully, setting session flag');
+      console.log('[DEBUG] MFA verified successfully, setting session flag');
       sessionStorage.setItem('mfa_verified', 'true');
       sessionStorage.removeItem('mfa_checkpoint');
       
@@ -264,12 +224,6 @@ function VerifyMFAContent() {
     setError('');
   };
 
-  const handleBackupCodeChange = (value: string) => {
-    const alphanumericValue = value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
-    setBackupCode(alphanumericValue);
-    setError('');
-  };
-
   return (
     <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Security Information */}
@@ -277,10 +231,10 @@ function VerifyMFAContent() {
         <div className="relative z-10">
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
-              SMS Verification
+              Email Verification
             </h1>
             <p className="text-primary-100 text-lg">
-              Enter the code we sent to your phone to continue
+              Enter the verification code sent to your email to continue
             </p>
           </div>
         </div>
@@ -295,7 +249,7 @@ function VerifyMFAContent() {
               </svg>
               <div>
                 <p className="font-medium">Protected Access</p>
-                <p className="text-sm text-primary-100">Your account is secured with SMS verification</p>
+                <p className="text-sm text-primary-100">Your account is secured with email verification</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -303,8 +257,8 @@ function VerifyMFAContent() {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Instant Delivery</p>
-                <p className="text-sm text-primary-100">Codes arrive in seconds via text message</p>
+                <p className="font-medium">Time-Limited Codes</p>
+                <p className="text-sm text-primary-100">Codes expire after 10 minutes for security</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -312,8 +266,8 @@ function VerifyMFAContent() {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Emergency Access</p>
-                <p className="text-sm text-primary-100">Use backup codes if you can't access your phone</p>
+                <p className="font-medium">Easy Access</p>
+                <p className="text-sm text-primary-100">Check your email on any device</p>
               </div>
             </div>
           </div>
@@ -328,7 +282,7 @@ function VerifyMFAContent() {
         </div>
       </div>
 
-      {/* Right Side - SMS MFA Verification Form */}
+      {/* Right Side - MFA Verification Form */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md">
           {/* Mobile Back Button */}
@@ -343,75 +297,62 @@ function VerifyMFAContent() {
             <div className="text-center mb-8">
               <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                 </svg>
               </div>
-              <h2 className="text-2xl font-bold text-gray-900">SMS Verification</h2>
+              <h2 className="text-2xl font-bold text-gray-900">Email Verification</h2>
               <p className="text-gray-600 mt-2">
-                {useBackupCode 
-                  ? 'Enter one of your backup codes'
-                  : isSendingCode
-                    ? 'Sending code to your phone...'
-                    : codeSent && phoneNumber
-                      ? `Code sent to ${phoneNumber}`
-                      : 'Preparing to send code...'
-                }
+                Enter the 6-digit code sent to your email
               </p>
             </div>
 
-            {/* Success message for resend */}
-            <div id="resend-success" className="hidden bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
-              <p className="text-sm text-green-800 text-center">Code resent successfully!</p>
-            </div>
+            {/* Success Message */}
+            {success && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-start gap-2 mb-6">
+                <svg className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                <p className="text-sm text-green-800">{success}</p>
+              </div>
+            )}
+
+            {/* Email Display */}
+            {userEmail && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-6">
+                <div className="flex items-start gap-2">
+                  <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                    <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                  </svg>
+                  <div className="text-sm text-blue-800">
+                    <p className="font-medium">Sent to: <span className="font-mono">{userEmail}</span></p>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {/* MFA Verification Form */}
             <form onSubmit={handleVerifyCode} className="space-y-5">
-              {!useBackupCode ? (
-                // SMS Code Input
-                <div>
-                  <label htmlFor="code" className="block text-sm font-medium text-gray-700 mb-2">
-                    Verification Code
-                  </label>
-                  <input
-                    type="text"
-                    id="code"
-                    value={code}
-                    onChange={(e) => handleCodeChange(e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl tracking-widest font-mono"
-                    placeholder="000000"
-                    maxLength={6}
-                    required
-                    autoFocus
-                    autoComplete="off"
-                    disabled={isSendingCode}
-                  />
-                  <p className="mt-2 text-sm text-gray-500 text-center">
-                    {isSendingCode ? 'Sending...' : 'Code expires in 10 minutes'}
-                  </p>
-                </div>
-              ) : (
-                // Backup Code Input
-                <div>
-                  <label htmlFor="backupCode" className="block text-sm font-medium text-gray-700 mb-2">
-                    Backup Code
-                  </label>
-                  <input
-                    type="text"
-                    id="backupCode"
-                    value={backupCode}
-                    onChange={(e) => handleBackupCodeChange(e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-xl tracking-wider font-mono"
-                    placeholder="A1B2C3D4"
-                    maxLength={8}
-                    required
-                    autoFocus
-                    autoComplete="off"
-                  />
-                  <p className="mt-2 text-sm text-gray-500">
-                    Each backup code can only be used once
-                  </p>
-                </div>
-              )}
+              <div>
+                <label htmlFor="code" className="block text-sm font-medium text-gray-700 mb-2">
+                  Verification Code
+                </label>
+                <input
+                  type="text"
+                  id="code"
+                  value={code}
+                  onChange={(e) => handleCodeChange(e.target.value)}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl tracking-widest font-mono"
+                  placeholder="000000"
+                  maxLength={6}
+                  required
+                  autoFocus
+                  autoComplete="off"
+                  disabled={!codeSent}
+                />
+                <p className="mt-2 text-sm text-gray-500">
+                  {codeSent ? 'Check your email inbox for the code' : 'Sending verification code...'}
+                </p>
+              </div>
 
               {/* Error Message */}
               {error && (
@@ -426,7 +367,7 @@ function VerifyMFAContent() {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || isSendingCode || (!useBackupCode && code.length !== 6) || (useBackupCode && backupCode.length !== 8)}
+                disabled={isLoading || !codeSent || code.length !== 6}
                 className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isLoading ? (
@@ -447,37 +388,31 @@ function VerifyMFAContent() {
                 )}
               </button>
 
-              {/* Resend Code / Toggle Backup Code */}
-              <div className="flex items-center justify-between pt-2">
-                {!useBackupCode && codeSent && (
+              {/* Resend Code */}
+              <div className="text-center pt-4 border-t border-gray-200">
+                {canResend ? (
                   <button
                     type="button"
-                    onClick={handleResendCode}
-                    disabled={isSendingCode}
-                    className="text-sm text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50"
+                    onClick={() => {
+                      setCode('');
+                      sendVerificationEmail();
+                    }}
+                    className="text-sm text-primary-600 hover:text-primary-700 font-medium"
                   >
-                    Resend Code
+                    Resend verification code
                   </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setUseBackupCode(!useBackupCode);
-                    setCode('');
-                    setBackupCode('');
-                    setError('');
-                  }}
-                  className="text-sm text-primary-600 hover:text-primary-700 font-medium ml-auto"
-                >
-                  {useBackupCode ? '← Use SMS code' : 'Use backup code →'}
-                </button>
+                ) : codeSent ? (
+                  <p className="text-sm text-gray-500">
+                    Didn't receive the code? You can resend in <span className="font-medium">{countdown}s</span>
+                  </p>
+                ) : null}
               </div>
             </form>
 
             {/* Help Section */}
             <div className="mt-6 pt-6 border-t border-gray-200">
               <p className="text-center text-sm text-gray-600">
-                Can't access your phone?{' '}
+                Having trouble?{' '}
                 <a href="#" className="text-primary-600 hover:text-primary-700 font-medium">
                   Contact Support
                 </a>
@@ -511,4 +446,3 @@ export default function VerifyMFAPage() {
     </Suspense>
   );
 }
-
