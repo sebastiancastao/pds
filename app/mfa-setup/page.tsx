@@ -58,15 +58,22 @@ export default function MFASetupPage() {
       rowCount: profileDataArray?.length || 0
     });
 
-    // If user has mfa_secret, they've already scanned QR - redirect to verify
-    if (profileData?.mfa_secret) {
-      console.log('[DEBUG] MFA Setup - ✅ MFA SECRET EXISTS, redirecting to /verify-mfa');
-      console.log('[DEBUG] MFA Setup - User already scanned QR code, should verify instead');
-      router.push('/verify-mfa');
+    // CRITICAL: NEVER redirect to /verify-mfa from /mfa-setup
+    // This page is for SETTING UP MFA, not verifying it
+    // Two workflows:
+    // 1. Temporary password: login → password → mfa-setup → register
+    // 2. Normal password: login → verify-mfa → home
+    // 
+    // If MFA is already FULLY enabled (mfa_enabled === true), redirect to home
+    // Otherwise, allow user to set up or re-set up MFA
+    if (profileData?.mfa_enabled === true) {
+      console.log('[DEBUG] MFA Setup - ✅ MFA ALREADY FULLY ENABLED, redirecting to home');
+      console.log('[DEBUG] MFA Setup - User already completed MFA setup');
+      router.push('/');
     } else {
-      console.log('[DEBUG] MFA Setup - ❌ NO MFA SECRET - Generating new secret');
-      console.log('[DEBUG] MFA Setup - User needs to scan QR code');
-      // Generate MFA secret for first-time setup
+      console.log('[DEBUG] MFA Setup - Setting up MFA (first time or re-setup)');
+      console.log('[DEBUG] MFA Setup - mfa_enabled:', profileData?.mfa_enabled);
+      // Generate MFA secret for first-time setup or re-setup
       generateMFASecret();
     }
   };
@@ -223,7 +230,7 @@ Keep these codes safe and secure!
   }
 
   return (
-    <AuthGuard requireMFA={false} allowTemporaryPassword={true} onboardingOnly={true}>
+    <AuthGuard requireMFA={true} allowTemporaryPassword={true} onboardingOnly={true}>
       <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Information */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
