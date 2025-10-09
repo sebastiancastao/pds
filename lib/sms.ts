@@ -31,18 +31,24 @@ export function generateVerificationCode(): string {
 }
 
 /**
- * Format phone number to E.164 format (+1XXXXXXXXXX for US)
+ * Format phone number to E.164 format
+ * Supports: US (+1XXXXXXXXXX) and Colombia (+57XXXXXXXXXX)
  */
 export function formatPhoneNumber(phone: string): string {
   // Remove all non-digit characters
   const digits = phone.replace(/\D/g, '');
   
-  // If it's 10 digits, assume US and add +1
+  // Colombian number: 57 + 10 digits (mobile starts with 3)
+  if (digits.length === 12 && digits.startsWith('57')) {
+    return `+${digits}`;
+  }
+  
+  // US number: 10 digits
   if (digits.length === 10) {
     return `+1${digits}`;
   }
   
-  // If it already has country code
+  // US with country code: 11 digits starting with 1
   if (digits.length === 11 && digits.startsWith('1')) {
     return `+${digits}`;
   }
@@ -58,11 +64,18 @@ export function formatPhoneNumber(phone: string): string {
 
 /**
  * Validate phone number format
+ * Supports: US (10 digits or 11 with country code) and Colombia (12 digits with 57)
  */
 export function isValidPhoneNumber(phone: string): boolean {
   const digits = phone.replace(/\D/g, '');
-  // Must be 10 digits (US) or 11 digits with country code
-  return digits.length === 10 || (digits.length === 11 && digits.startsWith('1'));
+  
+  // US: 10 digits or 11 digits starting with 1
+  const isValidUS = digits.length === 10 || (digits.length === 11 && digits.startsWith('1'));
+  
+  // Colombia: 12 digits (57 + 10 digits, mobile starts with 3)
+  const isValidColombian = digits.length === 12 && digits.startsWith('57') && digits.charAt(2) === '3';
+  
+  return isValidUS || isValidColombian;
 }
 
 /**

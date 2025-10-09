@@ -119,20 +119,31 @@ function VerifyMFAContent() {
   };
 
   const formatPhoneForDisplay = (phone: string) => {
-    // Format +15551234567 to (555) 123-4567
+    // Format phone numbers for display
     const numbers = phone.replace(/\D/g, '');
+    
+    // Colombian format: +57 3XX XXX XXXX
+    if (numbers.length === 12 && numbers.startsWith('57')) {
+      const withoutCountry = numbers.slice(2);
+      return `+57 ${withoutCountry.slice(0, 3)} ${withoutCountry.slice(3, 6)} ${withoutCountry.slice(6)}`;
+    }
+    
+    // US format with country code: +1 (555) 123-4567
     if (numbers.length === 11 && numbers.startsWith('1')) {
       const areaCode = numbers.slice(1, 4);
       const first = numbers.slice(4, 7);
       const last = numbers.slice(7);
       return `(${areaCode}) ${first}-${last}`;
     }
+    
+    // US format without country code: (555) 123-4567
     if (numbers.length === 10) {
       const areaCode = numbers.slice(0, 3);
       const first = numbers.slice(3, 6);
       const last = numbers.slice(6);
       return `(${areaCode}) ${first}-${last}`;
     }
+    
     return phone;
   };
 

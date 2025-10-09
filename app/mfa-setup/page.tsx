@@ -1,6 +1,3 @@
-// This is the NEW SMS-based MFA setup page
-// Replace the content of app/mfa-setup/page.tsx with this
-
 'use client';
 
 import { useState, useEffect } from 'react';
@@ -11,70 +8,73 @@ import { AuthGuard } from '@/lib/auth-guard';
 
 export default function MFASetupPage() {
   const router = useRouter();
-  const [step, setStep] = useState<'phone' | 'verify' | 'backup-codes' | 'success'>('phone');
-  const [phoneNumber, setPhoneNumber] = useState('');
+  const [step, setStep] = useState<'setup' | 'verify' | 'success'>('setup');
   const [verificationCode, setVerificationCode] = useState('');
-  const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [userEmail, setUserEmail] = useState('');
   const [codeSent, setCodeSent] = useState(false);
+  const [canResend, setCanResend] = useState(false);
+  const [countdown, setCountdown] = useState(60);
 
   useEffect(() => {
     checkAuthAndMFA();
   }, []);
 
   const checkAuthAndMFA = async () => {
-    console.log('[DEBUG] SMS MFA Setup - Initializing...');
+    console.log('[DEBUG] MFA Setup - Initializing email MFA setup...');
     
+    // AuthGuard handles authentication check, so we just get the user
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user) {
-      console.log('[DEBUG] SMS MFA Setup - No user');
+      console.log('[DEBUG] MFA Setup - No user (AuthGuard should have caught this)');
       return;
     }
 
     setUserEmail(user.email || '');
 
     // Check if MFA is already enabled
+    console.log('[DEBUG] MFA Setup - Checking if MFA is already enabled...');
+    console.log('[DEBUG] MFA Setup - User ID:', user.id);
+    
     const { data: profileDataArray } = await (supabase
       .from('profiles')
-      .select('mfa_enabled, mfa_secret')
+      .select('mfa_enabled')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(1) as any);
     
     const profileData = profileDataArray?.[0] || null;
 
+    console.log('[DEBUG] MFA Setup - Profile check:', {
+      mfaEnabled: profileData?.mfa_enabled,
+    });
+
+    // If MFA is already FULLY enabled, redirect to home
     if (profileData?.mfa_enabled === true) {
-      console.log('[DEBUG] SMS MFA Setup - MFA already enabled, redirecting to home');
+      console.log('[DEBUG] MFA Setup - ✅ MFA ALREADY ENABLED, redirecting to home');
       router.push('/');
+    } else {
+      console.log('[DEBUG] MFA Setup - MFA not enabled, ready to set up');
     }
   };
 
-  const formatPhoneNumberDisplay = (value: string) => {
-    const numbers = value.replace(/\D/g, '');
-    if (numbers.length <= 3) return numbers;
-    if (numbers.length <= 6) return `(${numbers.slice(0, 3)}) ${numbers.slice(3)}`;
-    return `(${numbers.slice(0, 3)}) ${numbers.slice(3, 6)}-${numbers.slice(6, 10)}`;
-  };
-
-  const handlePhoneChange = (value: string) => {
-    const numbers = value.replace(/\D/g, '').slice(0, 10);
-    setPhoneNumber(numbers);
-    setError('');
-  };
-
-  const handleSendCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-
-    if (phoneNumber.length !== 10) {
-      setError('Please enter a valid 10-digit phone number');
-      return;
+  // Countdown timer for resend button
+  useEffect(() => {
+    if (codeSent && countdown > 0) {
+      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
+      return () => clearTimeout(timer);
+    } else if (countdown === 0) {
+      setCanResend(true);
     }
+  }, [countdown, codeSent]);
 
+  const sendVerificationEmail = async () => {
     setIsLoading(true);
+    setError('');
+    setSuccess('');
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -85,32 +85,31 @@ export default function MFASetupPage() {
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/setup-sms', {
+      const response = await fetch('/api/auth/mfa/send-email-code', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify({ 
-          action: 'send_code',
-          phoneNumber,
-        }),
       });
 
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setError(data.error || 'Failed to send verification code. Please try again.');
+        setError(data.error || 'Failed to send verification email. Please try again.');
         setIsLoading(false);
         return;
       }
 
       setCodeSent(true);
+      setCanResend(false);
+      setCountdown(60);
+      setSuccess(`Verification code sent to ${userEmail}`);
       setStep('verify');
-      setIsLoading(false);
     } catch (err: any) {
-      console.error('Send code error:', err);
+      console.error('Email send error:', err);
       setError('An unexpected error occurred. Please try again.');
+    } finally {
       setIsLoading(false);
     }
   };
@@ -118,8 +117,9 @@ export default function MFASetupPage() {
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setSuccess('');
 
-    if (verificationCode.length !== 6) {
+    if (!verificationCode || verificationCode.length !== 6) {
       setError('Please enter a valid 6-digit code');
       return;
     }
@@ -135,15 +135,14 @@ export default function MFASetupPage() {
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/setup-sms', {
+      const response = await fetch('/api/auth/mfa/verify-email-code', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({ 
-          action: 'verify_code',
-          code: verificationCode,
+          code: verificationCode
         }),
       });
 
@@ -155,9 +154,11 @@ export default function MFASetupPage() {
         return;
       }
 
-      // Success! Show backup codes
-      setBackupCodes(data.backupCodes);
-      setStep('backup-codes');
+      // Success! MFA is now enabled
+      setStep('success');
+      setTimeout(() => {
+        router.push('/register');
+      }, 2000);
     } catch (err: any) {
       console.error('Verification error:', err);
       setError('An unexpected error occurred. Please try again.');
@@ -165,92 +166,16 @@ export default function MFASetupPage() {
     }
   };
 
-  const handleResendCode = async () => {
-    setError('');
-    setIsLoading(true);
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        setError('Session expired. Please log in again.');
-        setIsLoading(false);
-        return;
-      }
-
-      const response = await fetch('/api/auth/mfa/setup-sms', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${session.access_token}`
-        },
-        body: JSON.stringify({ 
-          action: 'send_code',
-          phoneNumber,
-        }),
-      });
-
-      const data = await response.json();
-
-      if (!response.ok || data.error) {
-        setError(data.error || 'Failed to resend code.');
-        setIsLoading(false);
-        return;
-      }
-
-      setError('');
-      setIsLoading(false);
-      // Show success message briefly
-      const successDiv = document.getElementById('resend-success');
-      if (successDiv) {
-        successDiv.classList.remove('hidden');
-        setTimeout(() => {
-          successDiv.classList.add('hidden');
-        }, 3000);
-      }
-    } catch (err: any) {
-      console.error('Resend code error:', err);
-      setError('An unexpected error occurred. Please try again.');
-      setIsLoading(false);
-    }
-  };
-
-  const handleDownloadBackupCodes = () => {
-    const text = `PDS Time Tracking - MFA Backup Codes
-Generated: ${new Date().toLocaleString()}
-Email: ${userEmail}
-
-IMPORTANT: Store these codes in a secure location.
-Each code can only be used once.
-
-${backupCodes.map((code, idx) => `${idx + 1}. ${code}`).join('\n')}
-
-Keep these codes safe and secure!
-`;
-    
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pds-backup-codes-${Date.now()}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  };
-
-  const handleCopyBackupCodes = () => {
-    const text = backupCodes.join('\n');
-    navigator.clipboard.writeText(text);
-    alert('Backup codes copied to clipboard!');
-  };
-
-  const handleComplete = () => {
-    setStep('success');
-    setTimeout(() => {
-      router.push('/register');
-    }, 2000);
-  };
+  if (isLoading && step === 'setup') {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Preparing email verification...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (step === 'success') {
     return (
@@ -261,9 +186,9 @@ Keep these codes safe and secure!
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">MFA Setup Complete!</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">Email MFA Enabled!</h2>
           <p className="text-gray-600 mb-6">
-            Your phone number is now verified. Redirecting to complete your profile...
+            Your account is now secured with email-based multi-factor authentication. When you log in, we'll send a verification code to your email. Redirecting to complete your profile...
           </p>
         </div>
       </div>
@@ -281,31 +206,22 @@ Keep these codes safe and secure!
               Secure Your Account
             </h1>
             <p className="text-primary-100 text-lg">
-              Add your phone number for secure SMS verification
+              Multi-factor authentication adds an extra layer of security to your account
             </p>
           </div>
         </div>
 
-        {/* SMS MFA Benefits */}
+        {/* MFA Benefits */}
         <div className="relative z-10 space-y-4">
-          <h2 className="text-white font-semibold text-xl mb-6">Why SMS Verification?</h2>
+          <h2 className="text-white font-semibold text-xl mb-6">Why Email MFA?</h2>
           <div className="space-y-3">
             <div className="flex items-start gap-3 text-white">
               <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Simple & Convenient</p>
-                <p className="text-sm text-primary-100">No extra apps needed - just your phone</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 text-white">
-              <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="font-medium">Instant Delivery</p>
-                <p className="text-sm text-primary-100">Receive codes instantly via text message</p>
+                <p className="font-medium">Enhanced Security</p>
+                <p className="text-sm text-primary-100">Verification codes sent directly to your email</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -314,7 +230,7 @@ Keep these codes safe and secure!
               </svg>
               <div>
                 <p className="font-medium">Compliance Required</p>
-                <p className="text-sm text-primary-100">SOC2 and enterprise security standards</p>
+                <p className="text-sm text-primary-100">SOC2 and enterprise security standards mandate MFA</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -322,8 +238,17 @@ Keep these codes safe and secure!
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Backup Codes</p>
-                <p className="text-sm text-primary-100">Emergency access with backup codes</p>
+                <p className="font-medium">Easy to Use</p>
+                <p className="text-sm text-primary-100">No app downloads required - works with your email</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 text-white">
+              <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <div>
+                <p className="font-medium">Always Accessible</p>
+                <p className="text-sm text-primary-100">Access from any device with your email</p>
               </div>
             </div>
           </div>
@@ -338,84 +263,95 @@ Keep these codes safe and secure!
         </div>
       </div>
 
-      {/* Right Side - SMS MFA Setup */}
+      {/* Right Side - MFA Setup */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
             {/* Step Indicator */}
             <div className="flex items-center justify-center mb-8">
-              <div className={`flex items-center ${step === 'phone' ? 'text-primary-600' : 'text-green-600'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'phone' ? 'bg-primary-100' : 'bg-green-100'}`}>
-                  {step === 'phone' ? '1' : '✓'}
+              <div className={`flex items-center ${step === 'setup' ? 'text-primary-600' : 'text-green-600'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'setup' ? 'bg-primary-100' : 'bg-green-100'}`}>
+                  {step === 'setup' ? '1' : '✓'}
                 </div>
-                <span className="ml-2 text-sm font-medium">Phone</span>
+                <span className="ml-2 text-sm font-medium">Send Code</span>
               </div>
-              <div className="w-12 h-0.5 bg-gray-300 mx-2"></div>
-              <div className={`flex items-center ${step === 'verify' ? 'text-primary-600' : ['backup-codes', 'success'].includes(step) ? 'text-green-600' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'verify' ? 'bg-primary-100' : ['backup-codes', 'success'].includes(step) ? 'bg-green-100' : 'bg-gray-100'}`}>
-                  {['backup-codes', 'success'].includes(step) ? '✓' : '2'}
+              <div className="w-16 h-0.5 bg-gray-300 mx-2"></div>
+              <div className={`flex items-center ${step === 'verify' ? 'text-primary-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'verify' ? 'bg-primary-100' : 'bg-gray-100'}`}>
+                  2
                 </div>
                 <span className="ml-2 text-sm font-medium">Verify</span>
               </div>
-              <div className="w-12 h-0.5 bg-gray-300 mx-2"></div>
-              <div className={`flex items-center ${['backup-codes', 'success'].includes(step) ? 'text-primary-600' : 'text-gray-400'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${['backup-codes', 'success'].includes(step) ? 'bg-primary-100' : 'bg-gray-100'}`}>
-                  3
-                </div>
-                <span className="ml-2 text-sm font-medium">Backup</span>
-              </div>
             </div>
 
-            {/* Step 1: Enter Phone Number */}
-            {step === 'phone' && (
+            {/* Step 1: Send Email Code */}
+            {step === 'setup' && (
               <>
                 <div className="text-center mb-6">
                   <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                     <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
                     </svg>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Add Phone Number</h2>
-                  <p className="text-gray-600 mt-2">We'll send you a verification code via SMS</p>
+                  <h2 className="text-2xl font-bold text-gray-900">Enable Email Verification</h2>
+                  <p className="text-gray-600 mt-2">We'll send a verification code to your email</p>
                 </div>
 
-                <form onSubmit={handleSendCode} className="space-y-5">
-                  <div>
-                    <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700 mb-2">
-                      Phone Number
-                    </label>
-                    <input
-                      type="tel"
-                      id="phoneNumber"
-                      value={formatPhoneNumberDisplay(phoneNumber)}
-                      onChange={(e) => handlePhoneChange(e.target.value)}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-lg"
-                      placeholder="(555) 123-4567"
-                      required
-                      autoFocus
-                    />
-                    <p className="mt-2 text-sm text-gray-500">
-                      Enter your 10-digit US phone number
-                    </p>
-                  </div>
-
-                  {error && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
-                      <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                      </svg>
-                      <p className="text-sm text-red-800">{error}</p>
+                {/* Email Display */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-sm text-blue-800">
+                      <p className="font-medium mb-1">Verification email will be sent to:</p>
+                      <p className="font-mono text-blue-900">{userEmail}</p>
                     </div>
-                  )}
+                  </div>
+                </div>
 
-                  <button
-                    type="submit"
-                    disabled={isLoading || phoneNumber.length !== 10}
-                    className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {isLoading ? 'Sending Code...' : 'Send Verification Code'}
-                  </button>
-                </form>
+                {/* Instructions */}
+                <div className="mb-6">
+                  <h3 className="text-sm font-medium text-gray-700 mb-2">What happens next?</h3>
+                  <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
+                    <li>We'll send a 6-digit code to your email</li>
+                    <li>Check your inbox (and spam folder)</li>
+                    <li>Enter the code to verify</li>
+                    <li>Your MFA will be activated</li>
+                  </ol>
+                </div>
+
+                {error && (
+                  <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2 mb-4">
+                    <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <p className="text-sm text-red-800">{error}</p>
+                  </div>
+                )}
+
+                <button
+                  onClick={sendVerificationEmail}
+                  disabled={isLoading}
+                  className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                >
+                  {isLoading ? (
+                    <>
+                      <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      <span>Sending...</span>
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      <span>Send Verification Code</span>
+                    </>
+                  )}
+                </button>
               </>
             )}
 
@@ -429,14 +365,17 @@ Keep these codes safe and secure!
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold text-gray-900">Enter Verification Code</h2>
-                  <p className="text-gray-600 mt-2">
-                    We sent a code to {formatPhoneNumberDisplay(phoneNumber)}
-                  </p>
+                  <p className="text-gray-600 mt-2">Enter the 6-digit code sent to {userEmail}</p>
                 </div>
 
-                <div id="resend-success" className="hidden bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
-                  <p className="text-sm text-green-800 text-center">Code resent successfully!</p>
-                </div>
+                {success && (
+                  <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-start gap-2 mb-4">
+                    <svg className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <p className="text-sm text-green-800">{success}</p>
+                  </div>
+                )}
 
                 <form onSubmit={handleVerifyCode} className="space-y-5">
                   <div>
@@ -458,8 +397,8 @@ Keep these codes safe and secure!
                       required
                       autoFocus
                     />
-                    <p className="mt-2 text-sm text-gray-500 text-center">
-                      Code expires in 10 minutes
+                    <p className="mt-2 text-sm text-gray-500">
+                      Check your email inbox for the code
                     </p>
                   </div>
 
@@ -475,94 +414,45 @@ Keep these codes safe and secure!
                   <button
                     type="submit"
                     disabled={isLoading || verificationCode.length !== 6}
-                    className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
-                    {isLoading ? 'Verifying...' : 'Verify Code'}
+                    {isLoading ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        <span>Verifying...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>Verify and Enable MFA</span>
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </>
+                    )}
                   </button>
 
-                  <div className="flex items-center justify-between pt-2">
-                    <button
-                      type="button"
-                      onClick={() => setStep('phone')}
-                      className="text-sm text-gray-600 hover:text-gray-800"
-                    >
-                      ← Change Phone Number
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleResendCode}
-                      disabled={isLoading}
-                      className="text-sm text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50"
-                    >
-                      Resend Code
-                    </button>
+                  <div className="text-center pt-4 border-t border-gray-200">
+                    {canResend ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVerificationCode('');
+                          sendVerificationEmail();
+                        }}
+                        className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+                      >
+                        Resend verification code
+                      </button>
+                    ) : (
+                      <p className="text-sm text-gray-500">
+                        Didn't receive the code? You can resend in <span className="font-medium">{countdown}s</span>
+                      </p>
+                    )}
                   </div>
                 </form>
-              </>
-            )}
-
-            {/* Step 3: Backup Codes */}
-            {step === 'backup-codes' && (
-              <>
-                <div className="text-center mb-6">
-                  <div className="w-16 h-16 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="w-8 h-8 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-                    </svg>
-                  </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Save Backup Codes</h2>
-                  <p className="text-gray-600 mt-2">Use these if you can't access your phone</p>
-                </div>
-
-                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
-                  <div className="flex gap-2">
-                    <svg className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
-                    </svg>
-                    <div className="text-sm text-yellow-800">
-                      <p className="font-medium">Important!</p>
-                      <p>Each code can only be used once. Save them in a secure location.</p>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-gray-50 border border-gray-300 rounded-lg p-4 mb-6">
-                  <div className="grid grid-cols-2 gap-2">
-                    {backupCodes.map((code, idx) => (
-                      <div key={idx} className="bg-white border border-gray-200 rounded px-3 py-2">
-                        <code className="text-sm font-mono">{code}</code>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex gap-3 mb-6">
-                  <button
-                    onClick={handleDownloadBackupCodes}
-                    className="flex-1 bg-white border-2 border-primary-600 text-primary-600 py-3 px-4 rounded-lg font-semibold hover:bg-primary-50 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                    </svg>
-                    Download
-                  </button>
-                  <button
-                    onClick={handleCopyBackupCodes}
-                    className="flex-1 bg-white border-2 border-primary-600 text-primary-600 py-3 px-4 rounded-lg font-semibold hover:bg-primary-50 transition-colors flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    Copy
-                  </button>
-                </div>
-
-                <button
-                  onClick={handleComplete}
-                  className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors"
-                >
-                  Complete Setup
-                </button>
               </>
             )}
           </div>
@@ -572,4 +462,3 @@ Keep these codes safe and secure!
     </AuthGuard>
   );
 }
-

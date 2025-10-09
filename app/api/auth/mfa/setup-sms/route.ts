@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
 
       if (!isValidPhoneNumber(phoneNumber)) {
         return NextResponse.json(
-          { error: 'Invalid phone number. Please enter a 10-digit US phone number.' },
+          { error: 'Invalid phone number. Please enter a valid US (10 digits) or Colombian (57 + 10 digits) phone number.' },
           { status: 400 }
         );
       }
