@@ -84,24 +84,30 @@ export function AuthGuard({
     }
 
     // Step 4: Check if user has reached MFA verification step
-    // Once at /verify-mfa, user cannot access ANY page without verifying
+    // CRITICAL: Only block access if this is NOT an onboarding page
+    // Onboarding pages (/password, /mfa-setup, /register) should be accessible
+    // even if MFA checkpoint is set or MFA is not verified yet
     const mfaCheckpoint = sessionStorage.getItem('mfa_checkpoint');
     const mfaVerified = sessionStorage.getItem('mfa_verified');
     
     console.log('[AUTH GUARD] MFA checkpoint status:', {
       checkpoint: mfaCheckpoint,
-      verified: mfaVerified
+      verified: mfaVerified,
+      requireMFA,
+      onboardingOnly
     });
     
-    if (mfaCheckpoint === 'true' && mfaVerified !== 'true') {
+    // Skip MFA checkpoint enforcement for onboarding pages
+    if (!onboardingOnly && mfaCheckpoint === 'true' && mfaVerified !== 'true') {
       console.log('[AUTH GUARD] ⚠️ User has reached MFA checkpoint but not verified');
-      console.log('[AUTH GUARD] ❌ Blocking access to all pages until MFA verified');
+      console.log('[AUTH GUARD] ❌ Blocking access to non-onboarding pages until MFA verified');
       router.push('/verify-mfa');
       return;
     }
 
     // Step 5: Check MFA verification (if required)
-    if (requireMFA) {
+    // Only enforce for non-onboarding pages
+    if (requireMFA && !onboardingOnly) {
       console.log('[AUTH GUARD] MFA verification status:', mfaVerified);
       
       if (mfaVerified !== 'true') {

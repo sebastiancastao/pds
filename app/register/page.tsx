@@ -320,7 +320,7 @@ export default function RegisterPage() {
   }
 
   return (
-    <AuthGuard requireMFA={true} allowTemporaryPassword={true} onboardingOnly={true}>
+    <AuthGuard requireMFA={false} allowTemporaryPassword={true} onboardingOnly={true}>
       <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">

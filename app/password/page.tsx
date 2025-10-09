@@ -212,7 +212,7 @@ export default function ChangePasswordPage() {
   }
 
   return (
-    <AuthGuard requireMFA={true} allowTemporaryPassword={true}>
+    <AuthGuard requireMFA={false} allowTemporaryPassword={true}>
       <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Security Information */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
