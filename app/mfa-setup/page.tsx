@@ -1,47 +1,43 @@
+// This is the NEW SMS-based MFA setup page
+// Replace the content of app/mfa-setup/page.tsx with this
+
 'use client';
 
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
-import { verifyMFAToken } from '@/lib/auth';
 import { AuthGuard } from '@/lib/auth-guard';
 
 export default function MFASetupPage() {
   const router = useRouter();
-  const [step, setStep] = useState<'setup' | 'verify' | 'backup-codes' | 'success'>('setup');
-  const [qrCodeUrl, setQrCodeUrl] = useState('');
-  const [secret, setSecret] = useState('');
+  const [step, setStep] = useState<'phone' | 'verify' | 'backup-codes' | 'success'>('phone');
+  const [phoneNumber, setPhoneNumber] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
   const [backupCodes, setBackupCodes] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [userEmail, setUserEmail] = useState('');
-  const [mfaEnabled, setMfaEnabled] = useState(false);
+  const [codeSent, setCodeSent] = useState(false);
 
   useEffect(() => {
     checkAuthAndMFA();
   }, []);
 
   const checkAuthAndMFA = async () => {
-    console.log('[DEBUG] MFA Setup - Initializing MFA setup...');
+    console.log('[DEBUG] SMS MFA Setup - Initializing...');
     
-    // AuthGuard handles authentication check, so we just get the user
     const { data: { user } } = await supabase.auth.getUser();
     
     if (!user) {
-      console.log('[DEBUG] MFA Setup - No user (AuthGuard should have caught this)');
+      console.log('[DEBUG] SMS MFA Setup - No user');
       return;
     }
 
     setUserEmail(user.email || '');
 
-    // Check if MFA secret already exists (user already scanned QR)
-    console.log('[DEBUG] MFA Setup - Checking if MFA secret exists...');
-    console.log('[DEBUG] MFA Setup - User ID:', user.id);
-    
-    // Use .limit(1) instead of .single() to handle duplicate profiles gracefully
-    const { data: profileDataArray, error: profileError } = await (supabase
+    // Check if MFA is already enabled
+    const { data: profileDataArray } = await (supabase
       .from('profiles')
       .select('mfa_enabled, mfa_secret')
       .eq('user_id', user.id)
@@ -50,65 +46,71 @@ export default function MFASetupPage() {
     
     const profileData = profileDataArray?.[0] || null;
 
-    console.log('[DEBUG] MFA Setup - Profile check:', {
-      profileData,
-      mfaEnabled: profileData?.mfa_enabled,
-      hasMfaSecret: !!profileData?.mfa_secret,
-      error: profileError?.message,
-      rowCount: profileDataArray?.length || 0
-    });
-
-    // CRITICAL: NEVER redirect to /verify-mfa from /mfa-setup
-    // This page is for SETTING UP MFA, not verifying it
-    // Two workflows:
-    // 1. Temporary password: login → password → mfa-setup → register
-    // 2. Normal password: login → verify-mfa → home
-    // 
-    // If MFA is already FULLY enabled (mfa_enabled === true), redirect to home
-    // Otherwise, allow user to set up or re-set up MFA
     if (profileData?.mfa_enabled === true) {
-      console.log('[DEBUG] MFA Setup - ✅ MFA ALREADY FULLY ENABLED, redirecting to home');
-      console.log('[DEBUG] MFA Setup - User already completed MFA setup');
+      console.log('[DEBUG] SMS MFA Setup - MFA already enabled, redirecting to home');
       router.push('/');
-    } else {
-      console.log('[DEBUG] MFA Setup - Setting up MFA (first time or re-setup)');
-      console.log('[DEBUG] MFA Setup - mfa_enabled:', profileData?.mfa_enabled);
-      // Generate MFA secret for first-time setup or re-setup
-      generateMFASecret();
     }
   };
 
-  const generateMFASecret = async () => {
+  const formatPhoneNumberDisplay = (value: string) => {
+    const numbers = value.replace(/\D/g, '');
+    if (numbers.length <= 3) return numbers;
+    if (numbers.length <= 6) return `(${numbers.slice(0, 3)}) ${numbers.slice(3)}`;
+    return `(${numbers.slice(0, 3)}) ${numbers.slice(3, 6)}-${numbers.slice(6, 10)}`;
+  };
+
+  const handlePhoneChange = (value: string) => {
+    const numbers = value.replace(/\D/g, '').slice(0, 10);
+    setPhoneNumber(numbers);
+    setError('');
+  };
+
+  const handleSendCode = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+
+    if (phoneNumber.length !== 10) {
+      setError('Please enter a valid 10-digit phone number');
+      return;
+    }
+
     setIsLoading(true);
+
     try {
       const { data: { session } } = await supabase.auth.getSession();
       
       if (!session) {
         setError('Session expired. Please log in again.');
+        setIsLoading(false);
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/setup', {
+      const response = await fetch('/api/auth/mfa/setup-sms', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
+        body: JSON.stringify({ 
+          action: 'send_code',
+          phoneNumber,
+        }),
       });
 
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setError(data.error || 'Failed to generate MFA setup. Please try again.');
+        setError(data.error || 'Failed to send verification code. Please try again.');
+        setIsLoading(false);
         return;
       }
 
-      setQrCodeUrl(data.qrCodeUrl);
-      setSecret(data.secret);
+      setCodeSent(true);
+      setStep('verify');
+      setIsLoading(false);
     } catch (err: any) {
-      console.error('MFA setup error:', err);
+      console.error('Send code error:', err);
       setError('An unexpected error occurred. Please try again.');
-    } finally {
       setIsLoading(false);
     }
   };
@@ -117,7 +119,7 @@ export default function MFASetupPage() {
     e.preventDefault();
     setError('');
 
-    if (!verificationCode || verificationCode.length !== 6) {
+    if (verificationCode.length !== 6) {
       setError('Please enter a valid 6-digit code');
       return;
     }
@@ -133,15 +135,15 @@ export default function MFASetupPage() {
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/verify', {
+      const response = await fetch('/api/auth/mfa/setup-sms', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({ 
+          action: 'verify_code',
           code: verificationCode,
-          secret: secret
         }),
       });
 
@@ -158,6 +160,56 @@ export default function MFASetupPage() {
       setStep('backup-codes');
     } catch (err: any) {
       console.error('Verification error:', err);
+      setError('An unexpected error occurred. Please try again.');
+      setIsLoading(false);
+    }
+  };
+
+  const handleResendCode = async () => {
+    setError('');
+    setIsLoading(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        setError('Session expired. Please log in again.');
+        setIsLoading(false);
+        return;
+      }
+
+      const response = await fetch('/api/auth/mfa/setup-sms', {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ 
+          action: 'send_code',
+          phoneNumber,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        setError(data.error || 'Failed to resend code.');
+        setIsLoading(false);
+        return;
+      }
+
+      setError('');
+      setIsLoading(false);
+      // Show success message briefly
+      const successDiv = document.getElementById('resend-success');
+      if (successDiv) {
+        successDiv.classList.remove('hidden');
+        setTimeout(() => {
+          successDiv.classList.add('hidden');
+        }, 3000);
+      }
+    } catch (err: any) {
+      console.error('Resend code error:', err);
       setError('An unexpected error occurred. Please try again.');
       setIsLoading(false);
     }
@@ -200,17 +252,6 @@ Keep these codes safe and secure!
     }, 2000);
   };
 
-  if (isLoading && !qrCodeUrl) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Setting up MFA...</p>
-        </div>
-      </div>
-    );
-  }
-
   if (step === 'success') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 p-8">
@@ -222,7 +263,7 @@ Keep these codes safe and secure!
           </div>
           <h2 className="text-2xl font-bold text-gray-900 mb-2">MFA Setup Complete!</h2>
           <p className="text-gray-600 mb-6">
-            Your account is now secured with multi-factor authentication. Redirecting to complete your profile...
+            Your phone number is now verified. Redirecting to complete your profile...
           </p>
         </div>
       </div>
@@ -240,22 +281,31 @@ Keep these codes safe and secure!
               Secure Your Account
             </h1>
             <p className="text-primary-100 text-lg">
-              Multi-factor authentication adds an extra layer of security to your account
+              Add your phone number for secure SMS verification
             </p>
           </div>
         </div>
 
-        {/* MFA Benefits */}
+        {/* SMS MFA Benefits */}
         <div className="relative z-10 space-y-4">
-          <h2 className="text-white font-semibold text-xl mb-6">Why MFA?</h2>
+          <h2 className="text-white font-semibold text-xl mb-6">Why SMS Verification?</h2>
           <div className="space-y-3">
             <div className="flex items-start gap-3 text-white">
               <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Enhanced Security</p>
-                <p className="text-sm text-primary-100">Even if someone has your password, they can't access your account</p>
+                <p className="font-medium">Simple & Convenient</p>
+                <p className="text-sm text-primary-100">No extra apps needed - just your phone</p>
+              </div>
+            </div>
+            <div className="flex items-start gap-3 text-white">
+              <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+              </svg>
+              <div>
+                <p className="font-medium">Instant Delivery</p>
+                <p className="text-sm text-primary-100">Receive codes instantly via text message</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -264,16 +314,7 @@ Keep these codes safe and secure!
               </svg>
               <div>
                 <p className="font-medium">Compliance Required</p>
-                <p className="text-sm text-primary-100">SOC2 and enterprise security standards mandate MFA</p>
-              </div>
-            </div>
-            <div className="flex items-start gap-3 text-white">
-              <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-              </svg>
-              <div>
-                <p className="font-medium">Easy to Use</p>
-                <p className="text-sm text-primary-100">Quick setup with any authenticator app</p>
+                <p className="text-sm text-primary-100">SOC2 and enterprise security standards</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -282,7 +323,7 @@ Keep these codes safe and secure!
               </svg>
               <div>
                 <p className="font-medium">Backup Codes</p>
-                <p className="text-sm text-primary-100">Never get locked out with emergency backup codes</p>
+                <p className="text-sm text-primary-100">Emergency access with backup codes</p>
               </div>
             </div>
           </div>
@@ -297,17 +338,17 @@ Keep these codes safe and secure!
         </div>
       </div>
 
-      {/* Right Side - MFA Setup */}
+      {/* Right Side - SMS MFA Setup */}
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="w-full max-w-md">
           <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
             {/* Step Indicator */}
             <div className="flex items-center justify-center mb-8">
-              <div className={`flex items-center ${step === 'setup' ? 'text-primary-600' : 'text-green-600'}`}>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'setup' ? 'bg-primary-100' : 'bg-green-100'}`}>
-                  {step === 'setup' ? '1' : '✓'}
+              <div className={`flex items-center ${step === 'phone' ? 'text-primary-600' : 'text-green-600'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'phone' ? 'bg-primary-100' : 'bg-green-100'}`}>
+                  {step === 'phone' ? '1' : '✓'}
                 </div>
-                <span className="ml-2 text-sm font-medium">Scan QR</span>
+                <span className="ml-2 text-sm font-medium">Phone</span>
               </div>
               <div className="w-12 h-0.5 bg-gray-300 mx-2"></div>
               <div className={`flex items-center ${step === 'verify' ? 'text-primary-600' : ['backup-codes', 'success'].includes(step) ? 'text-green-600' : 'text-gray-400'}`}>
@@ -325,51 +366,56 @@ Keep these codes safe and secure!
               </div>
             </div>
 
-            {/* Step 1: Scan QR Code */}
-            {step === 'setup' && (
+            {/* Step 1: Enter Phone Number */}
+            {step === 'phone' && (
               <>
                 <div className="text-center mb-6">
                   <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                     <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                     </svg>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Scan QR Code</h2>
-                  <p className="text-gray-600 mt-2">Use your authenticator app to scan this code</p>
+                  <h2 className="text-2xl font-bold text-gray-900">Add Phone Number</h2>
+                  <p className="text-gray-600 mt-2">We'll send you a verification code via SMS</p>
                 </div>
 
-                {/* QR Code Display */}
-                {qrCodeUrl && (
-                  <div className="bg-white border-2 border-gray-200 rounded-lg p-6 mb-6">
-                    <img src={qrCodeUrl} alt="MFA QR Code" className="w-full max-w-xs mx-auto" />
+                <form onSubmit={handleSendCode} className="space-y-5">
+                  <div>
+                    <label htmlFor="phoneNumber" className="block text-sm font-medium text-gray-700 mb-2">
+                      Phone Number
+                    </label>
+                    <input
+                      type="tel"
+                      id="phoneNumber"
+                      value={formatPhoneNumberDisplay(phoneNumber)}
+                      onChange={(e) => handlePhoneChange(e.target.value)}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-lg"
+                      placeholder="(555) 123-4567"
+                      required
+                      autoFocus
+                    />
+                    <p className="mt-2 text-sm text-gray-500">
+                      Enter your 10-digit US phone number
+                    </p>
                   </div>
-                )}
 
-                {/* Manual Entry */}
-                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-                  <p className="text-sm text-gray-600 mb-2 font-medium">Can't scan? Enter this code manually:</p>
-                  <code className="block bg-white border border-gray-300 rounded px-3 py-2 text-sm font-mono break-all">
-                    {secret}
-                  </code>
-                </div>
+                  {error && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
+                      <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                      </svg>
+                      <p className="text-sm text-red-800">{error}</p>
+                    </div>
+                  )}
 
-                {/* Supported Apps */}
-                <div className="mb-6">
-                  <p className="text-sm text-gray-600 mb-2">Supported authenticator apps:</p>
-                  <div className="flex flex-wrap gap-2">
-                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">Google Authenticator</span>
-                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">Microsoft Authenticator</span>
-                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">Authy</span>
-                    <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">1Password</span>
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => setStep('verify')}
-                  className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors"
-                >
-                  Continue to Verification
-                </button>
+                  <button
+                    type="submit"
+                    disabled={isLoading || phoneNumber.length !== 10}
+                    className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isLoading ? 'Sending Code...' : 'Send Verification Code'}
+                  </button>
+                </form>
               </>
             )}
 
@@ -382,8 +428,14 @@ Keep these codes safe and secure!
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Verify Setup</h2>
-                  <p className="text-gray-600 mt-2">Enter the 6-digit code from your authenticator app</p>
+                  <h2 className="text-2xl font-bold text-gray-900">Enter Verification Code</h2>
+                  <p className="text-gray-600 mt-2">
+                    We sent a code to {formatPhoneNumberDisplay(phoneNumber)}
+                  </p>
+                </div>
+
+                <div id="resend-success" className="hidden bg-green-50 border border-green-200 rounded-lg p-3 mb-4">
+                  <p className="text-sm text-green-800 text-center">Code resent successfully!</p>
                 </div>
 
                 <form onSubmit={handleVerifyCode} className="space-y-5">
@@ -406,6 +458,9 @@ Keep these codes safe and secure!
                       required
                       autoFocus
                     />
+                    <p className="mt-2 text-sm text-gray-500 text-center">
+                      Code expires in 10 minutes
+                    </p>
                   </div>
 
                   {error && (
@@ -422,16 +477,26 @@ Keep these codes safe and secure!
                     disabled={isLoading || verificationCode.length !== 6}
                     className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {isLoading ? 'Verifying...' : 'Verify and Continue'}
+                    {isLoading ? 'Verifying...' : 'Verify Code'}
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setStep('setup')}
-                    className="w-full text-gray-600 hover:text-gray-800 py-2 text-sm"
-                  >
-                    ← Back to QR Code
-                  </button>
+                  <div className="flex items-center justify-between pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setStep('phone')}
+                      className="text-sm text-gray-600 hover:text-gray-800"
+                    >
+                      ← Change Phone Number
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleResendCode}
+                      disabled={isLoading}
+                      className="text-sm text-primary-600 hover:text-primary-700 font-medium disabled:opacity-50"
+                    >
+                      Resend Code
+                    </button>
+                  </div>
                 </form>
               </>
             )}
@@ -446,7 +511,7 @@ Keep these codes safe and secure!
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold text-gray-900">Save Backup Codes</h2>
-                  <p className="text-gray-600 mt-2">Store these codes in a safe place</p>
+                  <p className="text-gray-600 mt-2">Use these if you can't access your phone</p>
                 </div>
 
                 <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">

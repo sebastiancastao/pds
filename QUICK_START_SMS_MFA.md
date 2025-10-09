@@ -29,9 +29,13 @@ Go to Supabase SQL Editor and run:
 database/migrations/005_add_phone_for_sms_mfa.sql
 ```
 
-### 5. Replace MFA Page
+### 5. Replace MFA Pages
 ```bash
+# Replace MFA setup page
 cp app/mfa-setup/page-sms.tsx app/mfa-setup/page.tsx
+
+# Replace MFA verification page
+cp app/verify-mfa/page-sms-updated.tsx app/verify-mfa/page.tsx
 ```
 
 ### 6. Deploy
