@@ -16,10 +16,89 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [locationStatus, setLocationStatus] = useState<string>('');
+  const [locationGranted, setLocationGranted] = useState(false);
+  const [userLocation, setUserLocation] = useState<{latitude: number, longitude: number, accuracy?: number} | null>(null);
+
+  // Handle location request (separate from login)
+  const handleRequestLocation = async () => {
+    setError('');
+    setLocationStatus('📍 Requesting your location...');
+    
+    console.log('📍 [DEBUG] Manual location request triggered');
+    console.log('📍 [DEBUG] Browser:', navigator.userAgent);
+    console.log('📍 [DEBUG] Protocol:', window.location.protocol);
+    
+    if (!isGeolocationSupported()) {
+      console.error('📍 [DEBUG] Geolocation not supported by browser');
+      setLocationStatus('');
+      setError('Your browser does not support location services. Please use a modern browser (Chrome, Safari, Firefox, Samsung Browser) with location enabled.');
+      return;
+    }
+
+    // Check if we're on HTTPS or localhost
+    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+      console.error('📍 [DEBUG] Not on HTTPS - geolocation may not work');
+      setLocationStatus('');
+      setError('Location services require a secure connection (HTTPS). Please contact your administrator.');
+      return;
+    }
+
+    try {
+      console.log('📍 [DEBUG] Calling getCurrentLocation()...');
+      const location = await getCurrentLocation();
+      
+      console.log('📍 [DEBUG] Location obtained:', {
+        latitude: location.latitude,
+        longitude: location.longitude,
+        accuracy: location.accuracy ? `${Math.round(location.accuracy)}m` : 'unknown'
+      });
+
+      setUserLocation(location);
+      setLocationGranted(true);
+      setLocationStatus('✓ Location verified - Ready to sign in');
+      
+      // Auto-hide success message after 3 seconds
+      setTimeout(() => setLocationStatus(''), 3000);
+      
+    } catch (locationError: any) {
+      console.error('📍 [DEBUG] Location error:', locationError);
+      console.error('📍 [DEBUG] Error details:', {
+        message: locationError.message,
+        code: locationError.code,
+        name: locationError.name
+      });
+      
+      setLocationStatus('');
+      setLocationGranted(false);
+      
+      // Provide detailed error messages for different browsers
+      if (locationError.message.includes('denied') || locationError.message.includes('permission')) {
+        setError(`📍 Location permission denied. Please enable location access:
+
+Samsung Browser: Menu → Settings → Sites and downloads → Location → Ask
+Chrome: Settings → Site settings → Location → Allow
+Safari: Settings → Privacy → Location Services → Safari → While Using
+
+Then refresh this page and try again.`);
+      } else if (locationError.message.includes('timeout')) {
+        setError('Location request timed out. Please:\n• Enable Location Services on your device\n• Ensure you have GPS signal\n• Try moving outdoors or near a window\n• Try again');
+      } else if (locationError.message.includes('unavailable')) {
+        setError('Location unavailable. Please:\n• Enable Location Services in device settings\n• Enable High Accuracy mode\n• Wait a moment and try again');
+      } else {
+        setError(`Location error: ${locationError.message}\n\nPlease enable location services and try again.`);
+      }
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    
+    // Check if location was granted
+    if (!locationGranted || !userLocation) {
+      setError('Please allow location access first by clicking "Allow Location Access" button above.');
+      return;
+    }
     
     // Basic validation
     if (!email.trim() || !password.trim()) {
@@ -66,105 +145,45 @@ export default function LoginPage() {
       // Store userId for later use (if user exists)
       const userId = preLoginData.userId || null;
 
-      // Step 2: Geofence location validation
-      console.log('📍 [DEBUG] Step 2: Checking location...');
+      // Step 2: Validate location against geofence (using already-obtained location)
+      console.log('📍 [DEBUG] Step 2: Validating location against geofence...');
+      setLocationStatus('📍 Validating location...');
       
-      if (!isGeolocationSupported()) {
-        console.error('📍 [DEBUG] Geolocation not supported by browser');
-        setError('Your browser does not support location services. Please use a modern browser (Chrome, Safari, Firefox) or enable location services on your device.');
-        setIsLoading(false);
-        return;
-      }
+      const locationResponse = await fetch('/api/auth/validate-location', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          latitude: userLocation.latitude,
+          longitude: userLocation.longitude,
+          accuracy: userLocation.accuracy,
+          email: email.toLowerCase().trim(),
+        }),
+      });
 
-      try {
-        // Show user-friendly status
-        setLocationStatus('📍 Requesting your location...');
-        console.log('📍 [DEBUG] Requesting user location...');
-        console.log('📍 [DEBUG] Browser:', navigator.userAgent);
-        console.log('📍 [DEBUG] Protocol:', window.location.protocol);
-        
-        // Check if we're on HTTPS or localhost (required for geolocation on mobile)
-        if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost') {
-          console.error('📍 [DEBUG] Not on HTTPS - geolocation may not work');
-          setError('Location services require a secure connection (HTTPS). Please contact your administrator.');
-          setIsLoading(false);
-          return;
-        }
-        
-        // Request user's location
-        const location = await getCurrentLocation();
-        
-        setLocationStatus('✓ Location obtained');
-        console.log('📍 [DEBUG] Location obtained:', {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          accuracy: location.accuracy ? `${Math.round(location.accuracy)}m` : 'unknown'
-        });
+      const locationData = await locationResponse.json();
 
-        // Validate location against geofence zones
-        setLocationStatus('📍 Validating location...');
-        console.log('📍 [DEBUG] Validating against geofence zones...');
-        
-        const locationResponse = await fetch('/api/auth/validate-location', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            latitude: location.latitude,
-            longitude: location.longitude,
-            accuracy: location.accuracy,
-            email: email.toLowerCase().trim(),
-          }),
-        });
+      console.log('📍 [DEBUG] Geofence validation result:', {
+        allowed: locationData.allowed,
+        matchedZone: locationData.matchedZone,
+        distance: locationData.distanceMeters,
+      });
 
-        const locationData = await locationResponse.json();
-
-        console.log('📍 [DEBUG] Geofence validation result:', {
-          allowed: locationData.allowed,
-          matchedZone: locationData.matchedZone,
-          distance: locationData.distanceMeters,
-        });
-
-        if (!locationData.allowed) {
-          console.log('📍 [DEBUG] ❌ Location outside allowed zones');
-          setLocationStatus('');
-          const distanceMsg = locationData.distanceMeters 
-            ? ` You are ${formatDistance(locationData.distanceMeters)} away from the nearest authorized location.`
-            : '';
-          setError(locationData.error || `Access denied: You are not in an authorized location.${distanceMsg}`);
-          setIsLoading(false);
-          return;
-        }
-
-        setLocationStatus('✓ Location verified');
-        console.log('📍 [DEBUG] ✅ Location verified:', locationData.matchedZone);
-        
-        // Clear location status after a moment
-        setTimeout(() => setLocationStatus(''), 1000);
-        
-      } catch (locationError: any) {
-        console.error('📍 [DEBUG] Location error:', locationError);
-        console.error('📍 [DEBUG] Error details:', {
-          message: locationError.message,
-          code: locationError.code,
-          stack: locationError.stack
-        });
-        
+      if (!locationData.allowed) {
+        console.log('📍 [DEBUG] ❌ Location outside allowed zones');
         setLocationStatus('');
-        
-        // Provide detailed error messages for different scenarios
-        if (locationError.message.includes('denied') || locationError.message.includes('permission')) {
-          setError('📍 Location access required. Please:\n\n1. Tap the address bar\n2. Look for the location icon 🔒\n3. Enable "Location" permission\n4. Refresh and try again');
-        } else if (locationError.message.includes('timeout')) {
-          setError('Location request timed out. Please ensure:\n• Location services are enabled on your device\n• You have good GPS signal\n• Try moving near a window if indoors');
-        } else if (locationError.message.includes('unavailable')) {
-          setError('Location unavailable. Please:\n• Enable Location Services in device settings\n• Enable High Accuracy mode\n• Try again in a few moments');
-        } else {
-          setError(`Location verification failed: ${locationError.message}\n\nPlease enable location services and try again.`);
-        }
-        
+        const distanceMsg = locationData.distanceMeters 
+          ? ` You are ${formatDistance(locationData.distanceMeters)} away from the nearest authorized location.`
+          : '';
+        setError(locationData.error || `Access denied: You are not in an authorized location.${distanceMsg}`);
         setIsLoading(false);
         return;
       }
+
+      setLocationStatus('✓ Location verified');
+      console.log('📍 [DEBUG] ✅ Location verified:', locationData.matchedZone);
+      
+      // Clear location status after a moment
+      setTimeout(() => setLocationStatus(''), 1000);
 
       // Step 3: Attempt Supabase authentication
       console.log('🔍 [DEBUG] Step 3: Attempting Supabase authentication...');
@@ -473,6 +492,54 @@ export default function LoginPage() {
 
             {/* Login Form */}
             <form onSubmit={handleSubmit} className="space-y-5">
+              {/* Location Access Button */}
+              {!locationGranted ? (
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-300 rounded-lg p-4">
+                  <div className="flex items-start gap-3 mb-3">
+                    <svg className="w-6 h-6 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M5.05 4.05a7 7 0 119.9 9.9L10 18.9l-4.95-4.95a7 7 0 010-9.9zM10 11a2 2 0 100-4 2 2 0 000 4z" clipRule="evenodd" />
+                    </svg>
+                    <div>
+                      <p className="text-sm font-bold text-blue-900">📍 Location Required</p>
+                      <p className="text-xs text-blue-800 mt-1">For security, please allow location access before signing in.</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleRequestLocation}
+                    className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-blue-700 transition-colors flex items-center justify-center gap-2 shadow-md"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    <span>Allow Location Access</span>
+                  </button>
+                  <p className="text-xs text-blue-700 mt-2 text-center">
+                    Works on: Chrome • Safari • Firefox • Samsung Browser • Brave
+                  </p>
+                </div>
+              ) : (
+                <div className="bg-green-50 border-2 border-green-300 rounded-lg p-4">
+                  <div className="flex items-center gap-3">
+                    <svg className="w-6 h-6 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    <div className="flex-1">
+                      <p className="text-sm font-bold text-green-900">✓ Location Verified</p>
+                      <p className="text-xs text-green-800">You can now sign in</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleRequestLocation}
+                      className="text-xs text-green-700 hover:text-green-900 underline"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {/* Email */}
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
@@ -553,16 +620,6 @@ export default function LoginPage() {
                 </div>
               )}
 
-              {/* Security Notice */}
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">
-                <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                </svg>
-                <div className="text-xs text-blue-800">
-                  <p className="font-medium">📍 Location Required</p>
-                  <p className="mt-1">For security, you must be at an authorized location to log in. You'll be prompted to share your location.</p>
-                </div>
-              </div>
 
               {/* Error Message */}
               {error && (
@@ -577,7 +634,7 @@ export default function LoginPage() {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || !email || !password}
+                disabled={isLoading || !email || !password || !locationGranted}
                 className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isLoading ? (
