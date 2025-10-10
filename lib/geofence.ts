@@ -45,11 +45,15 @@ export interface GeofenceValidation {
 
 /**
  * Browser geolocation options
+ * - enableHighAccuracy: Use GPS for precise location
+ * - timeout: How long to wait for position (30 seconds)
+ * - maximumAge: How old a cached browser position can be (5 minutes)
+ *   Note: This is the browser's internal cache, separate from our localStorage cache
  */
 const GEOLOCATION_OPTIONS: PositionOptions = {
   enableHighAccuracy: true,
-  timeout: 10000, // 10 seconds
-  maximumAge: 0, // Don't use cached location
+  timeout: 30000, // 30 seconds (increased for mobile GPS)
+  maximumAge: 300000, // 5 minutes - browser can return cached position within this age
 };
 
 /**

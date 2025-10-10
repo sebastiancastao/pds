@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase, isValidEmail } from '@/lib/supabase';
@@ -19,6 +19,44 @@ export default function LoginPage() {
   const [locationGranted, setLocationGranted] = useState(false);
   const [userLocation, setUserLocation] = useState<{latitude: number, longitude: number, accuracy?: number} | null>(null);
   const [debugInfo, setDebugInfo] = useState<string>('');
+
+  // Check if location was previously granted on component mount
+  useEffect(() => {
+    const checkStoredLocation = () => {
+      try {
+        const storedLocation = localStorage.getItem('pds_location_granted');
+        const storedCoords = localStorage.getItem('pds_user_location');
+        const storedTimestamp = localStorage.getItem('pds_location_timestamp');
+        
+        if (storedLocation === 'true' && storedCoords && storedTimestamp) {
+          const timestamp = parseInt(storedTimestamp, 10);
+          const now = Date.now();
+          const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
+          
+          // If location is less than 1 hour old, use cached
+          if (now - timestamp < oneHour) {
+            const coords = JSON.parse(storedCoords);
+            const ageMinutes = Math.round((now - timestamp) / 60000);
+            console.log('📍 [CACHE] Using cached location from', ageMinutes, 'minutes ago');
+            setUserLocation(coords);
+            setLocationGranted(true);
+            setLocationStatus(`✓ Location verified (cached ${ageMinutes}min ago)`);
+            setTimeout(() => setLocationStatus(''), 3000);
+          } else {
+            console.log('📍 [CACHE] Cached location expired (older than 1 hour), will request fresh');
+            // Clear expired cache
+            localStorage.removeItem('pds_location_granted');
+            localStorage.removeItem('pds_user_location');
+            localStorage.removeItem('pds_location_timestamp');
+          }
+        }
+      } catch (error) {
+        console.warn('📍 [CACHE] Error reading cached location:', error);
+      }
+    };
+
+    checkStoredLocation();
+  }, []);
 
   // Handle location request (separate from login)
   const handleRequestLocation = async () => {
@@ -168,6 +206,17 @@ Accuracy: ${location.accuracy ? location.accuracy.toFixed(1) + 'm' : 'unknown'}
 
       setUserLocation(location);
       setLocationGranted(true);
+      
+      // Store location in localStorage for persistence (expires in 1 hour)
+      try {
+        localStorage.setItem('pds_location_granted', 'true');
+        localStorage.setItem('pds_user_location', JSON.stringify(location));
+        localStorage.setItem('pds_location_timestamp', Date.now().toString());
+        console.log('📍 [CACHE] Location stored in localStorage, valid for 1 hour');
+      } catch (error) {
+        console.warn('📍 [CACHE] Failed to store location:', error);
+      }
+      
       setLocationStatus('✓ Location verified - Ready to sign in');
       
       // Auto-hide success message after 3 seconds
@@ -784,7 +833,19 @@ Error Message: ${errorMessage}
                     </div>
                     <button
                       type="button"
-                      onClick={handleRequestLocation}
+                      onClick={() => {
+                        // Clear cached location to force fresh request
+                        console.log('📍 [CACHE] User clicked Refresh - clearing cache');
+                        localStorage.removeItem('pds_location_granted');
+                        localStorage.removeItem('pds_user_location');
+                        localStorage.removeItem('pds_location_timestamp');
+                        setLocationGranted(false);
+                        setUserLocation(null);
+                        setError('');
+                        setDebugInfo('');
+                        // Immediately request fresh location
+                        handleRequestLocation();
+                      }}
                       className="text-xs text-green-700 hover:text-green-900 underline"
                     >
                       Refresh
