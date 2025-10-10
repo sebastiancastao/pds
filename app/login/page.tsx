@@ -18,29 +18,121 @@ export default function LoginPage() {
   const [locationStatus, setLocationStatus] = useState<string>('');
   const [locationGranted, setLocationGranted] = useState(false);
   const [userLocation, setUserLocation] = useState<{latitude: number, longitude: number, accuracy?: number} | null>(null);
+  const [debugInfo, setDebugInfo] = useState<string>('');
 
   // Handle location request (separate from login)
   const handleRequestLocation = async () => {
     setError('');
-    setLocationStatus('📍 Requesting your location...');
+    setLocationStatus('📍 Checking location permission...');
+    
+    // Collect debug information
+    const debugData = {
+      browser: navigator.userAgent,
+      protocol: window.location.protocol,
+      hostname: window.location.hostname,
+      fullUrl: window.location.href,
+      geolocationSupported: 'geolocation' in navigator,
+      permissionsAPI: 'permissions' in navigator,
+      secureContext: window.isSecureContext,
+      permissionState: 'checking...',
+    };
     
     console.log('📍 [DEBUG] Manual location request triggered');
-    console.log('📍 [DEBUG] Browser:', navigator.userAgent);
-    console.log('📍 [DEBUG] Protocol:', window.location.protocol);
+    console.log('📍 [DEBUG] Initial debug data:', debugData);
     
     if (!isGeolocationSupported()) {
       console.error('📍 [DEBUG] Geolocation not supported by browser');
       setLocationStatus('');
-      setError('Your browser does not support location services. Please use a modern browser (Chrome, Safari, Firefox, Samsung Browser) with location enabled.');
+      const debugText = `
+🔍 DEBUG INFO:
+Browser: ${debugData.browser.substring(0, 100)}...
+Geolocation API: ❌ Not Available
+      `.trim();
+      setDebugInfo(debugText);
+      setError(`⚠️ Geolocation Not Supported\n\nYour browser doesn't support location services.\n\n${debugText}`);
       return;
     }
 
     // Check if we're on HTTPS or localhost
-    if (window.location.protocol !== 'https:' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-      console.error('📍 [DEBUG] Not on HTTPS - geolocation may not work');
+    if (!window.isSecureContext) {
+      console.error('📍 [DEBUG] Not in secure context - geolocation will not work');
       setLocationStatus('');
-      setError('Location services require a secure connection (HTTPS). Please contact your administrator.');
+      const debugText = `
+🔍 DEBUG INFO:
+Protocol: ${debugData.protocol}
+URL: ${debugData.fullUrl}
+Secure Context: ❌ No
+      `.trim();
+      setDebugInfo(debugText);
+      setError(`⚠️ HTTPS Required\n\nLocation services require a secure connection (HTTPS).\n\nYour URL: ${window.location.href}\n\nPlease access via HTTPS or localhost.\n\n${debugText}`);
       return;
+    }
+
+    // Check current permission state using Permissions API
+    try {
+      if ('permissions' in navigator) {
+        console.log('📍 [DEBUG] Checking permission state via Permissions API...');
+        const permissionStatus = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
+        debugData.permissionState = permissionStatus.state;
+        
+        console.log('📍 [DEBUG] Permission state:', permissionStatus.state);
+        
+        if (permissionStatus.state === 'denied') {
+          setLocationStatus('');
+          const debugText = `
+🔍 DEBUG INFO:
+Browser: ${debugData.browser.substring(0, 100)}...
+Protocol: ${debugData.protocol}
+URL: ${debugData.fullUrl}
+Permission State: ❌ DENIED (cached by browser)
+Secure Context: ✅ Yes
+          `.trim();
+          setDebugInfo(debugText);
+          setError(`❌ Location Blocked for This Site
+
+Your browser has CACHED a previous "deny" for this specific website.
+
+Even though location is enabled in browser settings, THIS SITE is blocked.
+
+🔧 Samsung Browser Fix:
+1. Tap the 🔒 lock icon in the address bar
+2. Tap "Permissions" → "Location"
+3. Tap "Reset" or "Clear"
+4. OR change from "Blocked" to "Ask" or "Allow"
+5. Refresh this page
+
+🔧 Alternative Fix:
+1. Samsung Browser Menu (☰)
+2. Settings → Sites and downloads → Location
+3. Find "${window.location.hostname}" in the list
+4. Tap it and select "Ask" or "Allow"
+5. Come back and try again
+
+🔧 Nuclear Option:
+Clear this site's data:
+Menu → Settings → Sites and downloads → Manage website data → Find "${window.location.hostname}" → Delete
+
+Then refresh and try again.
+
+${debugText}`);
+          return;
+        }
+        
+        if (permissionStatus.state === 'prompt') {
+          console.log('📍 [DEBUG] Permission state is "prompt" - will request permission');
+          setLocationStatus('📍 Requesting your location...');
+        } else if (permissionStatus.state === 'granted') {
+          console.log('📍 [DEBUG] Permission already granted - proceeding');
+          setLocationStatus('📍 Getting your location...');
+        }
+      } else {
+        console.log('📍 [DEBUG] Permissions API not available, will request directly');
+        setLocationStatus('📍 Requesting your location...');
+      }
+    } catch (permErr) {
+      console.warn('📍 [DEBUG] Permissions API error:', permErr);
+      // Continue anyway - we'll try direct geolocation
+      setLocationStatus('📍 Requesting your location...');
     }
 
     try {
@@ -52,6 +144,20 @@ export default function LoginPage() {
         longitude: location.longitude,
         accuracy: location.accuracy ? `${Math.round(location.accuracy)}m` : 'unknown'
       });
+
+      // Update debug info with success
+      const successDebugText = `
+🔍 DEBUG INFO:
+Browser: ${debugData.browser.substring(0, 100)}...
+Protocol: ${debugData.protocol}
+URL: ${debugData.fullUrl}
+Permission State: ✅ ${debugData.permissionState}
+Secure Context: ✅ Yes
+Latitude: ${location.latitude.toFixed(6)}
+Longitude: ${location.longitude.toFixed(6)}
+Accuracy: ${location.accuracy ? location.accuracy.toFixed(1) + 'm' : 'unknown'}
+      `.trim();
+      setDebugInfo(successDebugText);
 
       setUserLocation(location);
       setLocationGranted(true);
@@ -71,22 +177,85 @@ export default function LoginPage() {
       setLocationStatus('');
       setLocationGranted(false);
       
+      // Build detailed error message with debug info
+      const errorCode = locationError.code || 'unknown';
+      const errorName = locationError.name || 'Error';
+      const errorMessage = locationError.message || 'Unknown error';
+      
+      let userMessage = '';
+      
       // Provide detailed error messages for different browsers
-      if (locationError.message.includes('denied') || locationError.message.includes('permission')) {
-        setError(`📍 Location permission denied. Please enable location access:
+      if (locationError.message.includes('denied') || locationError.message.includes('permission') || errorCode === 1) {
+        userMessage = `❌ Location Blocked for THIS SITE
 
-Samsung Browser: Menu → Settings → Sites and downloads → Location → Ask
-Chrome: Settings → Site settings → Location → Allow
-Safari: Settings → Privacy → Location Services → Safari → While Using
+This specific website is blocked in your browser, even if location is enabled globally.
 
-Then refresh this page and try again.`);
-      } else if (locationError.message.includes('timeout')) {
-        setError('Location request timed out. Please:\n• Enable Location Services on your device\n• Ensure you have GPS signal\n• Try moving outdoors or near a window\n• Try again');
-      } else if (locationError.message.includes('unavailable')) {
-        setError('Location unavailable. Please:\n• Enable Location Services in device settings\n• Enable High Accuracy mode\n• Wait a moment and try again');
+Your browser CACHED a previous "deny" and remembers it.
+
+🔧 Fix for Samsung Browser:
+METHOD 1 - Quick Fix:
+1. Tap the 🔒 lock icon in your address bar
+2. Tap "Permissions" → "Location"
+3. Change from "Blocked" to "Ask" or "Allow"
+4. REFRESH this page (pull down to reload)
+
+METHOD 2 - Settings Fix:
+1. Samsung Browser Menu (☰)
+2. Settings → Sites and downloads → Location
+3. Find "${window.location.hostname}" in the list
+4. Tap it → select "Ask" or "Allow"
+5. Come back and REFRESH
+
+METHOD 3 - Clear Site Data:
+1. Menu → Settings → Sites and downloads
+2. Manage website data
+3. Find "${window.location.hostname}"
+4. Delete → Confirm
+5. REFRESH this page
+
+🔧 Chrome/Brave: Tap lock icon → Permissions → Location → Allow → Refresh
+
+🔧 Safari: Settings → Safari → Location → While Using → Refresh
+
+Then REFRESH this page and try again.`;
+      } else if (locationError.message.includes('timeout') || errorCode === 3) {
+        userMessage = `⏱️ Location Request Timed Out
+
+Please:
+• Enable Location Services on your device
+• Ensure you have GPS signal (go outdoors)
+• Wait 30 seconds and try again
+• Enable "High Accuracy" mode`;
+      } else if (locationError.message.includes('unavailable') || errorCode === 2) {
+        userMessage = `📍 Location Unavailable
+
+Please:
+• Enable Location Services in device Settings
+• Enable High Accuracy mode
+• Restart your browser
+• Try again`;
       } else {
-        setError(`Location error: ${locationError.message}\n\nPlease enable location services and try again.`);
+        userMessage = `⚠️ Location Error
+
+Error: ${errorMessage}
+Code: ${errorCode}
+Type: ${errorName}`;
       }
+      
+      // Build final debug text with error info
+      const errorDebugText = `
+🔍 DEBUG INFO:
+Browser: ${debugData.browser.substring(0, 100)}...
+Protocol: ${debugData.protocol}
+URL: ${debugData.fullUrl}
+Permission State: ${debugData.permissionState}
+Secure Context: ${debugData.secureContext ? '✅ Yes' : '❌ No'}
+Error Code: ${errorCode}
+Error Message: ${errorMessage}
+      `.trim();
+      setDebugInfo(errorDebugText);
+      
+      setError(`${userMessage}\n\n${errorDebugText}`);
     }
   };
 
@@ -623,11 +792,26 @@ Then refresh this page and try again.`);
 
               {/* Error Message */}
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2">
-                  <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
-                  </svg>
-                  <p className="text-sm text-red-800 whitespace-pre-line">{error}</p>
+                <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4">
+                  <div className="flex items-start gap-2 mb-2">
+                    <svg className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <p className="text-sm text-red-900 whitespace-pre-line font-mono flex-1">{error}</p>
+                  </div>
+                  {debugInfo && (
+                    <details className="mt-3 pt-3 border-t border-red-200">
+                      <summary className="text-xs text-red-700 cursor-pointer hover:text-red-900 font-semibold">
+                        📊 Technical Details (click to expand)
+                      </summary>
+                      <pre className="mt-2 text-xs text-red-800 bg-red-100 p-2 rounded overflow-x-auto font-mono">
+                        {debugInfo}
+                      </pre>
+                      <p className="mt-2 text-xs text-red-700">
+                        💡 Screenshot this and send to support if you need help
+                      </p>
+                    </details>
+                  )}
                 </div>
               )}
 
