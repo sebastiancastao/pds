@@ -136,8 +136,15 @@ ${debugText}`);
     }
 
     try {
-      console.log('📍 [DEBUG] Calling getCurrentLocation()...');
+      console.log('📍 [DEBUG] About to call getCurrentLocation()...');
+      console.log('📍 [DEBUG] navigator.geolocation exists?', 'geolocation' in navigator);
+      console.log('📍 [DEBUG] window.isSecureContext?', window.isSecureContext);
+      
+      // Direct test call to see if browser blocks it
+      console.log('📍 [DEBUG] Attempting DIRECT navigator.geolocation call...');
+      
       const location = await getCurrentLocation();
+      console.log('📍 [DEBUG] ✅ getCurrentLocation() returned successfully!');
       
       console.log('📍 [DEBUG] Location obtained:', {
         latitude: location.latitude,
@@ -722,6 +729,48 @@ Error Message: ${errorMessage}
                   <p className="text-xs text-blue-700 mt-2 text-center">
                     Works on: Chrome • Safari • Firefox • Samsung Browser • Brave
                   </p>
+                  
+                  {/* Debug Test Button */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      console.log('🧪 [TEST] Direct native API test button clicked');
+                      console.log('🧪 [TEST] Protocol:', window.location.protocol);
+                      console.log('🧪 [TEST] Secure context:', window.isSecureContext);
+                      console.log('🧪 [TEST] Geolocation available:', 'geolocation' in navigator);
+                      
+                      if (!('geolocation' in navigator)) {
+                        alert('❌ Geolocation NOT available in navigator object');
+                        return;
+                      }
+                      
+                      if (!window.isSecureContext) {
+                        alert('❌ NOT in secure context (need HTTPS)');
+                        return;
+                      }
+                      
+                      alert('✅ Prerequisites OK. Browser will now ask for location permission...');
+                      
+                      navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                          console.log('🧪 [TEST] ✅ SUCCESS! Got position:', position);
+                          alert(`✅ SUCCESS!\nLat: ${position.coords.latitude}\nLon: ${position.coords.longitude}\nAccuracy: ${position.coords.accuracy}m`);
+                        },
+                        (error) => {
+                          console.error('🧪 [TEST] ❌ ERROR:', error);
+                          alert(`❌ ERROR!\nCode: ${error.code}\nMessage: ${error.message}\n\nCodes:\n1=Permission Denied\n2=Position Unavailable\n3=Timeout`);
+                        },
+                        {
+                          enableHighAccuracy: true,
+                          timeout: 10000,
+                          maximumAge: 0
+                        }
+                      );
+                    }}
+                    className="w-full mt-2 bg-purple-600 text-white py-2 px-3 rounded-lg text-sm font-semibold hover:bg-purple-700 transition-colors"
+                  >
+                    🧪 Test Direct API Call (Debug)
+                  </button>
                 </div>
               ) : (
                 <div className="bg-green-50 border-2 border-green-300 rounded-lg p-4">
