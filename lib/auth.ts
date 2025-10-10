@@ -307,4 +307,31 @@ export const hasAllPermissions = (role: UserRole, permissions: Permission[]): bo
   return permissions.every((permission) => hasPermission(role, permission));
 };
 
+/**
+ * Generate a 6-digit email verification code
+ * @returns 6-digit numeric code as string
+ */
+export const generateEmailMFACode = (): string => {
+  return crypto.randomInt(100000, 999999).toString();
+};
+
+/**
+ * Hash email MFA code for storage
+ * @param code - 6-digit verification code
+ * @returns Promise resolving to hashed code
+ */
+export const hashEmailMFACode = async (code: string): Promise<string> => {
+  return bcrypt.hash(code, 10);
+};
+
+/**
+ * Verify email MFA code against stored hash
+ * @param code - 6-digit verification code
+ * @param hashedCode - Stored hash
+ * @returns Promise resolving to true if code matches
+ */
+export const verifyEmailMFACode = async (code: string, hashedCode: string): Promise<boolean> => {
+  return bcrypt.compare(code, hashedCode);
+};
+
 

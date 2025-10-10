@@ -1,9 +1,9 @@
-// PDS Time Tracking System - MFA Verification API
-// Verifies MFA code and enables MFA for user account
+// PDS Time Tracking System - Verify Email MFA Code (Setup)
+// Verifies email code and enables MFA for user account
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { verifyMFAToken, generateBackupCodes, hashBackupCodes } from '@/lib/auth';
+import { verifyEmailMFACode, generateBackupCodes, hashBackupCodes } from '@/lib/auth';
 import { logAuditEvent } from '@/lib/audit';
 import { isValidUUID } from '@/lib/supabase';
 
@@ -36,19 +36,12 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { code, secret } = body;
+    const { code } = body;
 
-    // Validate inputs
-    if (!code || typeof code !== 'string') {
+    // Validate code
+    if (!code || typeof code !== 'string' || !/^\d{6}$/.test(code)) {
       return NextResponse.json(
-        { error: 'Verification code is required' },
-        { status: 400 }
-      );
-    }
-
-    if (!secret || typeof secret !== 'string') {
-      return NextResponse.json(
-        { error: 'MFA secret is required' },
+        { error: 'Valid 6-digit verification code is required' },
         { status: 400 }
       );
     }
@@ -79,17 +72,71 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[DEBUG] MFA Verify - Verifying code for user:', userId);
+    console.log('[DEBUG] Verify Email MFA Code (Setup) - User:', userId);
 
-    // Verify the MFA code
-    const isValid = verifyMFAToken(code, secret);
+    // Get stored code from database
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    });
 
-    if (!isValid) {
-      console.log('[DEBUG] MFA Verify - Invalid code');
+    const { data: userData, error: fetchError } = await supabaseAdmin
+      .from('users')
+      .select('mfa_setup_code, mfa_setup_code_expires_at')
+      .eq('id', userId)
+      .single();
+
+    if (fetchError || !userData) {
+      console.error('[DEBUG] Failed to fetch user data:', fetchError);
+      return NextResponse.json(
+        { error: 'Failed to verify code. Please try again.' },
+        { status: 500 }
+      );
+    }
+
+    if (!userData.mfa_setup_code || !userData.mfa_setup_code_expires_at) {
+      console.log('[DEBUG] No verification code found');
+      return NextResponse.json(
+        { error: 'No verification code found. Please request a new code.' },
+        { status: 400 }
+      );
+    }
+
+    // Check if code expired
+    const expiresAt = new Date(userData.mfa_setup_code_expires_at);
+    if (expiresAt < new Date()) {
+      console.log('[DEBUG] Verification code expired');
       
       await logAuditEvent({
         userId,
-        action: 'mfa_verification_failed',
+        action: 'mfa_setup_verification_failed',
+        resourceType: 'auth',
+        ipAddress: clientIP,
+        userAgent,
+        success: false,
+        metadata: { 
+          reason: 'code_expired'
+        },
+      });
+
+      return NextResponse.json(
+        { error: 'Verification code has expired. Please request a new code.' },
+        { status: 400 }
+      );
+    }
+
+    // Verify the code
+    const isValid = await verifyEmailMFACode(code, userData.mfa_setup_code);
+
+    if (!isValid) {
+      console.log('[DEBUG] Invalid verification code');
+      
+      await logAuditEvent({
+        userId,
+        action: 'mfa_setup_verification_failed',
         resourceType: 'auth',
         ipAddress: clientIP,
         userAgent,
@@ -105,34 +152,25 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[DEBUG] MFA Verify - Code verified successfully');
+    console.log('[DEBUG] Email code verified successfully');
 
     // Generate backup codes
     const backupCodes = generateBackupCodes();
     const hashedBackupCodes = await hashBackupCodes(backupCodes);
 
-    console.log('[DEBUG] MFA Verify - Backup codes generated');
+    console.log('[DEBUG] Backup codes generated');
 
-    // Update user profile with MFA settings using service role
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    });
-
-    const { error: updateError } = await supabaseAdmin
+    // Enable MFA in profile
+    const { error: updateProfileError } = await supabaseAdmin
       .from('profiles')
       .update({
-        mfa_secret: secret,
         mfa_enabled: true,
         backup_codes: hashedBackupCodes,
       })
       .eq('user_id', userId);
 
-    if (updateError) {
-      console.error('[DEBUG] MFA Verify - Failed to update profile:', updateError);
+    if (updateProfileError) {
+      console.error('[DEBUG] Failed to update profile:', updateProfileError);
       
       await logAuditEvent({
         userId,
@@ -142,7 +180,7 @@ export async function POST(request: NextRequest) {
         userAgent,
         success: false,
         metadata: { 
-          error: updateError.message
+          error: updateProfileError.message
         },
       });
 
@@ -152,7 +190,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[DEBUG] MFA Verify - MFA enabled successfully');
+    // Clear the setup code from users table
+    await supabaseAdmin
+      .from('users')
+      .update({
+        mfa_setup_code: null,
+        mfa_setup_code_expires_at: null,
+      })
+      .eq('id', userId);
+
+    console.log('[DEBUG] MFA enabled successfully via email verification');
 
     // Log success
     await logAuditEvent({
@@ -163,6 +210,7 @@ export async function POST(request: NextRequest) {
       userAgent,
       success: true,
       metadata: { 
+        method: 'email',
         backupCodesGenerated: backupCodes.length
       },
     });
@@ -174,17 +222,11 @@ export async function POST(request: NextRequest) {
     });
 
   } catch (error: any) {
-    console.error('MFA verification error:', error);
+    console.error('Verify email MFA code error:', error);
     return NextResponse.json(
       { error: 'An unexpected error occurred. Please try again.' },
       { status: 500 }
     );
   }
 }
-
-
-
-
-
-
 

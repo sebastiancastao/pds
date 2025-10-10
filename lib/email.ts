@@ -443,3 +443,153 @@ export async function sendAccountLockedEmail(
   };
 }
 
+/**
+ * Send MFA email verification code
+ */
+export async function sendMFAVerificationEmail(
+  email: string,
+  code: string,
+  purpose: 'setup' | 'login'
+): Promise<EmailResult> {
+  const emailSubject = purpose === 'setup' 
+    ? 'Enable Multi-Factor Authentication - Verification Code'
+    : 'PDS Login Verification Code';
+    
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+          
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">
+                ${purpose === 'setup' ? '🔐 Enable MFA' : '🔒 Login Verification'}
+              </h1>
+              <p style="color: #e6e6ff; margin: 10px 0 0 0; font-size: 16px;">
+                ${purpose === 'setup' ? 'Verification code to enable MFA' : 'Enter this code to continue'}
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                ${purpose === 'setup' 
+                  ? 'To enable Multi-Factor Authentication on your PDS account, enter the verification code below:'
+                  : 'Someone is trying to log into your PDS account. Enter the verification code below to continue:'}
+              </p>
+
+              <!-- Verification Code Box -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 12px; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 30px; text-align: center;">
+                    <p style="color: #ffffff; margin: 0 0 10px 0; font-size: 14px; font-weight: 600; letter-spacing: 1px; text-transform: uppercase;">Your Verification Code</p>
+                    <p style="color: #ffffff; margin: 0; font-size: 48px; font-weight: bold; letter-spacing: 8px; font-family: 'Courier New', monospace;">${code}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Important Info -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 20px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #856404; margin: 0 0 10px 0; font-size: 14px;"><strong>⏰ Time Sensitive:</strong></p>
+                    <ul style="color: #856404; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6;">
+                      <li>This code expires in <strong>10 minutes</strong></li>
+                      <li>Do not share this code with anyone</li>
+                      <li>If you didn't request this, please ignore this email</li>
+                    </ul>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Security Tips -->
+              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">🛡️ Security Tips:</h3>
+              <ul style="color: #555555; font-size: 15px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                <li>PDS will never ask for your verification code</li>
+                <li>Always verify the URL before entering codes</li>
+                <li>Enable MFA for maximum account security</li>
+              </ul>
+
+              <!-- Support -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
+                      <strong>Need help?</strong> Contact our support team at 
+                      <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                This email was sent by PDS Time Tracking System
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 0;">
+                This message contains confidential information. If you received this in error, please delete it.
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 10px 0 0 0;">
+                © ${new Date().getFullYear()} PDS. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  // Send email via Resend
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PDS Time Tracking <onboarding@resend.dev>',
+      to: email,
+      subject: emailSubject,
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (MFA code):', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    console.log('✅ MFA verification email sent successfully!');
+    console.log(`   To: ${email}`);
+    console.log(`   Purpose: ${purpose}`);
+    console.log(`   Message ID: ${data?.id}`);
+
+    return {
+      success: true,
+      messageId: data?.id,
+    };
+  } catch (error: any) {
+    console.error('❌ MFA email sending failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to send MFA email',
+    };
+  }
+}
+

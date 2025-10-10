@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase, isValidEmail } from '@/lib/supabase';
 import { logAuditEvent } from '@/lib/audit';
+import { getCurrentLocation, isGeolocationSupported, formatDistance } from '@/lib/geofence';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -64,8 +65,76 @@ export default function LoginPage() {
       // Store userId for later use (if user exists)
       const userId = preLoginData.userId || null;
 
-      // Step 2: Attempt Supabase authentication
-      console.log('🔍 [DEBUG] Step 2: Attempting Supabase authentication...');
+      // Step 2: Geofence location validation
+      console.log('📍 [DEBUG] Step 2: Checking location...');
+      
+      if (isGeolocationSupported()) {
+        try {
+          // Request user's location
+          console.log('📍 [DEBUG] Requesting user location...');
+          const location = await getCurrentLocation();
+          
+          console.log('📍 [DEBUG] Location obtained:', {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            accuracy: location.accuracy ? `${Math.round(location.accuracy)}m` : 'unknown'
+          });
+
+          // Validate location against geofence zones
+          console.log('📍 [DEBUG] Validating against geofence zones...');
+          const locationResponse = await fetch('/api/auth/validate-location', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              latitude: location.latitude,
+              longitude: location.longitude,
+              accuracy: location.accuracy,
+              email: email.toLowerCase().trim(),
+            }),
+          });
+
+          const locationData = await locationResponse.json();
+
+          console.log('📍 [DEBUG] Geofence validation result:', {
+            allowed: locationData.allowed,
+            matchedZone: locationData.matchedZone,
+            distance: locationData.distanceMeters,
+          });
+
+          if (!locationData.allowed) {
+            console.log('📍 [DEBUG] ❌ Location outside allowed zones');
+            const distanceMsg = locationData.distanceMeters 
+              ? ` You are ${formatDistance(locationData.distanceMeters)} away from the nearest authorized location.`
+              : '';
+            setError(locationData.error || `Access denied: You are not in an authorized location.${distanceMsg}`);
+            setIsLoading(false);
+            return;
+          }
+
+          console.log('📍 [DEBUG] ✅ Location verified:', locationData.matchedZone);
+          
+        } catch (locationError: any) {
+          console.error('📍 [DEBUG] Location error:', locationError);
+          
+          // Check if user denied location permission
+          if (locationError.message.includes('denied')) {
+            setError('Location access required. Please enable location permission in your browser settings and try again.');
+          } else {
+            setError(`Location verification failed: ${locationError.message}`);
+          }
+          
+          setIsLoading(false);
+          return;
+        }
+      } else {
+        console.warn('📍 [DEBUG] Geolocation not supported by browser');
+        // Optional: Allow login without geofence if browser doesn't support it
+        // or enforce geofence and deny access
+        // For now, we'll allow it but log a warning
+      }
+
+      // Step 3: Attempt Supabase authentication
+      console.log('🔍 [DEBUG] Step 3: Attempting Supabase authentication...');
       
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: email.toLowerCase().trim(),
@@ -130,8 +199,8 @@ export default function LoginPage() {
         return;
       }
 
-      // Step 3: Reset failed attempts on successful login
-      console.log('🔍 [DEBUG] Step 3: Resetting failed login attempts...');
+      // Step 4: Reset failed attempts on successful login
+      console.log('🔍 [DEBUG] Step 4: Resetting failed login attempts...');
       
       // Reset failed login attempts (use service role API)
       await fetch('/api/auth/update-login-attempts', {
@@ -143,8 +212,8 @@ export default function LoginPage() {
         }),
       });
 
-      // Step 4: Re-fetch user data to ensure we have the latest temporary password status
-      console.log('🔍 [DEBUG] Step 4: Re-fetching user data to check temporary password status...');
+      // Step 5: Re-fetch user data to ensure we have the latest temporary password status
+      console.log('🔍 [DEBUG] Step 5: Re-fetching user data to check temporary password status...');
       console.log('🔍 [DEBUG] Fetching for user ID:', authData.user.id);
       
       const { data: currentUserData, error: fetchError } = await (supabase
@@ -191,7 +260,7 @@ export default function LoginPage() {
       // This check is redundant since we do a more robust check below with .limit(1)
 
       // Log successful authentication
-      console.log('🔍 [DEBUG] Step 5: Logging audit event...');
+      console.log('🔍 [DEBUG] Step 6: Logging audit event...');
       
       // Use pre-login data for accurate temporary password status
       const tempPasswordStatus = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
@@ -207,8 +276,8 @@ export default function LoginPage() {
         }
       });
 
-      // Step 6: Redirect based on temporary password status and MFA
-      console.log('🔍 [DEBUG] Step 6: Making redirect decision...');
+      // Step 7: Redirect based on temporary password status and MFA
+      console.log('🔍 [DEBUG] Step 7: Making redirect decision...');
       
       // Use data from pre-login check (most reliable source)
       // Fallback to currentUserData if pre-login data is unavailable
@@ -236,7 +305,7 @@ export default function LoginPage() {
       
       // Only proceed to MFA if no temporary password
       // Verify session is persisted before redirecting
-      console.log('🔍 [DEBUG] Step 7: Verifying session before MFA redirect...');
+      console.log('🔍 [DEBUG] Step 8: Verifying session before MFA redirect...');
       
       // Small delay to ensure session is fully persisted to storage
       await new Promise(resolve => setTimeout(resolve, 100));

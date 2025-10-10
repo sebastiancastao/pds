@@ -1,9 +1,10 @@
-// PDS Time Tracking System - MFA Verification API
-// Verifies MFA code and enables MFA for user account
+// PDS Time Tracking System - Send Email MFA Code (Setup)
+// Sends verification code via email during MFA setup
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { verifyMFAToken, generateBackupCodes, hashBackupCodes } from '@/lib/auth';
+import { generateEmailMFACode, hashEmailMFACode } from '@/lib/auth';
+import { sendMFAVerificationEmail } from '@/lib/email';
 import { logAuditEvent } from '@/lib/audit';
 import { isValidUUID } from '@/lib/supabase';
 
@@ -34,25 +35,6 @@ export async function POST(request: NextRequest) {
 
     const token = authHeader.replace('Bearer ', '');
 
-    // Parse request body
-    const body = await request.json();
-    const { code, secret } = body;
-
-    // Validate inputs
-    if (!code || typeof code !== 'string') {
-      return NextResponse.json(
-        { error: 'Verification code is required' },
-        { status: 400 }
-      );
-    }
-
-    if (!secret || typeof secret !== 'string') {
-      return NextResponse.json(
-        { error: 'MFA secret is required' },
-        { status: 400 }
-      );
-    }
-
     // Create Supabase client
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -71,6 +53,7 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = user.id;
+    const userEmail = user.email || '';
 
     if (!isValidUUID(userId)) {
       return NextResponse.json(
@@ -79,41 +62,15 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[DEBUG] MFA Verify - Verifying code for user:', userId);
+    console.log('[DEBUG] Send Email MFA Code (Setup) - User:', userId);
 
-    // Verify the MFA code
-    const isValid = verifyMFAToken(code, secret);
+    // Generate 6-digit verification code
+    const code = generateEmailMFACode();
+    const hashedCode = await hashEmailMFACode(code);
+    
+    // Store code in database with 10-minute expiration
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    if (!isValid) {
-      console.log('[DEBUG] MFA Verify - Invalid code');
-      
-      await logAuditEvent({
-        userId,
-        action: 'mfa_verification_failed',
-        resourceType: 'auth',
-        ipAddress: clientIP,
-        userAgent,
-        success: false,
-        metadata: { 
-          reason: 'invalid_code'
-        },
-      });
-
-      return NextResponse.json(
-        { error: 'Invalid verification code. Please try again.' },
-        { status: 400 }
-      );
-    }
-
-    console.log('[DEBUG] MFA Verify - Code verified successfully');
-
-    // Generate backup codes
-    const backupCodes = generateBackupCodes();
-    const hashedBackupCodes = await hashBackupCodes(backupCodes);
-
-    console.log('[DEBUG] MFA Verify - Backup codes generated');
-
-    // Update user profile with MFA settings using service role
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: {
@@ -122,69 +79,62 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // Store hashed code in users table (temporary storage)
     const { error: updateError } = await supabaseAdmin
-      .from('profiles')
+      .from('users')
       .update({
-        mfa_secret: secret,
-        mfa_enabled: true,
-        backup_codes: hashedBackupCodes,
+        mfa_setup_code: hashedCode,
+        mfa_setup_code_expires_at: expiresAt.toISOString(),
       })
-      .eq('user_id', userId);
+      .eq('id', userId);
 
     if (updateError) {
-      console.error('[DEBUG] MFA Verify - Failed to update profile:', updateError);
-      
-      await logAuditEvent({
-        userId,
-        action: 'mfa_enable_failed',
-        resourceType: 'auth',
-        ipAddress: clientIP,
-        userAgent,
-        success: false,
-        metadata: { 
-          error: updateError.message
-        },
-      });
-
+      console.error('[DEBUG] Failed to store MFA code:', updateError);
       return NextResponse.json(
-        { error: 'Failed to enable MFA. Please try again.' },
+        { error: 'Failed to generate verification code. Please try again.' },
         { status: 500 }
       );
     }
 
-    console.log('[DEBUG] MFA Verify - MFA enabled successfully');
+    // Send email with verification code
+    const emailResult = await sendMFAVerificationEmail(userEmail, code, 'setup');
 
-    // Log success
+    if (!emailResult.success) {
+      console.error('[DEBUG] Failed to send email:', emailResult.error);
+      return NextResponse.json(
+        { error: 'Failed to send verification email. Please try again.' },
+        { status: 500 }
+      );
+    }
+
+    console.log('[DEBUG] MFA setup code sent successfully to:', userEmail);
+
+    // Log audit event
     await logAuditEvent({
       userId,
-      action: 'mfa_enabled',
+      action: 'mfa_setup_code_sent',
       resourceType: 'auth',
       ipAddress: clientIP,
       userAgent,
       success: true,
       metadata: { 
-        backupCodesGenerated: backupCodes.length
+        email: userEmail,
+        codeExpires: expiresAt.toISOString(),
       },
     });
 
     return NextResponse.json({
       success: true,
-      message: 'MFA enabled successfully',
-      backupCodes: backupCodes, // Return unhashed codes for user to save
+      message: 'Verification code sent to your email',
+      expiresAt: expiresAt.toISOString(),
     });
 
   } catch (error: any) {
-    console.error('MFA verification error:', error);
+    console.error('Send email MFA code error:', error);
     return NextResponse.json(
       { error: 'An unexpected error occurred. Please try again.' },
       { status: 500 }
     );
   }
 }
-
-
-
-
-
-
 
