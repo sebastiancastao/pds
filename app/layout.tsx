@@ -13,6 +13,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
+      <head>
+        {/* Explicitly allow geolocation API */}
+        <meta httpEquiv="Permissions-Policy" content="geolocation=(self)" />
+      </head>
       <body>{children}</body>
     </html>
   );
