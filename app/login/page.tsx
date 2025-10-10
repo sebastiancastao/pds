@@ -823,14 +823,39 @@ Error Message: ${errorMessage}
                 </div>
               ) : (
                 <div className="bg-green-50 border-2 border-green-300 rounded-lg p-4">
-                  <div className="flex items-center gap-3">
-                    <svg className="w-6 h-6 text-green-600 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                  <div className="flex items-start gap-3 mb-3">
+                    <svg className="w-6 h-6 text-green-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                       <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                     </svg>
                     <div className="flex-1">
                       <p className="text-sm font-bold text-green-900">✓ Location Verified</p>
-                      <p className="text-xs text-green-800">You can now sign in</p>
+                      <p className="text-xs text-green-800 mb-2">You can now sign in</p>
+                      
+                      {/* Coordinates Display */}
+                      {userLocation && (
+                        <div className="bg-green-100 border border-green-300 rounded p-2 mt-2">
+                          <p className="text-xs font-semibold text-green-900 mb-1">📍 Your Coordinates:</p>
+                          <div className="font-mono text-xs text-green-800 space-y-0.5">
+                            <div className="flex justify-between">
+                              <span className="font-semibold">Latitude:</span>
+                              <span>{userLocation.latitude.toFixed(6)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="font-semibold">Longitude:</span>
+                              <span>{userLocation.longitude.toFixed(6)}</span>
+                            </div>
+                            {userLocation.accuracy && (
+                              <div className="flex justify-between">
+                                <span className="font-semibold">Accuracy:</span>
+                                <span>±{Math.round(userLocation.accuracy)}m</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
+                  </div>
+                  <div className="flex justify-end">
                     <button
                       type="button"
                       onClick={() => {
@@ -846,9 +871,9 @@ Error Message: ${errorMessage}
                         // Immediately request fresh location
                         handleRequestLocation();
                       }}
-                      className="text-xs text-green-700 hover:text-green-900 underline"
+                      className="text-xs text-green-700 hover:text-green-900 underline font-semibold"
                     >
-                      Refresh
+                      🔄 Refresh Location
                     </button>
                   </div>
                 </div>
