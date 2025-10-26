@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, rgb, PDFName, PDFString, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, PDFName, PDFString, StandardFonts, PDFArray } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -31,7 +31,7 @@ export async function GET() {
     const doneLinkAnnot = pdfDoc.context.obj({ Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'), Rect: [doneButtonX, doneButtonY, doneButtonX + doneButtonWidth, doneButtonY + doneButtonHeight], Border: [0, 0, 0], C: [0.2, 0.7, 0.4], A: pdfDoc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('http://localhost:3000/') }) });
 
     const annotsArray = lastPage.node.get(PDFName.of('Annots'));
-    if (annotsArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(doneLinkAnnot)); }
+    if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(doneLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(doneLinkAnnot)])); }
 
     const pdfBytes = await pdfDoc.save();

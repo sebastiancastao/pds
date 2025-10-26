@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, rgb, PDFName, PDFString, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, PDFName, PDFString, StandardFonts, PDFArray } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -26,7 +26,7 @@ export async function GET() {
     lastPage.drawText('>>', { x: continueButtonX + continueButtonWidth - 18, y: continueButtonY + 12, size: 11, color: rgb(1, 1, 1), font: helveticaFont });
     const continueLinkAnnot = pdfDoc.context.obj({ Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'), Rect: [continueButtonX, continueButtonY, continueButtonX + continueButtonWidth, continueButtonY + continueButtonHeight], Border: [0, 0, 0], C: [0.25, 0.53, 0.96], A: pdfDoc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('http://localhost:3000/payroll-packet-ca/health-insurance') }) });
     const annotsArray = lastPage.node.get(PDFName.of('Annots'));
-    if (annotsArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
+    if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(continueLinkAnnot)])); }
     const pdfBytes = await pdfDoc.save();
     return new NextResponse(Buffer.from(pdfBytes), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="Transgender_Rights_Poster.pdf"', 'Content-Security-Policy': "default-src 'self'", 'X-Content-Type-Options': 'nosniff' } });
