@@ -49,15 +49,17 @@ export async function GET() {
     });
 
     // Get or create the Annots array
-    let annotsArray = lastPage.node.get(PDFName.of('Annots'));
+    const annotsArray = lastPage.node.get(PDFName.of('Annots'));
     if (annotsArray instanceof PDFArray) {
       annotsArray.push(pdfDoc.context.register(backLinkAnnot));
       annotsArray.push(pdfDoc.context.register(continueLinkAnnot));
     } else {
-      annotsArray = PDFArray.withContext(pdfDoc.context);
-      annotsArray.push(pdfDoc.context.register(backLinkAnnot));
-      annotsArray.push(pdfDoc.context.register(continueLinkAnnot));
-      lastPage.node.set(PDFName.of('Annots'), annotsArray);
+      // Create a new annotations array with our links
+      const newAnnots = pdfDoc.context.obj([
+        pdfDoc.context.register(backLinkAnnot),
+        pdfDoc.context.register(continueLinkAnnot)
+      ]);
+      lastPage.node.set(PDFName.of('Annots'), newAnnots);
     }
 
     const pdfBytes = await pdfDoc.save();
