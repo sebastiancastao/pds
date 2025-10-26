@@ -188,4 +188,67 @@ export const maskPhone = (phone: string): string => {
   return `***-***-${last4}`;
 };
 
+/**
+ * Encrypt binary data (for profile photos, documents)
+ * @param data - Binary data as Uint8Array
+ * @returns Base64 encoded encrypted binary data
+ */
+export const encryptData = (data: Uint8Array): string => {
+  if (!data || data.length === 0) {
+    return '';
+  }
+
+  try {
+    const key = getEncryptionKey();
+    
+    // Convert Uint8Array to WordArray for CryptoJS
+    const wordArray = CryptoJS.lib.WordArray.create(data);
+    
+    const encrypted = CryptoJS.AES.encrypt(wordArray, key, {
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7,
+    });
+    
+    return encrypted.toString();
+  } catch (error) {
+    console.error('Binary encryption error:', error);
+    throw new Error('Failed to encrypt binary data');
+  }
+};
+
+/**
+ * Decrypt binary data (for profile photos, documents)
+ * @param ciphertext - Base64 encoded encrypted binary data
+ * @returns Decrypted binary data as Uint8Array
+ */
+export const decryptData = (ciphertext: string): Uint8Array => {
+  if (!ciphertext) {
+    return new Uint8Array(0);
+  }
+
+  try {
+    const key = getEncryptionKey();
+    
+    const decrypted = CryptoJS.AES.decrypt(ciphertext, key, {
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7,
+    });
+    
+    // Convert WordArray back to Uint8Array
+    const wordArray = decrypted;
+    const words = wordArray.words;
+    const sigBytes = wordArray.sigBytes;
+    
+    const bytes = new Uint8Array(sigBytes);
+    for (let i = 0; i < sigBytes; i++) {
+      bytes[i] = (words[Math.floor(i / 4)] >>> (24 - (i % 4) * 8)) & 0xff;
+    }
+    
+    return bytes;
+  } catch (error) {
+    console.error('Binary decryption error:', error);
+    throw new Error('Failed to decrypt binary data');
+  }
+};
+
 

@@ -1,0 +1,176 @@
+/* Apple-inspired Invitation Page Styles */
+
+/* Day Cards */
+.invitation-day-card {
+  background: white;
+  border-radius: 1rem;
+  padding: 1.25rem;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  cursor: pointer;
+}
+
+.invitation-day-card:hover {
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05);
+  transform: translateY(-2px);
+}
+
+.invitation-day-card.available {
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  border-color: #93c5fd;
+  box-shadow: 0 2px 4px rgba(59, 130, 246, 0.1), 0 1px 2px rgba(59, 130, 246, 0.06);
+}
+
+.invitation-day-card.available:hover {
+  box-shadow: 0 6px 12px rgba(59, 130, 246, 0.15), 0 3px 6px rgba(59, 130, 246, 0.1);
+}
+
+.invitation-day-card.today {
+  border-color: #007AFF;
+  border-width: 2px;
+}
+
+/* Custom Checkbox */
+.invitation-checkbox-wrapper {
+  position: relative;
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+}
+
+.invitation-checkbox {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+  height: 0;
+  width: 0;
+}
+
+.checkmark {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 28px;
+  width: 28px;
+  background-color: white;
+  border: 2px solid #d1d5db;
+  border-radius: 50%;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.invitation-checkbox-wrapper:hover .checkmark {
+  border-color: #007AFF;
+  background-color: #f0f9ff;
+}
+
+.invitation-checkbox:checked ~ .checkmark {
+  background: linear-gradient(180deg, #007AFF 0%, #0051D5 100%);
+  border-color: #007AFF;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.3);
+}
+
+.checkmark:after {
+  content: "";
+  position: absolute;
+  display: none;
+}
+
+.invitation-checkbox:checked ~ .checkmark:after {
+  display: block;
+}
+
+.invitation-checkbox-wrapper .checkmark:after {
+  left: 9px;
+  top: 5px;
+  width: 6px;
+  height: 11px;
+  border: solid white;
+  border-width: 0 2.5px 2.5px 0;
+  transform: rotate(45deg);
+}
+
+/* Notes Input */
+.invitation-notes-input {
+  width: 100%;
+  padding: 0.625rem 0.875rem;
+  font-size: 0.875rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.625rem;
+  background: white;
+  color: #1f2937;
+  transition: all 0.2s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+}
+
+.invitation-notes-input:focus {
+  outline: none;
+  border-color: #007AFF;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+  background: white;
+}
+
+.invitation-notes-input::placeholder {
+  color: #9ca3af;
+}
+
+/* Small Spinner for Button */
+.apple-spinner-small {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Responsive Adjustments */
+@media (max-width: 640px) {
+  .invitation-day-card {
+    padding: 1rem;
+  }
+
+  .invitation-checkbox-wrapper {
+    width: 24px;
+    height: 24px;
+  }
+
+  .checkmark {
+    width: 24px;
+    height: 24px;
+  }
+
+  .invitation-checkbox-wrapper .checkmark:after {
+    left: 8px;
+    top: 4px;
+    width: 5px;
+    height: 9px;
+  }
+}
+
+/* Enhanced Transitions */
+.invitation-day-card,
+.invitation-notes-input,
+.checkmark {
+  transition-property: all;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 200ms;
+}
+
+/* Focus States for Accessibility */
+.invitation-checkbox:focus ~ .checkmark {
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.3);
+}
+
+.invitation-notes-input:focus-visible {
+  outline: 2px solid #007AFF;
+  outline-offset: 2px;
+}

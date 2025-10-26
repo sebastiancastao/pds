@@ -20,8 +20,11 @@
 **Purpose:** Verify identity on each login  
 **When:** User has `mfa_enabled = true`  
 **What happens:**
-- User enters code from authenticator app
-- System verifies code
+- User can choose from multiple verification methods:
+  - **Primary**: Enter 6-digit TOTP code from authenticator app
+  - **Fallback**: Use email verification code
+  - **Emergency**: Use 8-character backup codes
+- System verifies the chosen method
 - Sets session flag `mfa_verified = true`
 - Grants access to home page
 
@@ -49,9 +52,12 @@
 ```
 1. Enter email + password at /login
 2. ✅ Authentication succeeds
-3. System checks: mfa_enabled = TRUE
+3. System checks: mfa_secret exists (TOTP set up)
 4. ➡️ Redirect to /verify-mfa
-5. User enters code from authenticator app
+5. User chooses verification method:
+   - Option A: Enter 6-digit TOTP code from authenticator app
+   - Option B: Click "Email" button and enter email verification code
+   - Option C: Enter 8-character backup code
 6. ✅ Code verified
 7. sessionStorage.mfa_verified = 'true'
 8. ➡️ Redirect to / (home page)
@@ -137,6 +143,11 @@ All of these generate 6-digit codes that change every 30 seconds.
 **Both pages already exist in your codebase!**
 
 The system automatically decides which page to show based on your account's MFA status.
+
+
+
+
+
 
 
 

@@ -58,10 +58,10 @@ export function AuthGuard({
     if (onboardingOnly) {
       console.log('[AUTH GUARD] Checking onboarding status (page is onboarding-only)...');
       
-      // Check if user has already set up MFA
+      // Check if user has already set up MFA (TOTP)
       const { data: profileDataArray } = await (supabase
         .from('profiles')
-        .select('mfa_secret')
+        .select('mfa_secret, mfa_enabled')
         .eq('user_id', session.user.id)
         .order('created_at', { ascending: false })
         .limit(1) as any);
@@ -69,12 +69,13 @@ export function AuthGuard({
       const profileData = profileDataArray?.[0] || null;
       
       console.log('[AUTH GUARD] Onboarding check:', {
-        hasMfaSecret: !!profileData?.mfa_secret
+        hasMfaSecret: !!profileData?.mfa_secret,
+        mfaEnabled: profileData?.mfa_enabled
       });
       
-      // If user has MFA secret, they've completed onboarding
+      // If user has MFA secret, they've completed TOTP onboarding
       if (profileData?.mfa_secret) {
-        console.log('[AUTH GUARD] ⚠️ User has completed onboarding (MFA secret exists)');
+        console.log('[AUTH GUARD] ⚠️ User has completed TOTP onboarding (MFA secret exists)');
         console.log('[AUTH GUARD] ❌ Onboarding-only page not accessible, redirecting to /verify-mfa');
         router.push('/verify-mfa');
         return;

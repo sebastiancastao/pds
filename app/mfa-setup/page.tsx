@@ -14,16 +14,26 @@ export default function MFASetupPage() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [userEmail, setUserEmail] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [canResend, setCanResend] = useState(false);
-  const [countdown, setCountdown] = useState(60);
+  const [qrCodeUrl, setQrCodeUrl] = useState('');
+  const [mfaSecret, setMfaSecret] = useState('');
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
 
   useEffect(() => {
     checkAuthAndMFA();
   }, []);
 
+  // Handle redirect after MFA setup success
+  useEffect(() => {
+    if (step === 'success' && backupCodes.length > 0) {
+      const timer = setTimeout(() => {
+        router.push('/register');
+      }, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [step, backupCodes, router]);
+
   const checkAuthAndMFA = async () => {
-    console.log('[DEBUG] MFA Setup - Initializing email MFA setup...');
+    console.log('[DEBUG] MFA Setup - Initializing TOTP MFA setup...');
     
     // AuthGuard handles authentication check, so we just get the user
     const { data: { user } } = await supabase.auth.getUser();
@@ -41,7 +51,7 @@ export default function MFASetupPage() {
     
     const { data: profileDataArray } = await (supabase
       .from('profiles')
-      .select('mfa_enabled')
+      .select('mfa_enabled, mfa_secret')
       .eq('user_id', user.id)
       .order('created_at', { ascending: false })
       .limit(1) as any);
@@ -50,28 +60,19 @@ export default function MFASetupPage() {
 
     console.log('[DEBUG] MFA Setup - Profile check:', {
       mfaEnabled: profileData?.mfa_enabled,
+      mfaSecret: !!profileData?.mfa_secret,
     });
 
-    // If MFA is already FULLY enabled, redirect to home
-    if (profileData?.mfa_enabled === true) {
-      console.log('[DEBUG] MFA Setup - ✅ MFA ALREADY ENABLED, redirecting to home');
+    // If MFA is already FULLY enabled with TOTP secret, redirect to home
+    if (profileData?.mfa_enabled === true && profileData?.mfa_secret) {
+      console.log('[DEBUG] MFA Setup - ✅ MFA ALREADY ENABLED WITH TOTP, redirecting to home');
       router.push('/');
     } else {
-      console.log('[DEBUG] MFA Setup - MFA not enabled, ready to set up');
+      console.log('[DEBUG] MFA Setup - MFA not enabled or no TOTP secret, ready to set up');
     }
   };
 
-  // Countdown timer for resend button
-  useEffect(() => {
-    if (codeSent && countdown > 0) {
-      const timer = setTimeout(() => setCountdown(countdown - 1), 1000);
-      return () => clearTimeout(timer);
-    } else if (countdown === 0) {
-      setCanResend(true);
-    }
-  }, [countdown, codeSent]);
-
-  const sendVerificationEmail = async () => {
+  const generateTOTPSecret = async () => {
     setIsLoading(true);
     setError('');
     setSuccess('');
@@ -85,7 +86,7 @@ export default function MFASetupPage() {
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/send-email-code', {
+      const response = await fetch('/api/auth/mfa/setup', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -96,18 +97,17 @@ export default function MFASetupPage() {
       const data = await response.json();
 
       if (!response.ok || data.error) {
-        setError(data.error || 'Failed to send verification email. Please try again.');
+        setError(data.error || 'Failed to generate MFA secret. Please try again.');
         setIsLoading(false);
         return;
       }
 
-      setCodeSent(true);
-      setCanResend(false);
-      setCountdown(60);
-      setSuccess(`Verification code sent to ${userEmail}`);
+      setMfaSecret(data.secret);
+      setQrCodeUrl(data.qrCodeUrl);
+      setSuccess('QR code generated successfully');
       setStep('verify');
     } catch (err: any) {
-      console.error('Email send error:', err);
+      console.error('TOTP setup error:', err);
       setError('An unexpected error occurred. Please try again.');
     } finally {
       setIsLoading(false);
@@ -135,14 +135,15 @@ export default function MFASetupPage() {
         return;
       }
 
-      const response = await fetch('/api/auth/mfa/verify-email-code', {
+      const response = await fetch('/api/auth/mfa/verify', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
         body: JSON.stringify({ 
-          code: verificationCode
+          code: verificationCode,
+          secret: mfaSecret
         }),
       });
 
@@ -154,11 +155,9 @@ export default function MFASetupPage() {
         return;
       }
 
-      // Success! MFA is now enabled
+      // Success! MFA is now enabled, show backup codes
+      setBackupCodes(data.backupCodes);
       setStep('success');
-      setTimeout(() => {
-        router.push('/register');
-      }, 2000);
     } catch (err: any) {
       console.error('Verification error:', err);
       setError('An unexpected error occurred. Please try again.');
@@ -171,7 +170,7 @@ export default function MFASetupPage() {
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Preparing email verification...</p>
+          <p className="text-gray-600">Preparing MFA setup...</p>
         </div>
       </div>
     );
@@ -180,16 +179,41 @@ export default function MFASetupPage() {
   if (step === 'success') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 p-8">
-        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
+        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-lg w-full text-center">
           <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
             </svg>
           </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Email MFA Enabled!</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-4">MFA Enabled Successfully!</h2>
+          
+          {/* Backup Codes */}
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
+            <h3 className="text-lg font-semibold text-yellow-800 mb-3">⚠️ Save Your Backup Codes</h3>
+            <p className="text-sm text-yellow-700 mb-3">
+              Store these backup codes in a safe place. You can use them to access your account if you lose your authenticator app.
+            </p>
+            <div className="bg-white border border-yellow-300 rounded p-3 mb-3">
+              <div className="grid grid-cols-2 gap-2 text-sm font-mono text-gray-800">
+                {backupCodes.map((code, index) => (
+                  <div key={index} className="p-1 bg-gray-50 rounded">
+                    {code}
+                  </div>
+                ))}
+              </div>
+            </div>
+            <p className="text-xs text-yellow-600">
+              Each backup code can only be used once. Generate new codes if you run out.
+            </p>
+          </div>
+          
           <p className="text-gray-600 mb-6">
-            Your account is now secured with email-based multi-factor authentication. When you log in, we'll send a verification code to your email. Redirecting to complete your profile...
+            Your account is now secured with authenticator app-based MFA. Redirecting to complete your profile...
           </p>
+          
+          <div className="animate-pulse text-sm text-gray-500">
+            Redirecting in 3 seconds...
+          </div>
         </div>
       </div>
     );
@@ -213,15 +237,15 @@ export default function MFASetupPage() {
 
         {/* MFA Benefits */}
         <div className="relative z-10 space-y-4">
-          <h2 className="text-white font-semibold text-xl mb-6">Why Email MFA?</h2>
+          <h2 className="text-white font-semibold text-xl mb-6">Why Authenticator Apps?</h2>
           <div className="space-y-3">
             <div className="flex items-start gap-3 text-white">
               <svg className="w-6 h-6 text-primary-200 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Enhanced Security</p>
-                <p className="text-sm text-primary-100">Verification codes sent directly to your email</p>
+                <p className="font-medium">Maximum Security</p>
+                <p className="text-sm text-primary-100">Time-based codes that change every 30 seconds</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -229,8 +253,8 @@ export default function MFASetupPage() {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Compliance Required</p>
-                <p className="text-sm text-primary-100">SOC2 and enterprise security standards mandate MFA</p>
+                <p className="font-medium">Works Offline</p>
+                <p className="text-sm text-primary-100">No internet connection required for codes</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -238,8 +262,8 @@ export default function MFASetupPage() {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Easy to Use</p>
-                <p className="text-sm text-primary-100">No app downloads required - works with your email</p>
+                <p className="font-medium">Industry Standard</p>
+                <p className="text-sm text-primary-100">Used by banks, tech companies, and government</p>
               </div>
             </div>
             <div className="flex items-start gap-3 text-white">
@@ -247,8 +271,8 @@ export default function MFASetupPage() {
                 <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
               </svg>
               <div>
-                <p className="font-medium">Always Accessible</p>
-                <p className="text-sm text-primary-100">Access from any device with your email</p>
+                <p className="font-medium">Backup Options</p>
+                <p className="text-sm text-primary-100">Email codes and backup codes available as fallback</p>
               </div>
             </div>
           </div>
@@ -273,51 +297,38 @@ export default function MFASetupPage() {
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'setup' ? 'bg-primary-100' : 'bg-green-100'}`}>
                   {step === 'setup' ? '1' : '✓'}
                 </div>
-                <span className="ml-2 text-sm font-medium">Send Code</span>
+                <span className="ml-2 text-sm font-medium">Scan QR Code</span>
               </div>
               <div className="w-16 h-0.5 bg-gray-300 mx-2"></div>
               <div className={`flex items-center ${step === 'verify' ? 'text-primary-600' : 'text-gray-400'}`}>
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${step === 'verify' ? 'bg-primary-100' : 'bg-gray-100'}`}>
                   2
                 </div>
-                <span className="ml-2 text-sm font-medium">Verify</span>
+                <span className="ml-2 text-sm font-medium">Verify Code</span>
               </div>
             </div>
 
-            {/* Step 1: Send Email Code */}
+            {/* Step 1: Generate QR Code */}
             {step === 'setup' && (
               <>
                 <div className="text-center mb-6">
                   <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
                     <svg className="w-8 h-8 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
                     </svg>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Enable Email Verification</h2>
-                  <p className="text-gray-600 mt-2">We'll send a verification code to your email</p>
-                </div>
-
-                {/* Email Display */}
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-                  <div className="flex items-start gap-3">
-                    <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
-                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
-                    </svg>
-                    <div className="text-sm text-blue-800">
-                      <p className="font-medium mb-1">Verification email will be sent to:</p>
-                      <p className="font-mono text-blue-900">{userEmail}</p>
-                    </div>
-                  </div>
+                  <h2 className="text-2xl font-bold text-gray-900">Setup Authenticator App</h2>
+                  <p className="text-gray-600 mt-2">Scan the QR code with your authenticator app</p>
                 </div>
 
                 {/* Instructions */}
                 <div className="mb-6">
-                  <h3 className="text-sm font-medium text-gray-700 mb-2">What happens next?</h3>
-                  <ol className="text-sm text-gray-600 space-y-1 list-decimal list-inside">
-                    <li>We'll send a 6-digit code to your email</li>
-                    <li>Check your inbox (and spam folder)</li>
-                    <li>Enter the code to verify</li>
-                    <li>Your MFA will be activated</li>
+                  <h3 className="text-sm font-medium text-gray-700 mb-3">Setup Instructions:</h3>
+                  <ol className="text-sm text-gray-600 space-y-2 list-decimal list-inside">
+                    <li>Download an authenticator app like Google Authenticator, Authy, or Microsoft Authenticator</li>
+                    <li>Open the app and tap "Add account" or the "+" button</li>
+                    <li>Scan the QR code that will appear</li>
+                    <li>Enter the 6-digit code from your app to verify</li>
                   </ol>
                 </div>
 
@@ -331,7 +342,7 @@ export default function MFASetupPage() {
                 )}
 
                 <button
-                  onClick={sendVerificationEmail}
+                  onClick={generateTOTPSecret}
                   disabled={isLoading}
                   className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
@@ -341,14 +352,14 @@ export default function MFASetupPage() {
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                       </svg>
-                      <span>Sending...</span>
+                      <span>Generating QR Code...</span>
                     </>
                   ) : (
                     <>
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
                       </svg>
-                      <span>Send Verification Code</span>
+                      <span>Generate QR Code</span>
                     </>
                   )}
                 </button>
@@ -364,9 +375,31 @@ export default function MFASetupPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
-                  <h2 className="text-2xl font-bold text-gray-900">Enter Verification Code</h2>
-                  <p className="text-gray-600 mt-2">Enter the 6-digit code sent to {userEmail}</p>
+                  <h2 className="text-2xl font-bold text-gray-900">Scan QR Code & Verify</h2>
+                  <p className="text-gray-600 mt-2">Scan the QR code with your authenticator app, then enter the 6-digit code</p>
                 </div>
+
+                {/* QR Code Display */}
+                {qrCodeUrl && (
+                  <div className="bg-gray-50 border border-gray-200 rounded-lg p-6 mb-6 text-center">
+                    <div className="flex flex-col items-center space-y-4">
+                      <div className="bg-white p-4 rounded-lg shadow-sm">
+                        <img 
+                          src={qrCodeUrl} 
+                          alt="MFA QR Code" 
+                          className="w-48 h-48 mx-auto"
+                        />
+                      </div>
+                      <div className="text-sm text-gray-600 max-w-sm">
+                        <p className="font-medium mb-2">Can't scan the QR code?</p>
+                        <div className="bg-gray-100 p-3 rounded font-mono text-xs break-all">
+                          {mfaSecret}
+                        </div>
+                        <p className="text-xs mt-2">Enter this code manually in your authenticator app</p>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {success && (
                   <div className="bg-green-50 border border-green-200 rounded-lg p-3 flex items-start gap-2 mb-4">
@@ -398,7 +431,7 @@ export default function MFASetupPage() {
                       autoFocus
                     />
                     <p className="mt-2 text-sm text-gray-500">
-                      Check your email inbox for the code
+                      Enter the 6-digit code from your authenticator app
                     </p>
                   </div>
 
@@ -435,22 +468,9 @@ export default function MFASetupPage() {
                   </button>
 
                   <div className="text-center pt-4 border-t border-gray-200">
-                    {canResend ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setVerificationCode('');
-                          sendVerificationEmail();
-                        }}
-                        className="text-sm text-primary-600 hover:text-primary-700 font-medium"
-                      >
-                        Resend verification code
-                      </button>
-                    ) : (
-                      <p className="text-sm text-gray-500">
-                        Didn't receive the code? You can resend in <span className="font-medium">{countdown}s</span>
-                      </p>
-                    )}
+                    <p className="text-sm text-gray-500">
+                      Having trouble? Make sure your authenticator app is synced and try entering the code again.
+                    </p>
                   </div>
                 </form>
               </>
@@ -462,3 +482,4 @@ export default function MFASetupPage() {
     </AuthGuard>
   );
 }
+

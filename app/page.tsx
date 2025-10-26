@@ -66,10 +66,10 @@ export default function Home() {
 
   if (isLoading) {
     return (
-      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto mb-4"></div>
-          <p className="text-gray-600">Loading...</p>
+      <main className="min-h-screen flex items-center justify-center">
+        <div className="liquid-card-compact p-8 animate-scale-in">
+          <div className="animate-spin rounded-full h-16 w-16 border-4 border-transparent border-t-ios-blue mx-auto mb-4"></div>
+          <p className="text-gray-700 font-medium text-center tracking-apple">Loading...</p>
         </div>
       </main>
     );
@@ -78,20 +78,27 @@ export default function Home() {
   if (!user) {
     // Show public home page for non-authenticated users
     return (
-      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
-        <div className="max-w-4xl mx-auto px-6 py-12">
-          <div className="text-center mb-12">
-            <h1 className="text-5xl font-bold text-gray-900 mb-4">
-              PDS Time Tracking System
+      <main className="min-h-screen flex items-center justify-center px-4 py-12">
+        <div className="max-w-5xl mx-auto w-full">
+          {/* Hero Section */}
+          <div className="text-center mb-16 animate-fade-in">
+            <div className="inline-block mb-6">
+              <div className="liquid-badge-blue text-base px-5 py-2">
+                <svg className="w-4 h-4 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+                Powered by Modern Technology
+              </div>
+            </div>
+            <h1 className="text-6xl md:text-7xl font-bold text-gray-900 mb-6 tracking-apple-tight">
+              PDS Time Tracking
             </h1>
-            <p className="text-xl text-gray-600 mb-8">
+            <p className="text-xl md:text-2xl text-gray-600 mb-10 tracking-apple max-w-3xl mx-auto leading-relaxed">
               Secure, compliant employee time tracking and worker availability management
             </p>
-          </div>
 
-          {/* Login Button */}
-          <div className="text-center mb-8">
-            <Link href="/login" className="btn-primary inline-flex items-center gap-2 text-lg px-8 py-4">
+            {/* Login Button */}
+            <Link href="/login" className="liquid-btn-primary liquid-btn-lg inline-flex items-center gap-3 liquid-glow-blue">
               <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
               </svg>
@@ -220,46 +227,66 @@ export default function Home() {
           </button>
         </div>
 
-        <div className="grid md:grid-cols-2 gap-6 mb-12">
-          {/* PDS Vendor Division */}
-          <div className="card hover:shadow-lg transition-shadow">
-            <h2 className="text-2xl font-semibold text-gray-900 mb-3">
-              PDS Vendor
-            </h2>
-            <p className="text-gray-600 mb-4">
-              Primary staffing and event services division
-            </p>
-            <Link href="/vendor" className="btn-primary inline-block">
-              Access Portal
-            </Link>
-          </div>
-
-          {/* CWT Trailers Division */}
-          <div className="card hover:shadow-lg transition-shadow">
-            <h2 className="text-2xl font-semibold text-gray-900 mb-3">
-              CWT Trailers
-            </h2>
-            <p className="text-gray-600 mb-4">
-              Trailer rental division time tracking
-            </p>
-            <Link href="/trailers" className="btn-primary inline-block">
-              Access Portal
-            </Link>
-          </div>
-        </div>
-
         <div className="card bg-white">
           <h2 className="text-2xl font-semibold text-gray-900 mb-6">
             Quick Actions
           </h2>
           <div className="space-y-3">
-            <Link href="/register" className="block p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-              <h3 className="font-semibold text-gray-900">Complete Profile</h3>
-              <p className="text-sm text-gray-600">Update your personal information</p>
+            <Link href="/dashboard" className="block p-4 bg-blue-50 rounded-lg hover:bg-blue-100 transition-colors border border-blue-200">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="font-semibold text-gray-900">Events Dashboard</h3>
+                  <p className="text-sm text-gray-600">Manage events, invitations, and teams</p>
+                </div>
+              </div>
             </Link>
+
+            <Link href="/admin" className="block p-4 bg-purple-50 rounded-lg hover:bg-purple-100 transition-colors border border-purple-200">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="font-semibold text-gray-900">Admin Panel</h3>
+                  <p className="text-sm text-gray-600">Background checks, user creation, and system management</p>
+                </div>
+              </div>
+            </Link>
+
+            <Link href="/register" className="block p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="font-semibold text-gray-900">Complete Profile</h3>
+                  <p className="text-sm text-gray-600">Update your personal information</p>
+                </div>
+              </div>
+            </Link>
+
             <Link href="/mfa-setup" className="block p-4 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-              <h3 className="font-semibold text-gray-900">Security Settings</h3>
-              <p className="text-sm text-gray-600">Manage MFA and security options</p>
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+                  </svg>
+                </div>
+                <div className="ml-4">
+                  <h3 className="font-semibold text-gray-900">Security Settings</h3>
+                  <p className="text-sm text-gray-600">Manage MFA and security options</p>
+                </div>
+              </div>
             </Link>
           </div>
         </div>

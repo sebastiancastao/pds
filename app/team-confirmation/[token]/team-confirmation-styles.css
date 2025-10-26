@@ -1,0 +1,390 @@
+/* Team Confirmation Page - Apple Design Aesthetic */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+.confirmation-container {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Inter', 'Segoe UI', sans-serif;
+}
+
+.confirmation-card {
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.1);
+  max-width: 600px;
+  width: 100%;
+  padding: 48px;
+  animation: slideUp 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Header Section */
+.confirmation-header {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.invitation-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+  animation: bounceIn 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes bounceIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.3);
+  }
+  50% {
+    transform: scale(1.05);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.confirmation-title {
+  font-size: 32px;
+  font-weight: 700;
+  color: #1d1d1f;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.5px;
+}
+
+.confirmation-subtitle {
+  font-size: 18px;
+  color: #6b7280;
+  margin: 0;
+  font-weight: 500;
+}
+
+/* Vendor Greeting */
+.vendor-greeting {
+  margin-bottom: 32px;
+  line-height: 1.7;
+}
+
+.vendor-greeting p {
+  font-size: 17px;
+  color: #4b5563;
+  margin: 0 0 12px 0;
+}
+
+.vendor-greeting strong {
+  color: #1d1d1f;
+  font-weight: 600;
+}
+
+/* Event Details Card */
+.event-details-card {
+  background: linear-gradient(135deg, #f5f7fa 0%, #f0f2f5 100%);
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 28px;
+  margin-bottom: 28px;
+}
+
+.event-details-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #007AFF;
+  margin: 0 0 20px 0;
+  letter-spacing: -0.3px;
+}
+
+.event-details-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.event-detail-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.event-detail-row:last-child {
+  border-bottom: none;
+}
+
+.detail-label {
+  font-size: 15px;
+  color: #6b7280;
+  font-weight: 500;
+}
+
+.detail-value {
+  font-size: 16px;
+  color: #1d1d1f;
+  font-weight: 600;
+  text-align: right;
+}
+
+/* Confirmation Prompt */
+.confirmation-prompt {
+  margin-bottom: 32px;
+  padding: 20px;
+  background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%);
+  border: 1px solid #93c5fd;
+  border-radius: 12px;
+}
+
+.prompt-text {
+  font-size: 16px;
+  color: #1e40af;
+  margin: 0;
+  font-weight: 500;
+  text-align: center;
+}
+
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.apple-button {
+  width: 100%;
+  padding: 16px 32px;
+  font-size: 17px;
+  font-weight: 600;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  letter-spacing: -0.3px;
+}
+
+.apple-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.apple-button-confirm {
+  background: linear-gradient(180deg, #34C759 0%, #28A745 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(52, 199, 89, 0.4);
+}
+
+.apple-button-confirm:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(52, 199, 89, 0.5);
+}
+
+.apple-button-confirm:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.apple-button-decline {
+  background: #f3f4f6;
+  color: #4b5563;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+.apple-button-decline:hover:not(:disabled) {
+  background: #e5e7eb;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
+}
+
+.apple-button-decline:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.apple-button-primary {
+  background: linear-gradient(180deg, #007AFF 0%, #0051D5 100%);
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4);
+}
+
+.apple-button-primary:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 122, 255, 0.5);
+}
+
+.button-icon {
+  width: 20px;
+  height: 20px;
+  stroke-width: 2.5;
+}
+
+.button-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #ffffff;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Important Note */
+.important-note {
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border: 1px solid #fbbf24;
+  border-left: 4px solid #f59e0b;
+  border-radius: 12px;
+}
+
+.note-text {
+  font-size: 15px;
+  color: #92400e;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.note-text strong {
+  font-weight: 600;
+}
+
+/* Loading State */
+.loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #e5e7eb;
+  border-top-color: #007AFF;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin: 0 auto 20px;
+}
+
+.loading-text {
+  font-size: 17px;
+  color: #6b7280;
+  text-align: center;
+  margin: 0;
+  font-weight: 500;
+}
+
+/* Error State */
+.error-icon {
+  font-size: 64px;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.confirmation-message {
+  font-size: 17px;
+  color: #4b5563;
+  text-align: center;
+  margin: 0 0 28px 0;
+  line-height: 1.6;
+}
+
+/* Status Icons */
+.status-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 48px;
+  font-weight: bold;
+  margin: 0 auto 24px;
+  animation: scaleIn 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.status-icon.success {
+  background: linear-gradient(135deg, #34C759 0%, #28A745 100%);
+  color: #ffffff;
+}
+
+.status-icon.declined {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  color: #ffffff;
+}
+
+.redirect-message {
+  font-size: 15px;
+  color: #6b7280;
+  text-align: center;
+  margin: 16px 0 0 0;
+  font-style: italic;
+}
+
+/* Responsive Design */
+@media (max-width: 640px) {
+  .confirmation-card {
+    padding: 32px 24px;
+  }
+
+  .confirmation-title {
+    font-size: 28px;
+  }
+
+  .confirmation-subtitle {
+    font-size: 16px;
+  }
+
+  .invitation-icon {
+    font-size: 56px;
+  }
+
+  .event-details-card {
+    padding: 20px;
+  }
+
+  .event-detail-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .detail-value {
+    text-align: left;
+  }
+
+  .apple-button {
+    padding: 14px 24px;
+    font-size: 16px;
+  }
+}
+
+/* Smooth transitions for all interactive elements */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}

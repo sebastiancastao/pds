@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { AuthGuard } from '@/lib/auth-guard';
+import { supabase } from '@/lib/supabase';
 
 const US_STATES = [
   { value: '', label: 'Select State' },
@@ -80,6 +81,13 @@ const VALIDATION_PATTERNS = {
   phone: /^(\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})$/,
 };
 
+// Photo upload constants
+const PHOTO_UPLOAD_CONFIG = {
+  maxSize: 5 * 1024 * 1024, // 5MB
+  allowedTypes: ['image/jpeg', 'image/jpg', 'image/png'],
+  allowedExtensions: ['.jpg', '.jpeg', '.png'],
+};
+
 // Validation Error Messages
 const VALIDATION_MESSAGES = {
   firstName: {
@@ -107,6 +115,10 @@ const VALIDATION_MESSAGES = {
   zipCode: {
     invalid: 'ZIP code must be 5 digits or 5+4 format (e.g., 12345 or 12345-6789)',
   },
+  photo: {
+    invalid: 'Please upload a valid image file (JPG, PNG) under 5MB',
+    required: 'Profile photo is required for employee identification',
+  },
 };
 
 interface ValidationErrors {
@@ -117,6 +129,7 @@ interface ValidationErrors {
   city?: string;
   state?: string;
   zipCode?: string;
+  photo?: string;
 }
 
 export default function RegisterPage() {
@@ -129,12 +142,15 @@ export default function RegisterPage() {
     city: '',
     state: '',
     zipCode: '',
+    photo: null as File | null,
   });
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [photoPreview, setPhotoPreview] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   // Check if MFA verification code has been validated
   useEffect(() => {
@@ -200,6 +216,18 @@ export default function RegisterPage() {
       case 'zipCode':
         if (value && !VALIDATION_PATTERNS.zipCode.test(value)) return VALIDATION_MESSAGES.zipCode.invalid;
         break;
+      
+      case 'photo':
+        if (!value || !formData.photo) return VALIDATION_MESSAGES.photo.required;
+        if (formData.photo) {
+          if (!PHOTO_UPLOAD_CONFIG.allowedTypes.includes(formData.photo.type)) {
+            return VALIDATION_MESSAGES.photo.invalid;
+          }
+          if (formData.photo.size > PHOTO_UPLOAD_CONFIG.maxSize) {
+            return VALIDATION_MESSAGES.photo.invalid;
+          }
+        }
+        break;
     }
     
     return undefined;
@@ -212,9 +240,16 @@ export default function RegisterPage() {
     const errors: ValidationErrors = {};
     
     Object.keys(formData).forEach((key) => {
-      const error = validateField(key, formData[key as keyof typeof formData]);
-      if (error) {
-        errors[key as keyof ValidationErrors] = error;
+      if (key === 'photo') {
+        const error = validateField(key, formData.photo ? 'photo' : '');
+        if (error) {
+          errors[key as keyof ValidationErrors] = error;
+        }
+      } else {
+        const error = validateField(key, formData[key as keyof typeof formData] as string);
+        if (error) {
+          errors[key as keyof ValidationErrors] = error;
+        }
       }
     });
     
@@ -227,17 +262,12 @@ export default function RegisterPage() {
    */
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    
-    // Update form data
+    // Remove all state-based redirects from here
     setFormData((prev) => ({
       ...prev,
       [name]: value,
     }));
-    
-    // Clear general error
     setError('');
-    
-    // Validate field if it has been touched
     if (touchedFields.has(name)) {
       const fieldError = validateField(name, value);
       setValidationErrors((prev) => ({
@@ -265,14 +295,99 @@ export default function RegisterPage() {
   };
 
   /**
+   * Validate and process uploaded photo
+   */
+  const handlePhotoUpload = (file: File) => {
+    // Validate file type
+    if (!PHOTO_UPLOAD_CONFIG.allowedTypes.includes(file.type)) {
+      setError('Please upload a valid image file (JPG, PNG)');
+      return;
+    }
+
+    // Validate file size
+    if (file.size > PHOTO_UPLOAD_CONFIG.maxSize) {
+      setError('Image file must be smaller than 5MB');
+      return;
+    }
+
+    // Update form data
+    setFormData(prev => ({
+      ...prev,
+      photo: file,
+    }));
+
+    // Create preview
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      setPhotoPreview(e.target?.result as string);
+    };
+    reader.readAsDataURL(file);
+
+    // Clear any existing errors
+    setError('');
+    setValidationErrors(prev => ({
+      ...prev,
+      photo: undefined,
+    }));
+  };
+
+  /**
+   * Handle drag and drop events
+   */
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      handlePhotoUpload(files[0]);
+    }
+  };
+
+  /**
+   * Handle file input change
+   */
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      handlePhotoUpload(file);
+    }
+  };
+
+  /**
+   * Remove uploaded photo
+   */
+  const removePhoto = () => {
+    setFormData(prev => ({
+      ...prev,
+      photo: null,
+    }));
+    setPhotoPreview(null);
+    setValidationErrors(prev => ({
+      ...prev,
+      photo: undefined,
+    }));
+  };
+
+  /**
    * Handle form submission
    */
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     
-    // Mark all fields as touched
-    setTouchedFields(new Set(Object.keys(formData)));
+    // Mark all fields as touched (including photo)
+    setTouchedFields(new Set([...Object.keys(formData), 'photo']));
     
     // Validate all fields
     if (!validateAllFields()) {
@@ -282,14 +397,64 @@ export default function RegisterPage() {
     
     setIsLoading(true);
 
-    // Simulate API call
-    setTimeout(() => {
+    try {
+      // Prepare form data for API call
+      const apiFormData = new FormData();
+      
+      // Add the photo file
+      if (formData.photo) {
+        apiFormData.append('photo', formData.photo);
+      }
+      
+      // Add profile data as JSON string
+      const profileData = {
+        firstName: formData.firstName,
+        lastName: formData.lastName,
+        email: formData.email,
+        address: formData.address,
+        city: formData.city,
+        state: formData.state,
+        zipCode: formData.zipCode,
+      };
+      apiFormData.append('profileData', JSON.stringify(profileData));
+
+      // Get current access token (works with cookie auth fallback server-side)
+      const { data: { session } } = await supabase.auth.getSession();
+      const accessToken = session?.access_token;
+
+      // Call the API endpoint (send cookies and bearer token)
+      const response = await fetch('/api/profile/upload-photo', {
+        method: 'POST',
+        body: apiFormData,
+        credentials: 'include',
+        headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined,
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to upload profile data');
+      }
+
       setIsLoading(false);
       setSuccess(true);
-      console.log('Registration data:', formData);
-      // In production, this would handle the actual onboarding process
-      // including secure storage of PII data with AES-256 encryption
-    }, 2000);
+      
+      console.log('Registration successful:', {
+        profileId: result.profileId,
+        photoUploaded: result.photoUploaded,
+        redirectPath: result.redirectPath
+      });
+
+      // Redirect to appropriate payroll packet page
+      setTimeout(() => {
+        router.push(result.redirectPath || '/dashboard');
+      }, 1500);
+
+    } catch (error) {
+      console.error('Registration error:', error);
+      setIsLoading(false);
+      setError(error instanceof Error ? error.message : 'Failed to submit registration. Please try again.');
+    }
   };
 
   if (success) {
@@ -504,6 +669,109 @@ export default function RegisterPage() {
                 )}
               </div>
 
+              {/* Photo Upload */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Profile Photo <span className="text-red-500">*</span>
+                </label>
+                
+                {!photoPreview ? (
+                  <div
+                    className={`relative border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                      isDragOver
+                        ? 'border-primary-500 bg-primary-50'
+                        : validationErrors.photo
+                        ? 'border-red-500 bg-red-50'
+                        : 'border-gray-300 hover:border-primary-400'
+                    }`}
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    <input
+                      type="file"
+                      id="photo"
+                      name="photo"
+                      accept="image/jpeg,image/jpg,image/png"
+                      onChange={handleFileInputChange}
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                      required
+                    />
+                    
+                    <div className="space-y-3">
+                      <div className="mx-auto w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center">
+                        <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      
+                      <div>
+                        <p className="text-sm font-medium text-gray-900">
+                          {isDragOver ? 'Drop your photo here' : 'Click to upload or drag and drop'}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-1">
+                          PNG, JPG up to 5MB
+                        </p>
+                      </div>
+                      
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-2 text-primary-600 hover:text-primary-700 text-sm font-medium"
+                        onClick={() => document.getElementById('photo')?.click()}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                        </svg>
+                        Choose File
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <div className="w-full h-48 bg-gray-100 rounded-lg overflow-hidden border border-gray-300">
+                      <img
+                        src={photoPreview}
+                        alt="Profile preview"
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                    
+                    <button
+                      type="button"
+                      onClick={removePhoto}
+                      className="absolute top-2 right-2 w-8 h-8 bg-red-500 text-white rounded-full flex items-center justify-center hover:bg-red-600 transition-colors"
+                      title="Remove photo"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                    
+                    <div className="mt-2 flex items-center justify-between">
+                      <span className="text-sm text-gray-600">
+                        {formData.photo?.name} ({(formData.photo?.size! / 1024 / 1024).toFixed(1)}MB)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('photo')?.click()}
+                        className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+                      >
+                        Change Photo
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                {validationErrors.photo && (
+                  <p className="mt-1 text-sm text-red-600 flex items-center gap-1">
+                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    {validationErrors.photo}
+                  </p>
+                )}
+              </div>
+
               {/* Address */}
               <div>
                 <label htmlFor="address" className="block text-sm font-medium text-gray-700 mb-2">
@@ -637,7 +905,7 @@ export default function RegisterPage() {
                 </svg>
                 <div className="text-xs text-blue-800">
                   <p className="font-medium">Your privacy is protected</p>
-                  <p>All information is encrypted with AES-256 and stored securely in compliance with SOC2, FLSA, and state regulations.</p>
+                  <p>All information including your profile photo is encrypted with AES-256 and stored securely in our database in compliance with SOC2, FLSA, and state regulations.</p>
                 </div>
               </div>
 

@@ -46,6 +46,23 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Validate code format based on type
+    if (isBackupCode) {
+      if (!/^[A-Z0-9]{8}$/.test(code)) {
+        return NextResponse.json(
+          { error: 'Backup code must be 8 alphanumeric characters' },
+          { status: 400 }
+        );
+      }
+    } else {
+      if (!/^\d{6}$/.test(code)) {
+        return NextResponse.json(
+          { error: 'TOTP code must be 6 digits' },
+          { status: 400 }
+        );
+      }
+    }
+
     // Create Supabase client
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
     const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
@@ -224,6 +241,11 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+
+
+
+
 
 
 
