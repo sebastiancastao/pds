@@ -16,12 +16,12 @@ export default function Home() {
 
   const checkAuthAndMFA = async () => {
     console.log('[DEBUG] Home - Checking authentication and MFA status...');
-    
+
     const { data: { user } } = await supabase.auth.getUser();
-    
+
     if (!user) {
-      console.log('[DEBUG] Home - No user found, showing public home page');
-      setIsLoading(false);
+      console.log('[DEBUG] Home - No user found, redirecting to login');
+      router.push('/login');
       return;
     }
 
@@ -70,168 +70,6 @@ export default function Home() {
         <div className="liquid-card-compact p-8 animate-scale-in">
           <div className="animate-spin rounded-full h-16 w-16 border-4 border-transparent border-t-ios-blue mx-auto mb-4"></div>
           <p className="text-gray-700 font-medium text-center tracking-apple">Loading...</p>
-        </div>
-      </main>
-    );
-  }
-
-  if (!user) {
-    // Show public home page for non-authenticated users
-    return (
-      <main className="min-h-screen flex items-center justify-center px-4 py-12">
-        <div className="max-w-5xl mx-auto w-full">
-          {/* Hero Section */}
-          <div className="text-center mb-16 animate-fade-in">
-            <div className="inline-block mb-6">
-              <div className="liquid-badge-blue text-base px-5 py-2">
-                <svg className="w-4 h-4 inline mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                </svg>
-                Powered by Modern Technology
-              </div>
-            </div>
-            <h1 className="text-6xl md:text-7xl font-bold text-gray-900 mb-6 tracking-apple-tight">
-              PDS Time Tracking
-            </h1>
-            <p className="text-xl md:text-2xl text-gray-600 mb-10 tracking-apple max-w-3xl mx-auto leading-relaxed">
-              Secure, compliant employee time tracking and worker availability management
-            </p>
-
-            {/* Login Button */}
-            <Link href="/login" className="liquid-btn-primary liquid-btn-lg inline-flex items-center gap-3 liquid-glow-blue">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
-              </svg>
-              Secure Login
-            </Link>
-          </div>
-
-          {/* Division Cards */}
-          <div className="grid md:grid-cols-2 gap-6 mb-12 animate-slide-up">
-            {/* PDS Vendor Division */}
-            <Link href="/vendor" className="liquid-card-blue p-8 group cursor-pointer">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0">
-                  <div className="w-14 h-14 rounded-liquid bg-gradient-to-br from-ios-blue to-ios-indigo flex items-center justify-center shadow-liquid-glow">
-                    <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2 tracking-apple">
-                    PDS Vendor
-                  </h2>
-                  <p className="text-gray-600 mb-4 leading-relaxed">
-                    Primary staffing and event services division
-                  </p>
-                  <div className="flex items-center text-ios-blue font-semibold text-sm group-hover:gap-2 gap-1 transition-all">
-                    Access Portal
-                    <svg className="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </div>
-              </div>
-            </Link>
-
-            {/* CWT Trailers Division */}
-            <Link href="/trailers" className="liquid-card-purple p-8 group cursor-pointer">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0">
-                  <div className="w-14 h-14 rounded-liquid bg-gradient-to-br from-ios-purple to-ios-pink flex items-center justify-center shadow-liquid-glow-purple">
-                    <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
-                    </svg>
-                  </div>
-                </div>
-                <div className="flex-1">
-                  <h2 className="text-2xl font-bold text-gray-900 mb-2 tracking-apple">
-                    CWT Trailers
-                  </h2>
-                  <p className="text-gray-600 mb-4 leading-relaxed">
-                    Trailer rental division time tracking
-                  </p>
-                  <div className="flex items-center text-ios-purple font-semibold text-sm group-hover:gap-2 gap-1 transition-all">
-                    Access Portal
-                    <svg className="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </div>
-                </div>
-              </div>
-            </Link>
-          </div>
-
-          {/* System Features */}
-          <div className="liquid-card-spacious mb-12 animate-slide-up" style={{ animationDelay: '0.1s' }}>
-            <h2 className="text-3xl font-bold text-gray-900 mb-8 tracking-apple text-center">
-              System Features
-            </h2>
-            <div className="grid md:grid-cols-2 gap-8">
-              <div className="space-y-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-12 h-12 rounded-liquid bg-gradient-to-br from-liquid-blue-400 to-liquid-blue-600 flex items-center justify-center shadow-liquid">
-                      <span className="text-white font-bold text-lg">1</span>
-                    </div>
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-lg mb-1 tracking-apple">Onboarding & Time Tracking</h3>
-                    <p className="text-gray-600 leading-relaxed">Secure employee onboarding with QR/PIN clock in/out</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-12 h-12 rounded-liquid bg-gradient-to-br from-liquid-purple-400 to-liquid-purple-600 flex items-center justify-center shadow-liquid">
-                      <span className="text-white font-bold text-lg">2</span>
-                    </div>
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-lg mb-1 tracking-apple">Event Staffing</h3>
-                    <p className="text-gray-600 leading-relaxed">Create events and manage staff assignments</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-6">
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-12 h-12 rounded-liquid bg-gradient-to-br from-ios-teal to-ios-blue flex items-center justify-center shadow-liquid">
-                      <span className="text-white font-bold text-lg">3</span>
-                    </div>
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-lg mb-1 tracking-apple">Global Calendar</h3>
-                    <p className="text-gray-600 leading-relaxed">Real-time scheduling visibility across all venues</p>
-                  </div>
-                </div>
-
-                <div className="flex items-start gap-4">
-                  <div className="flex-shrink-0">
-                    <div className="w-12 h-12 rounded-liquid bg-gradient-to-br from-ios-orange to-ios-yellow flex items-center justify-center shadow-liquid">
-                      <span className="text-white font-bold text-lg">4</span>
-                    </div>
-                  </div>
-                  <div>
-                    <h3 className="font-bold text-gray-900 text-lg mb-1 tracking-apple">Payroll Closeout</h3>
-                    <p className="text-gray-600 leading-relaxed">Automated payroll calculations with ADP integration</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Security Badge */}
-          <div className="text-center animate-fade-in" style={{ animationDelay: '0.2s' }}>
-            <div className="liquid-badge-green text-base px-6 py-3 inline-flex items-center gap-3">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-              </svg>
-              <span className="font-semibold">SOC2 Compliant • FLSA Certified • PII Encrypted</span>
-            </div>
-          </div>
         </div>
       </main>
     );
