@@ -280,11 +280,11 @@ export default function LoginPage() {
       });
 
       // Step 5: Re-fetch user data
-      const { data: currentUserData, error: fetchError } = await supabase
+      const { data: currentUserData, error: fetchError } = await (supabase
         .from('users')
         .select('is_temporary_password')
         .eq('id', authData.user.id)
-        .single();
+        .single() as Promise<{ data: { is_temporary_password?: boolean } | null; error: any }>);
 
       if (fetchError) console.error('DEBUG Error fetching user:', fetchError);
 
