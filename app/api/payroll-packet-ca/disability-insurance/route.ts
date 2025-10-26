@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, rgb, PDFName, PDFString, StandardFonts } from 'pdf-lib';
+import { PDFDocument, rgb, PDFName, PDFString, StandardFonts, PDFArray } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -15,10 +15,7 @@ export async function GET() {
     const helveticaRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     // Draw back button
-    const backButtonX = 50;
-    const backButtonY = 100;
-    const backButtonWidth = 100;
-    const backButtonHeight = 32;
+    const backButtonX = 50, backButtonY = 100, backButtonWidth = 100, backButtonHeight = 32;
     lastPage.drawRectangle({ x: backButtonX, y: backButtonY - 2, width: backButtonWidth, height: backButtonHeight, color: rgb(0, 0, 0), opacity: 0.1 });
     lastPage.drawRectangle({ x: backButtonX, y: backButtonY, width: backButtonWidth, height: backButtonHeight, color: rgb(0.5, 0.5, 0.5), borderColor: rgb(0.4, 0.4, 0.4), borderWidth: 1 });
     lastPage.drawText('<< Back', { x: backButtonX + 18, y: backButtonY + 12, size: 10, color: rgb(1, 1, 1), font: helveticaFont });
@@ -34,10 +31,7 @@ export async function GET() {
     });
 
     // Draw continue button
-    const continueButtonX = lastPageSize.width - 150;
-    const continueButtonY = 100;
-    const continueButtonWidth = 120;
-    const continueButtonHeight = 32;
+    const continueButtonX = lastPageSize.width - 150, continueButtonY = 100, continueButtonWidth = 120, continueButtonHeight = 32;
     lastPage.drawText('(Save this form before clicking)', { x: continueButtonX - 12, y: continueButtonY + continueButtonHeight + 12, size: 8, color: rgb(0.4, 0.4, 0.4), font: helveticaRegular });
     lastPage.drawRectangle({ x: continueButtonX, y: continueButtonY - 2, width: continueButtonWidth, height: continueButtonHeight, color: rgb(0, 0, 0), opacity: 0.1 });
     lastPage.drawRectangle({ x: continueButtonX, y: continueButtonY, width: continueButtonWidth, height: continueButtonHeight, color: rgb(0.25, 0.53, 0.96), borderColor: rgb(0.2, 0.45, 0.85), borderWidth: 1 });
@@ -56,8 +50,7 @@ export async function GET() {
 
     // Get or create the Annots array
     let annotsArray = lastPage.node.get(PDFName.of('Annots'));
-    if (annotsArray) {
-      annotsArray = annotsArray.asArray(); // Ensure it's an array
+    if (annotsArray instanceof PDFArray) {
       annotsArray.push(pdfDoc.context.register(backLinkAnnot));
       annotsArray.push(pdfDoc.context.register(continueLinkAnnot));
     } else {
