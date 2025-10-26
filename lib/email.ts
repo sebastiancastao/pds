@@ -57,7 +57,7 @@ export async function sendTemporaryPasswordEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <onboarding@resend.dev>', // Update this to your domain after verification
+      from: 'PDS Time Tracking <sebastian@luna-lab.pro>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -378,7 +378,7 @@ export async function sendInviteEmail(data: {
   // Send invite email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <onboarding@resend.dev>', // Update this to your domain after verification
+      from: 'PDS Time Tracking <sebastian@luna-lab.pro>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -561,7 +561,7 @@ export async function sendMFAVerificationEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <onboarding@resend.dev>',
+      from: 'PDS Time Tracking <sebastian@luna-lab.pro>',
       to: email,
       subject: emailSubject,
       html: emailBody,

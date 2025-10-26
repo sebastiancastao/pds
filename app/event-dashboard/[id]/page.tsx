@@ -63,6 +63,7 @@ export default function EventDashboardPage() {
   const [ticketCount, setTicketCount] = useState<string>("");
   const [commissionPool, setCommissionPool] = useState<string>("");
   const [taxRate, setTaxRate] = useState<string>("0"); // %
+  const [tips, setTips] = useState<string>("");
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
   const [merchandiseValue, setMerchandiseValue] = useState<string>("");
 
@@ -169,6 +170,7 @@ export default function EventDashboardPage() {
         setTicketCount(eventData.ticket_count?.toString() || "");
         setCommissionPool(eventData.commission_pool?.toString() || "");
         setTaxRate((eventData.tax_rate_percent ?? 0).toString());
+        setTips((eventData as any).tips?.toString() || "");
         setMerchandiseUnits(eventData.merchandise_units?.toString() || "");
         setMerchandiseValue(eventData.merchandise_value?.toString() || "");
       } else {
@@ -292,7 +294,8 @@ export default function EventDashboardPage() {
           ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
           ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
           commission_pool: commissionPool !== "" ? Number(commissionPool) : null,
-          tax_rate_percent: taxRate !== "" ? Number(taxRate) : 0
+          tax_rate_percent: taxRate !== "" ? Number(taxRate) : 0,
+          tips: tips !== "" ? Number(tips) : null
         })
       });
 
@@ -713,7 +716,7 @@ export default function EventDashboardPage() {
                       placeholder="0.00"
                       step="0.01"
                       min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
+                      className="liquid-input w-full p-3 text-lg"
                     />
                   </div>
 
@@ -725,7 +728,7 @@ export default function EventDashboardPage() {
                       onChange={(e) => setTicketCount(e.target.value)}
                       placeholder="0"
                       min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
+                      className="liquid-input w-full p-3 text-lg"
                     />
                   </div>
 
@@ -739,7 +742,20 @@ export default function EventDashboardPage() {
                       step="0.01"
                       min="0"
                       max="100"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
+                      className="liquid-input w-full p-3 text-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="font-semibold block mb-2">Tips ($)</label>
+                    <input
+                      type="number"
+                      value={tips}
+                      onChange={(e) => setTips(e.target.value)}
+                      placeholder="0.00"
+                      step="0.01"
+                      min="0"
+                      className="liquid-input w-full p-3 text-lg"
                     />
                   </div>
 
@@ -752,7 +768,7 @@ export default function EventDashboardPage() {
                       placeholder="0.00"
                       step="0.01"
                       min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
+                      className="liquid-input w-full p-3 text-lg"
                     />
                   </div>
                 </div>
@@ -760,7 +776,7 @@ export default function EventDashboardPage() {
                 <button
                   onClick={handleSaveSales}
                   disabled={submitting}
-                  className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded transition disabled:bg-gray-400"
+                  className="liquid-btn-primary mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {submitting ? "Saving..." : "Save Sales Data"}
                 </button>
@@ -773,32 +789,64 @@ export default function EventDashboardPage() {
                   {/* Sales Summary */}
                   <div>
                     <h3 className="text-xl font-semibold mb-4">Sales Summary</h3>
-                    <div className="bg-blue-50 rounded-lg p-4 space-y-3 mb-4">
+                    <div className="liquid-card-blue p-6 space-y-4 mb-4">
                       <div className="flex justify-between items-center">
-                        <span className="font-medium">Gross Sales</span>
-                        <span className="text-lg font-bold">${shares.grossSales.toFixed(2)}</span>
+                        <span className="font-semibold text-gray-900">Gross Sales</span>
+                        <span className="text-xl font-bold text-gray-900">${shares.grossSales.toFixed(2)}</span>
                       </div>
 
-                      <div className="flex justify-between items-center text-red-600">
-                        <span className="font-medium">Tax ({shares.taxPct}%)</span>
-                        <span className="text-lg font-bold">-${shares.tax.toFixed(2)}</span>
-                      </div>
-
-                      <hr className="my-2 border-blue-200" />
-
-                      <div className="flex justify-between items-center text-lg">
-                        <span className="font-bold">Net Sales</span>
-                        <span className="font-bold text-blue-600">${shares.netSales.toFixed(2)}</span>
-                      </div>
-
-                      {ticketCount && Number(ticketCount) > 0 && (
-                        <div className="flex justify-between items-center text-green-700 bg-green-50 p-2 rounded mt-2">
-                          <span className="font-medium">Value per Person</span>
-                          <span className="text-lg font-bold">${(shares.grossSales / Number(ticketCount)).toFixed(2)}</span>
+                      {tips && Number(tips) > 0 && (
+                        <div className="flex justify-between items-center text-ios-green">
+                          <span className="font-semibold">Tips</span>
+                          <span className="text-xl font-bold">+${Number(tips).toFixed(2)}</span>
                         </div>
                       )}
+
+                      <div className="flex justify-between items-center text-red-600">
+                        <span className="font-semibold">Tax ({shares.taxPct}%)</span>
+                        <span className="text-xl font-bold">-${shares.tax.toFixed(2)}</span>
+                      </div>
+
+                      <hr className="my-2 border-gray-200" />
+
+                      <div className="flex justify-between items-center text-xl">
+                        <span className="font-bold text-gray-900">Net Sales</span>
+                        <span className="font-bold text-ios-blue">${shares.netSales.toFixed(2)}</span>
+                      </div>
                     </div>
                   </div>
+
+                  {/* Per Person Metrics */}
+                  {ticketCount && Number(ticketCount) > 0 && (
+                    <div>
+                      <h3 className="text-xl font-semibold mb-4">Per Person Metrics</h3>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div className="liquid-card-compact p-6 text-center">
+                          <div className="text-sm font-semibold text-gray-600 mb-2">$/Head (Total)</div>
+                          <div className="text-3xl font-bold text-ios-blue tracking-apple-tight">
+                            ${((shares.grossSales + (Number(tips) || 0)) / Number(ticketCount)).toFixed(2)}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">Includes tax & tips</div>
+                        </div>
+
+                        <div className="liquid-card-compact p-6 text-center">
+                          <div className="text-sm font-semibold text-gray-600 mb-2">Avg $ (Gross)</div>
+                          <div className="text-3xl font-bold text-ios-purple tracking-apple-tight">
+                            ${(shares.grossSales / Number(ticketCount)).toFixed(2)}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">Before tax</div>
+                        </div>
+
+                        <div className="liquid-card-compact p-6 text-center">
+                          <div className="text-sm font-semibold text-gray-600 mb-2">Avg $ w/o Tax</div>
+                          <div className="text-3xl font-bold text-ios-teal tracking-apple-tight">
+                            ${(shares.netSales / Number(ticketCount)).toFixed(2)}
+                          </div>
+                          <div className="text-xs text-gray-500 mt-1">After tax removed</div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Revenue Split from Net Sales */}
                   <div>
