@@ -32,6 +32,7 @@ body {
   background-attachment: fixed;
   min-height: 100vh;
   overflow-x: hidden;
+  color: #111827;
 }
 
 /* Animated Mesh Background */
@@ -61,11 +62,11 @@ body::before {
 
   .liquid-card {
     @apply relative overflow-hidden rounded-liquid-lg;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.1);
     transition: all 0.4s var(--ease-spring);
   }
 
@@ -90,21 +91,21 @@ body::before {
   /* Liquid Card with Blue Accent */
   .liquid-card-blue {
     @apply liquid-card;
-    background: linear-gradient(135deg, rgba(240, 249, 255, 0.85) 0%, rgba(224, 242, 254, 0.85) 100%);
+    background: linear-gradient(135deg, rgba(240, 249, 255, 0.95) 0%, rgba(224, 242, 254, 0.95) 100%);
   }
 
   .liquid-card-blue:hover {
-    box-shadow: 0 12px 48px 0 rgba(14, 165, 233, 0.2);
+    box-shadow: 0 12px 48px 0 rgba(14, 165, 233, 0.25);
   }
 
   /* Liquid Card with Purple Accent */
   .liquid-card-purple {
     @apply liquid-card;
-    background: linear-gradient(135deg, rgba(250, 245, 255, 0.85) 0%, rgba(233, 213, 255, 0.85) 100%);
+    background: linear-gradient(135deg, rgba(250, 245, 255, 0.95) 0%, rgba(233, 213, 255, 0.95) 100%);
   }
 
   .liquid-card-purple:hover {
-    box-shadow: 0 12px 48px 0 rgba(168, 85, 247, 0.2);
+    box-shadow: 0 12px 48px 0 rgba(168, 85, 247, 0.25);
   }
 
   /* ============================================
@@ -139,32 +140,33 @@ body::before {
 
   .liquid-btn-secondary {
     @apply liquid-btn;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
-    color: #1f2937;
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #111827;
+    border: 1px solid rgba(0, 0, 0, 0.15);
     box-shadow: 0 4px 16px 0 rgba(31, 38, 135, 0.08);
   }
 
   .liquid-btn-secondary:hover {
     transform: translateY(-2px);
-    background: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.95);
     box-shadow: 0 8px 24px 0 rgba(31, 38, 135, 0.12);
+    border-color: rgba(0, 0, 0, 0.2);
   }
 
   .liquid-btn-glass {
     @apply liquid-btn;
-    background: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.7);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    color: #1f2937;
-    border: 1px solid rgba(255, 255, 255, 0.4);
+    color: #111827;
+    border: 1px solid rgba(0, 0, 0, 0.15);
   }
 
   .liquid-btn-glass:hover {
-    background: rgba(255, 255, 255, 0.65);
-    border-color: rgba(255, 255, 255, 0.5);
+    background: rgba(255, 255, 255, 0.85);
+    border-color: rgba(0, 0, 0, 0.2);
   }
 
   .liquid-btn-danger {
@@ -193,11 +195,11 @@ body::before {
 
   .liquid-input {
     @apply w-full px-4 py-3 rounded-liquid;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    color: #1f2937;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    color: #111827;
     font-size: 1rem;
     transition: all 0.3s var(--ease-spring);
     letter-spacing: -0.01em;
@@ -206,12 +208,12 @@ body::before {
   .liquid-input:focus {
     outline: none;
     border-color: #007AFF;
-    box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.1);
-    background: rgba(255, 255, 255, 0.85);
+    box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.15);
+    background: rgba(255, 255, 255, 0.95);
   }
 
   .liquid-input::placeholder {
-    color: rgba(31, 41, 55, 0.5);
+    color: rgba(31, 41, 55, 0.6);
   }
 
   .liquid-select {
@@ -232,9 +234,9 @@ body::before {
   .liquid-checkbox {
     @apply w-5 h-5 rounded-lg;
     appearance: none;
-    background: rgba(255, 255, 255, 0.7);
+    background: rgba(255, 255, 255, 0.85);
     backdrop-filter: blur(16px);
-    border: 2px solid rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(0, 0, 0, 0.2);
     cursor: pointer;
     transition: all 0.3s var(--ease-spring);
   }
@@ -249,7 +251,7 @@ body::before {
 
   .liquid-label {
     @apply block text-sm font-semibold mb-2;
-    color: #374151;
+    color: #1f2937;
     letter-spacing: -0.01em;
   }
 
@@ -266,37 +268,37 @@ body::before {
 
   .liquid-badge-blue {
     @apply liquid-badge;
-    background: rgba(14, 165, 233, 0.15);
-    color: #0369a1;
-    border: 1px solid rgba(14, 165, 233, 0.3);
+    background: rgba(14, 165, 233, 0.2);
+    color: #075985;
+    border: 1px solid rgba(14, 165, 233, 0.4);
   }
 
   .liquid-badge-purple {
     @apply liquid-badge;
-    background: rgba(168, 85, 247, 0.15);
-    color: #7c3aed;
-    border: 1px solid rgba(168, 85, 247, 0.3);
+    background: rgba(168, 85, 247, 0.2);
+    color: #6b21a8;
+    border: 1px solid rgba(168, 85, 247, 0.4);
   }
 
   .liquid-badge-green {
     @apply liquid-badge;
-    background: rgba(52, 199, 89, 0.15);
-    color: #15803d;
-    border: 1px solid rgba(52, 199, 89, 0.3);
+    background: rgba(52, 199, 89, 0.2);
+    color: #14532d;
+    border: 1px solid rgba(52, 199, 89, 0.4);
   }
 
   .liquid-badge-red {
     @apply liquid-badge;
-    background: rgba(255, 59, 48, 0.15);
-    color: #dc2626;
-    border: 1px solid rgba(255, 59, 48, 0.3);
+    background: rgba(255, 59, 48, 0.2);
+    color: #991b1b;
+    border: 1px solid rgba(255, 59, 48, 0.4);
   }
 
   .liquid-badge-orange {
     @apply liquid-badge;
-    background: rgba(255, 149, 0, 0.15);
-    color: #c2410c;
-    border: 1px solid rgba(255, 149, 0, 0.3);
+    background: rgba(255, 149, 0, 0.2);
+    color: #9a3412;
+    border: 1px solid rgba(255, 149, 0, 0.4);
   }
 
   /* ============================================
@@ -314,17 +316,18 @@ body::before {
   .liquid-modal {
     @apply relative w-full max-w-2xl max-h-[90vh] overflow-hidden;
     @apply rounded-liquid-xl;
-    background: rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.95);
     backdrop-filter: blur(40px);
     -webkit-backdrop-filter: blur(40px);
-    border: 1px solid rgba(255, 255, 255, 0.4);
-    box-shadow: 0 20px 60px 0 rgba(31, 38, 135, 0.15);
+    border: 1px solid rgba(0, 0, 0, 0.1);
+    box-shadow: 0 20px 60px 0 rgba(31, 38, 135, 0.2);
     animation: scaleIn 0.3s var(--ease-spring);
+    color: #111827;
   }
 
   .liquid-modal-header {
     @apply px-8 py-6 border-b;
-    border-color: rgba(255, 255, 255, 0.3);
+    border-color: rgba(0, 0, 0, 0.08);
   }
 
   .liquid-modal-body {
@@ -334,7 +337,7 @@ body::before {
 
   .liquid-modal-footer {
     @apply px-8 py-6 border-t;
-    border-color: rgba(255, 255, 255, 0.3);
+    border-color: rgba(0, 0, 0, 0.08);
   }
 
   /* ============================================
@@ -351,30 +354,30 @@ body::before {
 
   .liquid-alert-success {
     @apply liquid-alert;
-    background: rgba(52, 199, 89, 0.15);
-    border-color: rgba(52, 199, 89, 0.3);
-    color: #15803d;
+    background: rgba(52, 199, 89, 0.2);
+    border-color: rgba(52, 199, 89, 0.4);
+    color: #14532d;
   }
 
   .liquid-alert-error {
     @apply liquid-alert;
-    background: rgba(255, 59, 48, 0.15);
-    border-color: rgba(255, 59, 48, 0.3);
-    color: #dc2626;
+    background: rgba(255, 59, 48, 0.2);
+    border-color: rgba(255, 59, 48, 0.4);
+    color: #991b1b;
   }
 
   .liquid-alert-info {
     @apply liquid-alert;
-    background: rgba(14, 165, 233, 0.15);
-    border-color: rgba(14, 165, 233, 0.3);
-    color: #0369a1;
+    background: rgba(14, 165, 233, 0.2);
+    border-color: rgba(14, 165, 233, 0.4);
+    color: #075985;
   }
 
   .liquid-alert-warning {
     @apply liquid-alert;
-    background: rgba(255, 149, 0, 0.15);
-    border-color: rgba(255, 149, 0, 0.3);
-    color: #c2410c;
+    background: rgba(255, 149, 0, 0.2);
+    border-color: rgba(255, 149, 0, 0.4);
+    color: #9a3412;
   }
 
   /* ============================================
@@ -395,8 +398,8 @@ body::before {
     @apply my-6 h-px;
     background: linear-gradient(90deg,
       transparent 0%,
-      rgba(255, 255, 255, 0.3) 20%,
-      rgba(255, 255, 255, 0.3) 80%,
+      rgba(0, 0, 0, 0.1) 20%,
+      rgba(0, 0, 0, 0.1) 80%,
       transparent 100%
     );
   }
@@ -430,17 +433,30 @@ body::before {
   }
 
   .liquid-scrollbar::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(0, 0, 0, 0.05);
     border-radius: 10px;
   }
 
   .liquid-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(0, 122, 255, 0.3);
+    background: rgba(0, 122, 255, 0.4);
     border-radius: 10px;
   }
 
   .liquid-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(0, 122, 255, 0.5);
+    background: rgba(0, 122, 255, 0.6);
+  }
+
+  /* High Contrast Text Utilities */
+  .text-contrast-high {
+    color: #111827;
+  }
+
+  .text-contrast-medium {
+    color: #374151;
+  }
+
+  .text-contrast-low {
+    color: #6b7280;
   }
 
   /* ============================================

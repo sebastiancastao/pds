@@ -54,7 +54,7 @@ export async function GET() {
       annotsArray.push(pdfDoc.context.register(backLinkAnnot));
       annotsArray.push(pdfDoc.context.register(continueLinkAnnot));
     } else {
-      annotsArray = pdfDoc.context.array();
+      annotsArray = PDFArray.withContext(pdfDoc.context);
       annotsArray.push(pdfDoc.context.register(backLinkAnnot));
       annotsArray.push(pdfDoc.context.register(continueLinkAnnot));
       lastPage.node.set(PDFName.of('Annots'), annotsArray);
