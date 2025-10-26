@@ -7,7 +7,8 @@
       "Bash(do sed -i \"s/if (annotsArray)/if (annotsArray instanceof PDFArray)/g\" \"$file/route.ts\")",
       "Bash(done)",
       "Bash(do sed -i \"s/from ''pdf-lib'';/, PDFArray } from ''pdf-lib'';/g\" \"$file/route.ts\")",
-      "Bash(do sed -i \"s/StandardFonts } , PDFArray }/StandardFonts, PDFArray }/g\" \"$file/route.ts\")"
+      "Bash(do sed -i \"s/StandardFonts } , PDFArray }/StandardFonts, PDFArray }/g\" \"$file/route.ts\")",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []

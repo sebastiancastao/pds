@@ -284,7 +284,7 @@ export default function LoginPage() {
         .from('users')
         .select('is_temporary_password')
         .eq('id', authData.user.id)
-        .single() as Promise<{ data: { is_temporary_password?: boolean } | null; error: any }>);
+        .single() as any);
 
       if (fetchError) console.error('DEBUG Error fetching user:', fetchError);
 
@@ -319,20 +319,20 @@ export default function LoginPage() {
       // === MFA CHECK: 1:1 PROFILE WITH .single() ===
       console.log('MFA [DEBUG] Checking MFA status for user:', authData.user.id);
 
-      let mfaProfile;
+      let mfaProfile: { mfa_secret?: string | null; mfa_enabled?: boolean } | null;
       try {
-        const { data, error } = await supabase
+        const { data, error } = await (supabase
           .from('profiles')
           .select('mfa_secret, mfa_enabled')
           .eq('user_id', authData.user.id)
-          .single(); // Enforces exactly one row
+          .single() as any); // Enforces exactly one row
 
         if (error) throw error;
         mfaProfile = data;
 
         console.log('MFA [DEBUG] Profile fetched:', {
-          hasSecret: !!mfaProfile.mfa_secret,
-          mfaEnabled: mfaProfile.mfa_enabled,
+          hasSecret: !!mfaProfile?.mfa_secret,
+          mfaEnabled: mfaProfile?.mfa_enabled,
         });
       } catch (error: any) {
         console.error('MFA [ERROR] Failed to fetch profile:', error.message);
@@ -346,7 +346,7 @@ export default function LoginPage() {
       }
 
       // Require BOTH secret AND enabled
-      if (!mfaProfile.mfa_secret || !mfaProfile.mfa_enabled) {
+      if (!mfaProfile?.mfa_secret || !mfaProfile?.mfa_enabled) {
         console.log('MFA [INFO] MFA not fully enabled → /mfa-setup');
         router.replace('/verify-mfa');
       } else {
