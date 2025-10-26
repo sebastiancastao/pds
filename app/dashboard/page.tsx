@@ -44,6 +44,7 @@ type Vendor = {
     state: string;
     latitude: number;
     longitude: number;
+    profile_photo_url?: string | null;
   };
 };
 
