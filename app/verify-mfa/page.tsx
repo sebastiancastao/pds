@@ -359,10 +359,10 @@ function VerifyMFAContent() {
                     setCode('');
                     setError('');
                   }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
+                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
                     mfaMethod === 'totp'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                      : 'liquid-card text-gray-900 hover:shadow-liquid'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-2">
@@ -382,10 +382,10 @@ function VerifyMFAContent() {
                       sendVerificationEmail();
                     }
                   }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
+                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
                     mfaMethod === 'email'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                      : 'liquid-card text-gray-900 hover:shadow-liquid'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-2">
@@ -402,10 +402,10 @@ function VerifyMFAContent() {
                     setCode('');
                     setError('');
                   }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-colors ${
+                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
                     mfaMethod === 'backup'
-                      ? 'bg-primary-600 text-white'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                      : 'liquid-card text-gray-900 hover:shadow-liquid'
                   }`}
                 >
                   <div className="flex items-center justify-center gap-2">
@@ -473,11 +473,11 @@ function VerifyMFAContent() {
               {/* Submit Button */}
               <button
                 type="submit"
-                disabled={isLoading || (mfaMethod === 'email' && !codeSent) || 
+                disabled={isLoading || (mfaMethod === 'email' && !codeSent) ||
                          (mfaMethod === 'totp' && code.length !== 6) ||
                          (mfaMethod === 'email' && code.length !== 6) ||
                          (mfaMethod === 'backup' && code.length !== 8)}
-                className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                className="liquid-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
               >
                 {isLoading ? (
                   <>
@@ -507,7 +507,7 @@ function VerifyMFAContent() {
                         setCode('');
                         sendVerificationEmail();
                       }}
-                      className="text-sm text-primary-600 hover:text-primary-700 font-medium"
+                      className="text-sm text-ios-blue hover:text-ios-indigo font-semibold transition-colors"
                     >
                       Resend verification code
                     </button>

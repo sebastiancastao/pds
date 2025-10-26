@@ -449,7 +449,7 @@ export default function LoginPage() {
                   <button
                     type="button"
                     onClick={handleRequestLocation}
-                    className="w-full mt-2 bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700"
+                    className="liquid-btn-primary w-full mt-2"
                   >
                     Allow Location Access
                   </button>
@@ -472,7 +472,7 @@ export default function LoginPage() {
                       setUserLocation(null);
                       handleRequestLocation();
                     }}
-                    className="text-xs underline mt-2"
+                    className="text-xs underline mt-2 text-ios-blue hover:text-ios-indigo"
                   >
                     Refresh
                   </button>
@@ -535,7 +535,7 @@ export default function LoginPage() {
               <button
                 type="submit"
                 disabled={isLoading || !locationGranted}
-                className="w-full bg-primary-600 text-white py-3 rounded-lg font-semibold disabled:opacity-50"
+                className="liquid-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Authenticating...' : 'Sign In'}
               </button>
