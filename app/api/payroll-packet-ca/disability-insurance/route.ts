@@ -77,8 +77,6 @@ export async function GET() {
         'X-Content-Type-Options': 'nosniff'
       }
     });
-
-    
   } catch (error: any) {
     console.error('Disability Insurance PDF error:', error);
     return NextResponse.json({ error: 'Failed to generate Disability Insurance PDF', details: error.message }, { status: 500 });
