@@ -84,19 +84,16 @@ export async function GET(request: NextRequest) {
 
     // Decrypt the photo data
     const decryptedData = decryptData(profile.profile_photo_data);
-    
-    // Convert back to ArrayBuffer for response
-    const arrayBuffer = decryptedData.buffer.slice(
-      decryptedData.byteOffset,
-      decryptedData.byteOffset + decryptedData.byteLength
-    );
+
+    // Convert to Buffer for NextResponse
+    const buffer = Buffer.from(decryptedData);
 
     // Return the image with proper headers
-    return new NextResponse(arrayBuffer, {
+    return new NextResponse(buffer, {
       status: 200,
       headers: {
         'Content-Type': profile.profile_photo_type || 'image/jpeg',
-        'Content-Length': arrayBuffer.byteLength.toString(),
+        'Content-Length': buffer.byteLength.toString(),
         'Cache-Control': 'private, max-age=3600', // Cache for 1 hour
         'Content-Disposition': 'inline; filename="profile-photo.jpg"'
       }
