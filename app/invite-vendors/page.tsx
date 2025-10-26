@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -22,7 +22,7 @@ type Vendor = {
   };
 };
 
-export default function InviteVendorsPage() {
+function InviteVendorsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const eventId = searchParams.get("eventId");
@@ -242,5 +242,13 @@ export default function InviteVendorsPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function InviteVendorsPage() {
+  return (
+    <Suspense fallback={<div className="container mx-auto max-w-6xl py-10 px-4"><div className="text-center">Loading...</div></div>}>
+      <InviteVendorsContent />
+    </Suspense>
   );
 }

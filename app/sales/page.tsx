@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -23,7 +23,7 @@ type EventItem = {
   tax_rate_percent?: number | null;
 };
 
-export default function SalesPage() {
+function SalesContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const eventId = searchParams.get("eventId");
@@ -389,5 +389,13 @@ export default function SalesPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function SalesPage() {
+  return (
+    <Suspense fallback={<div className="container mx-auto max-w-4xl py-10 px-4"><div className="text-center">Loading...</div></div>}>
+      <SalesContent />
+    </Suspense>
   );
 }

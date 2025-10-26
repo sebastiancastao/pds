@@ -1,17 +1,17 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import dynamic from 'next/dynamic';
+import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
 
 // Dynamically import PDFFormEditor to avoid SSR issues
-const PDFFormEditor = dynamic(() => import('@/app/components/PDFFormEditor'), {
+const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
   ssr: false,
   loading: () => <div style={{ padding: '20px', textAlign: 'center' }}>Loading PDF editor...</div>
 });
 
-export default function FormViewer() {
+function FormViewerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
@@ -341,5 +341,13 @@ export default function FormViewer() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function FormViewer() {
+  return (
+    <Suspense fallback={<div style={{ padding: '20px', textAlign: 'center' }}>Loading...</div>}>
+      <FormViewerContent />
+    </Suspense>
   );
 }
