@@ -84,12 +84,16 @@ export async function GET(
     let vendorFirstName = '';
     let vendorLastName = '';
     try {
-      if (teamInvitation.users?.profiles) {
-        vendorFirstName = teamInvitation.users.profiles.first_name
-          ? decrypt(teamInvitation.users.profiles.first_name)
+      // users is returned as an array from Supabase, but vendor_id is a single foreign key
+      const user = Array.isArray(teamInvitation.users) ? teamInvitation.users[0] : teamInvitation.users;
+      const profiles = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+
+      if (profiles) {
+        vendorFirstName = profiles.first_name
+          ? decrypt(profiles.first_name)
           : '';
-        vendorLastName = teamInvitation.users.profiles.last_name
-          ? decrypt(teamInvitation.users.profiles.last_name)
+        vendorLastName = profiles.last_name
+          ? decrypt(profiles.last_name)
           : '';
       }
     } catch (error) {
