@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendVendorBulkInvitationEmail } from "@/lib/email";
+import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -69,6 +70,20 @@ export async function POST(req: NextRequest) {
       .eq('user_id', user.id)
       .single();
 
+    // Decrypt manager profile names
+    let managerFirstName = 'Event';
+    let managerLastName = 'Manager';
+    let managerPhone = '';
+    if (managerProfile) {
+      try {
+        managerFirstName = managerProfile.first_name ? decrypt(managerProfile.first_name) : 'Event';
+        managerLastName = managerProfile.last_name ? decrypt(managerProfile.last_name) : 'Manager';
+        managerPhone = managerProfile.phone ? decrypt(managerProfile.phone) : '';
+      } catch (decryptError) {
+        console.error('Error decrypting manager profile:', decryptError);
+      }
+    }
+
     // Get vendor details (only those selected)
     const { data: vendors, error: vendorsError } = await supabaseAdmin
       .from('users')
@@ -118,11 +133,23 @@ export async function POST(req: NextRequest) {
           throw new Error(`Failed to store invitation for ${vendor.email}`);
         }
 
+        // Decrypt vendor names
+        let firstName = 'Vendor';
+        let lastName = '';
+        try {
+          firstName = vendor.profiles.first_name ? decrypt(vendor.profiles.first_name) : 'Vendor';
+          lastName = vendor.profiles.last_name ? decrypt(vendor.profiles.last_name) : '';
+        } catch (decryptError) {
+          console.error('Error decrypting vendor name:', decryptError);
+          firstName = 'Vendor';
+          lastName = '';
+        }
+
         // Send invitation email
         const emailResult = await sendVendorBulkInvitationEmail({
           email: vendor.email,
-          firstName: vendor.profiles.first_name,
-          lastName: vendor.profiles.last_name,
+          firstName: firstName,
+          lastName: lastName,
           durationWeeks: durationWeeks,
           eventCount: events?.length || 0,
           startDate: startDate.toLocaleDateString('en-US', {
@@ -137,10 +164,8 @@ export async function POST(req: NextRequest) {
             month: 'long',
             day: 'numeric'
           }),
-          managerName: managerProfile
-            ? `${managerProfile.first_name} ${managerProfile.last_name}`
-            : 'Event Manager',
-          managerPhone: managerProfile?.phone || '',
+          managerName: `${managerFirstName} ${managerLastName}`,
+          managerPhone: managerPhone,
           invitationToken: invitationToken
         });
 

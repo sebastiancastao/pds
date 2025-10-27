@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendVendorEventInvitationEmail } from "@/lib/email";
+import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -112,11 +113,23 @@ export async function POST(
           throw new Error(`Failed to store invitation for ${vendor.email}`);
         }
 
+        // Decrypt vendor names
+        let firstName = 'Vendor';
+        let lastName = '';
+        try {
+          firstName = vendor.profiles.first_name ? decrypt(vendor.profiles.first_name) : 'Vendor';
+          lastName = vendor.profiles.last_name ? decrypt(vendor.profiles.last_name) : '';
+        } catch (decryptError) {
+          console.error('Error decrypting vendor name:', decryptError);
+          firstName = 'Vendor';
+          lastName = '';
+        }
+
         // Send invitation email
         const emailResult = await sendVendorEventInvitationEmail({
           email: vendor.email,
-          firstName: vendor.profiles.first_name,
-          lastName: vendor.profiles.last_name,
+          firstName: firstName,
+          lastName: lastName,
           eventName: eventData.event_name,
           eventDate: eventDate,
           venueName: eventData.venue,

@@ -57,7 +57,7 @@ export async function sendTemporaryPasswordEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <sebastian@luna-lab.pro>', // Update this to your domain after verification
+      from: 'PDS Time Tracking <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -378,7 +378,7 @@ export async function sendInviteEmail(data: {
   // Send invite email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <sebastian@luna-lab.pro>', // Update this to your domain after verification
+      from: 'PDS Time Tracking <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -561,7 +561,7 @@ export async function sendMFAVerificationEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <sebastian@luna-lab.pro>',
+      from: 'PDS Time Tracking <service@furnituretaxi.site>',
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -749,7 +749,7 @@ export async function sendVendorEventInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <events@resend.dev>', // Update this to your domain after verification
+      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -976,7 +976,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <events@resend.dev>', // Update this to your domain after verification
+      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -1190,7 +1190,7 @@ export async function sendTeamConfirmationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <events@resend.dev>', // Update this to your domain after verification
+      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,

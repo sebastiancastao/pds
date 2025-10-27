@@ -41,7 +41,7 @@ type Venue = {
   longitude: number;
 };
 
-type TabType = 'edit' | 'sales' | 'merchandise' | 'team';
+type TabType = 'edit' | 'sales' | 'merchandise' | 'team' | 'hr';
 
 export default function EventDashboardPage() {
   const router = useRouter();
@@ -66,6 +66,22 @@ export default function EventDashboardPage() {
   const [tips, setTips] = useState<string>("");
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
   const [merchandiseValue, setMerchandiseValue] = useState<string>("");
+
+  // Detailed merchandise breakdown
+  const [apparelGross, setApparelGross] = useState<string>("");
+  const [apparelTaxRate, setApparelTaxRate] = useState<string>("0");
+  const [apparelCCFeeRate, setApparelCCFeeRate] = useState<string>("0");
+  const [otherGross, setOtherGross] = useState<string>("");
+  const [otherTaxRate, setOtherTaxRate] = useState<string>("0");
+  const [otherCCFeeRate, setOtherCCFeeRate] = useState<string>("0");
+  const [musicGross, setMusicGross] = useState<string>("");
+  const [musicTaxRate, setMusicTaxRate] = useState<string>("0");
+  const [musicCCFeeRate, setMusicCCFeeRate] = useState<string>("0");
+
+  // Split percentages for merchandise
+  const [apparelArtistPercent, setApparelArtistPercent] = useState<string>("80");
+  const [otherArtistPercent, setOtherArtistPercent] = useState<string>("80");
+  const [musicArtistPercent, setMusicArtistPercent] = useState<string>("90");
 
   // Team state
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
@@ -483,6 +499,16 @@ export default function EventDashboardPage() {
             >
               Team
             </button>
+            <button
+              onClick={() => setActiveTab('hr')}
+              className={`px-6 py-3 font-semibold border-b-2 transition ${
+                activeTab === 'hr'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-gray-600 hover:text-gray-800'
+              }`}
+            >
+              HR
+            </button>
           </nav>
         </div>
 
@@ -879,45 +905,192 @@ export default function EventDashboardPage() {
           {/* Merchandise Tab */}
           {activeTab === 'merchandise' && (
             <div className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-bold mb-4">Merchandise Information</h2>
+              <h2 className="text-2xl font-bold mb-6">Merchandise Settlement</h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="font-semibold block mb-2">Merchandise Units Sold</label>
-                    <input
-                      type="number"
-                      value={merchandiseUnits}
-                      onChange={(e) => setMerchandiseUnits(e.target.value)}
-                      placeholder="0"
-                      min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
-                    />
+              {/* Input Section */}
+              <div className="bg-gray-50 p-6 rounded-lg space-y-4">
+                <h3 className="text-lg font-semibold mb-4">Enter Sales Data</h3>
+
+                {/* Merchandise Categories */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Apparel */}
+                  <div className="bg-white p-4 rounded border">
+                    <h4 className="font-bold text-gray-700 mb-3">Apparel</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
+                        <input
+                          type="number"
+                          value={apparelGross}
+                          onChange={(e) => setApparelGross(e.target.value)}
+                          placeholder="0.00"
+                          step="0.01"
+                          min="0"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
+                          <input
+                            type="number"
+                            value={apparelTaxRate}
+                            onChange={(e) => setApparelTaxRate(e.target.value)}
+                            placeholder="0"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
+                          <input
+                            type="number"
+                            value={apparelCCFeeRate}
+                            onChange={(e) => setApparelCCFeeRate(e.target.value)}
+                            placeholder="0"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                        <input
+                          type="number"
+                          value={apparelArtistPercent}
+                          onChange={(e) => setApparelArtistPercent(e.target.value)}
+                          placeholder="80"
+                          step="1"
+                          min="0"
+                          max="100"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
                   </div>
 
-                  <div>
-                    <label className="font-semibold block mb-2">Merchandise Total Value ($)</label>
-                    <input
-                      type="number"
-                      value={merchandiseValue}
-                      onChange={(e) => setMerchandiseValue(e.target.value)}
-                      placeholder="0.00"
-                      step="0.01"
-                      min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
-                    />
+                  {/* Other */}
+                  <div className="bg-white p-4 rounded border">
+                    <h4 className="font-bold text-gray-700 mb-3">Other</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
+                        <input
+                          type="number"
+                          value={otherGross}
+                          onChange={(e) => setOtherGross(e.target.value)}
+                          placeholder="0.00"
+                          step="0.01"
+                          min="0"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
+                          <input
+                            type="number"
+                            value={otherTaxRate}
+                            onChange={(e) => setOtherTaxRate(e.target.value)}
+                            placeholder="0"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
+                          <input
+                            type="number"
+                            value={otherCCFeeRate}
+                            onChange={(e) => setOtherCCFeeRate(e.target.value)}
+                            placeholder="0"
+                            step="0.01"
+                            min="0"
+                            max="100"
+                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                        <input
+                          type="number"
+                          value={otherArtistPercent}
+                          onChange={(e) => setOtherArtistPercent(e.target.value)}
+                          placeholder="80"
+                          step="1"
+                          min="0"
+                          max="100"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
                   </div>
+                </div>
 
-                  <div>
-                    <label className="font-semibold block mb-2">Ticket Sales (# of People/Tickets)</label>
-                    <input
-                      type="number"
-                      value={ticketCount}
-                      onChange={(e) => setTicketCount(e.target.value)}
-                      placeholder="0"
-                      min="0"
-                      className="w-full p-3 border rounded focus:ring-2 focus:ring-blue-500 text-lg"
-                    />
+                {/* Music Sales */}
+                <div className="bg-white p-4 rounded border max-w-md">
+                  <h4 className="font-bold text-gray-700 mb-3">Music Sales</h4>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
+                      <input
+                        type="number"
+                        value={musicGross}
+                        onChange={(e) => setMusicGross(e.target.value)}
+                        placeholder="0.00"
+                        step="0.01"
+                        min="0"
+                        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
+                        <input
+                          type="number"
+                          value={musicTaxRate}
+                          onChange={(e) => setMusicTaxRate(e.target.value)}
+                          placeholder="0"
+                          step="0.01"
+                          min="0"
+                          max="100"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
+                        <input
+                          type="number"
+                          value={musicCCFeeRate}
+                          onChange={(e) => setMusicCCFeeRate(e.target.value)}
+                          placeholder="0"
+                          step="0.01"
+                          min="0"
+                          max="100"
+                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                      <input
+                        type="number"
+                        value={musicArtistPercent}
+                        onChange={(e) => setMusicArtistPercent(e.target.value)}
+                        placeholder="90"
+                        step="1"
+                        min="0"
+                        max="100"
+                        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
                   </div>
                 </div>
 
@@ -926,49 +1099,271 @@ export default function EventDashboardPage() {
                   disabled={submitting}
                   className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded transition disabled:bg-gray-400"
                 >
-                  {submitting ? "Saving..." : "Save Merchandise Data"}
+                  {submitting ? "Saving..." : "Calculate Settlement"}
                 </button>
               </div>
 
-              {merchandiseValue && ticketSales && Number(merchandiseValue) > 0 && Number(ticketSales) > 0 && (
-                <>
-                  <hr className="my-6" />
+              {/* Settlement Display */}
+              {(() => {
+                const appGross = Number(apparelGross) || 0;
+                const appTax = appGross * (Number(apparelTaxRate) || 0) / 100;
+                const appCC = appGross * (Number(apparelCCFeeRate) || 0) / 100;
+                const appAdjusted = appGross - appTax - appCC;
 
-                  {/* Merchandise Summary */}
-                  <div>
-                    <h3 className="text-xl font-semibold mb-4">Merchandise Summary</h3>
-                    <div className="bg-purple-50 rounded-lg p-4 space-y-3 mb-4">
-                      <div className="flex justify-between items-center">
-                        <span className="font-medium">Total Merchandise Value</span>
-                        <span className="text-lg font-bold">${Number(merchandiseValue).toFixed(2)}</span>
-                      </div>
+                const othGross = Number(otherGross) || 0;
+                const othTax = othGross * (Number(otherTaxRate) || 0) / 100;
+                const othCC = othGross * (Number(otherCCFeeRate) || 0) / 100;
+                const othAdjusted = othGross - othTax - othCC;
 
-                      <div className="flex justify-between items-center">
-                        <span className="font-medium">Total Ticket Sales</span>
-                        <span className="text-lg font-bold">${Number(ticketSales).toFixed(2)}</span>
-                      </div>
+                const merchGross = appGross + othGross;
+                const merchTax = appTax + othTax;
+                const merchCC = appCC + othCC;
+                const merchAdjusted = appAdjusted + othAdjusted;
 
-                      <hr className="my-2 border-purple-200" />
+                const musGross = Number(musicGross) || 0;
+                const musTax = musGross * (Number(musicTaxRate) || 0) / 100;
+                const musCC = musGross * (Number(musicCCFeeRate) || 0) / 100;
+                const musAdjusted = musGross - musTax - musCC;
 
-                      <div className="flex justify-between items-center text-lg">
-                        <span className="font-bold">Merchandise Value per Ticket Sale Dollar</span>
-                        <span className="font-bold text-purple-600">
-                          ${(Number(merchandiseValue) / Number(ticketSales)).toFixed(2)}
-                        </span>
-                      </div>
+                const totalGross = merchGross + musGross;
+                const totalTax = merchTax + musTax;
+                const totalCC = merchCC + musCC;
+                const totalAdjusted = merchAdjusted + musAdjusted;
 
-                      {ticketCount && Number(ticketCount) > 0 && (
-                        <div className="flex justify-between items-center text-green-700 bg-green-50 p-2 rounded mt-2">
-                          <span className="font-medium">Merchandise Value per Person</span>
-                          <span className="text-lg font-bold">
-                            ${(Number(merchandiseValue) / Number(ticketCount)).toFixed(2)}
-                          </span>
+                // Artist splits
+                const appArtistPct = Number(apparelArtistPercent) || 0;
+                const othArtistPct = Number(otherArtistPercent) || 0;
+                const musArtistPct = Number(musicArtistPercent) || 0;
+
+                const appArtistCut = appAdjusted * (appArtistPct / 100);
+                const appVenueCut = appAdjusted * ((100 - appArtistPct) / 100);
+
+                const othArtistCut = othAdjusted * (othArtistPct / 100);
+                const othVenueCut = othAdjusted * ((100 - othArtistPct) / 100);
+
+                const musArtistCut = musAdjusted * (musArtistPct / 100);
+                const musVenueCut = musAdjusted * ((100 - musArtistPct) / 100);
+
+                const totalArtist = appArtistCut + othArtistCut + musArtistCut;
+                const totalVenue = appVenueCut + othVenueCut + musVenueCut;
+
+                const hasData = appGross > 0 || othGross > 0 || musGross > 0;
+
+                return hasData ? (
+                  <>
+                    <hr className="my-6" />
+
+                    {/* Sales Summary Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                      {/* Merchandise Sales */}
+                      <div>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Merchandise Sales</h3>
+                        <div className="bg-white border border-gray-200 rounded-b p-4 space-y-3">
+                          <div className="grid grid-cols-3 gap-2 text-sm font-semibold border-b pb-2">
+                            <div>Category</div>
+                            <div className="text-right">Apparel</div>
+                            <div className="text-right">Other</div>
+                            <div className="col-span-3 border-b pt-2"></div>
+                            <div>Total</div>
+                            <div className="text-right">${appGross.toFixed(2)}</div>
+                            <div className="text-right">${othGross.toFixed(2)}</div>
+                          </div>
+
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Gross Sales</span>
+                              <span className="font-bold">${merchGross.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Sales Tax</span>
+                              <span>-${merchTax.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Fee: credit card</span>
+                              <span>-${merchCC.toFixed(2)}</span>
+                            </div>
+                            <hr />
+                            <div className="flex justify-between font-bold text-base">
+                              <span>Adjusted Gross</span>
+                              <span className="text-green-600">${merchAdjusted.toFixed(2)}</span>
+                            </div>
+                          </div>
                         </div>
-                      )}
+                      </div>
+
+                      {/* Music Sales */}
+                      <div>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Music Sales</h3>
+                        <div className="bg-white border border-gray-200 rounded-b p-4 space-y-3">
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Total</span>
+                              <span className="font-bold">${musGross.toFixed(2)}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 text-sm pt-6">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Gross Sales</span>
+                              <span className="font-bold">${musGross.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Sales Tax</span>
+                              <span>-${musTax.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Fee: credit card</span>
+                              <span>-${musCC.toFixed(2)}</span>
+                            </div>
+                            <hr />
+                            <div className="flex justify-between font-bold text-base">
+                              <span>Adjusted Gross</span>
+                              <span className="text-green-600">${musAdjusted.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Total Sales */}
+                      <div>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Total Sales</h3>
+                        <div className="bg-white border border-gray-200 rounded-b p-4 space-y-3">
+                          <div className="space-y-2 text-sm">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Total</span>
+                              <span className="font-bold">${totalGross.toFixed(2)}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-2 text-sm pt-6">
+                            <div className="flex justify-between">
+                              <span className="font-medium">Gross Sales</span>
+                              <span className="font-bold">${totalGross.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Sales Tax</span>
+                              <span>-${totalTax.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-red-600">
+                              <span>Fee: credit card</span>
+                              <span>-${totalCC.toFixed(2)}</span>
+                            </div>
+                            <hr />
+                            <div className="flex justify-between font-bold text-base">
+                              <span>Adjusted Gross</span>
+                              <span className="text-green-600">${totalAdjusted.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                </>
-              )}
+
+                    {/* Settlement Bar */}
+                    <div className="bg-gray-700 text-white p-4 rounded flex justify-between items-center">
+                      <span className="text-xl font-bold">Settlement</span>
+                      <div className="flex gap-8">
+                        <div>
+                          <span className="text-sm opacity-80">Total Due Artist: </span>
+                          <span className="text-2xl font-bold">${totalArtist.toFixed(2)}</span>
+                        </div>
+                        <div>
+                          <span className="text-sm opacity-80">Total Due Venue: </span>
+                          <span className="text-2xl font-bold">${totalVenue.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Artist & Venue Breakdown */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                      {/* Artist */}
+                      <div>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Artist</h3>
+                        <div className="bg-white border border-gray-200 rounded-b overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="text-left p-3 font-medium">Category</th>
+                                <th className="text-right p-3 font-medium">Cuts</th>
+                                <th className="text-right p-3 font-medium">Fees</th>
+                                <th className="text-right p-3 font-medium">Taxes</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                              <tr>
+                                <td className="p-3">Apparel ({appArtistPct}%)</td>
+                                <td className="text-right p-3">${appArtistCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">$0.00</td>
+                              </tr>
+                              <tr>
+                                <td className="p-3">Other ({othArtistPct}%)</td>
+                                <td className="text-right p-3">${othArtistCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">$0.00</td>
+                              </tr>
+                              <tr className="font-semibold bg-gray-50">
+                                <td className="p-3">Merch Subtotal</td>
+                                <td className="text-right p-3">${(appArtistCut + othArtistCut).toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">$0.00</td>
+                              </tr>
+                              <tr>
+                                <td className="p-3">Music ({musArtistPct}%)</td>
+                                <td className="text-right p-3">${musArtistCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">$0.00</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Venue */}
+                      <div>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Venue</h3>
+                        <div className="bg-white border border-gray-200 rounded-b overflow-hidden">
+                          <table className="w-full text-sm">
+                            <thead className="bg-gray-50">
+                              <tr>
+                                <th className="text-left p-3 font-medium">Category</th>
+                                <th className="text-right p-3 font-medium">Cuts</th>
+                                <th className="text-right p-3 font-medium">Fees</th>
+                                <th className="text-right p-3 font-medium">Taxes</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                              <tr>
+                                <td className="p-3">Apparel ({100 - appArtistPct}%)</td>
+                                <td className="text-right p-3">${appVenueCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">${appTax.toFixed(2)}</td>
+                              </tr>
+                              <tr>
+                                <td className="p-3">Other ({100 - othArtistPct}%)</td>
+                                <td className="text-right p-3">${othVenueCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">${othTax.toFixed(2)}</td>
+                              </tr>
+                              <tr className="font-semibold bg-gray-50">
+                                <td className="p-3">Merch Subtotal</td>
+                                <td className="text-right p-3">${(appVenueCut + othVenueCut).toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">${(appTax + othTax).toFixed(2)}</td>
+                              </tr>
+                              <tr>
+                                <td className="p-3">Music ({100 - musArtistPct}%)</td>
+                                <td className="text-right p-3">${musVenueCut.toFixed(2)}</td>
+                                <td className="text-right p-3">$0.00</td>
+                                <td className="text-right p-3">${musTax.toFixed(2)}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : null;
+              })()}
             </div>
           )}
 
@@ -1141,6 +1536,260 @@ export default function EventDashboardPage() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {/* HR Tab */}
+          {activeTab === 'hr' && (
+            <div className="space-y-6">
+              <h2 className="text-2xl font-bold mb-6">HR Management</h2>
+
+              {/* Quick Stats */}
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+                <div className="bg-blue-50 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-blue-600">Staff Assigned</div>
+                    <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-3xl font-bold text-blue-900">{event?.confirmed_staff || 0}</div>
+                  <div className="text-xs text-blue-600 mt-1">of {event?.required_staff || 0} required</div>
+                </div>
+
+                <div className="bg-green-50 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-green-600">Hours Worked</div>
+                    <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-3xl font-bold text-green-900">0</div>
+                  <div className="text-xs text-green-600 mt-1">total hours</div>
+                </div>
+
+                <div className="bg-purple-50 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-purple-600">Labor Cost</div>
+                    <svg className="w-5 h-5 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-3xl font-bold text-purple-900">$0</div>
+                  <div className="text-xs text-purple-600 mt-1">estimated</div>
+                </div>
+
+                <div className="bg-orange-50 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-orange-600">Attendance</div>
+                    <svg className="w-5 h-5 text-orange-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                  </div>
+                  <div className="text-3xl font-bold text-orange-900">0%</div>
+                  <div className="text-xs text-orange-600 mt-1">checked in</div>
+                </div>
+              </div>
+
+              {/* Staff Schedule */}
+              <div className="bg-white border rounded-lg p-6">
+                <h3 className="text-xl font-semibold mb-4">Staff Schedule</h3>
+
+                <div className="mb-4 flex gap-4">
+                  <input
+                    type="text"
+                    placeholder="Search staff..."
+                    className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  />
+                  <select className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                    <option value="">All Roles</option>
+                    <option value="bartender">Bartender</option>
+                    <option value="server">Server</option>
+                    <option value="security">Security</option>
+                    <option value="tech">Tech/Sound</option>
+                  </select>
+                  <button className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                    Add Staff
+                  </button>
+                </div>
+
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b">
+                      <tr>
+                        <th className="text-left p-4 font-semibold text-gray-700">Employee</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Role</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Shift Time</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Rate</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Status</th>
+                        <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {teamMembers.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="p-8 text-center text-gray-500">
+                            <svg className="w-12 h-12 mx-auto text-gray-300 mb-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                            </svg>
+                            No staff scheduled yet
+                          </td>
+                        </tr>
+                      ) : (
+                        teamMembers.map((member: any) => {
+                          const profile = member.users?.profiles;
+                          const firstName = profile?.first_name || 'N/A';
+                          const lastName = profile?.last_name || '';
+
+                          return (
+                            <tr key={member.id} className="hover:bg-gray-50 transition-colors">
+                              <td className="p-4">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
+                                    {firstName.charAt(0)}{lastName.charAt(0)}
+                                  </div>
+                                  <div>
+                                    <div className="font-medium text-gray-900">{firstName} {lastName}</div>
+                                    <div className="text-xs text-gray-500">{member.users?.email || 'N/A'}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="p-4">
+                                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
+                                  Staff
+                                </span>
+                              </td>
+                              <td className="p-4 text-gray-600 text-sm">
+                                {event?.start_time?.slice(0,5)} - {event?.end_time?.slice(0,5)}
+                              </td>
+                              <td className="p-4 text-gray-900 font-medium">
+                                {event?.start_time && event?.end_time ?
+                                  (() => {
+                                    const start = new Date(`1970-01-01T${event.start_time}`);
+                                    const end = new Date(`1970-01-01T${event.end_time}`);
+                                    const hours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
+                                    return hours > 0 ? `${hours.toFixed(1)}h` : 'N/A';
+                                  })()
+                                  : 'N/A'
+                                }
+                              </td>
+                              <td className="p-4 text-gray-900">$25/hr</td>
+                              <td className="p-4">
+                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                  member.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+                                  member.status === 'declined' ? 'bg-red-100 text-red-700' :
+                                  'bg-yellow-100 text-yellow-700'
+                                }`}>
+                                  {member.status === 'confirmed' ? 'Confirmed' :
+                                   member.status === 'declined' ? 'Declined' :
+                                   'Pending'}
+                                </span>
+                              </td>
+                              <td className="p-4 text-right">
+                                <button className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3">
+                                  Edit
+                                </button>
+                                <button className="text-red-600 hover:text-red-700 font-medium text-sm">
+                                  Remove
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Time Tracking */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-white border rounded-lg p-6">
+                  <h3 className="text-xl font-semibold mb-4">Time Tracking</h3>
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                      <div>
+                        <div className="font-medium text-gray-900">Clock In/Out</div>
+                        <div className="text-sm text-gray-500">Event: {event?.event_name}</div>
+                      </div>
+                      <button className="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                        Clock In
+                      </button>
+                    </div>
+
+                    <div className="border-t pt-4">
+                      <h4 className="font-semibold text-gray-700 mb-3">Recent Activity</h4>
+                      <div className="text-center py-8 text-gray-500 text-sm">
+                        No time entries yet
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-white border rounded-lg p-6">
+                  <h3 className="text-xl font-semibold mb-4">Payroll Summary</h3>
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center pb-3 border-b">
+                      <span className="text-gray-600">Base Pay</span>
+                      <span className="font-semibold text-gray-900">$0.00</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-3 border-b">
+                      <span className="text-gray-600">Overtime</span>
+                      <span className="font-semibold text-gray-900">$0.00</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-3 border-b">
+                      <span className="text-gray-600">Tips</span>
+                      <span className="font-semibold text-gray-900">${tips || '0.00'}</span>
+                    </div>
+                    <div className="flex justify-between items-center pb-3 border-b">
+                      <span className="text-gray-600">Deductions</span>
+                      <span className="font-semibold text-gray-900">$0.00</span>
+                    </div>
+                    <div className="flex justify-between items-center pt-2">
+                      <span className="text-lg font-bold text-gray-900">Total Payroll</span>
+                      <span className="text-2xl font-bold text-green-600">${tips || '0.00'}</span>
+                    </div>
+                    <button className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold transition">
+                      Process Payroll
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Performance Metrics */}
+              <div className="bg-white border rounded-lg p-6">
+                <h3 className="text-xl font-semibold mb-4">Performance Metrics</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <div className="text-sm text-gray-600 mb-2">Attendance Rate</div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-full bg-green-500 rounded-full" style={{ width: '0%' }}></div>
+                      </div>
+                      <span className="text-sm font-semibold text-gray-900">0%</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-2">On-Time Rate</div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500 rounded-full" style={{ width: '0%' }}></div>
+                      </div>
+                      <span className="text-sm font-semibold text-gray-900">0%</span>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-sm text-gray-600 mb-2">Customer Rating</div>
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div className="h-full bg-yellow-500 rounded-full" style={{ width: '0%' }}></div>
+                      </div>
+                      <span className="text-sm font-semibold text-gray-900">0.0</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
         </div>

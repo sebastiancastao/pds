@@ -73,7 +73,7 @@ You should see:
 
 Look for an email from:
 ```
-From: PDS Time Tracking <sebastian@luna-lab.pro>
+From: PDS Time Tracking <service@furnituretaxi.site>
 Subject: Welcome to PDS Time Tracking - Your Account Details
 ```
 
@@ -139,7 +139,7 @@ Subject: Welcome to PDS Time Tracking - Your Account Details
 
 **Sender Address:**
 ```
-PDS Time Tracking <sebastian@luna-lab.pro>
+PDS Time Tracking <service@furnituretaxi.site>
 ```
 
 **⚠️ Note:** This uses Resend's default domain. For production:

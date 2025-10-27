@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { encryptData, encrypt } from '@/lib/encryption';
+import { geocodeAddress } from '@/lib/geocoding';
 
 // Create service role client for database operations
 const supabaseAdmin = createClient(
@@ -98,12 +99,73 @@ export async function POST(request: NextRequest) {
       zip_code: parsedProfileData.zipCode || null,
     };
 
+    // Geocode the address to get latitude and longitude
+    let latitude: number | null = null;
+    let longitude: number | null = null;
+
+    if (parsedProfileData.address) {
+      console.log('[DEBUG] Geocoding address:', parsedProfileData.address);
+
+      // Normalize address: add space after street number if missing (e.g., "3848W" -> "3848 W")
+      let normalizedAddress = parsedProfileData.address.replace(/^(\d+)([A-Z])/i, '$1 $2');
+      console.log('[DEBUG] Normalized address:', normalizedAddress);
+
+      // Check if address already contains city/state/zip (full address format)
+      const addressLower = normalizedAddress.toLowerCase();
+      const hasCity = parsedProfileData.city && addressLower.includes(parsedProfileData.city.toLowerCase());
+      const hasState = parsedProfileData.state && addressLower.includes(parsedProfileData.state.toLowerCase());
+
+      let geocodeResult = null;
+
+      if (hasCity && hasState) {
+        // Address field contains full address, use it as-is
+        console.log('[DEBUG] Using full address format');
+        geocodeResult = await geocodeAddress(
+          normalizedAddress,
+          '', // Empty city
+          '', // Empty state
+          ''  // Empty zip
+        );
+      }
+
+      // If first attempt failed or we have separate components, try with separate fields
+      if (!geocodeResult && parsedProfileData.city && parsedProfileData.state) {
+        console.log('[DEBUG] Trying with separate components');
+        // Extract just the street address (before city name if it exists)
+        let streetAddress = normalizedAddress;
+        if (hasCity && parsedProfileData.city) {
+          const cityIndex = normalizedAddress.toLowerCase().indexOf(parsedProfileData.city.toLowerCase());
+          if (cityIndex > 0) {
+            streetAddress = normalizedAddress.substring(0, cityIndex).trim();
+            console.log('[DEBUG] Extracted street address:', streetAddress);
+          }
+        }
+
+        geocodeResult = await geocodeAddress(
+          streetAddress,
+          parsedProfileData.city,
+          parsedProfileData.state,
+          parsedProfileData.zipCode
+        );
+      }
+
+      if (geocodeResult) {
+        latitude = geocodeResult.latitude;
+        longitude = geocodeResult.longitude;
+        console.log('[DEBUG] Geocoding successful:', latitude, longitude);
+      } else {
+        console.warn('[DEBUG] Geocoding failed for address');
+      }
+    }
+
     // Insert or update profile with photo data
     const { data: profile, error: profileError } = await supabaseAdmin
       .from('profiles')
       .upsert({
         user_id: user.id,
         ...encryptedProfileData,
+        latitude,
+        longitude,
         profile_photo_data: encryptedPhotoData,
         profile_photo_type: photo.type,
         profile_photo_size: photo.size,

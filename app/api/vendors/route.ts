@@ -92,7 +92,8 @@ export async function GET(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Query all vendors (users with division 'vendor' or 'both') with coordinates
+    // Query all vendors (users with division 'vendor' or 'both')
+    // Include vendors with AND without coordinates
     // IMPORTANT: Only select non-sensitive fields to avoid exposing encrypted data
     const { data: vendors, error } = await supabaseAdmin
       .from('users')
@@ -114,24 +115,29 @@ export async function GET(req: NextRequest) {
         )
       `)
       .in('division', ['vendor', 'both'])
-      .eq('is_active', true)
-      .not('profiles.latitude', 'is', null)
-      .not('profiles.longitude', 'is', null);
+      .eq('is_active', true);
 
     if (error) {
       console.error('SUPABASE SELECT ERROR:', error);
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
     }
 
-    // Calculate distance for all vendors and sort by proximity (closest first)
+    // Calculate distance for vendors with coordinates, and sort by proximity (closest first)
+    // Vendors without coordinates will appear at the end
     const vendorsWithDistance = (vendors ?? [])
       .map((vendor: any) => {
-        const distance = calculateDistance(
-          venueLat,
-          venueLon,
-          vendor.profiles.latitude,
-          vendor.profiles.longitude
-        );
+        // Calculate distance only if vendor has coordinates
+        let distance: number | null = null;
+        const hasCoordinates = vendor.profiles.latitude != null && vendor.profiles.longitude != null;
+
+        if (hasCoordinates) {
+          distance = calculateDistance(
+            venueLat,
+            venueLon,
+            vendor.profiles.latitude,
+            vendor.profiles.longitude
+          );
+        }
 
         // Decrypt sensitive profile data
         let firstName = '';
@@ -218,10 +224,25 @@ export async function GET(req: NextRequest) {
             longitude: vendor.profiles.longitude,
             profile_photo_url: profilePhotoUrl
           },
-          distance: Math.round(distance * 10) / 10 // Round to 1 decimal place
+          distance: distance !== null ? Math.round(distance * 10) / 10 : null, // Round to 1 decimal place or null
+          hasCoordinates: hasCoordinates
         };
       })
-      .sort((a: any, b: any) => a.distance - b.distance); // Sort by distance (closest first)
+      .sort((a: any, b: any) => {
+        // Vendors with coordinates come first, sorted by distance
+        if (a.hasCoordinates && !b.hasCoordinates) return -1;
+        if (!a.hasCoordinates && b.hasCoordinates) return 1;
+
+        // Both have coordinates: sort by distance
+        if (a.hasCoordinates && b.hasCoordinates) {
+          return (a.distance || 0) - (b.distance || 0);
+        }
+
+        // Both don't have coordinates: sort alphabetically by name
+        const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.toLowerCase();
+        const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
 
     return NextResponse.json({
       vendors: vendorsWithDistance,
