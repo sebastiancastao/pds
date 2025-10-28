@@ -39,16 +39,52 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   const [scale, setScale] = useState(1.5);
   const [viewport, setViewport] = useState<any>(null);
   const [continueButtonRect, setContinueButtonRect] = useState<{x: number, y: number, width: number, height: number} | null>(null);
+  const renderTaskRef = useRef<any>(null);
+  const isLoadingRef = useRef(false);
 
   useEffect(() => {
     loadPDF();
+
+    // Cleanup on unmount
+    return () => {
+      console.log('[CLEANUP] Component unmounting, canceling any active renders');
+      if (renderTaskRef.current) {
+        renderTaskRef.current.cancel();
+        renderTaskRef.current = null;
+      }
+      if (pdfDocRef.current) {
+        pdfDocRef.current.destroy();
+        pdfDocRef.current = null;
+      }
+    };
   }, [pdfUrl, formId]);
 
   const loadPDF = async () => {
+    // Prevent multiple simultaneous loads
+    if (isLoadingRef.current) {
+      console.log('[LOAD] Already loading, skipping duplicate load');
+      return;
+    }
+
     try {
+      isLoadingRef.current = true;
       console.log('=== PDFFormEditor loadPDF START ===');
       console.log('PDF URL:', pdfUrl);
       console.log('Form ID:', formId);
+
+      // Cancel any ongoing render
+      if (renderTaskRef.current) {
+        console.log('[LOAD] Canceling previous render task');
+        renderTaskRef.current.cancel();
+        renderTaskRef.current = null;
+      }
+
+      // Destroy previous PDF document
+      if (pdfDocRef.current) {
+        console.log('[LOAD] Destroying previous PDF document');
+        pdfDocRef.current.destroy();
+        pdfDocRef.current = null;
+      }
 
       setLoading(true);
       setError('');
@@ -273,6 +309,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       console.error('Error name:', err.name);
       setError(`Failed to load PDF: ${err.message}`);
       setLoading(false);
+    } finally {
+      isLoadingRef.current = false;
     }
   };
 
@@ -375,6 +413,17 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   const renderPage = async (pageNum: number) => {
     console.log(`[RENDER] Starting render for page ${pageNum}`);
 
+    // Cancel any previous render task
+    if (renderTaskRef.current) {
+      console.log('[RENDER] Canceling previous render task');
+      try {
+        renderTaskRef.current.cancel();
+      } catch (cancelErr) {
+        console.warn('[RENDER] Error canceling previous render:', cancelErr);
+      }
+      renderTaskRef.current = null;
+    }
+
     if (!pdfDocRef.current) {
       console.error('[RENDER] ❌ pdfDocRef.current is null!');
       return;
@@ -417,12 +466,20 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       };
 
       console.log('[RENDER] Starting page.render()...');
-      await page.render(renderContext).promise;
+      const renderTask = page.render(renderContext);
+      renderTaskRef.current = renderTask;
+
+      await renderTask.promise;
+      renderTaskRef.current = null;
       console.log('[RENDER] ✅ Page rendered successfully!');
 
       setCurrentPage(pageNum);
       setViewport(pageViewport);
     } catch (err: any) {
+      if (err.name === 'RenderingCancelledException') {
+        console.log('[RENDER] Render was cancelled (expected during navigation)');
+        return;
+      }
       console.error('[RENDER] ❌ Error rendering page:', err);
       console.error('[RENDER] Stack:', err?.stack);
       throw err; // Re-throw so it's caught by the caller

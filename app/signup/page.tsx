@@ -191,22 +191,39 @@ export default function SignupPage() {
 
       const data = await response.json();
 
+      console.log('[Frontend] Email send response:', {
+        ok: response.ok,
+        status: response.status,
+        data,
+        userId: user.id,
+        email: user.email
+      });
+
       if (!response.ok) {
         throw new Error(data.error || 'Failed to send email');
       }
 
+      // Verify the response contains success field
+      if (!data.success) {
+        throw new Error(data.error || 'Email sending was not successful');
+      }
+
       // Update to show email sent
-      setSuccessResults(results =>
-        results.map(r =>
-          r.id === user.id
-            ? { ...r, emailSent: true, emailSending: false }
-            : r
-        )
-      );
+      setSuccessResults(results => {
+        const updated = results.map(r => {
+          if (r.id === user.id) {
+            console.log('[Frontend] Updating user state to emailSent=true:', { userId: r.id, email: r.email });
+            return { ...r, emailSent: true, emailSending: false };
+          }
+          return r;
+        });
+        console.log('[Frontend] State updated, emailSent should now be true');
+        return updated;
+      });
     } catch (err: any) {
       console.error('Send email error:', err);
       alert(`Failed to send email: ${err.message}`);
-      
+
       // Remove loading state
       setSuccessResults(results =>
         results.map(r =>
@@ -262,8 +279,21 @@ export default function SignupPage() {
 
         const data = await response.json();
 
+        console.log('[Frontend] Bulk email send response:', {
+          ok: response.ok,
+          status: response.status,
+          data,
+          userId: user.id,
+          email: user.email
+        });
+
         if (!response.ok) {
           throw new Error(data.error || 'Failed to send email');
+        }
+
+        // Verify the response contains success field
+        if (!data.success) {
+          throw new Error(data.error || 'Email sending was not successful');
         }
 
         // Update individual user to show email sent
@@ -278,7 +308,7 @@ export default function SignupPage() {
         successCount++;
       } catch (err: any) {
         console.error(`Failed to send email to ${user.email}:`, err);
-        
+
         // Remove loading state for failed user
         setSuccessResults(results =>
           results.map(r =>
@@ -567,7 +597,7 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
                   <button
                     onClick={sendAllCredentialsEmails}
                     disabled={successResults.some(r => r.emailSending)}
-                    className="bg-primary-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                    className="liquid-btn-primary disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     {successResults.some(r => r.emailSending) ? (
                       <>
@@ -649,7 +679,7 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
                             <button
                               onClick={() => sendCredentialsEmail(result)}
                               disabled={result.emailSending}
-                              className="w-full bg-primary-600 text-white px-3 py-2 rounded text-xs font-medium hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                              className="liquid-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               {result.emailSending ? (
                                 <>
@@ -1029,7 +1059,7 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
             <button
               type="submit"
               disabled={isLoading || users.length === 0}
-              className="w-full bg-primary-600 text-white py-3 px-4 rounded-lg font-semibold hover:bg-primary-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              className="liquid-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {isLoading ? (
                 <>
