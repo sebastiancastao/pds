@@ -132,3 +132,4 @@ AND conname LIKE '%photo%';
 -- SELECT id, profile_photo_type, profile_photo_size 
 -- FROM profiles 
 -- WHERE user_id = auth.uid();
+

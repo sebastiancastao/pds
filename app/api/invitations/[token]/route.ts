@@ -127,6 +127,27 @@ export async function POST(
       return NextResponse.json({ error: 'Failed to save availability' }, { status: 500 });
     }
 
+    // Also persist per-day availability into vendor_availability table (idempotent upsert)
+    try {
+      const rows = (availability as any[])
+        .filter((d) => d && typeof d.date === 'string')
+        .map((d) => ({
+          vendor_id: invitation.vendor_id,
+          date: d.date,
+          available: !!d.available,
+          notes: d.notes || null,
+          updated_at: new Date().toISOString()
+        }));
+      if (rows.length > 0) {
+        // Upsert on (vendor_id, date)
+        await supabaseAdmin
+          .from('vendor_availability')
+          .upsert(rows, { onConflict: 'vendor_id,date' });
+      }
+    } catch (e) {
+      console.warn('vendor_availability upsert failed (non-fatal):', e);
+    }
+
     return NextResponse.json({
       success: true,
       message: 'Availability saved successfully',

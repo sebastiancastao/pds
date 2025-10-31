@@ -345,7 +345,7 @@ export default function EditEventPage() {
               />
             </div>
             <div>
-              <label className="font-semibold block mb-1">Ticket Sales</label>
+              <label className="font-semibold block mb-1">Total Collected</label>
               <input 
                 name="ticket_sales" 
                 value={form.ticket_sales || ""} 
@@ -463,4 +463,6 @@ export default function EditEventPage() {
     </div>
   );
 }
+
+
 

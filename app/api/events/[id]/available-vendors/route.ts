@@ -200,9 +200,7 @@ export async function GET(
         )
       `)
       .in('id', availableVendorIds)
-      .eq('is_active', true)
-      .not('profiles.latitude', 'is', null)
-      .not('profiles.longitude', 'is', null);
+      .eq('is_active', true);
 
     console.log('🔍 DEBUG - Vendor Details Query:', {
       availableVendorIds,
@@ -221,12 +219,15 @@ export async function GET(
     // Calculate distances and sort by proximity
     const vendorsWithDistance = (vendors || [])
       .map((vendor: any) => {
-        const distance = calculateDistance(
-          venueData.latitude,
-          venueData.longitude,
-          vendor.profiles.latitude,
-          vendor.profiles.longitude
-        );
+        let distance: number | null = null;
+        if (vendor.profiles.latitude != null && vendor.profiles.longitude != null) {
+          distance = calculateDistance(
+            venueData.latitude,
+            venueData.longitude,
+            vendor.profiles.latitude,
+            vendor.profiles.longitude
+          );
+        }
         return {
           id: vendor.id,
           email: vendor.email,
@@ -242,10 +243,17 @@ export async function GET(
             latitude: vendor.profiles.latitude,
             longitude: vendor.profiles.longitude
           },
-          distance: Math.round(distance * 10) / 10
+          distance: distance !== null ? Math.round(distance * 10) / 10 : null
         };
       })
-      .sort((a: any, b: any) => a.distance - b.distance);
+      .sort((a: any, b: any) => {
+        if (a.distance !== null && b.distance === null) return -1;
+        if (a.distance === null && b.distance !== null) return 1;
+        if (a.distance !== null && b.distance !== null) return a.distance - b.distance;
+        const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.toLowerCase();
+        const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
 
     console.log('✅ DEBUG - Final Result:', {
       vendorsWithDistanceCount: vendorsWithDistance.length,

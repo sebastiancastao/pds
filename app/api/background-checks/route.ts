@@ -53,32 +53,34 @@ export async function GET(req: NextRequest) {
       }, { status: 403 });
     }
 
-    // Fetch all vendors with their background check status
-    const { data: vendors, error: vendorsError } = await adminClient
-      .from('profiles')
+    // Fetch all users from vendor_background_checks table with their profile info
+    const { data: backgroundChecks, error: vendorsError } = await adminClient
+      .from('vendor_background_checks')
       .select(`
         id,
-        user_id,
-        first_name,
-        last_name,
-        phone,
-        role,
-        created_at,
-        vendor_background_checks (
+        profile_id,
+        background_check_completed,
+        completed_date,
+        notes,
+        updated_at,
+        profiles (
           id,
-          background_check_completed,
-          completed_date,
-          notes,
-          updated_at
+          user_id,
+          first_name,
+          last_name,
+          phone,
+          role,
+          created_at
         )
       `)
-      .eq('role', 'vendor')
-      .order('first_name', { ascending: true });
+      .order('updated_at', { ascending: false });
 
     if (vendorsError) {
-      console.error('Error fetching vendors:', vendorsError);
-      return NextResponse.json({ error: 'Failed to fetch vendors' }, { status: 500 });
+      console.error('[BACKGROUND CHECKS API] Error fetching background checks:', vendorsError);
+      return NextResponse.json({ error: 'Failed to fetch background checks' }, { status: 500 });
     }
+
+    console.log('[BACKGROUND CHECKS API] Fetched background checks:', backgroundChecks?.length || 0);
 
     // Fetch all auth users to get emails and password status
     const { data: authUsers } = await adminClient.auth.admin.listUsers();
@@ -87,6 +89,20 @@ export async function GET(req: NextRequest) {
     const { data: usersData } = await adminClient
       .from('users')
       .select('id, is_temporary_password, must_change_password');
+
+    // Fetch background check PDFs
+    const { data: backgroundPdfs, error: pdfError } = await adminClient
+      .from('background_check_pdfs')
+      .select('user_id, created_at');
+
+    if (pdfError) {
+      console.error('[BACKGROUND CHECKS API] Error fetching PDFs:', pdfError);
+    }
+
+    console.log('[BACKGROUND CHECKS API] Fetched background PDFs:', backgroundPdfs?.length || 0);
+    if (backgroundPdfs && backgroundPdfs.length > 0) {
+      console.log('[BACKGROUND CHECKS API] Sample PDF user_ids:', backgroundPdfs.slice(0, 3).map(p => p.user_id));
+    }
 
     // Create maps for quick lookup
     const emailMap = new Map();
@@ -106,25 +122,59 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // Transform the data to make it easier to work with
-    const transformedVendors = vendors.map(vendor => {
-      const passwordInfo = tempPasswordMap.get(vendor.user_id) || {
-        is_temporary_password: false,
-        must_change_password: false
-      };
+    const pdfMap = new Map();
+    if (backgroundPdfs) {
+      backgroundPdfs.forEach(pdf => {
+        pdfMap.set(pdf.user_id, {
+          has_pdf: true,
+          submitted_at: pdf.created_at
+        });
+      });
+    }
 
-      return {
-        id: vendor.id,
-        full_name: `${vendor.first_name || ''} ${vendor.last_name || ''}`.trim() || 'N/A',
-        email: emailMap.get(vendor.user_id) || 'N/A',
-        phone: vendor.phone || 'N/A',
-        created_at: vendor.created_at,
-        is_temporary_password: passwordInfo.is_temporary_password,
-        must_change_password: passwordInfo.must_change_password,
-        has_temporary_password: passwordInfo.is_temporary_password || passwordInfo.must_change_password,
-        background_check: vendor.vendor_background_checks?.[0] || null
-      };
-    });
+    // Transform the data to make it easier to work with
+    const transformedVendors = backgroundChecks
+      ?.filter(check => check.profiles) // Only include records with valid profiles
+      .map(check => {
+        const profile = check.profiles;
+        const passwordInfo = tempPasswordMap.get(profile.user_id) || {
+          is_temporary_password: false,
+          must_change_password: false
+        };
+
+        const pdfInfo = pdfMap.get(profile.user_id) || {
+          has_pdf: false,
+          submitted_at: null
+        };
+
+        return {
+          id: profile.id,
+          user_id: profile.user_id,
+          full_name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'N/A',
+          email: emailMap.get(profile.user_id) || 'N/A',
+          role: profile.role,
+          phone: profile.phone || 'N/A',
+          created_at: profile.created_at,
+          is_temporary_password: passwordInfo.is_temporary_password,
+          must_change_password: passwordInfo.must_change_password,
+          has_temporary_password: passwordInfo.is_temporary_password || passwordInfo.must_change_password,
+          background_check: {
+            id: check.id,
+            background_check_completed: check.background_check_completed,
+            completed_date: check.completed_date,
+            notes: check.notes,
+            updated_at: check.updated_at
+          },
+          has_submitted_pdf: pdfInfo.has_pdf,
+          pdf_submitted_at: pdfInfo.submitted_at
+        };
+      }) || [];
+
+    console.log('[BACKGROUND CHECKS API] Transformed vendors:', transformedVendors.length);
+    console.log('[BACKGROUND CHECKS API] Vendors with submitted PDFs:',
+      transformedVendors.filter(v => v.has_submitted_pdf).length);
+    console.log('[BACKGROUND CHECKS API] Vendors with background_check data:',
+      transformedVendors.filter(v => v.background_check !== null).length);
 
     return NextResponse.json({ vendors: transformedVendors }, { status: 200 });
   } catch (error) {

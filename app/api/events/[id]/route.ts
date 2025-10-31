@@ -22,10 +22,10 @@ export async function GET(
     // Try cookie-based session first
     let { data: { user } } = await supabase.auth.getUser();
 
-    // Fallback to Authorization: Bearer <access_token> header for SSR/API contexts
+    // Fallback to Authorization: Bearer <access_token>
     if (!user || !user.id) {
-      const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
-      const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+      const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
       if (token) {
         const { data: tokenUser, error: tokenErr } = await supabaseAnon.auth.getUser(token);
         if (!tokenErr && tokenUser?.user?.id) {
@@ -33,35 +33,36 @@ export async function GET(
         }
       }
     }
+
     if (!user || !user.id) {
-      console.error('No authenticated user');
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      console.error("No authenticated user");
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     const eventId = params.id;
     if (!eventId) {
-      return NextResponse.json({ error: 'Event ID is required' }, { status: 400 });
+      return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
     }
 
     const { data, error } = await supabaseAdmin
-      .from('events')
-      .select('*')
-      .eq('id', eventId)
-      .eq('created_by', user.id)
+      .from("events")
+      .select("*")
+      .eq("id", eventId)
+      .eq("created_by", user.id)
       .single();
 
     if (error) {
-      console.error('SUPABASE SELECT ERROR:', error);
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+      console.error("SUPABASE SELECT ERROR:", error);
+      if (error.code === "PGRST116") {
+        return NextResponse.json({ error: "Event not found" }, { status: 404 });
       }
-      return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+      return NextResponse.json({ error: error.message || error.code || (error as any) }, { status: 500 });
     }
 
     return NextResponse.json({ event: data }, { status: 200 });
   } catch (err: any) {
-    console.error('SERVER ERROR in event get:', err);
-    return NextResponse.json({ error: err.message || err }, { status: 500 });
+    console.error("SERVER ERROR in event get:", err);
+    return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
   }
 }
 
@@ -74,10 +75,10 @@ export async function PUT(
     // Try cookie-based session first
     let { data: { user } } = await supabase.auth.getUser();
 
-    // Fallback to Authorization: Bearer <access_token> header for SSR/API contexts
+    // Fallback to Authorization: Bearer <access_token>
     if (!user || !user.id) {
-      const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
-      const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+      const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
       if (token) {
         const { data: tokenUser, error: tokenErr } = await supabaseAnon.auth.getUser(token);
         if (!tokenErr && tokenUser?.user?.id) {
@@ -85,17 +86,20 @@ export async function PUT(
         }
       }
     }
+
     if (!user || !user.id) {
-      console.error('No authenticated user');
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      console.error("No authenticated user");
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     const eventId = params.id;
     if (!eventId) {
-      return NextResponse.json({ error: 'Event ID is required' }, { status: 400 });
+      return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
     }
 
     const body = await req.json();
+
+    // Core fields
     const event_name = body.event_name?.trim() || "";
     const artist = body.artist?.trim() || null;
     const venue = body.venue?.trim() || "";
@@ -104,17 +108,44 @@ export async function PUT(
     const event_date = body.event_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
-    const ticket_sales = body.ticket_sales === undefined || body.ticket_sales === "" ? null : Number(body.ticket_sales);
-    const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
-    const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
-    const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
-    const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
-    const required_staff = body.required_staff === undefined || body.required_staff === "" ? null : Number(body.required_staff);
-    const confirmed_staff = body.confirmed_staff === undefined || body.confirmed_staff === "" ? null : Number(body.confirmed_staff);
+
+    // Money / numbers
+    const ticket_sales =
+      body.ticket_sales === undefined || body.ticket_sales === "" ? null : Number(body.ticket_sales);
+
+    // NEW: number of tickets
+    const ticket_count =
+      body.ticket_count === undefined || body.ticket_count === "" ? null : Number(body.ticket_count);
+
+    // NEW: tax rate percent (0–100)
+    const tax_rate_percent =
+      body.tax_rate_percent === undefined || body.tax_rate_percent === "" ? 0 : Number(body.tax_rate_percent);
+
+    const artist_share_percent =
+      body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
+
+    const venue_share_percent =
+      body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
+
+    const pds_share_percent =
+      body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
+
+    const commission_pool =
+      body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
+
+    const required_staff =
+      body.required_staff === undefined || body.required_staff === "" ? null : Number(body.required_staff);
+
+    const confirmed_staff =
+      body.confirmed_staff === undefined || body.confirmed_staff === "" ? null : Number(body.confirmed_staff);
+
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
 
-    // Debug output for all incoming data
-    console.log('EVENT UPDATE PAYLOAD:', {
+    // Existing: tips
+    const tips = body.tips === undefined || body.tips === "" ? null : Number(body.tips);
+
+    // Debug
+    console.log("EVENT UPDATE PAYLOAD:", {
       eventId,
       event_name,
       artist,
@@ -125,22 +156,29 @@ export async function PUT(
       start_time,
       end_time,
       ticket_sales,
+      ticket_count,        // NEW
+      tax_rate_percent,    // NEW
       artist_share_percent,
       venue_share_percent,
       pds_share_percent,
       commission_pool,
       required_staff,
       confirmed_staff,
-      is_active
+      is_active,
+      tips,
     });
 
-    // Required fields validation
+    // Required fields
     if (!event_name || !venue || !event_date || !start_time || !end_time) {
-      console.error('Event update: missing required fields');
-      return NextResponse.json({ error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" }, { status: 400 });
+      console.error("Event update: missing required fields");
+      return NextResponse.json(
+        { error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" },
+        { status: 400 }
+      );
     }
 
-    const event = {
+    // Build payload, include tips/ticket_count/tax_rate_percent when provided
+    const updatePayload: Record<string, any> = {
       event_name,
       artist,
       venue,
@@ -157,34 +195,45 @@ export async function PUT(
       required_staff,
       confirmed_staff,
       is_active,
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
     };
+
+    if (ticket_count !== null && !Number.isNaN(ticket_count)) {
+      updatePayload.ticket_count = ticket_count;
+    }
+    if (tax_rate_percent !== null && !Number.isNaN(tax_rate_percent)) {
+      updatePayload.tax_rate_percent = tax_rate_percent;
+    }
+    if (tips !== null && !Number.isNaN(tips)) {
+      updatePayload.tips = tips;
+    }
 
     const { data, error } = await supabaseAdmin
       .from("events")
-      .update(event)
-      .eq('id', eventId)
-      .eq('created_by', user.id)
+      .update(updatePayload)
+      .eq("id", eventId)
+      .eq("created_by", user.id)
       .select();
 
-    // Debug output for DB response/error
     if (error) {
-      console.error('SUPABASE UPDATE ERROR:', error);
-      if (error.code === 'PGRST116') {
-        return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+      console.error("SUPABASE UPDATE ERROR:", error);
+      if (error.code === "PGRST116") {
+        return NextResponse.json({ error: "Event not found" }, { status: 404 });
       }
-      return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+      return NextResponse.json({ error: error.message || error.code || (error as any) }, { status: 500 });
     }
 
     if (!data || data.length === 0) {
-      return NextResponse.json({ error: 'Event not found or you do not have permission to update it' }, { status: 404 });
+      return NextResponse.json(
+        { error: "Event not found or you do not have permission to update it" },
+        { status: 404 }
+      );
     }
 
-    console.log('SUPABASE UPDATE RESULT:', data);
+    console.log("SUPABASE UPDATE RESULT:", data);
     return NextResponse.json({ event: data[0] }, { status: 200 });
   } catch (err: any) {
-    console.error('SERVER ERROR in event update:', err);
-    return NextResponse.json({ error: err.message || err }, { status: 500 });
+    console.error("SERVER ERROR in event update:", err);
+    return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
   }
 }
-

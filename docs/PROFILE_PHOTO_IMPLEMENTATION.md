@@ -257,3 +257,4 @@ LIMIT 10;
 - [ ] Lazy loading
 - [ ] Progressive JPEG support
 - [ ] WebP format support
+

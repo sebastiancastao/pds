@@ -14,14 +14,18 @@ interface BackgroundCheck {
 
 interface Vendor {
   id: string;
+  user_id: string;
   full_name: string;
   email: string;
+  role: string;
   phone: string | null;
   created_at: string;
   is_temporary_password: boolean;
   must_change_password: boolean;
   has_temporary_password: boolean;
   background_check: BackgroundCheck | null;
+  has_submitted_pdf: boolean;
+  pdf_submitted_at: string | null;
 }
 
 export default function BackgroundChecksPage() {
@@ -32,6 +36,8 @@ export default function BackgroundChecksPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
+  const [editingNotes, setEditingNotes] = useState<string | null>(null);
+  const [notesValue, setNotesValue] = useState<string>('');
   const router = useRouter();
 
   useEffect(() => {
@@ -78,6 +84,20 @@ export default function BackgroundChecksPage() {
 
       setVendors(data.vendors || []);
       console.log('[Background Checks] Successfully loaded', data.vendors?.length || 0, 'vendors');
+      console.log('[Background Checks] Vendors with PDF submissions:',
+        data.vendors?.filter((v: Vendor) => v.has_submitted_pdf).length || 0);
+      console.log('[Background Checks] Vendors with background_check records:',
+        data.vendors?.filter((v: Vendor) => v.background_check !== null).length || 0);
+
+      // Show sample vendor data
+      if (data.vendors && data.vendors.length > 0) {
+        console.log('[Background Checks] Sample vendor data:', {
+          user_id: data.vendors[0].user_id,
+          has_submitted_pdf: data.vendors[0].has_submitted_pdf,
+          pdf_submitted_at: data.vendors[0].pdf_submitted_at,
+          background_check: data.vendors[0].background_check
+        });
+      }
     } catch (e: any) {
       console.error('[Background Checks] Error:', e);
       setError(e.message || 'Failed to load vendors');
@@ -156,6 +176,124 @@ export default function BackgroundChecksPage() {
     }
   };
 
+  const handleViewPDF = async (userId: string, vendorName: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to load PDF');
+      }
+
+      // Get the PDF blob
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      // Open in new window
+      window.open(url, '_blank');
+    } catch (err: any) {
+      console.error('Error viewing PDF:', err);
+      alert(`Failed to view PDF: ${err.message}`);
+    }
+  };
+
+  const handleDownloadPDF = async (userId: string, vendorName: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to download PDF');
+      }
+
+      // Get the PDF blob
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+
+      // Create download link
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `background_check_${vendorName.replace(/\s+/g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Error downloading PDF:', err);
+      alert(`Failed to download PDF: ${err.message}`);
+    }
+  };
+
+  const handleEditNotes = (vendorId: string, currentNotes: string | null) => {
+    setEditingNotes(vendorId);
+    setNotesValue(currentNotes || '');
+  };
+
+  const handleSaveNotes = async (vendorId: string) => {
+    try {
+      setUpdating(vendorId);
+      setError(null);
+
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const vendor = vendors.find(v => v.id === vendorId);
+      if (!vendor) return;
+
+      const response = await fetch('/api/background-checks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        body: JSON.stringify({
+          profile_id: vendorId,
+          background_check_completed: vendor.background_check?.background_check_completed || false,
+          notes: notesValue.trim() || null,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to update notes');
+      }
+
+      // Update the vendors list with the new background check data
+      setVendors(prevVendors =>
+        prevVendors.map(v =>
+          v.id === vendorId
+            ? { ...v, background_check: data.background_check }
+            : v
+        )
+      );
+
+      setEditingNotes(null);
+      setNotesValue('');
+    } catch (err: any) {
+      console.error('Error updating notes:', err);
+      setError(err.message || 'Failed to update notes. Please try again.');
+    } finally {
+      setUpdating(null);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditingNotes(null);
+    setNotesValue('');
+  };
+
   const filteredVendors = vendors.filter(vendor => {
     const matchesSearch = vendor.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                          vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
@@ -182,6 +320,7 @@ export default function BackgroundChecksPage() {
   const completedCount = vendors.filter(v => v.background_check?.background_check_completed).length;
   const pendingCount = vendors.length - completedCount;
   const temporaryPasswordCount = vendors.filter(v => v.has_temporary_password).length;
+  const pdfSubmittedCount = vendors.filter(v => v.has_submitted_pdf).length;
 
   if (loading) {
     return (
@@ -199,14 +338,14 @@ export default function BackgroundChecksPage() {
       <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Vendor Background Checks</h1>
-          <p className="mt-2 text-gray-600">Track and manage background check status for all vendors</p>
+          <h1 className="text-3xl font-bold text-gray-900">Background Checks</h1>
+          <p className="mt-2 text-gray-600">Track and manage background check status for all users</p>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-sm font-medium text-gray-500">Total Vendors</div>
+            <div className="text-sm font-medium text-gray-500">Total Users</div>
             <div className="mt-2 text-3xl font-semibold text-gray-900">{vendors.length}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
@@ -216,6 +355,10 @@ export default function BackgroundChecksPage() {
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">Background Pending</div>
             <div className="mt-2 text-3xl font-semibold text-orange-600">{pendingCount}</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="text-sm font-medium text-gray-500">PDF Submitted</div>
+            <div className="mt-2 text-3xl font-semibold text-blue-600">{pdfSubmittedCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">Temporary Password</div>
@@ -228,7 +371,7 @@ export default function BackgroundChecksPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">
-                Search Vendors
+                Search Users
               </label>
               <input
                 type="text"
@@ -286,10 +429,13 @@ export default function BackgroundChecksPage() {
               <thead className="bg-gray-50">
                 <tr>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Vendor Name
+                    User Name
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Email
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Role
                   </th>
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Phone
@@ -303,18 +449,24 @@ export default function BackgroundChecksPage() {
                   <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Completed Date
                   </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    PDF Submitted
+                  </th>
+                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    Notes
+                  </th>
                   <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Background Check
+                    Actions
                   </th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredVendors.length === 0 ? (
                   <tr>
-                    <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={10} className="px-6 py-12 text-center text-gray-500">
                       {searchTerm || filterStatus !== 'all'
-                        ? 'No vendors found matching your filters.'
-                        : 'No vendors found.'}
+                        ? 'No users found matching your filters.'
+                        : 'No users found.'}
                     </td>
                   </tr>
                 ) : (
@@ -325,6 +477,11 @@ export default function BackgroundChecksPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-500">{vendor.email}</div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800 capitalize">
+                          {vendor.role}
+                        </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm text-gray-500">{vendor.phone || 'N/A'}</div>
@@ -358,17 +515,99 @@ export default function BackgroundChecksPage() {
                             : 'N/A'}
                         </div>
                       </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        {vendor.has_submitted_pdf ? (
+                          <div>
+                            <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
+                              Yes
+                            </span>
+                            {vendor.pdf_submitted_at && (
+                              <div className="text-xs text-gray-500 mt-1">
+                                {new Date(vendor.pdf_submitted_at).toLocaleDateString()}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                            No
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-6 py-4">
+                        {editingNotes === vendor.id ? (
+                          <div className="flex items-center gap-2">
+                            <textarea
+                              value={notesValue}
+                              onChange={(e) => setNotesValue(e.target.value)}
+                              className="w-full px-2 py-1 text-sm border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                              rows={2}
+                              placeholder="Add notes..."
+                              disabled={updating === vendor.id}
+                            />
+                            <div className="flex flex-col gap-1">
+                              <button
+                                onClick={() => handleSaveNotes(vendor.id)}
+                                disabled={updating === vendor.id}
+                                className="px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded disabled:bg-gray-400"
+                                title="Save"
+                              >
+                                ✓
+                              </button>
+                              <button
+                                onClick={handleCancelEdit}
+                                disabled={updating === vendor.id}
+                                className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded disabled:bg-gray-400"
+                                title="Cancel"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            onClick={() => handleEditNotes(vendor.id, vendor.background_check?.notes || null)}
+                            className="cursor-pointer hover:bg-gray-50 p-2 rounded min-h-[40px]"
+                            title="Click to edit notes"
+                          >
+                            {vendor.background_check?.notes ? (
+                              <div className="text-sm text-gray-700">{vendor.background_check.notes}</div>
+                            ) : (
+                              <div className="text-sm text-gray-400 italic">Click to add notes...</div>
+                            )}
+                          </div>
+                        )}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
-                        <input
-                          type="checkbox"
-                          checked={vendor.background_check?.background_check_completed || false}
-                          onChange={(e) => handleCheckboxChange(vendor.id, e.target.checked)}
-                          disabled={updating === vendor.id}
-                          className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                          title={vendor.background_check?.background_check_completed
-                            ? 'Background check completed'
-                            : 'Mark background check as completed'}
-                        />
+                        <div className="flex items-center justify-center gap-2">
+                          <input
+                            type="checkbox"
+                            checked={vendor.background_check?.background_check_completed || false}
+                            onChange={(e) => handleCheckboxChange(vendor.id, e.target.checked)}
+                            disabled={updating === vendor.id}
+                            className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                            title={vendor.background_check?.background_check_completed
+                              ? 'Background check completed'
+                              : 'Mark background check as completed'}
+                          />
+                          {vendor.has_submitted_pdf && (
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => handleViewPDF(vendor.user_id, vendor.full_name)}
+                                className="px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded border border-blue-300"
+                                title="View PDF"
+                              >
+                                View
+                              </button>
+                              <button
+                                onClick={() => handleDownloadPDF(vendor.user_id, vendor.full_name)}
+                                className="px-2 py-1 text-xs font-medium text-green-600 hover:text-green-800 hover:bg-green-50 rounded border border-green-300"
+                                title="Download PDF"
+                              >
+                                Download
+                              </button>
+                            </div>
+                          )}
+                        </div>
                         {updating === vendor.id && (
                           <div className="mt-1 text-xs text-gray-500">Updating...</div>
                         )}
@@ -383,7 +622,7 @@ export default function BackgroundChecksPage() {
 
         {/* Footer Info */}
         <div className="mt-6 text-sm text-gray-500 text-center">
-          Showing {filteredVendors.length} of {vendors.length} vendors
+          Showing {filteredVendors.length} of {vendors.length} users
         </div>
       </div>
     </div>

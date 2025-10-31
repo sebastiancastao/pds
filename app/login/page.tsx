@@ -279,21 +279,85 @@ export default function LoginPage() {
         body: JSON.stringify({ userId: authData.user.id, reset: true }),
       });
 
-      // Step 5: Re-fetch user data
+      // Step 5: Re-fetch user data including background check status
+      console.log('[LOGIN DEBUG] Fetching user data for:', authData.user.id);
+
       const { data: currentUserData, error: fetchError } = await (supabase
         .from('users')
-        .select('is_temporary_password')
+        .select('is_temporary_password, background_check_completed')
         .eq('id', authData.user.id)
         .single() as any);
 
-      if (fetchError) console.error('DEBUG Error fetching user:', fetchError);
+      if (fetchError) {
+        console.error('[LOGIN DEBUG] ❌ Error fetching user from database:', fetchError);
+        console.error('[LOGIN DEBUG] Error details:', {
+          message: fetchError.message,
+          code: fetchError.code,
+          hint: fetchError.hint,
+          details: fetchError.details
+        });
+      } else if (!currentUserData) {
+        console.error('[LOGIN DEBUG] ❌ User data is NULL - user may not exist in users table');
+        console.error('[LOGIN DEBUG] User ID:', authData.user.id);
+      } else {
+        console.log('[LOGIN DEBUG] ✅ User data fetched successfully:', currentUserData);
+      }
+
+      // Check if the column exists and log its exact value
+      console.log('[LOGIN DEBUG] 🔍 Checking background_check_completed column...');
+      console.log('[LOGIN DEBUG] currentUserData object:', currentUserData);
+      console.log('[LOGIN DEBUG] background_check_completed RAW VALUE:', currentUserData?.background_check_completed);
+      console.log('[LOGIN DEBUG] background_check_completed TYPE:', typeof currentUserData?.background_check_completed);
+      console.log('[LOGIN DEBUG] background_check_completed === true:', currentUserData?.background_check_completed === true);
+      console.log('[LOGIN DEBUG] background_check_completed === false:', currentUserData?.background_check_completed === false);
+      console.log('[LOGIN DEBUG] background_check_completed === null:', currentUserData?.background_check_completed === null);
+      console.log('[LOGIN DEBUG] background_check_completed === undefined:', currentUserData?.background_check_completed === undefined);
+
+      if (currentUserData && typeof currentUserData.background_check_completed === 'undefined') {
+        console.error('[LOGIN DEBUG] 🚨 CRITICAL: background_check_completed column does NOT exist in users table!');
+        console.error('[LOGIN DEBUG] You MUST run migration 023 to add this column!');
+        console.error('[LOGIN DEBUG] See: database/migrations/023_add_background_check_completed_to_users.sql');
+      }
 
       const isTemporaryPassword = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
+      const backgroundCheckCompleted = currentUserData?.background_check_completed ?? false;
 
-      if (isTemporaryPassword) {
+      console.log('[LOGIN DEBUG] 📊 Computed values after defaults:');
+      console.log('[LOGIN DEBUG] - isTemporaryPassword:', isTemporaryPassword, '(type:', typeof isTemporaryPassword, ')');
+      console.log('[LOGIN DEBUG] - backgroundCheckCompleted:', backgroundCheckCompleted, '(type:', typeof backgroundCheckCompleted, ')');
+
+      console.log('[LOGIN DEBUG] User status after login:', {
+        userId: authData.user.id,
+        email: authData.user.email,
+        isTemporaryPassword,
+        backgroundCheckCompleted,
+        rawData: currentUserData
+      });
+
+      console.log('[LOGIN DEBUG] 🔍 SIMPLE REDIRECT LOGIC:');
+      console.log('[LOGIN DEBUG] - If background_check_completed = TRUE → /password');
+      console.log('[LOGIN DEBUG] - If background_check_completed = FALSE → /background-checks-form');
+
+      // SIMPLE: Check background_check_completed value
+      if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
+        // FALSE → go to background-checks-form
+        console.log('[LOGIN DEBUG] ❌ background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
+        console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
+
+        sessionStorage.setItem('mfa_verified', 'true');
+        sessionStorage.setItem('background_check_required', 'true');
+
+        router.replace('/background-checks-form');
+        return;
+      } else {
+        // TRUE → go to /password
+        console.log('[LOGIN DEBUG] ✅ background_check_completed = TRUE');
+        console.log('[LOGIN DEBUG] 🔄 Redirecting to /password');
+
         sessionStorage.setItem('requires_password_change', 'true');
         sessionStorage.removeItem('mfa_checkpoint');
         sessionStorage.removeItem('mfa_verified');
+
         router.replace('/password');
         return;
       }

@@ -204,3 +204,4 @@ mfa_login_code_expires_at   TIMESTAMP -- Email code expiration
 - **Recovery**: Generate new backup codes for users
 - **Reset**: Disable MFA and force re-setup if needed
 - **Compliance**: Export audit logs for regulatory requirements
+

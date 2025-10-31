@@ -151,8 +151,8 @@ export const eventCreateSchema = z.object({
   endTime: z.string().regex(/^\d{2}:\d{2}$/, 'Invalid end time format (HH:MM)'),
   
   ticketSales: z.number()
-    .int('Ticket sales must be a whole number')
-    .min(0, 'Ticket sales cannot be negative')
+    .int('Total Collected must be a whole number')
+    .min(0, 'Total Collected cannot be negative')
     .optional(),
   
   artistSharePercent: z.number()

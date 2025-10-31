@@ -232,9 +232,38 @@ function VerifyMFAContent() {
       console.log('[DEBUG] MFA verified successfully, setting session flag');
       sessionStorage.setItem('mfa_verified', 'true');
       sessionStorage.removeItem('mfa_checkpoint');
-      
-      // Redirect to home
-      router.push('/');
+
+      // Check if user has completed background check (check database column)
+      console.log('[VERIFY-MFA DEBUG] Fetching user data for background check status...');
+
+      const { data: userData, error: userError } = await (supabase
+        .from('users')
+        .select('background_check_completed')
+        .eq('id', session.user.id)
+        .single() as any);
+
+      if (userError) {
+        console.error('[VERIFY-MFA DEBUG] Error fetching user data:', userError);
+      }
+
+      console.log('[VERIFY-MFA DEBUG] User data fetched:', userData);
+      console.log('[VERIFY-MFA DEBUG] Background check status:', {
+        hasCompletedBackgroundCheck: !!userData?.background_check_completed,
+        rawValue: userData?.background_check_completed
+      });
+
+      // If user hasn't completed background check, redirect there
+      // This applies to ALL users, not just new users
+      if (!userData?.background_check_completed) {
+        console.log('[VERIFY-MFA DEBUG] ⚠️ Background check NOT completed');
+        console.log('[VERIFY-MFA DEBUG] 🔄 Redirecting to /background-checks-form');
+        router.push('/background-checks-form');
+      } else {
+        console.log('[VERIFY-MFA DEBUG] ✅ Background check completed');
+        console.log('[VERIFY-MFA DEBUG] 🔄 Redirecting to /dashboard');
+        sessionStorage.removeItem('new_user_onboarding'); // Clean up flag
+        router.push('/dashboard');
+      }
     } catch (err: any) {
       console.error('MFA verification error:', err);
       setError('An unexpected error occurred. Please try again.');

@@ -53,7 +53,7 @@ This application is designed to track employee time and worker availability for 
   - **Vendor compliance requirement:** Workers must have completed onboarding process and submitted all required documents
 - Invites sent via email/SMS/in-app with 24h acceptance window
 - Event dashboard showing: assigned, confirmed, open slots
-- Ticket sales per event entry for right-size staff planning
+- Total Collected per event entry for right-size staff planning
 
 **Event Dashboard Fields:**
 - Event name

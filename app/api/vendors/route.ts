@@ -60,6 +60,7 @@ export async function GET(req: NextRequest) {
     // Get query parameters
     const { searchParams } = new URL(req.url);
     const venueName = searchParams.get('venue');
+    const regionId = searchParams.get('region_id');
 
     if (!venueName) {
       return NextResponse.json({ error: 'Venue name is required' }, { status: 400 });
@@ -95,7 +96,7 @@ export async function GET(req: NextRequest) {
     // Query all vendors (users with division 'vendor' or 'both')
     // Include vendors with AND without coordinates
     // IMPORTANT: Only select non-sensitive fields to avoid exposing encrypted data
-    const { data: vendors, error } = await supabaseAdmin
+    let vendorQuery = supabaseAdmin
       .from('users')
       .select(`
         id,
@@ -111,11 +112,19 @@ export async function GET(req: NextRequest) {
           state,
           latitude,
           longitude,
-          profile_photo_data
+          profile_photo_data,
+          region_id
         )
       `)
       .in('division', ['vendor', 'both'])
       .eq('is_active', true);
+
+    // Apply region filter if provided
+    if (regionId && regionId !== 'all') {
+      vendorQuery = vendorQuery.eq('profiles.region_id', regionId);
+    }
+
+    const { data: vendors, error } = await vendorQuery;
 
     if (error) {
       console.error('SUPABASE SELECT ERROR:', error);
@@ -224,6 +233,7 @@ export async function GET(req: NextRequest) {
             longitude: vendor.profiles.longitude,
             profile_photo_url: profilePhotoUrl
           },
+          region_id: vendor.profiles.region_id || null,
           distance: distance !== null ? Math.round(distance * 10) / 10 : null, // Round to 1 decimal place or null
           hasCoordinates: hasCoordinates
         };

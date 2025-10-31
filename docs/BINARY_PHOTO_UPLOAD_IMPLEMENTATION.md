@@ -333,3 +333,4 @@ ORDER BY created_at DESC LIMIT 5;
 - ✅ **PII Protection**: High-sensitivity data classification
 
 The binary photo upload implementation provides a secure, compliant solution for storing employee profile photos directly in the database with full encryption and access controls.
+
