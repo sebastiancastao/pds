@@ -25,6 +25,13 @@ function FormViewerContent() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [signatureMode, setSignatureMode] = useState<'type' | 'draw'>('type');
 
+  // I-9 Document uploads
+  const [i9Documents, setI9Documents] = useState<{
+    drivers_license?: { url: string; filename: string };
+    ssn_document?: { url: string; filename: string };
+  }>({});
+  const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
+
   // Map form names to display names and API endpoints
   const formConfig: Record<string, { display: string; api: string; formId: string; next?: string; requiresSignature?: boolean }> = {
     'fillable': { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
@@ -158,6 +165,18 @@ function FormViewerContent() {
       return;
     }
 
+    // Check if I-9 documents are uploaded (for I-9 form only)
+    if (formName === 'i9') {
+      if (!i9Documents.drivers_license) {
+        alert('Please upload your Driver\'s License or State ID before continuing.');
+        return;
+      }
+      if (!i9Documents.ssn_document) {
+        alert('Please upload your Social Security Card before continuing.');
+        return;
+      }
+    }
+
     // Save before continuing if we have data
     if (pdfBytesRef.current) {
       console.log('Saving before continue...');
@@ -288,6 +307,99 @@ function FormViewerContent() {
       return newSigs;
     });
   };
+
+  // I-9 Document Upload Functions
+  const handleDocumentUpload = async (documentType: 'drivers_license' | 'ssn_document', file: File) => {
+    try {
+      setUploadingDoc(documentType);
+
+      // Get session for authentication
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('documentType', documentType);
+
+      const response = await fetch('/api/i9-documents/upload', {
+        method: 'POST',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Upload failed');
+      }
+
+      const result = await response.json();
+      console.log('[I9_UPLOAD] Success:', result);
+
+      // Update state
+      setI9Documents(prev => ({
+        ...prev,
+        [documentType]: {
+          url: result.url,
+          filename: result.filename,
+        },
+      }));
+
+      alert(`${documentType === 'drivers_license' ? "Driver's License" : 'SSN Document'} uploaded successfully!`);
+    } catch (error) {
+      console.error('[I9_UPLOAD] Error:', error);
+      alert(`Failed to upload: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setUploadingDoc(null);
+    }
+  };
+
+  const loadI9Documents = async () => {
+    if (formName !== 'i9') return;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch('/api/i9-documents/upload', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.documents) {
+          const docs: any = {};
+
+          if (result.documents.drivers_license_url) {
+            docs.drivers_license = {
+              url: result.documents.drivers_license_url,
+              filename: result.documents.drivers_license_filename,
+            };
+          }
+
+          if (result.documents.ssn_document_url) {
+            docs.ssn_document = {
+              url: result.documents.ssn_document_url,
+              filename: result.documents.ssn_document_filename,
+            };
+          }
+
+          setI9Documents(docs);
+        }
+      }
+    } catch (error) {
+      console.error('[I9_LOAD] Error loading documents:', error);
+    }
+  };
+
+  // Load I-9 documents when on I-9 form
+  useEffect(() => {
+    if (formName === 'i9') {
+      loadI9Documents();
+    }
+  }, [formName]);
 
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
@@ -489,8 +601,7 @@ function FormViewerContent() {
                   style={{
                     width: '100%',
                     padding: '12px',
-                    fontSize: '24px',
-                    fontFamily: 'cursive',
+                    fontSize: '18px',
                     border: '2px solid #ddd',
                     borderRadius: '6px',
                     outline: 'none'
@@ -507,7 +618,7 @@ function FormViewerContent() {
                     backgroundColor: '#f9f9f9',
                     textAlign: 'center'
                   }}>
-                    <div style={{ fontSize: '32px', fontFamily: 'cursive', color: '#000' }}>
+                    <div style={{ fontSize: '24px', color: '#1a1a1a', fontWeight: 600 }}>
                       {currentSignature}
                     </div>
                     <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
@@ -572,6 +683,237 @@ function FormViewerContent() {
                 </span>
               </div>
             )}
+          </div>
+        )}
+
+        {/* I-9 Document Uploads - Only show for I-9 form */}
+        {formName === 'i9' && (
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '24px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            marginBottom: '20px'
+          }}>
+            <h2 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: 'bold' }}>
+              Identity & Employment Verification Documents
+            </h2>
+            <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: '#666' }}>
+              Upload clear photos or scans of your identification documents for I-9 verification.
+            </p>
+
+            {/* Driver's License Upload */}
+            <div style={{ marginBottom: '20px' }}>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>
+                Driver's License or State ID <span style={{ color: '#d32f2f' }}>*</span>
+              </h3>
+              {i9Documents.drivers_license ? (
+                <div style={{
+                  border: '2px solid #4caf50',
+                  borderRadius: '6px',
+                  padding: '16px',
+                  backgroundColor: '#e8f5e9'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                    <svg style={{ width: '24px', height: '24px', fill: '#4caf50' }} viewBox="0 0 24 24">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                    </svg>
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 'bold', color: '#2e7d32' }}>Uploaded Successfully</p>
+                      <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>{i9Documents.drivers_license.filename}</p>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <a
+                      href={i9Documents.drivers_license.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#1976d2',
+                        color: 'white',
+                        textDecoration: 'none',
+                        borderRadius: '6px',
+                        fontSize: '14px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      View Document
+                    </a>
+                    <label style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#666',
+                      color: 'white',
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}>
+                      Replace
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleDocumentUpload('drivers_license', file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <label style={{
+                  display: 'block',
+                  border: '2px dashed #ddd',
+                  borderRadius: '6px',
+                  padding: '24px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  backgroundColor: uploadingDoc === 'drivers_license' ? '#f5f5f5' : 'white'
+                }}>
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    style={{ display: 'none' }}
+                    disabled={uploadingDoc === 'drivers_license'}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleDocumentUpload('drivers_license', file);
+                    }}
+                  />
+                  <div style={{ marginBottom: '12px' }}>
+                    <svg style={{ width: '48px', height: '48px', fill: '#999', margin: '0 auto' }} viewBox="0 0 24 24">
+                      <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" />
+                    </svg>
+                  </div>
+                  <p style={{ margin: 0, fontWeight: 'bold', fontSize: '16px' }}>
+                    {uploadingDoc === 'drivers_license' ? 'Uploading...' : 'Click to upload or drag and drop'}
+                  </p>
+                  <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#666' }}>
+                    JPG, PNG, WEBP, or PDF (max 10MB)
+                  </p>
+                </label>
+              )}
+            </div>
+
+            {/* SSN Document Upload */}
+            <div>
+              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>
+                Social Security Card <span style={{ color: '#d32f2f' }}>*</span>
+              </h3>
+              {i9Documents.ssn_document ? (
+                <div style={{
+                  border: '2px solid #4caf50',
+                  borderRadius: '6px',
+                  padding: '16px',
+                  backgroundColor: '#e8f5e9'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
+                    <svg style={{ width: '24px', height: '24px', fill: '#4caf50' }} viewBox="0 0 24 24">
+                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                    </svg>
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 'bold', color: '#2e7d32' }}>Uploaded Successfully</p>
+                      <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>{i9Documents.ssn_document.filename}</p>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <a
+                      href={i9Documents.ssn_document.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        padding: '8px 16px',
+                        backgroundColor: '#1976d2',
+                        color: 'white',
+                        textDecoration: 'none',
+                        borderRadius: '6px',
+                        fontSize: '14px',
+                        fontWeight: 'bold'
+                      }}
+                    >
+                      View Document
+                    </a>
+                    <label style={{
+                      padding: '8px 16px',
+                      backgroundColor: '#666',
+                      color: 'white',
+                      borderRadius: '6px',
+                      fontSize: '14px',
+                      fontWeight: 'bold',
+                      cursor: 'pointer'
+                    }}>
+                      Replace
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleDocumentUpload('ssn_document', file);
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <label style={{
+                  display: 'block',
+                  border: '2px dashed #ddd',
+                  borderRadius: '6px',
+                  padding: '24px',
+                  textAlign: 'center',
+                  cursor: 'pointer',
+                  backgroundColor: uploadingDoc === 'ssn_document' ? '#f5f5f5' : 'white'
+                }}>
+                  <input
+                    type="file"
+                    accept="image/*,application/pdf"
+                    style={{ display: 'none' }}
+                    disabled={uploadingDoc === 'ssn_document'}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) handleDocumentUpload('ssn_document', file);
+                    }}
+                  />
+                  <div style={{ marginBottom: '12px' }}>
+                    <svg style={{ width: '48px', height: '48px', fill: '#999', margin: '0 auto' }} viewBox="0 0 24 24">
+                      <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" />
+                    </svg>
+                  </div>
+                  <p style={{ margin: 0, fontWeight: 'bold', fontSize: '16px' }}>
+                    {uploadingDoc === 'ssn_document' ? 'Uploading...' : 'Click to upload or drag and drop'}
+                  </p>
+                  <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#666' }}>
+                    JPG, PNG, WEBP, or PDF (max 10MB)
+                  </p>
+                </label>
+              )}
+            </div>
+
+            {/* Security Notice */}
+            <div style={{
+              marginTop: '20px',
+              padding: '12px',
+              backgroundColor: '#e3f2fd',
+              border: '1px solid #2196f3',
+              borderRadius: '6px',
+              display: 'flex',
+              alignItems: 'start',
+              gap: '12px'
+            }}>
+              <svg style={{ width: '20px', height: '20px', fill: '#1976d2', flexShrink: 0, marginTop: '2px' }} viewBox="0 0 24 24">
+                <path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" />
+              </svg>
+              <div style={{ fontSize: '12px', color: '#1565c0' }}>
+                <p style={{ margin: 0, fontWeight: 'bold' }}>Your documents are secure</p>
+                <p style={{ margin: '4px 0 0 0' }}>
+                  All uploaded documents are encrypted and stored securely in compliance with federal regulations.
+                  These documents are only accessible to authorized HR personnel for employment verification purposes.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 

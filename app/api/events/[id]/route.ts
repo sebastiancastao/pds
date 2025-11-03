@@ -44,12 +44,27 @@ export async function GET(
       return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
     }
 
-    const { data, error } = await supabaseAdmin
+    // Check user role - admin and exec can view any event
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    const userRole = userData?.role as string;
+    const isAdminOrExec = userRole === "admin" || userRole === "exec";
+
+    // Build query - admin/exec can see any event, others only their own
+    let query = supabaseAdmin
       .from("events")
       .select("*")
-      .eq("id", eventId)
-      .eq("created_by", user.id)
-      .single();
+      .eq("id", eventId);
+
+    if (!isAdminOrExec) {
+      query = query.eq("created_by", user.id);
+    }
+
+    const { data, error } = await query.single();
 
     if (error) {
       console.error("SUPABASE SELECT ERROR:", error);
@@ -96,6 +111,16 @@ export async function PUT(
     if (!eventId) {
       return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
     }
+
+    // Check user role - admin and exec can edit any event
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    const userRole = userData?.role as string;
+    const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
     const body = await req.json();
 
@@ -208,12 +233,17 @@ export async function PUT(
       updatePayload.tips = tips;
     }
 
-    const { data, error } = await supabaseAdmin
+    // Build update query - admin/exec can edit any event, others only their own
+    let updateQuery = supabaseAdmin
       .from("events")
       .update(updatePayload)
-      .eq("id", eventId)
-      .eq("created_by", user.id)
-      .select();
+      .eq("id", eventId);
+
+    if (!isAdminOrExec) {
+      updateQuery = updateQuery.eq("created_by", user.id);
+    }
+
+    const { data, error } = await updateQuery.select();
 
     if (error) {
       console.error("SUPABASE UPDATE ERROR:", error);

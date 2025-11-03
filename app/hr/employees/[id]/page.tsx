@@ -51,6 +51,18 @@ type SummaryPayload = {
   entries: TimeEntry[];
 };
 
+type I9Documents = {
+  drivers_license_url?: string;
+  drivers_license_filename?: string;
+  drivers_license_uploaded_at?: string;
+  ssn_document_url?: string;
+  ssn_document_filename?: string;
+  ssn_document_uploaded_at?: string;
+  additional_doc_url?: string;
+  additional_doc_filename?: string;
+  additional_doc_uploaded_at?: string;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -81,6 +93,8 @@ export default function EmployeeProfilePage() {
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [summary, setSummary] = useState<SummaryPayload["summary"] | null>(null);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
+  const [i9Documents, setI9Documents] = useState<I9Documents | null>(null);
+  const [i9Loading, setI9Loading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -143,6 +157,42 @@ export default function EmployeeProfilePage() {
       console.log("🔴 [DEBUG] No employeeId provided");
     }
   }, [employeeId]);
+
+  // Fetch I-9 documents after employee is loaded
+  useEffect(() => {
+    const loadI9Documents = async () => {
+      if (!employee?.id) return;
+
+      console.log("🔵 [DEBUG] Fetching I-9 documents for user:", employee.id);
+      setI9Loading(true);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        // Note: This fetches the employee's I-9 documents
+        // The API will need to be updated to support HR viewing employee documents
+        const res = await fetch(`/api/i9-documents/upload?userId=${employee.id}`, {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          console.log("🟢 [DEBUG] I-9 documents loaded:", data);
+          setI9Documents(data.documents || null);
+        } else {
+          console.log("⚠️ [DEBUG] No I-9 documents found or error:", res.status);
+        }
+      } catch (error) {
+        console.error("🔴 [DEBUG] Error loading I-9 documents:", error);
+      } finally {
+        setI9Loading(false);
+      }
+    };
+
+    loadI9Documents();
+  }, [employee?.id]);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -383,6 +433,206 @@ export default function EmployeeProfilePage() {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </section>
+
+            {/* I-9 Documents */}
+            <section className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">I-9 Documentation</h2>
+              </div>
+              <div className="apple-card p-6">
+                {i9Loading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading documents…</span>
+                  </div>
+                ) : !i9Documents ? (
+                  <div className="text-center py-8">
+                    <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p className="text-gray-500 font-medium">No I-9 documents uploaded yet</p>
+                    <p className="text-sm text-gray-400 mt-1">Employee has not completed I-9 verification</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {/* Driver's License */}
+                    <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
+                            i9Documents.drivers_license_url
+                              ? 'bg-green-100 text-green-600'
+                              : 'bg-gray-100 text-gray-400'
+                          }`}>
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
+                            </svg>
+                          </div>
+                          <div>
+                            <h3 className="font-semibold text-gray-900">Driver's License</h3>
+                            <p className="text-sm text-gray-500">Identity verification</p>
+                          </div>
+                        </div>
+                        {i9Documents.drivers_license_url && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                            Uploaded
+                          </span>
+                        )}
+                      </div>
+                      {i9Documents.drivers_license_url ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center text-sm text-gray-600">
+                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="truncate">{i9Documents.drivers_license_filename || 'document'}</span>
+                          </div>
+                          {i9Documents.drivers_license_uploaded_at && (
+                            <div className="flex items-center text-sm text-gray-500">
+                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              {formatDate(i9Documents.drivers_license_uploaded_at)}
+                            </div>
+                          )}
+                          <a
+                            href={i9Documents.drivers_license_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            View Document
+                          </a>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">Not uploaded</p>
+                      )}
+                    </div>
+
+                    {/* SSN Document */}
+                    <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
+                      <div className="flex items-start justify-between mb-3">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
+                            i9Documents.ssn_document_url
+                              ? 'bg-green-100 text-green-600'
+                              : 'bg-gray-100 text-gray-400'
+                          }`}>
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                          </div>
+                          <div>
+                            <h3 className="font-semibold text-gray-900">Social Security Card</h3>
+                            <p className="text-sm text-gray-500">Employment eligibility</p>
+                          </div>
+                        </div>
+                        {i9Documents.ssn_document_url && (
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                            Uploaded
+                          </span>
+                        )}
+                      </div>
+                      {i9Documents.ssn_document_url ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center text-sm text-gray-600">
+                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="truncate">{i9Documents.ssn_document_filename || 'document'}</span>
+                          </div>
+                          {i9Documents.ssn_document_uploaded_at && (
+                            <div className="flex items-center text-sm text-gray-500">
+                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              {formatDate(i9Documents.ssn_document_uploaded_at)}
+                            </div>
+                          )}
+                          <a
+                            href={i9Documents.ssn_document_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            View Document
+                          </a>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">Not uploaded</p>
+                      )}
+                    </div>
+
+                    {/* Additional Document (if exists) */}
+                    {i9Documents.additional_doc_url && (
+                      <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all md:col-span-2">
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
+                              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <h3 className="font-semibold text-gray-900">Additional Document</h3>
+                              <p className="text-sm text-gray-500">Supplementary verification</p>
+                            </div>
+                          </div>
+                          <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                            </svg>
+                            Uploaded
+                          </span>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-center text-sm text-gray-600">
+                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span className="truncate">{i9Documents.additional_doc_filename || 'document'}</span>
+                          </div>
+                          {i9Documents.additional_doc_uploaded_at && (
+                            <div className="flex items-center text-sm text-gray-500">
+                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              {formatDate(i9Documents.additional_doc_uploaded_at)}
+                            </div>
+                          )}
+                          <a
+                            href={i9Documents.additional_doc_url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            View Document
+                          </a>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
 

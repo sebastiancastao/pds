@@ -1,4 +1,4 @@
-// app/(dashboard)/dashboard/page.tsx
+// app/global-calendar/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -7,7 +7,6 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
-import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import "./dashboard-styles.css";
 
 type EventItem = {
@@ -96,16 +95,12 @@ type Department = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"events">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
 
   // Auth & Access Control
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [userRole, setUserRole] = useState<string>("");
-  const [userRegionId, setUserRegionId] = useState<string | null>(null);
-  const [userCoordinates, setUserCoordinates] = useState<{ lat: number; lng: number } | null>(null);
-  const [detectedRegion, setDetectedRegion] = useState<{ id: string; name: string } | null>(null);
 
   // Events
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -168,7 +163,7 @@ export default function DashboardPage() {
         params.append("region_id", regionFilter);
         params.append("geo_filter", "true");
       }
-      console.log('[DASHBOARD-HR] 🔍 Loading employees with filters:', { stateFilter, regionFilter });
+      console.log('[GLOBAL-CALENDAR-HR] 🔍 Loading employees with filters:', { stateFilter, regionFilter });
       const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}`, {
         method: "GET",
         headers: {
@@ -177,7 +172,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load employees");
-      console.log('[DASHBOARD-HR] 📦 Employees loaded:', {
+      console.log('[GLOBAL-CALENDAR-HR] 📦 Employees loaded:', {
         count: data.employees?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered
@@ -185,7 +180,7 @@ export default function DashboardPage() {
       setEmployees(data.employees || []);
       if (data.stats?.states) setAvailableStates(data.stats.states);
     } catch (err: any) {
-      console.error('[DASHBOARD-HR] ❌ Error loading employees:', err);
+      console.error('[GLOBAL-CALENDAR-HR] ❌ Error loading employees:', err);
       setEmployeesError(err.message || "Failed to load employees");
     }
     setLoadingEmployees(false);
@@ -195,334 +190,41 @@ export default function DashboardPage() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        console.log('[DASHBOARD] 🔐 Starting auth check...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-        console.log('[DASHBOARD] 🔐 Session check result:', {
-          hasSession: !!session,
-          userId: session?.user?.id,
-          error: sessionError?.message
-        });
-
-        if (sessionError) {
-          console.error('[DASHBOARD] ❌ Session error:', sessionError);
+        if (sessionError || !session) {
+          console.error('[GLOBAL-CALENDAR] No session found, redirecting to login');
           router.replace('/login');
           return;
         }
 
-        if (!session) {
-          console.error('[DASHBOARD] ❌ No session found, redirecting to login');
-          router.replace('/login');
-          return;
-        }
-
-        console.log('[DASHBOARD] ✅ Session found, fetching user data for:', session.user.id);
-
-        // Check user role and region from users table (coordinates are in profiles table)
+        // Check user role
         const { data: userData, error: userError } = await (supabase
           .from('users')
-          .select('role, region_id')
+          .select('role')
           .eq('id', session.user.id)
           .single() as any);
 
-        console.log('[DASHBOARD] 📊 User data fetch result:', {
-          success: !!userData,
-          hasError: !!userError,
-          errorCode: userError?.code,
-          errorMessage: userError?.message
-        });
-
-        if (userError) {
-          console.error('[DASHBOARD] ❌ User data fetch error:', userError);
-          router.replace('/login');
+        if (userError || !userData) {
+          console.error('[GLOBAL-CALENDAR] Failed to fetch user data:', userError);
+          router.replace('/dashboard');
           return;
         }
 
-        if (!userData) {
-          console.error('[DASHBOARD] ❌ No user data found');
-          router.replace('/login');
+        // Only allow admin and exec users
+        const userRole = userData.role as string;
+        if (userRole !== 'admin' && userRole !== 'exec') {
+          console.error('[GLOBAL-CALENDAR] Access denied - user role:', userRole);
+          router.replace('/dashboard');
           return;
         }
 
-        console.log('[DASHBOARD] 📋 User data from users table:', JSON.stringify(userData, null, 2));
-
-        // Fetch profile data - try both possible foreign key columns
-        console.log('[DASHBOARD] 🔍 Fetching profile for user:', session.user.id);
-
-        // Debug: Check what's in profiles table
-        const debugProfiles = await supabase
-          .from('profiles')
-          .select('id, user_id, latitude, longitude')
-          .limit(3);
-
-        console.log('[DASHBOARD] 🔍 DEBUG - Sample profiles:', {
-          count: debugProfiles.data?.length,
-          samples: debugProfiles.data,
-          error: debugProfiles.error?.message
-        });
-
-        let profileData: any = null;
-        let profileError: any = null;
-
-        // Try 1: user_id column
-        const result1 = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('user_id', session.user.id)
-          .maybeSingle();
-
-        console.log('[DASHBOARD] 🔍 Profile query (user_id):', {
-          found: !!result1.data,
-          error: result1.error?.message,
-          dataPreview: result1.data ? 'Found' : 'Not found',
-          searchingFor: session.user.id
-        });
-
-        if (result1.data) {
-          profileData = result1.data;
-        } else if (!result1.error) {
-          // Try 2: id column as foreign key
-          console.log('[DASHBOARD] 🔍 Trying with id column...');
-          const result2 = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .maybeSingle();
-
-          console.log('[DASHBOARD] 🔍 Profile query (id):', {
-            found: !!result2.data,
-            error: result2.error?.message
-          });
-
-          profileData = result2.data;
-          profileError = result2.error;
-        } else {
-          profileError = result1.error;
-        }
-
-        console.log('[DASHBOARD] 📋 Final profile data:', profileData ? {
-          hasLatitude: !!profileData.latitude,
-          hasLongitude: !!profileData.longitude,
-          latitude: profileData.latitude,
-          longitude: profileData.longitude
-        } : null);
-
-        if (profileError) {
-          console.warn('[DASHBOARD] ⚠️ Profile fetch error (non-fatal):', profileError);
-        }
-
-        // Only allow manager and exec users
-        const role = userData.role as string;
-        const regionId = userData.region_id as string | null;
-
-        // Get coordinates from profiles table (they only exist there)
-        let userLat = profileData?.latitude;
-        let userLng = profileData?.longitude;
-
-        console.log('[DASHBOARD] 📍 Coordinates from profiles table:', {
-          lat: userLat,
-          lng: userLng,
-          hasCoordinates: !!(userLat && userLng)
-        });
-
-        // If no coordinates but user has address, geocode it
-        if ((!userLat || !userLng) && profileData?.city && profileData?.state) {
-          console.log('[DASHBOARD] 🗺️ No coordinates found, attempting to geocode address:', {
-            city: profileData.city,
-            state: profileData.state
-          });
-
-          try {
-            // Use a simple placeholder address for geocoding - just city and state
-            const geocodeResult = await geocodeAddress(
-              '', // No street address
-              profileData.city,
-              profileData.state
-            );
-
-            if (geocodeResult) {
-              userLat = geocodeResult.latitude;
-              userLng = geocodeResult.longitude;
-              console.log('[DASHBOARD] ✅ Address geocoded successfully:', {
-                lat: userLat,
-                lng: userLng,
-                display_name: geocodeResult.display_name
-              });
-
-              // Optionally update the profile with the geocoded coordinates
-              // (commented out to avoid unnecessary writes)
-              // await supabase.from('profiles').update({
-              //   latitude: userLat,
-              //   longitude: userLng
-              // }).eq('id', session.user.id);
-            } else {
-              console.warn('[DASHBOARD] ⚠️ Geocoding returned no results for address');
-            }
-          } catch (geocodeErr) {
-            console.error('[DASHBOARD] ❌ Geocoding failed:', geocodeErr);
-          }
-        }
-
-        if (role !== 'manager' && role !== 'exec') {
-          console.error('[DASHBOARD] Access denied - user role:', role);
-          router.replace('/login');
-          return;
-        }
-
-        console.log('[DASHBOARD] ✅ Access granted - user role:', role, 'region:', regionId, 'coords:', { userLat, userLng });
-
-        setUserRole(role);
-        setUserRegionId(regionId);
-
-        // IMPORTANT: Grant access immediately - geocoding should NOT block dashboard access
+        console.log('[GLOBAL-CALENDAR] Access granted - user role:', userRole);
         setIsAuthorized(true);
-        console.log('[DASHBOARD] 🎯 Authorization granted, proceeding with region detection...');
-
-        // Priority order for determining user's region (non-blocking):
-        // 1. Geocoding from coordinates (most accurate)
-        // 2. Database region_id (fallback)
-        // 3. No region (user will see all data)
-
-        // Wrap geocoding in try-catch to ensure it never blocks access
-        try {
-          let regionDetected = false;
-
-          // If user has coordinates, find their region
-          // This applies to both managers and executives
-          if (userLat && userLng) {
-          console.log('[DASHBOARD] 🌍 Determining region from coordinates:', { userLat, userLng });
-          setUserCoordinates({ lat: userLat, lng: userLng });
-
-          // Fetch all regions to determine which one the user is in
-          try {
-            const regionsRes = await fetch('/api/regions');
-            if (regionsRes.ok) {
-              const regionsData = await regionsRes.json();
-              const allRegions = regionsData.regions || [];
-
-              // Use the geocoding utility to find the user's region
-              const userRegion = getUserRegion(userLat, userLng, allRegions);
-
-              if (userRegion) {
-                console.log('[DASHBOARD] ✅ User detected in region:', userRegion.name);
-                setDetectedRegion({ id: userRegion.id, name: userRegion.name });
-                regionDetected = true;
-
-                // For managers, auto-set their region filter
-                // For executives, they can still change it
-                if (role === 'manager') {
-                  console.log('[DASHBOARD] 👤 Setting manager region filters to:', userRegion.id);
-                  setSelectedRegion(userRegion.id);
-                  setSelectedEmployeeRegion(userRegion.id);
-                }
-              } else {
-                console.warn('[DASHBOARD] ⚠️ No region found within radius for user coordinates');
-              }
-            }
-          } catch (err) {
-            console.error('[DASHBOARD] ❌ Failed to determine user region:', err);
-          }
-        } else {
-          console.log('[DASHBOARD] ⚠️ No coordinates available for region detection');
-        }
-
-        // Fallback: If geocoding didn't work but user has a region_id, use that
-        if (!regionDetected && regionId) {
-          console.log('[DASHBOARD] 📌 Using database region_id as fallback:', regionId);
-          // Fetch region name for display
-          try {
-            const regionsRes = await fetch('/api/regions');
-            if (regionsRes.ok) {
-              const regionsData = await regionsRes.json();
-              const region = regionsData.regions?.find((r: any) => r.id === regionId);
-              if (region) {
-                console.log('[DASHBOARD] ✅ Region found from database:', region.name);
-                setDetectedRegion({ id: region.id, name: region.name });
-                if (role === 'manager') {
-                  setSelectedRegion(region.id);
-                  setSelectedEmployeeRegion(region.id);
-                }
-                regionDetected = true;
-              }
-            }
-          } catch (err) {
-            console.error('[DASHBOARD] ❌ Failed to fetch region data:', err);
-          }
-        }
-
-        // Last resort: Use browser geolocation to determine current location
-        if (!regionDetected) {
-          console.log('[DASHBOARD] 🌐 Attempting browser geolocation...');
-          try {
-            // Get user's current location from browser
-            const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-              if (!navigator.geolocation) {
-                reject(new Error('Geolocation not supported'));
-                return;
-              }
-              navigator.geolocation.getCurrentPosition(resolve, reject, {
-                timeout: 10000,
-                maximumAge: 300000, // 5 minutes cache
-                enableHighAccuracy: false
-              });
-            });
-
-            const currentLat = position.coords.latitude;
-            const currentLng = position.coords.longitude;
-
-            console.log('[DASHBOARD] 📍 Browser location obtained:', { currentLat, currentLng });
-
-            // Fetch regions and determine which one the user is in
-            const regionsRes = await fetch('/api/regions');
-            if (regionsRes.ok) {
-              const regionsData = await regionsRes.json();
-              const allRegions = regionsData.regions || [];
-
-              // Use the geocoding utility to find the user's region
-              const userRegion = getUserRegion(currentLat, currentLng, allRegions);
-
-              if (userRegion) {
-                console.log('[DASHBOARD] ✅ User location detected in region:', userRegion.name);
-                setDetectedRegion({ id: userRegion.id, name: userRegion.name });
-                setUserCoordinates({ lat: currentLat, lng: currentLng });
-                if (role === 'manager') {
-                  console.log('[DASHBOARD] 👤 Setting manager region filters to:', userRegion.id);
-                  setSelectedRegion(userRegion.id);
-                  setSelectedEmployeeRegion(userRegion.id);
-                }
-                regionDetected = true;
-              } else {
-                console.warn('[DASHBOARD] ⚠️ Current location is not within any defined region');
-              }
-            }
-          } catch (geoErr: any) {
-            console.warn('[DASHBOARD] ⚠️ Browser geolocation failed:', geoErr.message);
-          }
-        }
-
-          // If still no region detected, warn the user (but still allow access)
-          if (!regionDetected && role === 'manager') {
-            console.warn('[DASHBOARD] ⚠️ Manager has no region assigned. Showing all data. Please allow location access or set coordinates in profile for region filtering.');
-          } else if (!regionDetected) {
-            console.log('[DASHBOARD] ℹ️ No region detected for executive. User can select region from dropdown.');
-          }
-
-          console.log('[DASHBOARD] 🏁 Auth check complete. Region detection:', regionDetected ? 'SUCCESS' : 'NONE');
-        } catch (regionErr) {
-          // Geocoding failed, but this should NOT block access
-          console.error('[DASHBOARD] ⚠️ Region detection failed (non-fatal):', regionErr);
-          console.log('[DASHBOARD] ℹ️ User can still access dashboard, region filtering disabled.');
-        }
-      } catch (err: any) {
-        console.error('[DASHBOARD] ❌ FATAL: Auth check error:', {
-          message: err?.message,
-          stack: err?.stack,
-          error: err
-        });
-        console.error('[DASHBOARD] ❌ Redirecting to login due to fatal error');
+      } catch (err) {
+        console.error('[GLOBAL-CALENDAR] Auth check error:', err);
         router.replace('/login');
       } finally {
-        console.log('[DASHBOARD] 🏁 Auth check finally block, setting authChecking to false');
         setAuthChecking(false);
       }
     };
@@ -539,7 +241,8 @@ export default function DashboardPage() {
       setLoading(true);
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch("/api/events", {
+        // Global calendar uses /api/all-events to see ALL events across the organization
+        const res = await fetch("/api/all-events", {
           method: "GET",
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
@@ -572,19 +275,11 @@ export default function DashboardPage() {
       setDepartments(mockDepts);
     };
 
-    // For managers, use the detected region from geocoding (if available)
-    // Otherwise, fall back to database region_id or 'all' for executives
-    const initialRegion = userRole === 'manager' && detectedRegion
-      ? detectedRegion.id
-      : (userRole === 'manager' && userRegionId ? userRegionId : 'all');
-
-    console.log('[DASHBOARD] 🚀 Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
-
     loadEvents();
-    loadEmployees('all', initialRegion);
+    loadEmployees();
     loadHRMockData();
     loadRegions();
-  }, [isAuthorized, loadEmployees, userRole, userRegionId, detectedRegion]);
+  }, [isAuthorized, loadEmployees]);
 
   // Derived stats
   const eventStats = {
@@ -612,7 +307,7 @@ export default function DashboardPage() {
 
   // Region + vendors helpers
   const loadRegions = async () => {
-    console.log('[DASHBOARD] 📍 Loading regions...');
+    console.log('[GLOBAL-CALENDAR] 📍 Loading regions...');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/regions", {
@@ -621,13 +316,13 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        console.log('[DASHBOARD] ✅ Regions loaded:', data.regions?.length || 0, data.regions);
+        console.log('[GLOBAL-CALENDAR] ✅ Regions loaded:', data.regions?.length || 0, data.regions);
         setRegions(data.regions || []);
       } else {
-        console.error('[DASHBOARD] ❌ Failed to load regions, status:', res.status);
+        console.error('[GLOBAL-CALENDAR] ❌ Failed to load regions, status:', res.status);
       }
     } catch (err) {
-      console.error("[DASHBOARD] ❌ Failed to load regions:", err);
+      console.error("[GLOBAL-CALENDAR] ❌ Failed to load regions:", err);
     }
   };
 
@@ -638,17 +333,16 @@ export default function DashboardPage() {
   };
 
   const loadAllVendors = async (regionId: string = selectedRegion) => {
-    console.log('[DASHBOARD] 🔍 loadAllVendors called with regionId:', regionId);
+    console.log('[GLOBAL-CALENDAR] 🔍 loadAllVendors called with regionId:', regionId);
     setLoadingVendors(true);
     setMessage("");
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
-      // Use geographic filtering when a specific region is selected
-      // This ensures vendors are filtered by geographic boundaries (radius from region center)
+      // Use geographic filtering when a region is selected
       const useGeoFilter = regionId !== "all";
-      const url = `/api/all-vendors${regionId !== "all" ? `?region_id=${regionId}${useGeoFilter ? '&geo_filter=true' : ''}` : ""}`;
-      console.log('[DASHBOARD] 📡 Fetching vendors from:', url, { useGeoFilter, userRole, regionId });
+      const url = `/api/all-vendors${regionId !== "all" ? `?region_id=${regionId}&geo_filter=true` : ""}`;
+      console.log('[GLOBAL-CALENDAR] 📡 Fetching vendors from:', url, { useGeoFilter });
 
       // Fetch ALL vendors from the database directly, not filtered by venue
       const res = await fetch(url, {
@@ -656,25 +350,16 @@ export default function DashboardPage() {
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
 
-      console.log('[DASHBOARD] 📥 Response status:', res.status, res.ok ? '✅' : '❌');
+      console.log('[GLOBAL-CALENDAR] 📥 Response status:', res.status, res.ok ? '✅' : '❌');
 
       if (!res.ok) {
-        let errorMessage = "Failed to load vendors";
-        try {
-          const errorData = await res.json();
-          console.error('[DASHBOARD] ❌ API error:', errorData);
-          errorMessage = errorData.error || errorMessage;
-        } catch (parseErr) {
-          // If JSON parsing fails, try to get text
-          const errorText = await res.text();
-          console.error('[DASHBOARD] ❌ Non-JSON error response:', errorText.substring(0, 200));
-          errorMessage = `Server error (${res.status}): ${res.statusText}`;
-        }
-        throw new Error(errorMessage);
+        const errorData = await res.json();
+        console.error('[GLOBAL-CALENDAR] ❌ API error:', errorData);
+        throw new Error(errorData.error || "Failed to load vendors");
       }
 
       const data = await res.json();
-      console.log('[DASHBOARD] 📦 Received data:', {
+      console.log('[GLOBAL-CALENDAR] 📦 Received data:', {
         vendors_count: data.vendors?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered,
@@ -691,10 +376,10 @@ export default function DashboardPage() {
             return A.localeCompare(B);
           });
 
-      console.log('[DASHBOARD] ✅ Setting vendors state:', allVendors.length);
+      console.log('[GLOBAL-CALENDAR] ✅ Setting vendors state:', allVendors.length);
       setVendors(allVendors);
     } catch (err: any) {
-      console.error("[DASHBOARD] ❌ Error loading vendors:", err);
+      console.error("[GLOBAL-CALENDAR] ❌ Error loading vendors:", err);
       setMessage(err.message || "Network error loading vendors");
     }
     setLoadingVendors(false);
@@ -704,15 +389,10 @@ export default function DashboardPage() {
   const openVendorModal = () => {
     setShowVendorModal(true);
     setSelectedVendors(new Set());
-    // For managers, use their detected region from geocoding; for execs, show all
-    const initialRegion = userRole === 'manager' && detectedRegion
-      ? detectedRegion.id
-      : (userRole === 'manager' && userRegionId ? userRegionId : "all");
-    console.log('[DASHBOARD] 📂 Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
-    setSelectedRegion(initialRegion);
+    setSelectedRegion("all");
     setMessage("");
     loadRegions();
-    loadAllVendors(initialRegion);
+    loadAllVendors("all");
   };
   const closeVendorModal = () => {
     setShowVendorModal(false);
@@ -721,7 +401,7 @@ export default function DashboardPage() {
     setMessage("");
   };
   const handleRegionChange = async (newRegion: string) => {
-    console.log('[DASHBOARD] 🌍 Region changed:', { from: selectedRegion, to: newRegion, userRole });
+    console.log('[GLOBAL-CALENDAR] 🌍 Region changed:', { from: selectedRegion, to: newRegion });
     setSelectedRegion(newRegion);
     setSelectedVendors(new Set());
     loadAllVendors(newRegion);
@@ -853,12 +533,7 @@ export default function DashboardPage() {
   };
 
   const handleEmployeeRegionChange = async (newRegion: string) => {
-    // Prevent managers from changing regions
-    if (userRole === 'manager') {
-      console.warn('[DASHBOARD-HR] ⚠️ Managers cannot change regions');
-      return;
-    }
-    console.log('[DASHBOARD-HR] 🌍 Region changed:', { from: selectedEmployeeRegion, to: newRegion });
+    console.log('[GLOBAL-CALENDAR-HR] 🌍 Region changed:', { from: selectedEmployeeRegion, to: newRegion });
     setSelectedEmployeeRegion(newRegion);
     loadEmployees(selectedState, newRegion);
   };
@@ -902,18 +577,18 @@ export default function DashboardPage() {
         <div className="mb-12">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">Dashboard</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">Global Calendar</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
-                  ? "Manage your events and invite vendors seamlessly."
+                  ? "Manage all events and vendors across the organization."
                   : "Manage employees, leave requests, and workforce analytics."}
               </p>
               <div className="mt-2">
-                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
                   <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                   </svg>
-                  Manager & Executive Access
+                  Admin & Executive Access
                 </span>
               </div>
             </div>
@@ -941,7 +616,15 @@ export default function DashboardPage() {
               Events
               {activeTab === "events" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
-            
+            <button
+              onClick={() => setActiveTab("hr")}
+              className={`pb-4 px-2 font-semibold text-lg transition-colors relative ${
+                activeTab === "hr" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              HR
+              {activeTab === "hr" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
           </div>
         </div>
 
@@ -976,7 +659,7 @@ export default function DashboardPage() {
             {!loading && !error && events.length > 0 && (
               <section className="mb-10">
                 <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Overview</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
                   <div className="apple-stat-card apple-stat-card-blue">
                     <div className="apple-stat-icon apple-stat-icon-blue">
                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1011,6 +694,20 @@ export default function DashboardPage() {
                       <div className="apple-stat-label">Total collected</div>
                       <div className="apple-stat-value">${(eventStats.totalTicketSales / 1000).toFixed(1)}k</div>
                       <div className="apple-stat-sublabel">total revenue</div>
+                    </div>
+                  </div>
+                  <div className="apple-stat-card apple-stat-card-orange">
+                    <div className="apple-stat-icon apple-stat-icon-orange">
+                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                    </div>
+                    <div className="apple-stat-content">
+                      <div className="apple-stat-label">Staff</div>
+                      <div className="apple-stat-value">
+                        {eventStats.totalConfirmedStaff}/{eventStats.totalRequiredStaff}
+                      </div>
+                      <div className="apple-stat-sublabel">confirmed</div>
                     </div>
                   </div>
                 </div>
@@ -1138,12 +835,14 @@ export default function DashboardPage() {
           <>
             {/* Quick Actions */}
             <div className="flex flex-wrap gap-3 mb-10">
-              <button className="apple-button apple-button-primary">
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                </svg>
-                Add Employee
-              </button>
+              <Link href="/signup">
+                <button className="apple-button apple-button-primary">
+                  <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                  </svg>
+                  Add Employee
+                </button>
+              </Link>
               <button className="apple-button apple-button-secondary">
                 <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -1350,7 +1049,6 @@ export default function DashboardPage() {
                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                       // (Optional) hook up local filter later
                     />
-                    {/* Region filter - Show for both Managers and Executives */}
                     <select
                       value={selectedEmployeeRegion}
                       onChange={(e) => handleEmployeeRegionChange(e.target.value)}
@@ -1359,55 +1057,34 @@ export default function DashboardPage() {
                       <option value="all">All Regions</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.name} {detectedRegion?.id === r.id && userRole === 'manager' ? '(Your Region)' : ''}
+                          {r.name}
                         </option>
                       ))}
                     </select>
-                    {/* State and Department filters - Only show for Executives */}
-                    {userRole === 'exec' && (
-                      <>
-                        <select
-                          value={selectedState}
-                          onChange={(e) => handleStateFilterChange(e.target.value)}
-                          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="all">All States</option>
-                          {availableStates.map((state) => (
-                            <option key={state} value={state}>
-                              {state}
-                            </option>
-                          ))}
-                        </select>
-                        <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                          <option value="">All Departments</option>
-                          {departments.map((dept) => (
-                            <option key={dept.name} value={dept.name}>
-                              {dept.name}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
+                    <select
+                      value={selectedState}
+                      onChange={(e) => handleStateFilterChange(e.target.value)}
+                      className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="all">All States</option>
+                      {availableStates.map((state) => (
+                        <option key={state} value={state}>
+                          {state}
+                        </option>
+                      ))}
+                    </select>
+                    <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+                      <option value="">All Departments</option>
+                      {departments.map((dept) => (
+                        <option key={dept.name} value={dept.name}>
+                          {dept.name}
+                        </option>
+                      ))}
+                    </select>
                   </div>
                 </div>
 
-                {/* Manager Region Info Banner */}
-                {userRole === 'manager' && detectedRegion && selectedEmployeeRegion !== "all" && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
-                    <div className="flex items-center text-xs text-blue-800">
-                      <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span>
-                        Your region was auto-detected: <strong>{detectedRegion.name}</strong> •
-                        Showing {employees.length} {employees.length === 1 ? "employee" : "employees"}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Executive Filter Banner */}
-                {userRole === 'exec' && (selectedState !== "all" || selectedEmployeeRegion !== "all") && (
+                {(selectedState !== "all" || selectedEmployeeRegion !== "all") && (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
                     <div className="flex items-center text-sm text-blue-800">
                       <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1421,13 +1098,7 @@ export default function DashboardPage() {
                       {selectedState !== "all" && <span>{selectedState}</span>}
                       <span className="ml-2 text-blue-600">• {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
                     </div>
-                    <button
-                      onClick={() => {
-                        handleStateFilterChange("all");
-                        handleEmployeeRegionChange("all");
-                      }}
-                      className="text-xs text-blue-700 hover:text-blue-900 font-medium flex items-center"
-                    >
+                    <button onClick={() => { handleStateFilterChange("all"); handleEmployeeRegionChange("all"); }} className="text-xs text-blue-700 hover:text-blue-900 font-medium flex items-center">
                       <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                       </svg>
@@ -1666,24 +1337,11 @@ export default function DashboardPage() {
                     </svg>
                     <div className="text-sm text-gray-700">
                       <div className="font-semibold mb-1">3-Week Work Period</div>
-                      <div className="text-xs text-gray-600">We’ll invite selected vendors to share availability</div>
+                      <div className="text-xs text-gray-600">We'll invite selected vendors to share availability</div>
                     </div>
                   </div>
 
-                  {/* Region Filter - For both managers and executives */}
                   <div className="mb-6">
-                    {/* Auto-detection notice for managers */}
-                    {userRole === 'manager' && detectedRegion && (
-                      <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
-                        <div className="flex items-center text-xs text-blue-800">
-                          <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                          </svg>
-                          <span>Your region was auto-detected: <strong>{detectedRegion.name}</strong>. You can change it below if needed.</span>
-                        </div>
-                      </div>
-                    )}
-
                     <label className="block text-sm font-semibold text-gray-700 mb-2">
                       Filter by Region
                       {regions.length > 0 && (
@@ -1698,16 +1356,13 @@ export default function DashboardPage() {
                       <option value="all">🌎 All Regions</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          📍 {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
+                          📍 {r.name}
                         </option>
                       ))}
                     </select>
                     <div className="flex items-center justify-between mt-1.5">
                       <p className="text-xs text-gray-500">
-                        {selectedRegion === "all"
-                          ? "Showing vendors from all regions"
-                          : `Showing ${vendors.length} ${vendors.length === 1 ? "vendor" : "vendors"} in ${regions.find(r => r.id === selectedRegion)?.name || 'selected region'}`
-                        }
+                        {selectedRegion === "all" ? "Showing vendors from all regions" : "Filtered by region"}
                       </p>
                       {selectedRegion !== "all" && (
                         <button onClick={() => handleRegionChange("all")} className="text-xs text-blue-600 hover:text-blue-700 font-medium">

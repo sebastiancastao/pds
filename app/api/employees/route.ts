@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
+import { decrypt } from "@/lib/encryption";
+import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -59,9 +61,31 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    // Get state filter from query params
+    // Get filters from query params
     const { searchParams } = new URL(req.url);
     const stateFilter = searchParams.get("state");
+    const regionId = searchParams.get("region_id");
+    const useGeoFilter = searchParams.get("geo_filter") === "true";
+
+    console.log("[EMPLOYEES] 🔍 Query parameters:", { stateFilter, regionId, useGeoFilter });
+
+    // Fetch region data if regionId is provided (for geographic filtering)
+    let regionData: any = null;
+    if (regionId && regionId !== "all") {
+      const { data: region, error: regionError } = await supabaseAdmin
+        .from("regions")
+        .select("id, name, center_lat, center_lng, radius_miles")
+        .eq("id", regionId)
+        .single();
+
+      if (regionError) {
+        console.error("[EMPLOYEES] ❌ Error fetching region:", regionError);
+      } else {
+        console.log("[EMPLOYEES] ✅ Region data fetched:", region);
+      }
+
+      regionData = region;
+    }
 
     // Fetch real users from the database - query from users table and join with profiles
     let query = supabaseAdmin
@@ -78,7 +102,10 @@ export async function GET(req: NextRequest) {
           last_name,
           phone,
           city,
-          state
+          state,
+          latitude,
+          longitude,
+          region_id
         )
       `)
       .eq("is_active", true);
@@ -88,36 +115,177 @@ export async function GET(req: NextRequest) {
       query = query.eq("profiles.state", stateFilter);
     }
 
+    // Apply region filter if provided (database-level filtering by region_id)
+    // Geographic filtering will be done after fetching, if enabled
+    if (regionId && regionId !== "all" && !useGeoFilter) {
+      console.log("[EMPLOYEES] 🔍 Applying database filter for region_id:", regionId);
+      query = query.eq("profiles.region_id", regionId);
+    } else if (useGeoFilter) {
+      console.log("[EMPLOYEES] 🌍 Geographic filtering will be applied after fetching");
+    }
+
     const { data: users, error: usersError } = await query;
 
     if (usersError) {
-      console.error("Error fetching users:", usersError);
+      console.error("[EMPLOYEES] ❌ Error fetching users:", usersError);
       return NextResponse.json(
         { error: usersError.message || "Failed to load employees" },
         { status: 500 }
       );
     }
 
-    // Transform users into employee format
-    const employees: Employee[] = (users || []).map((user: any) => ({
-      id: user.id,
-      first_name: user.profiles?.first_name || "N/A",
-      last_name: user.profiles?.last_name || "N/A",
-      email: user.email || "N/A",
-      phone: user.profiles?.phone,
-      department: "General", // Default department - you can add this field to profiles table later
-      position: "Vendor", // Default position - you can add this field to profiles table later
-      hire_date: user.created_at || new Date().toISOString(),
-      status: "active", // Default status - you can add this field to profiles table later
-      salary: 0, // Default - you can add this field to profiles table later
-      profile_photo_url: null, // Photo handling will be added later if needed
-      state: user.profiles?.state || "N/A",
-      city: user.profiles?.city,
-      performance_score: 0,
-      projects_completed: 0,
-      attendance_rate: 0,
-      customer_satisfaction: 0,
-    }));
+    console.log("[EMPLOYEES] 📦 Raw users fetched:", users?.length || 0);
+
+    // Helper function to check if data appears to be encrypted
+    const isEncrypted = (data: string): boolean => {
+      // Encrypted data from CryptoJS typically:
+      // 1. Is base64 encoded (only contains A-Z, a-z, 0-9, +, /, =)
+      // 2. Often starts with "U2FsdGVk" (base64 for "Salted__")
+      // 3. Is longer than typical plain text names
+      if (!data || data.length < 20) return false;
+      const base64Regex = /^[A-Za-z0-9+/]+=*$/;
+      return base64Regex.test(data) && data.length > 30;
+    };
+
+    // Transform users into employee format - decrypt names only if encrypted
+    let employees: Employee[] = (users || []).map((user: any) => {
+      // Decrypt first and last names with error handling
+      let decryptedFirstName = "N/A";
+      let decryptedLastName = "N/A";
+
+      if (user.profiles?.first_name) {
+        if (isEncrypted(user.profiles.first_name)) {
+          try {
+            decryptedFirstName = decrypt(user.profiles.first_name);
+          } catch (err) {
+            console.error(`Failed to decrypt first_name for user ${user.id}:`, err);
+            decryptedFirstName = "[Decryption Error]";
+          }
+        } else {
+          // Data is not encrypted, use as-is
+          decryptedFirstName = user.profiles.first_name;
+        }
+      }
+
+      if (user.profiles?.last_name) {
+        if (isEncrypted(user.profiles.last_name)) {
+          try {
+            decryptedLastName = decrypt(user.profiles.last_name);
+          } catch (err) {
+            console.error(`Failed to decrypt last_name for user ${user.id}:`, err);
+            decryptedLastName = "[Decryption Error]";
+          }
+        } else {
+          // Data is not encrypted, use as-is
+          decryptedLastName = user.profiles.last_name;
+        }
+      }
+
+      return {
+        id: user.id,
+        first_name: decryptedFirstName,
+        last_name: decryptedLastName,
+        email: user.email || "N/A",
+        phone: user.profiles?.phone,
+        department: "General", // Default department - you can add this field to profiles table later
+        position: "Vendor", // Default position - you can add this field to profiles table later
+        hire_date: user.created_at || new Date().toISOString(),
+        status: "active", // Default status - you can add this field to profiles table later
+        salary: 0, // Default - you can add this field to profiles table later
+        profile_photo_url: null, // Photo handling will be added later if needed
+        state: user.profiles?.state || "N/A",
+        city: user.profiles?.city,
+        performance_score: 0,
+        projects_completed: 0,
+        attendance_rate: 0,
+        customer_satisfaction: 0,
+      };
+    });
+
+    console.log("[EMPLOYEES] 📦 Processed employees (after decryption):", employees.length);
+
+    // Apply geographic filtering if enabled
+    if (useGeoFilter && regionData && regionData.center_lat && regionData.center_lng) {
+      console.log("[EMPLOYEES] 🌍 Applying geographic filter:", {
+        region: regionData.name,
+        center: `${regionData.center_lat}, ${regionData.center_lng}`,
+        radius: regionData.radius_miles,
+      });
+
+      const originalCount = employees.length;
+
+      employees = employees
+        .filter((employee: any) => {
+          // Get coordinates from the original user data
+          const user = users?.find((u: any) => u.id === employee.id);
+          const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+          const latitude = profile?.latitude;
+          const longitude = profile?.longitude;
+
+          // Only include employees with valid coordinates that are within the region
+          if (!latitude || !longitude) {
+            console.log(`[EMPLOYEES] ⚠️ Employee ${employee.id} excluded: missing coordinates`);
+            return false;
+          }
+
+          const withinRegion = isWithinRegion(
+            latitude,
+            longitude,
+            regionData.center_lat,
+            regionData.center_lng,
+            regionData.radius_miles
+          );
+
+          const distance = calculateDistanceMiles(
+            latitude,
+            longitude,
+            regionData.center_lat,
+            regionData.center_lng
+          );
+
+          console.log(`[EMPLOYEES] 🔍 Employee ${employee.email}:`, {
+            coordinates: `${latitude}, ${longitude}`,
+            distance: `${Math.round(distance * 10) / 10} miles`,
+            withinRegion,
+            threshold: `${regionData.radius_miles} miles`,
+          });
+
+          return withinRegion;
+        })
+        .map((employee: any) => {
+          // Add distance information for each employee
+          const user = users?.find((u: any) => u.id === employee.id);
+          const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+          const latitude = profile?.latitude;
+          const longitude = profile?.longitude;
+
+          if (latitude && longitude) {
+            const distance = calculateDistanceMiles(
+              latitude,
+              longitude,
+              regionData.center_lat,
+              regionData.center_lng
+            );
+
+            return {
+              ...employee,
+              distance_from_center: Math.round(distance * 10) / 10,
+            };
+          }
+
+          return employee;
+        })
+        .sort((a: any, b: any) => {
+          // Sort by distance from region center when using geo filter
+          return (a.distance_from_center || 0) - (b.distance_from_center || 0);
+        });
+
+      console.log("[EMPLOYEES] ✅ Geographic filtering complete:", {
+        original_count: originalCount,
+        filtered_count: employees.length,
+        sorted_by: "distance",
+      });
+    }
 
     // Get unique states for filter dropdown
     const uniqueStates = [...new Set((users || []).map((u: any) => u.profiles?.state).filter(Boolean))].sort();
@@ -129,6 +297,16 @@ export async function GET(req: NextRequest) {
           total: employees.length,
           states: uniqueStates,
         },
+        region: regionData
+          ? {
+              id: regionData.id,
+              name: regionData.name,
+              center_lat: regionData.center_lat,
+              center_lng: regionData.center_lng,
+              radius_miles: regionData.radius_miles,
+            }
+          : null,
+        geo_filtered: useGeoFilter && regionData != null,
       },
       { status: 200 }
     );

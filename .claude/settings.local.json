@@ -9,7 +9,9 @@
       "Bash(do sed -i \"s/from ''pdf-lib'';/, PDFArray } from ''pdf-lib'';/g\" \"$file/route.ts\")",
       "Bash(do sed -i \"s/StandardFonts } , PDFArray }/StandardFonts, PDFArray }/g\" \"$file/route.ts\")",
       "Bash(npm run build:*)",
-      "Bash(node -c:*)"
+      "Bash(node -c:*)",
+      "Bash(timeout 60 npm run build:*)",
+      "Bash(npx tsc:*)"
     ],
     "deny": [],
     "ask": []

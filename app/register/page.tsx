@@ -148,7 +148,6 @@ export default function RegisterPage() {
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState(false);
   const [photoPreview, setPhotoPreview] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
@@ -436,19 +435,14 @@ export default function RegisterPage() {
         throw new Error(result.error || 'Failed to upload profile data');
       }
 
-      setIsLoading(false);
-      setSuccess(true);
-      
       console.log('Registration successful:', {
         profileId: result.profileId,
         photoUploaded: result.photoUploaded,
         redirectPath: result.redirectPath
       });
 
-      // Redirect to appropriate payroll packet page
-      setTimeout(() => {
-        router.push(result.redirectPath || '/dashboard');
-      }, 1500);
+      // Redirect immediately to appropriate payroll packet page
+      router.push(result.redirectPath || '/dashboard');
 
     } catch (error) {
       console.error('Registration error:', error);
@@ -457,42 +451,13 @@ export default function RegisterPage() {
     }
   };
 
-  if (success) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100 p-8">
-        <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
-          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <svg className="w-8 h-8 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Registration Submitted!</h2>
-          <p className="text-gray-600 mb-6">
-            Your onboarding information has been securely received. You will receive an email with next steps shortly.
-          </p>
-          <Link
-            href="/"
-            className="liquid-btn-primary inline-flex items-center gap-2"
-          >
-            <span>Go to Home</span>
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-            </svg>
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <AuthGuard requireMFA={false} allowTemporaryPassword={true} onboardingOnly={true}>
       <div className="min-h-screen flex bg-gradient-to-br from-primary-50 to-primary-100">
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
         <div className="relative z-10">
-          <Link href="/" className="text-white hover:text-primary-100 transition-colors">
-            ← Back to Home
-          </Link>
+         
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
               Employee Onboarding

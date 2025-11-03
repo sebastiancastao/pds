@@ -128,6 +128,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const isActiveParam = searchParams.get('is_active');
 
+    // Filter events by the current user (only show events they created)
     let query = supabaseAdmin
       .from('events')
       .select('*')

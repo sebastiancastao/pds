@@ -65,15 +65,15 @@ export async function POST(request: NextRequest) {
       // Update existing record
       console.log('[BACKGROUND CHECK SAVE] Updating existing record:', existingPdf.id);
 
-      const { error: updateError } = await (supabase
-        .from('background_check_pdfs')
+      const { error: updateError } = await ((supabase
+        .from('background_check_pdfs') as any)
         .update({
           pdf_data: pdfData,
           signature: signature || null,
           signature_type: signatureType || null,
           updated_at: new Date().toISOString()
         })
-        .eq('user_id', user.id) as any);
+        .eq('user_id', user.id));
 
       if (updateError) {
         console.error('[BACKGROUND CHECK SAVE] Update error:', updateError);
@@ -94,14 +94,14 @@ export async function POST(request: NextRequest) {
       // Insert new record
       console.log('[BACKGROUND CHECK SAVE] Creating new record');
 
-      const { error: insertError } = await (supabase
-        .from('background_check_pdfs')
+      const { error: insertError } = await ((supabase
+        .from('background_check_pdfs') as any)
         .insert([{
           user_id: user.id,
           pdf_data: pdfData,
           signature: signature || null,
           signature_type: signatureType || null
-        }]) as any);
+        }]));
 
       if (insertError) {
         console.error('[BACKGROUND CHECK SAVE] Insert error:', insertError);

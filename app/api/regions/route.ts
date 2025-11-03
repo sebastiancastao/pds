@@ -21,18 +21,11 @@ export async function GET(req: NextRequest) {
     const includeInactive = searchParams.get('include_inactive') === 'true';
     const withVendorCount = searchParams.get('with_vendor_count') === 'true';
 
-    // Build the query
-    let query = supabase
+    // Build the query - fetch all regions sorted by name
+    const { data: regions, error } = await supabase
       .from('regions')
       .select('*')
       .order('name', { ascending: true });
-
-    // Filter active regions by default
-    if (!includeInactive) {
-      query = query.eq('is_active', true);
-    }
-
-    const { data: regions, error } = await query;
 
     if (error) {
       console.error('Error fetching regions:', error);

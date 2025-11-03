@@ -28,10 +28,10 @@ export default function Home() {
     console.log('[DEBUG] Home - User authenticated:', user.id);
     setUser(user);
 
-    // Check if user has temporary password
+    // Check if user has temporary password and get role
     const { data: userData } = await (supabase
       .from('users')
-      .select('is_temporary_password, must_change_password')
+      .select('is_temporary_password, must_change_password, role')
       .eq('id', user.id)
       .single() as any);
 
@@ -50,6 +50,28 @@ export default function Home() {
       // Set checkpoint flag so user cannot navigate away from verify-mfa
       sessionStorage.setItem('mfa_checkpoint', 'true');
       router.push('/verify-mfa');
+      return;
+    }
+
+    // Role-based routing
+    const userRole = userData?.role;
+    console.log('[DEBUG] Home - User role:', userRole);
+
+    if (userRole === 'manager') {
+      console.log('[DEBUG] Home - Manager role detected, redirecting to /dashboard');
+      router.push('/dashboard');
+      return;
+    }
+
+    if (userRole === 'exec') {
+      console.log('[DEBUG] Home - Exec role detected, redirecting to /global-calendar');
+      router.push('/global-calendar');
+      return;
+    }
+
+    if (userRole === 'worker') {
+      console.log('[DEBUG] Home - Worker role detected, redirecting to /time-tracking');
+      router.push('/time-tracking');
       return;
     }
 

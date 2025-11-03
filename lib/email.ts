@@ -1222,3 +1222,405 @@ export async function sendTeamConfirmationEmail(data: {
   }
 }
 
+/**
+ * Send background check submission notification to admin
+ */
+export async function sendBackgroundCheckSubmissionNotification(data: {
+  userEmail: string;
+  userFirstName: string;
+  userLastName: string;
+  submittedAt: string;
+}): Promise<EmailResult> {
+  const { userEmail, userFirstName, userLastName, submittedAt } = data;
+
+  const emailSubject = `New Background Check Submitted - ${userFirstName} ${userLastName}`;
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">📋 New Background Check Submitted</h1>
+              <p style="color: #e6e6ff; margin: 10px 0 0 0; font-size: 16px;">A user has completed their background check forms</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                A new background check form has been submitted and is ready for your review.
+              </p>
+
+              <!-- User Details Box -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f8f9fa; border-radius: 8px; border: 2px solid #667eea; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 25px;">
+                    <h2 style="color: #667eea; margin: 0 0 20px 0; font-size: 20px;">👤 User Information</h2>
+
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Name:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 16px;">${userFirstName} ${userLastName}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Email:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${userEmail}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Submitted:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${submittedAt}</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Next Steps -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #0c5280; margin: 0 0 10px 0; font-size: 14px;"><strong>📝 Next Steps:</strong></p>
+                    <ol style="color: #0c5280; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6;">
+                      <li>Log in to the PDS admin dashboard</li>
+                      <li>Navigate to the Background Checks page</li>
+                      <li>Review the submitted PDF documents</li>
+                      <li>Mark the background check as completed when approved</li>
+                    </ol>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Dashboard Button -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks"
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                      Review Background Checks
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Important Note -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 20px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #856404; margin: 0; font-size: 14px;">
+                      <strong>⚠️ Important:</strong> This is an automated notification. The background check status will remain pending until you review and approve it in the admin dashboard.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                This notification was sent by PDS Time Tracking System
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 0;">
+                This message contains confidential information. If you received this in error, please delete it.
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 10px 0 0 0;">
+                © ${new Date().getFullYear()} PDS. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  // Send email via Resend to admin
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      to: 'sebastiancastao379@gmail.com', // Admin email
+      subject: emailSubject,
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (background check notification):', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    console.log('✅ Background check notification email sent successfully!');
+    console.log(`   To: sebastiancastao379@gmail.com`);
+    console.log(`   User: ${userFirstName} ${userLastName} (${userEmail})`);
+    console.log(`   Message ID: ${data?.id}`);
+
+    return {
+      success: true,
+      messageId: data?.id,
+    };
+  } catch (error: any) {
+    console.error('❌ Background check notification email failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to send background check notification',
+    };
+  }
+}
+
+/**
+ * Generic send email function for custom emails
+ */
+export async function sendEmail(data: {
+  to: string;
+  subject: string;
+  html: string;
+  from?: string;
+}): Promise<EmailResult> {
+  const { to, subject, html, from } = data;
+
+  try {
+    const { data: resendData, error } = await resend.emails.send({
+      from: from || 'PDS Time Tracking <service@furnituretaxi.site>',
+      to,
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (generic email):', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    console.log('✅ Email sent successfully via Resend!');
+    console.log(`   To: ${to}`);
+    console.log(`   Subject: ${subject}`);
+    console.log(`   Message ID: ${resendData?.id}`);
+
+    return {
+      success: true,
+      messageId: resendData?.id,
+    };
+  } catch (error: any) {
+    console.error('❌ Email sending failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to send email',
+    };
+  }
+}
+
+/**
+ * Send background check approval notification to user
+ */
+export async function sendBackgroundCheckApprovalEmail(data: {
+  email: string;
+  firstName: string;
+  lastName: string;
+}): Promise<EmailResult> {
+  const { email, firstName, lastName } = data;
+
+  const emailSubject = 'Background Check Approved - Complete Your Onboarding';
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check Approved!</h1>
+              <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">You're one step closer to getting started</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                Hello <strong>${firstName} ${lastName}</strong>,
+              </p>
+
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                Great news! Your background check has been approved and processed successfully. You can now proceed with completing your onboarding process.
+              </p>
+
+              <!-- Success Box -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); border-radius: 8px; border: 2px solid #34C759; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 25px; text-align: center;">
+                    <div style="font-size: 48px; margin-bottom: 10px;">🎉</div>
+                    <h2 style="color: #065f46; margin: 0 0 10px 0; font-size: 20px; font-weight: 600;">Background Check Complete</h2>
+                    <p style="color: #065f46; margin: 0; font-size: 15px;">
+                      Your background check has been reviewed and approved by our team.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Next Steps -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #0c5280; margin: 0 0 10px 0; font-size: 14px;"><strong>📝 Next Steps - Complete Your Onboarding:</strong></p>
+                    <ol style="color: #0c5280; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6;">
+                      <li>Log in to your PDS account</li>
+                      <li>Navigate to your dashboard</li>
+                      <li>Complete any remaining onboarding forms</li>
+                      <li>Review and sign required documents</li>
+                      <li>Set up your profile information</li>
+                    </ol>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Dashboard Button -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/dashboard"
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                      Go to Dashboard
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- What's Next -->
+              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">🚀 What's Next?</h3>
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb; margin: 20px 0;">
+                <tr>
+                  <td style="padding: 24px;">
+                    <ul style="color: #4b5563; margin: 0; padding-left: 24px; font-size: 16px; line-height: 1.8;">
+                      <li style="margin-bottom: 10px;">Complete your employee profile</li>
+                      <li style="margin-bottom: 10px;">Review company policies and procedures</li>
+                      <li style="margin-bottom: 10px;">Set up your payment information</li>
+                      <li style="margin-bottom: 10px;">Complete tax withholding forms (W-4, I-9)</li>
+                      <li style="margin-bottom: 0;">Schedule your orientation session</li>
+                    </ul>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Important Note -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 20px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #856404; margin: 0; font-size: 14px;">
+                      <strong>⏰ Time Sensitive:</strong> Please complete your onboarding as soon as possible. Some forms and documents are time-sensitive and must be completed before you can begin work.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Support -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
+                      <strong>Need help?</strong> If you have any questions about the onboarding process, please contact us at
+                      <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                This email was sent by PDS Time Tracking System
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 0;">
+                This message contains confidential information. If you received this in error, please delete it.
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 10px 0 0 0;">
+                © ${new Date().getFullYear()} PDS. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  // Send email via Resend to user
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      to: email,
+      subject: emailSubject,
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (background check approval):', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    console.log('✅ Background check approval email sent successfully!');
+    console.log(`   To: ${email}`);
+    console.log(`   User: ${firstName} ${lastName}`);
+    console.log(`   Message ID: ${data?.id}`);
+
+    return {
+      success: true,
+      messageId: data?.id,
+    };
+  } catch (error: any) {
+    console.error('❌ Background check approval email failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to send background check approval email',
+    };
+  }
+}
+

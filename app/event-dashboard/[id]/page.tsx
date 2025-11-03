@@ -101,6 +101,10 @@ export default function EventDashboardPage() {
     >
   >({});
 
+  // HR/Payroll adjustments (user_id -> adjustment amount)
+  const [adjustments, setAdjustments] = useState<Record<string, number>>({});
+  const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
     event_name: "",
@@ -459,6 +463,100 @@ export default function EventDashboardPage() {
     return `${hh}:${mm}`;
   };
 
+  // Process Payroll - Send emails to all team members
+  const handleProcessPayroll = async () => {
+    if (!event || !eventId) return;
+
+    if (!window.confirm(`Send payroll details to all ${teamMembers.length} team members via email?`)) {
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // Calculate payroll data for each team member
+      const stateRates: Record<string, number> = {
+        'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
+      };
+      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+      const baseRate = stateRates[eventState] || 17.28;
+
+      const sharesData = calculateShares();
+      const netSales = sharesData?.netSales || 0;
+      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
+      const totalCommissionPool = netSales * poolPercent;
+      const totalTips = Number(tips) || 0;
+
+      const totalHoursAll = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) / (1000 * 60 * 60);
+
+      const payrollData = teamMembers.map((member: any) => {
+        const profile = member.users?.profiles;
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const totalMs = timesheetTotals[uid] || 0;
+        const actualHours = totalMs / (1000 * 60 * 60);
+
+        // Calculate pay
+        const regularHours = Math.min(actualHours, 8);
+        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
+        const doubletimeHours = Math.max(actualHours - 12, 0);
+
+        const regularPay = regularHours * baseRate;
+        const overtimePay = overtimeHours * (baseRate * 1.5);
+        const doubletimePay = doubletimeHours * (baseRate * 2);
+
+        const proratedCommission = totalHoursAll > 0 ? (totalCommissionPool * actualHours) / totalHoursAll : 0;
+        const proratedTips = totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
+        const adjustment = adjustments[uid] || 0;
+
+        const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips + adjustment;
+
+        return {
+          email: member.users?.email,
+          firstName: profile?.first_name || "Team Member",
+          lastName: profile?.last_name || "",
+          regularHours: regularHours.toFixed(2),
+          regularPay: regularPay.toFixed(2),
+          overtimeHours: overtimeHours.toFixed(2),
+          overtimePay: overtimePay.toFixed(2),
+          doubletimeHours: doubletimeHours.toFixed(2),
+          doubletimePay: doubletimePay.toFixed(2),
+          commission: proratedCommission.toFixed(2),
+          tips: proratedTips.toFixed(2),
+          adjustment: adjustment.toFixed(2),
+          totalPay: totalPay.toFixed(2),
+          baseRate: baseRate.toFixed(2),
+        };
+      });
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${eventId}/process-payroll`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          eventName: event.event_name,
+          eventDate: event.event_date,
+          venue: event.venue,
+          city: event.city,
+          state: event.state,
+          payrollData,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setMessage(`Success! Payroll emails sent to ${data.sentCount || payrollData.length} team members.`);
+      } else {
+        const error = await res.text();
+        setMessage(`Failed to process payroll: ${error}`);
+      }
+    } catch (err: any) {
+      setMessage(`Error: ${err.message}`);
+    }
+    setSubmitting(false);
+  };
+
   if (!isAuthed || loading) {
     return (
       <div className="container mx-auto max-w-6xl py-10 px-4">
@@ -489,463 +587,592 @@ export default function EventDashboardPage() {
     (event.pds_share_percent || 0);
 
   return (
-    <div className="container mx-auto max-w-6xl py-10 px-4">
-      <div className="flex mb-6">
-        <Link href="/dashboard">
-          <button className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-md">
-            &larr; Back to Dashboard
-          </button>
-        </Link>
-      </div>
-
-      {message && (
-        <div
-          className={`mb-4 px-6 py-3 rounded relative ${
-            message.toLowerCase().includes("success")
-              ? "bg-green-100 border-green-400 text-green-700"
-              : "bg-red-100 border-red-400 text-red-700"
-          }`}
-        >
-          {message}
-          <button onClick={() => setMessage("")} className="absolute top-2 right-2 font-bold">
-            ×
-          </button>
-        </div>
-      )}
-
-      {percentTotal !== 100 && (
-        <div className="mb-4 px-6 py-3 rounded bg-amber-100 text-amber-800">
-          Heads up: your split percentages add up to {percentTotal}% (not 100%).
-        </div>
-      )}
-
-      <div className="bg-white shadow-md rounded-lg overflow-hidden">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-blue-700 text-white p-6">
-          <h1 className="text-3xl font-bold">{event.event_name}</h1>
-          <div className="mt-2 text-blue-100">
-            <p>
-              <strong>Venue:</strong> {event.venue} ({event.city}, {event.state})
-            </p>
-            {event.artist && (
-              <p>
-                <strong>Artist:</strong> {event.artist}
-              </p>
-            )}
-            <p>
-              <strong>Date:</strong> {event.event_date} | {event.start_time?.slice(0, 5)} -{" "}
-              {event.end_time?.slice(0, 5)}
-            </p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
+      <div className="container mx-auto max-w-7xl py-8 px-4">
+        <div className="flex items-center justify-between mb-8">
+          <Link href="/dashboard">
+            <button className="group flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-700 font-semibold py-2.5 px-5 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 border border-gray-200">
+              <svg className="w-5 h-5 transform group-hover:-translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Back to Dashboard
+            </button>
+          </Link>
+          <div className="flex items-center gap-2 bg-white px-4 py-2 rounded-xl shadow-sm border border-gray-200">
+            <div className={`w-2.5 h-2.5 rounded-full ${event.is_active ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`}></div>
+            <span className="text-sm font-medium text-gray-700">{event.is_active ? 'Active' : 'Inactive'}</span>
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="border-b">
-          <nav className="flex">
-            {[
-              ["edit", "Edit Event"],
-              ["sales", "Sales"],
-              ["merchandise", "Merchandise"],
-              ["team", "Team"],
-              ["timesheet", "TimeSheet"],
-              ["hr", "Payment"],
-            ].map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setActiveTab(key as TabType)}
-                className={`px-6 py-3 font-semibold border-b-2 transition ${
-                  activeTab === (key as TabType)
-                    ? "border-blue-600 text-blue-600"
-                    : "border-transparent text-gray-600 hover:text-gray-800"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </nav>
-        </div>
+        {message && (
+          <div
+            className={`mb-6 px-6 py-4 rounded-xl relative shadow-lg backdrop-blur-sm ${
+              message.toLowerCase().includes("success")
+                ? "bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 text-green-800"
+                : "bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 text-red-800"
+            }`}
+          >
+            <div className="flex items-center gap-3">
+              {message.toLowerCase().includes("success") ? (
+                <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              ) : (
+                <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              )}
+              <span className="font-medium">{message}</span>
+            </div>
+            <button onClick={() => setMessage("")} className="absolute top-4 right-4 text-gray-500 hover:text-gray-700 transition-colors">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        )}
+
+        {percentTotal !== 100 && (
+          <div className="mb-6 px-6 py-4 rounded-xl bg-gradient-to-r from-amber-50 to-yellow-50 border-2 border-amber-200 text-amber-900 shadow-sm">
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+              </svg>
+              <span className="font-medium">Heads up: your split percentages add up to {percentTotal}% (not 100%).</span>
+            </div>
+          </div>
+        )}
+
+        <div className="bg-white shadow-2xl rounded-2xl overflow-hidden border border-gray-200">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 text-white p-8 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-96 h-96 bg-white opacity-5 rounded-full -mr-48 -mt-48"></div>
+            <div className="absolute bottom-0 left-0 w-96 h-96 bg-white opacity-5 rounded-full -ml-48 -mb-48"></div>
+            <div className="relative z-10">
+              <h1 className="text-4xl font-bold mb-4 tracking-tight">{event.event_name}</h1>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-blue-100">
+                <div className="flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                  <span><strong className="text-white">Venue:</strong> {event.venue} ({event.city}, {event.state})</span>
+                </div>
+                {event.artist && (
+                  <div className="flex items-center gap-2">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    </svg>
+                    <span><strong className="text-white">Artist:</strong> {event.artist}</span>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <span><strong className="text-white">Date:</strong> {event.event_date} | {event.start_time?.slice(0, 5)} - {event.end_time?.slice(0, 5)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Tabs */}
+          <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-slate-50">
+            <nav className="flex overflow-x-auto">
+              {[
+                ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
+                ["sales", "Sales", "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"],
+                ["merchandise", "Merchandise", "M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"],
+                ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
+                ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
+                ["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"],
+              ].map(([key, label, icon]) => (
+                <button
+                  key={key}
+                  onClick={() => setActiveTab(key as TabType)}
+                  className={`group relative px-6 py-4 font-semibold transition-all duration-200 flex items-center gap-2 whitespace-nowrap ${
+                    activeTab === (key as TabType)
+                      ? "text-blue-600"
+                      : "text-gray-600 hover:text-gray-900"
+                  }`}
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={icon} />
+                  </svg>
+                  {label}
+                  {activeTab === (key as TabType) && (
+                    <div className="absolute bottom-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 to-indigo-500 rounded-t-full"></div>
+                  )}
+                </button>
+              ))}
+            </nav>
+          </div>
 
         {/* Content */}
-        <div className="p-6">
+        <div className="p-8 bg-gradient-to-br from-gray-50 to-slate-50">
           {/* EDIT TAB */}
           {activeTab === "edit" && (
-            <form onSubmit={handleSubmit} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="font-semibold block mb-1">Event Name *</label>
-                  <input
-                    name="event_name"
-                    value={form.event_name}
-                    onChange={handleChange}
-                    required
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Artist</label>
-                  <input
-                    name="artist"
-                    value={form.artist || ""}
-                    onChange={handleChange}
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Venue *</label>
-                  <select
-                    name="venue"
-                    value={form.venue}
-                    onChange={handleVenueChange}
-                    required
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select a venue...</option>
-                    {venues.map((venue) => (
-                      <option key={venue.id} value={venue.venue_name}>
-                        {venue.venue_name} - {venue.city}, {venue.state}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">City (Auto-filled)</label>
-                  <input
-                    name="city"
-                    value={form.city || ""}
-                    readOnly
-                    className="w-full p-2 border rounded bg-gray-100 cursor-not-allowed"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">State (Auto-filled)</label>
-                  <input
-                    name="state"
-                    value={form.state || ""}
-                    readOnly
-                    className="w-full p-2 border rounded bg-gray-100 cursor-not-allowed uppercase"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Event Date *</label>
-                  <input
-                    name="event_date"
-                    value={form.event_date}
-                    onChange={handleChange}
-                    required
-                    type="date"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="font-semibold block mb-1">Start Time *</label>
-                  <input
-                    name="start_time"
-                    value={form.start_time}
-                    onChange={handleChange}
-                    required
-                    type="time"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">End Time *</label>
-                  <input
-                    name="end_time"
-                    value={form.end_time}
-                    onChange={handleChange}
-                    required
-                    type="time"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Total Collected</label>
-                  <input
-                    name="ticket_sales"
-                    value={form.ticket_sales || ""}
-                    onChange={handleChange}
-                    type="number"
-                    min="0"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
+            <form onSubmit={handleSubmit} className="space-y-8">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Basic Information
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Event Name *</label>
+                    <input
+                      name="event_name"
+                      value={form.event_name}
+                      onChange={handleChange}
+                      required
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="Enter event name"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Artist</label>
+                    <input
+                      name="artist"
+                      value={form.artist || ""}
+                      onChange={handleChange}
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="Artist name (optional)"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Venue *</label>
+                    <select
+                      name="venue"
+                      value={form.venue}
+                      onChange={handleVenueChange}
+                      required
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                    >
+                      <option value="">Select a venue...</option>
+                      {venues.map((venue) => (
+                        <option key={venue.id} value={venue.venue_name}>
+                          {venue.venue_name} - {venue.city}, {venue.state}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">City (Auto-filled)</label>
+                    <input
+                      name="city"
+                      value={form.city || ""}
+                      readOnly
+                      className="w-full px-4 py-3 border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">State (Auto-filled)</label>
+                    <input
+                      name="state"
+                      value={form.state || ""}
+                      readOnly
+                      className="w-full px-4 py-3 border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600 uppercase"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Event Date *</label>
+                    <input
+                      name="event_date"
+                      value={form.event_date}
+                      onChange={handleChange}
+                      required
+                      type="date"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                    />
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div>
-                  <label className="font-semibold block mb-1">Artist Share %</label>
-                  <input
-                    name="artist_share_percent"
-                    value={form.artist_share_percent}
-                    onChange={handleChange}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Venue Share %</label>
-                  <input
-                    name="venue_share_percent"
-                    value={form.venue_share_percent}
-                    onChange={handleChange}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">PDS Share %</label>
-                  <input
-                    name="pds_share_percent"
-                    value={form.pds_share_percent}
-                    onChange={handleChange}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    max="100"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <div>
-                  <label className="font-semibold block mb-1">Commission Pool</label>
-                  <input
-                    name="commission_pool"
-                    value={form.commission_pool || ""}
-                    onChange={handleChange}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                  />
-                  <p className="text-xs text-gray-500 mt-1">Enter as fraction (e.g., 0.04 for 4%).</p>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Event Timing
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Start Time *</label>
+                    <input
+                      name="start_time"
+                      value={form.start_time}
+                      onChange={handleChange}
+                      required
+                      type="time"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">End Time *</label>
+                    <input
+                      name="end_time"
+                      value={form.end_time}
+                      onChange={handleChange}
+                      required
+                      type="time"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Total Collected</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500">$</span>
+                      <input
+                        name="ticket_sales"
+                        value={form.ticket_sales || ""}
+                        onChange={handleChange}
+                        type="number"
+                        min="0"
+                        step="1"
+                        className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                        placeholder="0"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  id="is_active"
-                  type="checkbox"
-                  name="is_active"
-                  checked={form.is_active}
-                  onChange={handleChange}
-                  className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                />
-                <label htmlFor="is_active" className="font-semibold">
-                  Is Active
-                </label>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                  </svg>
+                  Revenue Split
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Artist Share %</label>
+                    <input
+                      name="artist_share_percent"
+                      value={form.artist_share_percent + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        handleChange({ target: { name: 'artist_share_percent', value: val } } as any);
+                      }}
+                      type="text"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="0.00%"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Venue Share %</label>
+                    <input
+                      name="venue_share_percent"
+                      value={form.venue_share_percent + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        handleChange({ target: { name: 'venue_share_percent', value: val } } as any);
+                      }}
+                      type="text"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="0.00%"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">PDS Share %</label>
+                    <input
+                      name="pds_share_percent"
+                      value={form.pds_share_percent + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        handleChange({ target: { name: 'pds_share_percent', value: val } } as any);
+                      }}
+                      type="text"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="0.00%"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Commission Pool (%)</label>
+                    <input
+                      name="commission_pool"
+                      value={((form.commission_pool || 0) * 100) + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        const fraction = Number(val) / 100;
+                        handleChange({ target: { name: 'commission_pool', value: fraction.toString() } } as any);
+                      }}
+                      type="text"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      placeholder="4%"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4%)</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <div className="flex items-center gap-3">
+                  <input
+                    id="is_active"
+                    type="checkbox"
+                    name="is_active"
+                    checked={form.is_active}
+                    onChange={handleChange}
+                    className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer"
+                  />
+                  <label htmlFor="is_active" className="text-sm font-semibold text-gray-700 cursor-pointer">
+                    Event is Active
+                  </label>
+                </div>
               </div>
 
               <button
                 type="submit"
-                className="w-full py-3 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded transition"
+                className="w-full py-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 disabled={submitting}
               >
-                {submitting ? "Updating..." : "Update Event"}
+                {submitting ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Updating...
+                  </span>
+                ) : (
+                  "Update Event"
+                )}
               </button>
             </form>
           )}
 
           {/* SALES TAB */}
           {activeTab === "sales" && (
-            <div className="space-y-6">
-              <div>
-                <h2 className="text-2xl font-bold mb-4">Sales Information</h2>
+            <div className="space-y-8">
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Sales Information
+                </h2>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
-                    <label className="font-semibold block mb-2">Total Collected ($)</label>
-                    <input
-                      type="number"
-                      value={ticketSales}
-                      onChange={(e) => setTicketSales(e.target.value)}
-                      placeholder="0.00"
-                      step="0.01"
-                      min="0"
-                      className="liquid-input w-full p-3 text-lg"
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Total Collected ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="number"
+                        value={ticketSales}
+                        onChange={(e) => setTicketSales(e.target.value)}
+                        placeholder="0"
+                        step="1"
+                        min="0"
+                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                      />
+                    </div>
                   </div>
 
                   <div>
-                    <label className="font-semibold block mb-2">Number of Tickets/People</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Number of Tickets/People</label>
                     <input
                       type="number"
                       value={ticketCount}
                       onChange={(e) => setTicketCount(e.target.value)}
                       placeholder="0"
                       min="0"
-                      className="liquid-input w-full p-3 text-lg"
+                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                     />
                   </div>
 
                   <div>
-                    <label className="font-semibold block mb-2">Tax Rate (%)</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tax Rate (%)</label>
                     <input
-                      type="number"
-                      value={taxRate}
-                      onChange={(e) => setTaxRate(e.target.value)}
-                      placeholder="0"
-                      step="0.01"
-                      min="0"
-                      max="100"
-                      className="liquid-input w-full p-3 text-lg"
+                      type="text"
+                      value={taxRate + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        setTaxRate(val);
+                      }}
+                      placeholder="0%"
+                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                     />
                   </div>
 
                   <div>
-                    <label className="font-semibold block mb-2">Tips ($)</label>
-                    <input
-                      type="number"
-                      value={tips}
-                      onChange={(e) => setTips(e.target.value)}
-                      placeholder="0.00"
-                      step="0.01"
-                      min="0"
-                      className="liquid-input w-full p-3 text-lg"
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tips ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="number"
+                        value={tips}
+                        onChange={(e) => setTips(e.target.value)}
+                        placeholder="0"
+                        step="1"
+                        min="0"
+                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                      />
+                    </div>
                   </div>
 
                   <div>
-                    <label className="font-semibold block mb-2">Commission Pool (%)</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Commission Pool (%)</label>
                     <input
-                      type="number"
-                      value={commissionPool}
-                      onChange={(e) => setCommissionPool(e.target.value)}
-                      placeholder="0.00"
-                      step="0.01"
-                      min="0"
-                      className="liquid-input w-full p-3 text-lg"
+                      type="text"
+                      value={(Number(commissionPool || 0) * 100) + '%'}
+                      onChange={(e) => {
+                        const val = e.target.value.replace('%', '').trim();
+                        const fraction = Number(val) / 100;
+                        setCommissionPool(fraction.toString());
+                      }}
+                      placeholder="4%"
+                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                     />
-                    <p className="text-xs text-gray-500 mt-1">Enter as fraction (e.g., 0.04 for 4%).</p>
+                    <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4%)</p>
                   </div>
 
-                  {/* Commission ($) */}
                   <div>
-                    <label className="font-semibold block mb-2">Commission ($)</label>
-                    <input
-                      type="number"
-                      value={(() => {
-                        const s = calculateShares();
-                        if (!s) return "";
-                        const pool = Number(commissionPool || event?.commission_pool || 0) || 0;
-                        const commissionAmount = s.netSales * pool;
-                        return commissionAmount.toFixed(2);
-                      })()}
-                      readOnly
-                      className="liquid-input w-full p-3 text-lg bg-gray-100 cursor-not-allowed"
-                    />
-                    <p className="text-xs text-gray-500 mt-1">
-                      Auto: Net Sales × Commission Pool (fraction)
-                    </p>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Commission ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="number"
+                        value={(() => {
+                          const s = calculateShares();
+                          if (!s) return "";
+                          const pool = Number(commissionPool || event?.commission_pool || 0) || 0;
+                          const commissionAmount = s.netSales * pool;
+                          return commissionAmount.toFixed(2);
+                        })()}
+                        readOnly
+                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Auto: Net Sales × Commission Pool (fraction)</p>
                   </div>
                 </div>
 
                 <button
                   onClick={handleSaveSales}
                   disabled={submitting}
-                  className="liquid-btn-primary mt-4 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full mt-6 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 >
-                  {submitting ? "Saving..." : "Save Sales Data"}
+                  {submitting ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      Saving...
+                    </span>
+                  ) : "Save Sales Data"}
                 </button>
               </div>
 
               {shares && (
                 <>
-                  <hr className="my-6" />
                   {/* Sales Summary */}
-                  <div>
-                    <h3 className="text-xl font-semibold mb-4">Sales Summary</h3>
-                    <div className="liquid-card-blue p-6 space-y-3 mb-4">
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-gray-900">Total collected</span>
-                        <span className="text-xl font-bold text-gray-900">
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl shadow-sm border-2 border-blue-200 p-6">
+                    <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-900">
+                      <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+                      </svg>
+                      Sales Summary
+                    </h3>
+                    <div className="bg-white rounded-lg p-6 space-y-4 shadow-sm">
+                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                        <span className="font-semibold text-gray-700">Total collected</span>
+                        <span className="text-2xl font-bold text-gray-900">
                           ${shares.grossCollected.toFixed(2)}
                         </span>
                       </div>
 
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-gray-900">− Tips</span>
-                        <span className="text-xl font-bold">−${shares.tipsNum.toFixed(2)}</span>
+                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                        <span className="font-semibold text-gray-700">− Tips</span>
+                        <span className="text-xl font-bold text-orange-600">−${shares.tipsNum.toFixed(2)}</span>
                       </div>
 
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-gray-900">= Total Sales</span>
-                        <span className="text-xl font-bold text-gray-900">
+                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                        <span className="font-semibold text-gray-700">= Total Sales</span>
+                        <span className="text-2xl font-bold text-gray-900">
                           ${shares.totalSales.toFixed(2)}
                         </span>
                       </div>
 
-                      <div className="flex justify-between items-center text-red-600">
-                        <span className="font-semibold">− Tax ({shares.taxPct}%)</span>
-                        <span className="text-xl font-bold">−${shares.tax.toFixed(2)}</span>
+                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                        <span className="font-semibold text-red-600">− Tax ({shares.taxPct}%)</span>
+                        <span className="text-xl font-bold text-red-600">−${shares.tax.toFixed(2)}</span>
                       </div>
 
-                      <div className="flex justify-between items-center border-t pt-2 text-xl">
-                        <span className="font-bold text-gray-900">= Net Sales</span>
-                        <span className="font-bold text-ios-blue">${shares.netSales.toFixed(2)}</span>
+                      <div className="flex justify-between items-center pt-2">
+                        <span className="text-lg font-bold text-gray-900">= Net Sales</span>
+                        <span className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">${shares.netSales.toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
 
                   {/* Per Person */}
                   {ticketCount && Number(ticketCount) > 0 && (
-                    <div>
-                      <h3 className="text-xl font-semibold mb-4">Per Person Metrics</h3>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
-                        <div className="liquid-card-compact p-6 text-center">
-                          <div className="text-sm font-semibold text-gray-600 mb-2">$ / Head (Total)</div>
-                          <div className="text-3xl font-bold text-ios-blue tracking-apple-tight">
-                            {(shares.grossCollected / Number(ticketCount)).toFixed(2)}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                      <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-900">
+                        <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                        </svg>
+                        Per Person Metrics
+                      </h3>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 text-center border border-blue-200">
+                          <div className="text-sm font-semibold text-blue-700 mb-3">$ / Head (Total)</div>
+                          <div className="text-4xl font-bold text-blue-600 mb-2">
+                            ${(shares.grossCollected / Number(ticketCount)).toFixed(2)}
                           </div>
-                          <div className="text-xs text-gray-500 mt-1">Based on Total collected</div>
+                          <div className="text-xs text-blue-600">Based on Total collected</div>
                         </div>
 
-                        <div className="liquid-card-compact p-6 text-center">
-                          <div className="text-sm font-semibold text-gray-600 mb-2">Avg $ (Total Sales)</div>
-                          <div className="text-3xl font-bold text-ios-purple tracking-apple-tight">
-                            {(shares.totalSales / Number(ticketCount)).toFixed(2)}
+                        <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-6 text-center border border-purple-200">
+                          <div className="text-sm font-semibold text-purple-700 mb-3">Avg $ (Total Sales)</div>
+                          <div className="text-4xl font-bold text-purple-600 mb-2">
+                            ${(shares.totalSales / Number(ticketCount)).toFixed(2)}
                           </div>
-                          <div className="text-xs text-gray-500 mt-1">After tips removed</div>
+                          <div className="text-xs text-purple-600">After tips removed</div>
                         </div>
 
-                        <div className="liquid-card-compact p-6 text-center">
-                          <div className="text-sm font-semibold text-gray-600 mb-2">Avg $ (Net)</div>
-                          <div className="text-3xl font-bold text-ios-teal tracking-apple-tight">
-                            {(shares.netSales / Number(ticketCount)).toFixed(2)}
+                        <div className="bg-gradient-to-br from-teal-50 to-teal-100 rounded-xl p-6 text-center border border-teal-200">
+                          <div className="text-sm font-semibold text-teal-700 mb-3">Avg $ (Net)</div>
+                          <div className="text-4xl font-bold text-teal-600 mb-2">
+                            ${(shares.netSales / Number(ticketCount)).toFixed(2)}
                           </div>
-                          <div className="text-xs text-gray-500 mt-1">After tax removed</div>
+                          <div className="text-xs text-teal-600">After tax removed</div>
                         </div>
                       </div>
                     </div>
                   )}
 
                   {/* Split */}
-                  <div>
-                    <h3 className="text-xl font-semibold mb-4">Revenue Split (from Net Sales)</h3>
+                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                    <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-900">
+                      <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
+                      </svg>
+                      Revenue Split (from Net Sales)
+                    </h3>
 
-                    <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+                    <div className="bg-gradient-to-br from-gray-50 to-slate-50 rounded-xl p-6 space-y-4 border border-gray-200">
                       {event.artist && (
-                        <div className="flex justify-between items-center">
-                          <span className="font-medium">Artist ({event.artist_share_percent}%)</span>
-                          <span className="text-lg font-bold">${shares.artistShare.toFixed(2)}</span>
+                        <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                          <span className="font-semibold text-gray-700">Artist ({event.artist_share_percent}%)</span>
+                          <span className="text-2xl font-bold text-green-600">${shares.artistShare.toFixed(2)}</span>
                         </div>
                       )}
 
-                      <div className="flex justify-between items-center">
-                        <span className="font-medium">Venue ({event.venue_share_percent}%)</span>
-                        <span className="text-lg font-bold">${shares.venueShare.toFixed(2)}</span>
+                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                        <span className="font-semibold text-gray-700">Venue ({event.venue_share_percent}%)</span>
+                        <span className="text-2xl font-bold text-blue-600">${shares.venueShare.toFixed(2)}</span>
                       </div>
 
                       <div className="flex justify-between items-center">
-                        <span className="font-medium">PDS ({event.pds_share_percent}%)</span>
-                        <span className="text-lg font-bold">${shares.pdsShare.toFixed(2)}</span>
+                        <span className="font-semibold text-gray-700">PDS ({event.pds_share_percent}%)</span>
+                        <span className="text-2xl font-bold text-indigo-600">${shares.pdsShare.toFixed(2)}</span>
                       </div>
                     </div>
                   </div>
@@ -956,128 +1183,156 @@ export default function EventDashboardPage() {
 
           {/* MERCH TAB */}
           {activeTab === "merchandise" && (
-            <div className="space-y-6">
-              <h2 className="text-2xl font-bold mb-6">Merchandise Settlement</h2>
+            <div className="space-y-8">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
+                  <svg className="w-6 h-6 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z" />
+                  </svg>
+                  Merchandise Settlement
+                </h2>
+              </div>
 
-              <div className="bg-gray-50 p-6 rounded-lg space-y-4">
-                <h3 className="text-lg font-semibold mb-4">Enter Sales Data</h3>
+              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+                <h3 className="text-lg font-bold mb-6 text-gray-900 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z" />
+                  </svg>
+                  Enter Sales Data
+                </h3>
 
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
                   {/* Apparel */}
-                  <div className="bg-white p-4 rounded border">
-                    <h4 className="font-bold text-gray-700 mb-3">Apparel</h4>
-                    <div className="space-y-3">
+                  <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-5 border-2 border-purple-200 shadow-sm">
+                    <h4 className="font-bold text-purple-700 mb-4 flex items-center gap-2 text-lg">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" />
+                      </svg>
+                      Apparel
+                    </h4>
+                    <div className="space-y-4">
                       <div>
-                        <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
-                        <input
-                          type="number"
-                          value={apparelGross}
-                          onChange={(e) => setApparelGross(e.target.value)}
-                          placeholder="0.00"
-                          step="0.01"
-                          min="0"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Gross Sales ($)</label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
                           <input
                             type="number"
-                            value={apparelTaxRate}
-                            onChange={(e) => setApparelTaxRate(e.target.value)}
+                            value={apparelGross}
+                            onChange={(e) => setApparelGross(e.target.value)}
                             placeholder="0"
-                            step="0.01"
+                            step="1"
                             min="0"
-                            max="100"
-                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
-                          <input
-                            type="number"
-                            value={apparelCCFeeRate}
-                            onChange={(e) => setApparelCCFeeRate(e.target.value)}
-                            placeholder="0"
-                            step="0.01"
-                            min="0"
-                            max="100"
-                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                            className="w-full pl-8 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
                           />
                         </div>
                       </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2">Sales Tax (%)</label>
+                          <input
+                            type="text"
+                            value={apparelTaxRate + '%'}
+                            onChange={(e) => {
+                              const val = e.target.value.replace('%', '').trim();
+                              setApparelTaxRate(val);
+                            }}
+                            placeholder="0%"
+                            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2">CC Fee (%)</label>
+                          <input
+                            type="text"
+                            value={apparelCCFeeRate + '%'}
+                            onChange={(e) => {
+                              const val = e.target.value.replace('%', '').trim();
+                              setApparelCCFeeRate(val);
+                            }}
+                            placeholder="0%"
+                            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
+                          />
+                        </div>
+                      </div>
                       <div>
-                        <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Artist Share (%)</label>
                         <input
-                          type="number"
-                          value={apparelArtistPercent}
-                          onChange={(e) => setApparelArtistPercent(e.target.value)}
-                          placeholder="80"
-                          step="1"
-                          min="0"
-                          max="100"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          type="text"
+                          value={apparelArtistPercent + '%'}
+                          onChange={(e) => {
+                            const val = e.target.value.replace('%', '').trim();
+                            setApparelArtistPercent(val);
+                          }}
+                          placeholder="80%"
+                          className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all"
                         />
                       </div>
                     </div>
                   </div>
 
                   {/* Other */}
-                  <div className="bg-white p-4 rounded border">
-                    <h4 className="font-bold text-gray-700 mb-3">Other</h4>
-                    <div className="space-y-3">
+                  <div className="bg-gradient-to-br from-blue-50 to-cyan-50 rounded-xl p-5 border-2 border-blue-200 shadow-sm">
+                    <h4 className="font-bold text-blue-700 mb-4 flex items-center gap-2 text-lg">
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                      </svg>
+                      Other Merchandise
+                    </h4>
+                    <div className="space-y-4">
                       <div>
-                        <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
-                        <input
-                          type="number"
-                          value={otherGross}
-                          onChange={(e) => setOtherGross(e.target.value)}
-                          placeholder="0.00"
-                          step="0.01"
-                          min="0"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Gross Sales ($)</label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
                           <input
                             type="number"
-                            value={otherTaxRate}
-                            onChange={(e) => setOtherTaxRate(e.target.value)}
+                            value={otherGross}
+                            onChange={(e) => setOtherGross(e.target.value)}
                             placeholder="0"
-                            step="0.01"
+                            step="1"
                             min="0"
-                            max="100"
-                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                        <div>
-                          <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
-                          <input
-                            type="number"
-                            value={otherCCFeeRate}
-                            onChange={(e) => setOtherCCFeeRate(e.target.value)}
-                            placeholder="0"
-                            step="0.01"
-                            min="0"
-                            max="100"
-                            className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                            className="w-full pl-8 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                           />
                         </div>
                       </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2">Sales Tax (%)</label>
+                          <input
+                            type="text"
+                            value={otherTaxRate + '%'}
+                            onChange={(e) => {
+                              const val = e.target.value.replace('%', '').trim();
+                              setOtherTaxRate(val);
+                            }}
+                            placeholder="0%"
+                            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-semibold text-gray-700 mb-2">CC Fee (%)</label>
+                          <input
+                            type="text"
+                            value={otherCCFeeRate + '%'}
+                            onChange={(e) => {
+                              const val = e.target.value.replace('%', '').trim();
+                              setOtherCCFeeRate(val);
+                            }}
+                            placeholder="0%"
+                            className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                          />
+                        </div>
+                      </div>
                       <div>
-                        <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Artist Share (%)</label>
                         <input
-                          type="number"
-                          value={otherArtistPercent}
-                          onChange={(e) => setOtherArtistPercent(e.target.value)}
-                          placeholder="80"
-                          step="1"
-                          min="0"
-                          max="100"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                          type="text"
+                          value={otherArtistPercent + '%'}
+                          onChange={(e) => {
+                            const val = e.target.value.replace('%', '').trim();
+                            setOtherArtistPercent(val);
+                          }}
+                          placeholder="80%"
+                          className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                         />
                       </div>
                     </div>
@@ -1085,60 +1340,66 @@ export default function EventDashboardPage() {
                 </div>
 
                 {/* Music */}
-                <div className="bg-white p-4 rounded border max-w-md">
-                  <h4 className="font-bold text-gray-700 mb-3">Music Sales</h4>
-                  <div className="space-y-3">
+                <div className="bg-gradient-to-br from-green-50 to-emerald-50 rounded-xl p-5 border-2 border-green-200 shadow-sm max-w-2xl">
+                  <h4 className="font-bold text-green-700 mb-4 flex items-center gap-2 text-lg">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+                    </svg>
+                    Music Sales
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5">
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Gross Sales ($)</label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
+                        <input
+                          type="number"
+                          value={musicGross}
+                          onChange={(e) => setMusicGross(e.target.value)}
+                          placeholder="0"
+                          step="1"
+                          min="0"
+                          className="w-full pl-8 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
+                        />
+                      </div>
+                    </div>
                     <div>
-                      <label className="text-sm font-medium block mb-1">Gross Sales ($)</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Sales Tax (%)</label>
                       <input
-                        type="number"
-                        value={musicGross}
-                        onChange={(e) => setMusicGross(e.target.value)}
-                        placeholder="0.00"
-                        step="0.01"
-                        min="0"
-                        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        type="text"
+                        value={musicTaxRate + '%'}
+                        onChange={(e) => {
+                          const val = e.target.value.replace('%', '').trim();
+                          setMusicTaxRate(val);
+                        }}
+                        placeholder="0%"
+                        className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
                       />
                     </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className="text-sm font-medium block mb-1">Sales Tax (%)</label>
-                        <input
-                          type="number"
-                          value={musicTaxRate}
-                          onChange={(e) => setMusicTaxRate(e.target.value)}
-                          placeholder="0"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-sm font-medium block mb-1">CC Fee (%)</label>
-                        <input
-                          type="number"
-                          value={musicCCFeeRate}
-                          onChange={(e) => setMusicCCFeeRate(e.target.value)}
-                          placeholder="0"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
-                        />
-                      </div>
-                    </div>
                     <div>
-                      <label className="text-sm font-medium block mb-1">Artist Share (%)</label>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">CC Fee (%)</label>
                       <input
-                        type="number"
-                        value={musicArtistPercent}
-                        onChange={(e) => setMusicArtistPercent(e.target.value)}
-                        placeholder="90"
-                        step="1"
-                        min="0"
-                        max="100"
-                        className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                        type="text"
+                        value={musicCCFeeRate + '%'}
+                        onChange={(e) => {
+                          const val = e.target.value.replace('%', '').trim();
+                          setMusicCCFeeRate(val);
+                        }}
+                        placeholder="0%"
+                        className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
+                      />
+                    </div>
+                    <div className="md:col-span-2">
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">Artist Share (%)</label>
+                      <input
+                        type="text"
+                        value={musicArtistPercent + '%'}
+                        onChange={(e) => {
+                          const val = e.target.value.replace('%', '').trim();
+                          setMusicArtistPercent(val);
+                        }}
+                        placeholder="90%"
+                        className="w-full px-4 py-2.5 bg-white border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent transition-all"
                       />
                     </div>
                   </div>
@@ -1146,9 +1407,17 @@ export default function EventDashboardPage() {
                   <button
                     onClick={handleSaveMerchandise}
                     disabled={submitting}
-                    className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded transition disabled:bg-gray-400"
+                    className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold py-3 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                   >
-                    {submitting ? "Saving..." : "Calculate Settlement"}
+                    {submitting ? (
+                      <span className="flex items-center justify-center gap-2">
+                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Saving...
+                      </span>
+                    ) : "Calculate Settlement"}
                   </button>
                 </div>
               </div>
@@ -1779,8 +2048,19 @@ export default function EventDashboardPage() {
                     ${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-                      const hourlyRate = 25; // Default rate
-                      const totalPayment = totalHours * hourlyRate;
+
+                      // State-specific base rates (2025)
+                      // Based on VENUE location (where event takes place), not vendor address
+                      const stateRates: Record<string, number> = {
+                        'CA': 17.28,  // California
+                        'NY': 17.00,  // New York
+                        'AZ': 14.70,  // Arizona
+                        'WI': 15.00,  // Wisconsin
+                      };
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
+                      const baseRate = stateRates[eventState] || 17.28;
+
+                      const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
                     })()}
                   </div>
@@ -1796,6 +2076,29 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-orange-900">0%</div>
                   <div className="text-xs text-orange-600 mt-1">checked in</div>
+                </div>
+              </div>
+
+              {/* State Rate Indicator */}
+              <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-4 mb-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-blue-700">Payroll Rate Based On</div>
+                    <div className="text-lg font-bold text-blue-900">
+                      {event?.state?.toUpperCase() || 'CA'} - {event?.venue || 'Venue'}, {event?.city || 'City'}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-sm font-semibold text-blue-700">Base Rate</div>
+                    <div className="text-2xl font-bold text-blue-900">
+                      ${(() => {
+                        const stateRates: Record<string, number> = {
+                          'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
+                        };
+                        return stateRates[event?.state?.toUpperCase()?.trim() || 'CA'] || 17.28;
+                      })()}/hr
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1829,13 +2132,14 @@ export default function EventDashboardPage() {
                         <th className="text-left p-4 font-semibold text-gray-700">Double time Pay</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Commissions</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Tips</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Adjustments</th>
                         <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {teamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={10} className="p-8 text-center text-gray-500">
+                          <td colSpan={11} className="p-8 text-center text-gray-500">
                             No staff scheduled yet
                           </td>
                         </tr>
@@ -1853,8 +2157,18 @@ export default function EventDashboardPage() {
                             Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) /
                             (1000 * 60 * 60);
 
-                          // Rates
-                          const baseRate = 17.28;
+                          // State-specific base rates (2025)
+                          // Based on VENUE location (where event takes place), not vendor address
+                          const stateRates: Record<string, number> = {
+                            'CA': 17.28,  // California
+                            'NY': 17.00,  // New York
+                            'AZ': 14.70,  // Arizona
+                            'WI': 15.00,  // Wisconsin
+                          };
+
+                          const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
+                          console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', stateRates[eventState]);
+                          const baseRate = stateRates[eventState] || 17.28; // Default to CA rate
                           const overtimeRate = baseRate * 1.5;
                           const doubletimeRate = baseRate * 2;
 
@@ -1962,11 +2276,85 @@ export default function EventDashboardPage() {
                                 <div className="text-[10px] text-gray-500">Prorated by hours</div>
                               </td>
 
+                              {/* Adjustments - Editable */}
+                              <td className="p-4">
+                                {editingMemberId === member.id ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-gray-500">$</span>
+                                    <input
+                                      type="number"
+                                      value={adjustments[uid] || 0}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value) || 0;
+                                        setAdjustments(prev => ({ ...prev, [uid]: value }));
+                                      }}
+                                      className="w-24 px-2 py-1 border border-blue-500 rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                                      placeholder="0"
+                                      step="1"
+                                      autoFocus
+                                    />
+                                    <button
+                                      onClick={() => setEditingMemberId(null)}
+                                      className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                    >
+                                      ✓
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => setEditingMemberId(member.id)}
+                                    className="cursor-pointer hover:bg-gray-100 rounded px-2 py-1 text-sm font-medium"
+                                  >
+                                    {adjustments[uid] ? (
+                                      <span className={adjustments[uid] >= 0 ? "text-green-600" : "text-red-600"}>
+                                        ${adjustments[uid] >= 0 ? '+' : ''}{adjustments[uid].toFixed(2)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-400">$0.00</span>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
+                              </td>
+
                               <td className="p-4 text-right">
-                                <button className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3">
-                                  Edit
+                                <button
+                                  onClick={() => {
+                                    if (editingMemberId === member.id) {
+                                      setEditingMemberId(null);
+                                    } else {
+                                      setEditingMemberId(member.id);
+                                    }
+                                  }}
+                                  className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3 transition-colors"
+                                >
+                                  {editingMemberId === member.id ? 'Done' : 'Edit'}
                                 </button>
-                                <button className="text-red-600 hover:text-red-700 font-medium text-sm">
+                                <button
+                                  onClick={async () => {
+                                    if (window.confirm(`Remove ${firstName} ${lastName} from this event?`)) {
+                                      try {
+                                        const { data: { session } } = await supabase.auth.getSession();
+                                        const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
+                                          method: 'DELETE',
+                                          headers: {
+                                            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+                                          },
+                                        });
+                                        if (res.ok) {
+                                          setMessage(`${firstName} ${lastName} removed successfully`);
+                                          loadTeam(); // Reload team list
+                                        } else {
+                                          const error = await res.text();
+                                          setMessage(`Failed to remove team member: ${error}`);
+                                        }
+                                      } catch (err: any) {
+                                        setMessage(`Error: ${err.message}`);
+                                      }
+                                    }
+                                  }}
+                                  className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors"
+                                >
                                   Remove
                                 </button>
                               </td>
@@ -1990,8 +2378,19 @@ export default function EventDashboardPage() {
                     <span className="font-semibold text-gray-900"> ${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-                      const hourlyRate = 25; // Default rate
-                      const totalPayment = totalHours * hourlyRate;
+
+                      // State-specific base rates (2025)
+                      // Based on VENUE location (where event takes place), not vendor address
+                      const stateRates: Record<string, number> = {
+                        'CA': 17.28,  // California
+                        'NY': 17.00,  // New York
+                        'AZ': 14.70,  // Arizona
+                        'WI': 15.00,  // Wisconsin
+                      };
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
+                      const baseRate = stateRates[eventState] || 17.28;
+
+                      const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
                     })()}</span>
                   </div>
@@ -2004,61 +2403,77 @@ export default function EventDashboardPage() {
                     <span className="font-semibold text-gray-900">${tips || "0.00"}</span>
                   </div>
                   <div className="flex justify-between items-center pb-3 border-b">
+                    <span className="text-gray-600">Adjustments</span>
+                    <span className={`font-semibold ${(() => {
+                      const total = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
+                      return total >= 0 ? 'text-green-600' : 'text-red-600';
+                    })()}`}>
+                      ${(() => {
+                        const total = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
+                        return (total >= 0 ? '+' : '') + total.toFixed(2);
+                      })()}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center pb-3 border-b">
                     <span className="text-gray-600">Deductions</span>
                     <span className="font-semibold text-gray-900">$0.00</span>
                   </div>
                   <div className="flex justify-between items-center pt-2">
                     <span className="text-lg font-bold text-gray-900">Total Payroll</span>
-                    <span className="text-2xl font-bold text-green-600">{(() => {
+                    <span className="text-2xl font-bold text-green-600">${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-                      const hourlyRate = 25; // Default rate
-                      const totalPayment = totalHours * hourlyRate;
-                      return totalPayment.toFixed(2)+tips;
+
+                      // State-specific base rates (2025)
+                      // Based on VENUE location (where event takes place), not vendor address
+                      const stateRates: Record<string, number> = {
+                        'CA': 17.28,  // California
+                        'NY': 17.00,  // New York
+                        'AZ': 14.70,  // Arizona
+                        'WI': 15.00,  // Wisconsin
+                      };
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
+                      const baseRate = stateRates[eventState] || 17.28;
+
+                      const basePay = totalHours * baseRate;
+                      const tipsAmount = Number(tips) || 0;
+                      const adjustmentsTotal = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
+                      const totalPayroll = basePay + tipsAmount + adjustmentsTotal;
+
+                      return totalPayroll.toFixed(2);
                     })()}</span>
                   </div>
-                  <button className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-semibold transition">
-                    Process Payroll
+                  <button
+                    onClick={handleProcessPayroll}
+                    disabled={submitting || teamMembers.length === 0}
+                    className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+                  >
+                    {submitting ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Processing...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                        Process Payroll & Send Emails
+                      </>
+                    )}
                   </button>
                 </div>
               </div>
 
               {/* Performance Metrics */}
-              <div className="bg-white border rounded-lg p-6">
-                <h3 className="text-xl font-semibold mb-4">Performance Metrics</h3>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                  <div>
-                    <div className="text-sm text-gray-600 mb-2">Attendance Rate</div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="h-full bg-green-500 rounded-full" style={{ width: "0%" }}></div>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">0%</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-600 mb-2">On-Time Rate</div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="h-full bg-blue-500 rounded-full" style={{ width: "0%" }}></div>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">0%</span>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-sm text-gray-600 mb-2">Customer Rating</div>
-                    <div className="flex items-center gap-2">
-                      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
-                        <div className="h-full bg-yellow-500 rounded-full" style={{ width: "0%" }}></div>
-                      </div>
-                      <span className="text-sm font-semibold text-gray-900">0.0</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              
             </div>
           )}
           {/* END tabs */}
+        </div>
         </div>
       </div>
     </div>

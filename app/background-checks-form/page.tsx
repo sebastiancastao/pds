@@ -377,9 +377,9 @@ export default function BackgroundChecksForm() {
         zIndex: 10
       }}>
         <div>
-          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>Background Check Waiver</h1>
+          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>Background Check Forms</h1>
           <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#666' }}>
-            Please review and sign the background check waiver form. Your progress is automatically saved.
+            Please review and sign both background check forms below. Your progress is automatically saved.
           </p>
         </div>
 
@@ -407,7 +407,7 @@ export default function BackgroundChecksForm() {
         </div>
       </div>
 
-      {/* PDF Editor */}
+      {/* PDF Editors */}
       <div style={{
         flex: 1,
         padding: '24px',
@@ -415,15 +415,48 @@ export default function BackgroundChecksForm() {
         display: 'flex',
         flexDirection: 'column'
       }}>
-        <div style={{ flex: 1, marginBottom: '20px' }}>
-          <PDFFormEditor
-            key="background-waiver"
-            pdfUrl="/api/background-waiver"
-            formId="background-waiver"
-            onSave={handlePDFSave}
-            onFieldChange={handleFieldChange}
-            onContinue={handleContinue}
-          />
+        {/* Form 1: Background Waiver */}
+        <div style={{ marginBottom: '32px' }}>
+          <h2 style={{
+            margin: '0 0 16px 0',
+            fontSize: '20px',
+            fontWeight: 'bold',
+            color: '#333'
+          }}>
+            1. Background Check Waiver
+          </h2>
+          <div style={{ marginBottom: '20px' }}>
+            <PDFFormEditor
+              key="background-waiver"
+              pdfUrl="/api/background-waiver"
+              formId="background-waiver"
+              onSave={handlePDFSave}
+              onFieldChange={handleFieldChange}
+              onContinue={handleContinue}
+            />
+          </div>
+        </div>
+
+        {/* Form 2: Background Disclosure */}
+        <div style={{ marginBottom: '32px' }}>
+          <h2 style={{
+            margin: '0 0 16px 0',
+            fontSize: '20px',
+            fontWeight: 'bold',
+            color: '#333'
+          }}>
+            2. Background Check Disclosure and Authorization
+          </h2>
+          <div style={{ marginBottom: '20px' }}>
+            <PDFFormEditor
+              key="background-disclosure"
+              pdfUrl="/api/background-disclosure"
+              formId="background-disclosure"
+              onSave={handlePDFSave}
+              onFieldChange={handleFieldChange}
+              onContinue={handleContinue}
+            />
+          </div>
         </div>
 
         {/* Signature Section */}

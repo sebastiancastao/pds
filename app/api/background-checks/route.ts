@@ -2,6 +2,8 @@ import { createClient } from "@supabase/supabase-js";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from 'next/server';
+import { decrypt } from "@/lib/encryption";
+import { sendBackgroundCheckApprovalEmail } from "@/lib/email";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -136,7 +138,7 @@ export async function GET(req: NextRequest) {
     const transformedVendors = backgroundChecks
       ?.filter(check => check.profiles) // Only include records with valid profiles
       .map(check => {
-        const profile = check.profiles;
+        const profile = check.profiles as any;
         const passwordInfo = tempPasswordMap.get(profile.user_id) || {
           is_temporary_password: false,
           must_change_password: false
@@ -147,13 +149,45 @@ export async function GET(req: NextRequest) {
           submitted_at: null
         };
 
+        // Decrypt names if they are encrypted, otherwise keep original values
+        let firstName = '';
+        let lastName = '';
+        let phone = '';
+
+        try {
+          firstName = profile.first_name
+            ? decrypt(profile.first_name)
+            : '';
+        } catch (decryptError) {
+          // If decryption fails, the name is not encrypted - use original value
+          firstName = profile.first_name || '';
+        }
+
+        try {
+          lastName = profile.last_name
+            ? decrypt(profile.last_name)
+            : '';
+        } catch (decryptError) {
+          // If decryption fails, the name is not encrypted - use original value
+          lastName = profile.last_name || '';
+        }
+
+        try {
+          phone = profile.phone
+            ? decrypt(profile.phone)
+            : '';
+        } catch (decryptError) {
+          // If decryption fails, the phone is not encrypted - use original value
+          phone = profile.phone || '';
+        }
+
         return {
           id: profile.id,
           user_id: profile.user_id,
-          full_name: `${profile.first_name || ''} ${profile.last_name || ''}`.trim() || 'N/A',
+          full_name: `${firstName} ${lastName}`.trim() || 'N/A',
           email: emailMap.get(profile.user_id) || 'N/A',
           role: profile.role,
-          phone: profile.phone || 'N/A',
+          phone: phone || 'N/A',
           created_at: profile.created_at,
           is_temporary_password: passwordInfo.is_temporary_password,
           must_change_password: passwordInfo.must_change_password,
@@ -297,6 +331,62 @@ export async function POST(request: NextRequest) {
       }
 
       result = data;
+    }
+
+    // Send approval email to user if background check was just marked as completed
+    if (background_check_completed && result) {
+      console.log('[BACKGROUND CHECKS API] Background check approved, sending notification email to user...');
+
+      // Get the user's profile info and email
+      const { data: userProfile, error: userProfileError } = await adminClient
+        .from('profiles')
+        .select('user_id, first_name, last_name')
+        .eq('id', profile_id)
+        .single();
+
+      if (!userProfileError && userProfile) {
+        // Get the user's email from auth
+        const { data: authUsers } = await adminClient.auth.admin.listUsers();
+        const userEmail = authUsers?.users?.find(u => u.id === userProfile.user_id)?.email;
+
+        if (userEmail) {
+          // Decrypt name fields
+          let firstName = 'User';
+          let lastName = '';
+
+          try {
+            firstName = userProfile.first_name ? decrypt(userProfile.first_name) : 'User';
+          } catch (decryptError) {
+            // If decryption fails, use original value
+            firstName = userProfile.first_name || 'User';
+          }
+
+          try {
+            lastName = userProfile.last_name ? decrypt(userProfile.last_name) : '';
+          } catch (decryptError) {
+            // If decryption fails, use original value
+            lastName = userProfile.last_name || '';
+          }
+
+          // Send approval email
+          const emailResult = await sendBackgroundCheckApprovalEmail({
+            email: userEmail,
+            firstName: firstName,
+            lastName: lastName
+          });
+
+          if (emailResult.success) {
+            console.log('[BACKGROUND CHECKS API] ✅ Approval email sent to user successfully');
+          } else {
+            console.error('[BACKGROUND CHECKS API] ❌ Failed to send approval email to user:', emailResult.error);
+            // Don't fail the request if email fails - log it but continue
+          }
+        } else {
+          console.error('[BACKGROUND CHECKS API] ⚠️ Could not find user email for approval notification');
+        }
+      } else {
+        console.error('[BACKGROUND CHECKS API] ⚠️ Could not fetch user profile for approval email:', userProfileError);
+      }
     }
 
     return NextResponse.json({ background_check: result }, { status: 200 });

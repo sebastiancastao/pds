@@ -272,6 +272,12 @@ export default function LoginPage() {
         return;
       }
 
+      if (!authData.user) {
+        setError('Authentication failed. Please try again.');
+        setIsLoading(false);
+        return;
+      }
+
       // Step 4: Reset failed attempts
       await fetch('/api/auth/update-login-attempts', {
         method: 'POST',
@@ -284,7 +290,7 @@ export default function LoginPage() {
 
       const { data: currentUserData, error: fetchError } = await (supabase
         .from('users')
-        .select('is_temporary_password, background_check_completed')
+        .select('is_temporary_password, must_change_password, background_check_completed')
         .eq('id', authData.user.id)
         .single() as any);
 
@@ -320,27 +326,31 @@ export default function LoginPage() {
       }
 
       const isTemporaryPassword = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
+      const mustChangePassword = currentUserData?.must_change_password ?? false;
       const backgroundCheckCompleted = currentUserData?.background_check_completed ?? false;
 
       console.log('[LOGIN DEBUG] 📊 Computed values after defaults:');
       console.log('[LOGIN DEBUG] - isTemporaryPassword:', isTemporaryPassword, '(type:', typeof isTemporaryPassword, ')');
+      console.log('[LOGIN DEBUG] - mustChangePassword:', mustChangePassword, '(type:', typeof mustChangePassword, ')');
       console.log('[LOGIN DEBUG] - backgroundCheckCompleted:', backgroundCheckCompleted, '(type:', typeof backgroundCheckCompleted, ')');
 
       console.log('[LOGIN DEBUG] User status after login:', {
         userId: authData.user.id,
         email: authData.user.email,
         isTemporaryPassword,
+        mustChangePassword,
         backgroundCheckCompleted,
         rawData: currentUserData
       });
 
-      console.log('[LOGIN DEBUG] 🔍 SIMPLE REDIRECT LOGIC:');
-      console.log('[LOGIN DEBUG] - If background_check_completed = TRUE → /password');
+      console.log('[LOGIN DEBUG] 🔍 REDIRECT LOGIC:');
       console.log('[LOGIN DEBUG] - If background_check_completed = FALSE → /background-checks-form');
+      console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + temp password → /password');
+      console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + permanent password → /verify-mfa');
 
-      // SIMPLE: Check background_check_completed value
+      // Step 1: Check if background check is completed
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
-        // FALSE → go to background-checks-form
+        // Background check not completed → go to background-checks-form
         console.log('[LOGIN DEBUG] ❌ background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
         console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
 
@@ -349,9 +359,12 @@ export default function LoginPage() {
 
         router.replace('/background-checks-form');
         return;
-      } else {
-        // TRUE → go to /password
-        console.log('[LOGIN DEBUG] ✅ background_check_completed = TRUE');
+      }
+
+      // Step 2: Background check completed, check if user needs to change password
+      if (isTemporaryPassword || mustChangePassword) {
+        // User has temporary password → go to /password
+        console.log('[LOGIN DEBUG] ⚠️ User has temporary password or must change password');
         console.log('[LOGIN DEBUG] 🔄 Redirecting to /password');
 
         sessionStorage.setItem('requires_password_change', 'true');
@@ -362,16 +375,20 @@ export default function LoginPage() {
         return;
       }
 
-      // Step 6: Log success
+      // Step 3: Background check completed AND permanent password → proceed to MFA
+      console.log('[LOGIN DEBUG] ✅ background_check_completed = TRUE + permanent password');
+      console.log('[LOGIN DEBUG] 🔄 Proceeding to MFA verification');
+
+      // Step 4: Log success
       await logAuditEvent({
-        userId: authData.user.id,
+        userId: authData.user!.id,
         action: 'login_success',
         resourceType: 'user',
         success: true,
         metadata: { email, temporaryPassword: isTemporaryPassword }
       });
 
-      // Step 7: Verify session
+      // Step 5: Verify session
       await new Promise(resolve => setTimeout(resolve, 100));
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -381,14 +398,14 @@ export default function LoginPage() {
       }
 
       // === MFA CHECK: 1:1 PROFILE WITH .single() ===
-      console.log('MFA [DEBUG] Checking MFA status for user:', authData.user.id);
+      console.log('MFA [DEBUG] Checking MFA status for user:', authData.user!.id);
 
       let mfaProfile: { mfa_secret?: string | null; mfa_enabled?: boolean } | null;
       try {
         const { data, error } = await (supabase
           .from('profiles')
           .select('mfa_secret, mfa_enabled')
-          .eq('user_id', authData.user.id)
+          .eq('user_id', authData.user!.id)
           .single() as any); // Enforces exactly one row
 
         if (error) throw error;
@@ -432,9 +449,7 @@ export default function LoginPage() {
       {/* Left Side - Branding */}
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
         <div className="relative z-10">
-          <Link href="/" className="text-white hover:text-primary-100 transition-colors">
-            ← Back to Home
-          </Link>
+          
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
               PDS Time Tracking System
@@ -605,20 +620,14 @@ export default function LoginPage() {
               </button>
             </form>
 
-            <div className="mt-6 pt-6 border-t text-center text-sm">
-              <Link href="/register" className="text-primary-600 font-medium">
-                Create your account
-              </Link>
-            </div>
+            
 
             <div className="mt-4 text-center text-xs text-gray-500">
               Secured by TLS 1.2+ encryption
             </div>
           </div>
 
-          <div className="mt-6 text-center text-sm">
-            <Link href="/support" className="text-primary-600">Contact Support</Link>
-          </div>
+          
         </div>
       </div>
     </div>

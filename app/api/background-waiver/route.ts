@@ -1,9 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { PDFDocument } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     // Load the Background Waiver PDF
     const pdfPath = join(process.cwd(), 'Background Waiver PDS Brett.pdf');
@@ -21,9 +21,9 @@ export async function GET(request: NextRequest) {
 
     // Add form fields for background check information
     // These coordinates may need adjustment based on your PDF layout
-   
+
     const checkbox = form.createCheckBox('checkbox');
-    
+
      checkbox.addToPage(firstPage, {
       x: 127, y: height - 527, width: 5, height: 5,
     });
@@ -35,19 +35,19 @@ export async function GET(request: NextRequest) {
       x: 255, y: height - 625, width: 200, height: 10,
     });
 
-    // Date 
+    // Date
     const dateField = form.createTextField('date');
     dateField.setText('');
     dateField.addToPage(firstPage, {
       x: 450, y: height - 600, width: 60, height: 10,
-   
+
     });
     // Date of Birth
     const dobField = form.createTextField('dateOfBirth');
     dobField.setText('');
     dobField.addToPage(firstPage, {
       x: 200, y: height - 710, width: 60, height: 10,
-   
+
     });
 
     // Social Security Number
@@ -55,19 +55,19 @@ export async function GET(request: NextRequest) {
     ssnField.setText('');
     ssnField.addToPage(firstPage, {
       x: 430, y: height - 710, width: 60, height: 10,
-      
+
     });
    const dlnField = form.createTextField('driversLicenseName');
     dlnField.setText('');
     dlnField.addToPage(firstPage, {
       x: 300, y: height - 640, width: 200, height: 10,
-     
+
     });
     const otherName = form.createTextField('otherName');
     otherName.setText('');
     otherName.addToPage(firstPage, {
       x: 255, y: height - 657, width: 200, height: 10,
-     
+
     });
 
     // Driver's License Number
@@ -77,7 +77,7 @@ export async function GET(request: NextRequest) {
       x: 255, y: height - 680, width: 80, height: 10,
     });
 
-    
+
 
     // State
     const stateField = form.createTextField('state');
@@ -86,12 +86,12 @@ export async function GET(request: NextRequest) {
       x: 450, y: height - 680, width: 60, height: 10,
     });
 
-   
 
-    
-    
 
-   
+
+
+
+
 
     // Add form fields to second page if it exists
     if (pages.length > 1) {
@@ -131,21 +131,21 @@ export async function GET(request: NextRequest) {
       prevEmployer1.setText('');
       prevEmployer1.addToPage(secondPage, {
         x: 100, y: height2 - 240, width: 300, height: 20,
-        
+
       });
       // Previous Dates 1
       const datefrom1 = form.createTextField('datefrom1');
       datefrom1.setText('');
       datefrom1.addToPage(secondPage, {
         x: 400, y: height2 - 240, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const datefto1 = form.createTextField('datefto1');
       datefto1.setText('');
       datefto1.addToPage(secondPage, {
         x: 480, y: height2 - 240, width: 80, height: 20,
-        
+
       });
 
 
@@ -161,14 +161,14 @@ export async function GET(request: NextRequest) {
       datefrom2.setText('');
       datefrom2.addToPage(secondPage, {
         x: 400, y: height2 - 265, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const datefto2 = form.createTextField('datefto2');
       datefto2.setText('');
       datefto2.addToPage(secondPage, {
         x: 480, y: height2 - 265, width: 80, height: 20,
-        
+
       });
 
 
@@ -184,14 +184,14 @@ export async function GET(request: NextRequest) {
       datefrom3.setText('');
       datefrom3.addToPage(secondPage, {
         x: 400, y: height2 - 290, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const datefto3 = form.createTextField('datefto3');
       datefto3.setText('');
       datefto3.addToPage(secondPage, {
         x: 480, y: height2 - 290, width: 80, height: 20,
-        
+
       });
 
        // Previous Position 2
@@ -206,14 +206,14 @@ export async function GET(request: NextRequest) {
       pdatefrom1.setText('');
       pdatefrom1.addToPage(secondPage, {
         x: 400, y: height2 - 375, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const pdatefto1 = form.createTextField('pdatefto1');
       pdatefto1.setText('');
       pdatefto1.addToPage(secondPage, {
         x: 480, y: height2 - 375, width: 80, height: 20,
-        
+
       });
 
 
@@ -222,7 +222,7 @@ export async function GET(request: NextRequest) {
       prevPosition2.setText('');
       prevPosition2.addToPage(secondPage, {
         x: 100, y: height2 - 400, width: 300, height: 20,
-      
+
       });
 
        // Previous Dates 1
@@ -230,14 +230,14 @@ export async function GET(request: NextRequest) {
       pdatefrom2.setText('');
       pdatefrom2.addToPage(secondPage, {
         x: 400, y: height2 - 400, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const pdatefto2 = form.createTextField('pdatefto2');
       pdatefto2.setText('');
       pdatefto2.addToPage(secondPage, {
         x: 480, y: height2 - 400, width: 80, height: 20,
-        
+
       });
 
       const prevPosition3 = form.createTextField('previousPosition3');
@@ -251,17 +251,17 @@ export async function GET(request: NextRequest) {
       pdatefrom3.setText('');
       pdatefrom3.addToPage(secondPage, {
         x: 400, y: height2 - 425, width: 80, height: 20,
-        
+
       });
       // Previous Dates 1
       const pdatefto3 = form.createTextField('pdatefto3');
       pdatefto3.setText('');
       pdatefto3.addToPage(secondPage, {
         x: 480, y: height2 - 425, width: 80, height: 20,
-        
+
       });
 
-     
+
 
       // Reference 1 Name
       const ref1Name = form.createTextField('reference1Name');
@@ -270,9 +270,9 @@ export async function GET(request: NextRequest) {
         x: 290, y: height2 - 300, width: 200, height: 10,
       });
 
-      
 
-      
+
+
 
       // Reference 2 Phone
       const ref1Phone = form.createTextField('reference1Phone');
@@ -288,13 +288,13 @@ export async function GET(request: NextRequest) {
       });
 
       const yesCrime = form.createCheckBox('yesCrime');
-      
+
       yesCrime.addToPage(secondPage, {
         x: 395, y: height2 - 437, width: 26, height: 10,
       });
 
       const noCrime = form.createCheckBox('noCrime');
-      
+
       noCrime.addToPage(secondPage, {
         x: 445, y: height2 - 437, width: 26, height: 10,
       });
@@ -386,7 +386,7 @@ export async function GET(request: NextRequest) {
         x: 350, y: height2 - 550, width: 130, height: 20,
       });
 
-      
+
 
       console.log('[BACKGROUND WAIVER] Added 12 editable form fields to second page');
     }

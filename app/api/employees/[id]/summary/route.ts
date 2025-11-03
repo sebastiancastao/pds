@@ -242,7 +242,7 @@ export async function GET(
     // ---- Pull time_entries with action and timestamp columns
     const { data: rawEntries, error: teErr } = await supabaseAdmin
       .from("time_entries")
-      .select("id, event_id, action, timestamp, created_at,  user_id")
+      .select("id, event_id, action, timestamp, created_at, updated_at, user_id")
       .or(`user_id.eq.${userId}`)
       .order("timestamp", { ascending: false });
 
