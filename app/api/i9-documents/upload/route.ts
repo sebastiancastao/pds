@@ -199,11 +199,37 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    // Check if requesting specific user's documents (HR feature)
+    const { searchParams } = new URL(request.url);
+    const requestedUserId = searchParams.get('userId');
+
+    let targetUserId = user.id;
+
+    // If requesting another user's documents, verify HR permissions
+    if (requestedUserId && requestedUserId !== user.id) {
+      // Check if current user has HR permissions (admin or hr_admin role)
+      const { data: userData } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+
+      if (!userData || !['admin', 'hr_admin'].includes(userData.role)) {
+        return NextResponse.json(
+          { error: 'Insufficient permissions to view employee documents' },
+          { status: 403 }
+        );
+      }
+
+      targetUserId = requestedUserId;
+      console.log('[I9_DOCUMENTS] HR viewing documents for user:', targetUserId);
+    }
+
     // Get documents from database
     const { data, error } = await supabase
       .from('i9_documents')
       .select('*')
-      .eq('user_id', user.id)
+      .eq('user_id', targetUserId)
       .single();
 
     if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned

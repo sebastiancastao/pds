@@ -96,7 +96,7 @@ type Department = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"events">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
 
   // Auth & Access Control
