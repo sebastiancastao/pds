@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
-export default function ResetPasswordPage() {
+function ResetPasswordContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [password, setPassword] = useState('');
@@ -57,7 +57,7 @@ export default function ResetPasswordPage() {
             setError('Invalid or expired reset link. Please request a new one.');
             setIsValidToken(false);
           } else if (sessionData.session) {
-            console.log('[RESET PASSWORD] ✅ Session created successfully');
+            console.log('[RESET PASSWORD]  Session created successfully');
             setIsValidToken(true);
           } else {
             console.error('[RESET PASSWORD] No session created');
@@ -143,7 +143,7 @@ export default function ResetPasswordPage() {
         return;
       }
 
-      console.log('[RESET PASSWORD] ✅ Password updated successfully');
+      console.log('[RESET PASSWORD]  Password updated successfully');
       setSuccess(true);
 
       // Sign out to force fresh login with new password
@@ -211,7 +211,7 @@ export default function ResetPasswordPage() {
       <div className="hidden lg:flex lg:w-1/2 bg-primary-600 p-12 flex-col justify-between relative overflow-hidden">
         <div className="relative z-10">
           <Link href="/login" className="text-white hover:text-primary-100 transition-colors">
-            ← Back to Login
+            � Back to Login
           </Link>
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
@@ -257,7 +257,7 @@ export default function ResetPasswordPage() {
         <div className="w-full max-w-md">
           <div className="lg:hidden mb-6">
             <Link href="/login" className="text-primary-600 hover:text-primary-700 transition-colors">
-              ← Back to Login
+              � Back to Login
             </Link>
           </div>
 
@@ -397,9 +397,24 @@ export default function ResetPasswordPage() {
             )}
           </div>
 
-          
+
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ResetPasswordPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-primary-50 to-primary-100">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-primary-600 mx-auto mb-4"></div>
+          <p className="text-gray-600 text-lg">Loading...</p>
+        </div>
+      </div>
+    }>
+      <ResetPasswordContent />
+    </Suspense>
   );
 }

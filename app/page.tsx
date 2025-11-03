@@ -14,6 +14,9 @@ export default function Home() {
     checkAuthAndMFA();
   }, []);
 
+
+  
+
   const checkAuthAndMFA = async () => {
     console.log('[DEBUG] Home - Checking authentication and MFA status...');
 
