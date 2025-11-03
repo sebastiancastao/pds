@@ -52,6 +52,8 @@ type SummaryPayload = {
 };
 
 type I9Documents = {
+  id?: string;
+  user_id?: string;
   drivers_license_url?: string;
   drivers_license_filename?: string;
   drivers_license_uploaded_at?: string;
@@ -61,6 +63,8 @@ type I9Documents = {
   additional_doc_url?: string;
   additional_doc_filename?: string;
   additional_doc_uploaded_at?: string;
+  created_at?: string;
+  updated_at?: string;
 };
 
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
@@ -167,25 +171,31 @@ export default function EmployeeProfilePage() {
       setI9Loading(true);
 
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        // Query i9_documents table directly - returns single record per user
+        const { data, error } = await supabase
+          .from('i9_documents')
+          .select('*')
+          .eq('user_id', employee.id)
+          .maybeSingle();
 
-        // Note: This fetches the employee's I-9 documents
-        // The API will need to be updated to support HR viewing employee documents
-        const res = await fetch(`/api/i9-documents/upload?userId=${employee.id}`, {
-          headers: {
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-          },
-        });
+        if (error) {
+          console.error("🔴 [DEBUG] Error querying i9_documents:", error);
+          setI9Documents(null);
+          return;
+        }
 
-        if (res.ok) {
-          const data = await res.json();
-          console.log("🟢 [DEBUG] I-9 documents loaded:", data);
-          setI9Documents(data.documents || null);
+        console.log("🟢 [DEBUG] I-9 documents loaded:", data);
+
+        // Set the documents directly (already in correct format)
+        if (data) {
+          setI9Documents(data);
         } else {
-          console.log("⚠️ [DEBUG] No I-9 documents found or error:", res.status);
+          console.log("⚠️ [DEBUG] No I-9 documents found for user");
+          setI9Documents(null);
         }
       } catch (error) {
         console.error("🔴 [DEBUG] Error loading I-9 documents:", error);
+        setI9Documents(null);
       } finally {
         setI9Loading(false);
       }

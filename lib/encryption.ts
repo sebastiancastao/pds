@@ -61,17 +61,56 @@ export const decrypt = (ciphertext: string): string => {
       mode: CryptoJS.mode.CBC,
       padding: CryptoJS.pad.Pkcs7,
     });
-    
+
     const plaintext = decrypted.toString(CryptoJS.enc.Utf8);
-    
+
     if (!plaintext) {
       throw new Error('Decryption resulted in empty string');
     }
-    
+
     return plaintext;
   } catch (error) {
     console.error('Decryption error:', error);
     throw new Error('Failed to decrypt data');
+  }
+};
+
+/**
+ * Check if data appears to be encrypted
+ * @param data - Data to check
+ * @returns True if data appears to be encrypted
+ */
+export const isEncrypted = (data: string): boolean => {
+  // Encrypted data from CryptoJS typically:
+  // 1. Is base64 encoded (only contains A-Z, a-z, 0-9, +, /, =)
+  // 2. Often starts with "U2FsdGVk" (base64 for "Salted__")
+  // 3. Is longer than typical plain text names
+  if (!data || data.length < 20) return false;
+  const base64Regex = /^[A-Za-z0-9+/]+=*$/;
+  return base64Regex.test(data) && data.length > 30;
+};
+
+/**
+ * Safely decrypt data - returns original if not encrypted
+ * @param data - Data that may or may not be encrypted
+ * @returns Decrypted data or original if not encrypted
+ */
+export const safeDecrypt = (data: string): string => {
+  if (!data) {
+    return '';
+  }
+
+  // Check if data is encrypted
+  if (!isEncrypted(data)) {
+    return data;
+  }
+
+  // Try to decrypt
+  try {
+    return decrypt(data);
+  } catch (error) {
+    console.error('Safe decryption failed, returning original:', error);
+    return data;
   }
 };
 

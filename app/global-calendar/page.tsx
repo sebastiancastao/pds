@@ -93,6 +93,17 @@ type Department = {
   color: string;
 };
 
+type BackgroundCheck = {
+  id: string;
+  vendor_id: string;
+  status: "pending" | "approved" | "rejected" | "in_progress";
+  check_date: string;
+  verified_by: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
@@ -130,6 +141,7 @@ export default function DashboardPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [backgroundChecks, setBackgroundChecks] = useState<BackgroundCheck[]>([]);
   const [selectedState, setSelectedState] = useState<string>("all");
   const [selectedEmployeeRegion, setSelectedEmployeeRegion] = useState<string>("all");
   const [availableStates, setAvailableStates] = useState<string[]>([]);
@@ -184,6 +196,30 @@ export default function DashboardPage() {
       setEmployeesError(err.message || "Failed to load employees");
     }
     setLoadingEmployees(false);
+  }, []);
+
+  // Load background checks
+  const loadBackgroundChecks = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log('[GLOBAL-CALENDAR-HR] 🔍 Loading background checks...');
+
+      const { data, error } = await supabase
+        .from('vendor_background_checks')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+
+      console.log('[GLOBAL-CALENDAR-HR] 📦 Background checks loaded:', {
+        count: data?.length || 0,
+        approved: data?.filter(bc => bc.status === 'approved').length || 0
+      });
+
+      setBackgroundChecks(data || []);
+    } catch (err: any) {
+      console.error('[GLOBAL-CALENDAR-HR] ❌ Error loading background checks:', err);
+    }
   }, []);
 
   // Auth check - MUST run first
@@ -258,28 +294,22 @@ export default function DashboardPage() {
     };
 
     const loadHRMockData = async () => {
-      // Replace with real sources as you wire APIs
+      // Leave requests mock data
       await new Promise((r) => setTimeout(r, 200));
       const mockLeaves: LeaveRequest[] = [
         { id: "1", employee_id: "4", employee_name: "Emily Davis", leave_type: "vacation", start_date: "2025-11-01", end_date: "2025-11-10", status: "pending", reason: "Family vacation", days: 10 },
         { id: "2", employee_id: "2", employee_name: "Sarah Johnson", leave_type: "sick", start_date: "2025-10-28", end_date: "2025-10-29", status: "approved", reason: "Medical appointment", days: 2 },
         { id: "3", employee_id: "1", employee_name: "John Smith", leave_type: "personal", start_date: "2025-11-15", end_date: "2025-11-15", status: "pending", reason: "Personal matter", days: 1 },
       ];
-      const mockDepts: Department[] = [
-        { name: "Engineering", employee_count: 2, color: "blue" },
-        { name: "Marketing", employee_count: 1, color: "purple" },
-        { name: "Sales", employee_count: 1, color: "green" },
-        { name: "HR", employee_count: 1, color: "orange" },
-      ];
       setLeaveRequests(mockLeaves);
-      setDepartments(mockDepts);
     };
 
     loadEvents();
     loadEmployees();
+    loadBackgroundChecks();
     loadHRMockData();
     loadRegions();
-  }, [isAuthorized, loadEmployees]);
+  }, [isAuthorized, loadEmployees, loadBackgroundChecks]);
 
   // Derived stats
   const eventStats = {
@@ -292,6 +322,22 @@ export default function DashboardPage() {
     totalConfirmedStaff: events.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
   };
 
+  // Calculate role distribution from actual employee data
+  const roleCounts = employees.reduce((acc, emp) => {
+    // Map employee positions to roles (vendor or manager)
+    // Assume positions containing 'manager' or 'supervisor' are managers, rest are vendors
+    const role = emp.position.toLowerCase().includes('manager') || emp.position.toLowerCase().includes('supervisor')
+      ? 'manager'
+      : 'vendor';
+    acc[role] = (acc[role] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  const calculatedDepartments: Department[] = [
+    { name: "vendor", employee_count: roleCounts['vendor'] || 0, color: "blue" },
+    { name: "manager", employee_count: roleCounts['manager'] || 0, color: "purple" },
+  ];
+
   const hrStats = {
     totalEmployees: employees.length,
     activeEmployees: employees.filter((e) => e.status === "active").length,
@@ -301,8 +347,8 @@ export default function DashboardPage() {
       const now = new Date();
       return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
     }).length,
-    pendingLeaves: leaveRequests.filter((l) => l.status === "pending").length,
-    totalDepartments: departments.length,
+    approvedBackgroundChecks: backgroundChecks.filter((bc) => bc.status === "approved").length,
+    totalDepartments: calculatedDepartments.length,
   };
 
   // Region + vendors helpers
@@ -658,56 +704,80 @@ export default function DashboardPage() {
             {/* Overview */}
             {!loading && !error && events.length > 0 && (
               <section className="mb-10">
-                <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Overview</h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                  <div className="apple-stat-card apple-stat-card-blue">
-                    <div className="apple-stat-icon apple-stat-icon-blue">
-                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                    <div className="apple-stat-content">
-                      <div className="apple-stat-label">Total Events</div>
-                      <div className="apple-stat-value">{eventStats.totalEvents}</div>
-                      <div className="apple-stat-sublabel">{eventStats.activeEvents} active</div>
-                    </div>
-                  </div>
-                  <div className="apple-stat-card apple-stat-card-purple">
-                    <div className="apple-stat-icon apple-stat-icon-purple">
-                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </div>
-                    <div className="apple-stat-content">
-                      <div className="apple-stat-label">Upcoming</div>
-                      <div className="apple-stat-value">{eventStats.upcomingEvents}</div>
-                      <div className="apple-stat-sublabel">scheduled ahead</div>
-                    </div>
-                  </div>
-                  <div className="apple-stat-card apple-stat-card-green">
-                    <div className="apple-stat-icon apple-stat-icon-green">
-                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
-                      </svg>
-                    </div>
-                    <div className="apple-stat-content">
-                      <div className="apple-stat-label">Total collected</div>
-                      <div className="apple-stat-value">${(eventStats.totalTicketSales / 1000).toFixed(1)}k</div>
-                      <div className="apple-stat-sublabel">total revenue</div>
-                    </div>
-                  </div>
-                  <div className="apple-stat-card apple-stat-card-orange">
-                    <div className="apple-stat-icon apple-stat-icon-orange">
-                      <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                      </svg>
-                    </div>
-                    <div className="apple-stat-content">
-                      <div className="apple-stat-label">Staff</div>
-                      <div className="apple-stat-value">
-                        {eventStats.totalConfirmedStaff}/{eventStats.totalRequiredStaff}
+                <div className="flex items-center justify-between mb-6">
+                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Overview</h2>
+                  <span className="text-sm text-gray-500 font-medium">Last updated: {new Date().toLocaleDateString()}</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <div className="group relative bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                    <div className="relative flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Events</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Total Events</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{eventStats.totalEvents}</div>
+                        <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          {eventStats.activeEvents} active
+                        </p>
                       </div>
-                      <div className="apple-stat-sublabel">confirmed</div>
+                    </div>
+                  </div>
+
+                  <div className="group relative bg-gradient-to-br from-purple-50 to-white border border-purple-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                    <div className="relative flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Schedule</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Upcoming Events</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{eventStats.upcomingEvents}</div>
+                        <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                          </svg>
+                          scheduled ahead
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="group relative bg-gradient-to-br from-green-50 to-white border border-green-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-green-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                    <div className="relative flex items-start justify-between">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-green-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 5v2m0 4v2m0 4v2M5 5a2 2 0 00-2 2v3a2 2 0 110 4v3a2 2 0 002 2h14a2 2 0 002-2v-3a2 2 0 110-4V7a2 2 0 00-2-2H5z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">Revenue</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Total Collected</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">${(eventStats.totalTicketSales / 1000).toFixed(1)}k</div>
+                        <p className="text-sm text-green-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          total revenue
+                        </p>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -843,12 +913,14 @@ export default function DashboardPage() {
                   Add Employee
                 </button>
               </Link>
-              <button className="apple-button apple-button-secondary">
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                View Calendar
-              </button>
+              <Link href="/background-checks">
+                <button className="apple-button apple-button-secondary">
+                  <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                  View Background Checks
+                </button>
+              </Link>
             </div>
 
             {/* HR Subtabs */}
@@ -872,20 +944,6 @@ export default function DashboardPage() {
                   Employees
                   {hrView === "employees" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
                 </button>
-                <button
-                  onClick={() => setHrView("leaves")}
-                  className={`pb-4 px-2 font-semibold transition-colors relative ${
-                    hrView === "leaves" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Leave Requests
-                  {hrStats.pendingLeaves > 0 && (
-                    <span className="ml-2 px-2 py-0.5 text-xs bg-red-500 text-white rounded-full">
-                      {hrStats.pendingLeaves}
-                    </span>
-                  )}
-                  {hrView === "leaves" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-                </button>
               </div>
             </div>
 
@@ -893,142 +951,159 @@ export default function DashboardPage() {
             {hrView === "overview" && (
               <div className="space-y-8">
                 <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Key Metrics</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="apple-stat-card apple-stat-card-blue">
-                      <div className="apple-stat-icon apple-stat-icon-blue">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Total Employees</div>
-                        <div className="apple-stat-value">{hrStats.totalEmployees}</div>
-                        <div className="apple-stat-sublabel">{hrStats.activeEmployees} active</div>
-                      </div>
-                    </div>
-                    <div className="apple-stat-card apple-stat-card-purple">
-                      <div className="apple-stat-icon apple-stat-icon-purple">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Departments</div>
-                        <div className="apple-stat-value">{hrStats.totalDepartments}</div>
-                        <div className="apple-stat-sublabel">active divisions</div>
-                      </div>
-                    </div>
-                    <div className="apple-stat-card apple-stat-card-green">
-                      <div className="apple-stat-icon apple-stat-icon-green">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">New Hires</div>
-                        <div className="apple-stat-value">{hrStats.newHiresThisMonth}</div>
-                        <div className="apple-stat-sublabel">this month</div>
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Key Metrics</h2>
+                    <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                    <div className="group relative bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                      <div className="relative">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Total</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Total Employees</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalEmployees}</div>
+                        <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          {hrStats.activeEmployees} active
+                        </p>
                       </div>
                     </div>
-                    <div className="apple-stat-card apple-stat-card-orange">
-                      <div className="apple-stat-icon apple-stat-icon-orange">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
+
+                    <div className="group relative bg-gradient-to-br from-purple-50 to-white border border-purple-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                      <div className="relative">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Roles</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Departments</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalDepartments}</div>
+                        <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          active divisions
+                        </p>
                       </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Pending Leaves</div>
-                        <div className="apple-stat-value">{hrStats.pendingLeaves}</div>
-                        <div className="apple-stat-sublabel">need approval</div>
+                    </div>
+
+                    <div className="group relative bg-gradient-to-br from-green-50 to-white border border-green-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-green-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                      <div className="relative">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-green-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">New</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">New Hires</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.newHiresThisMonth}</div>
+                        <p className="text-sm text-green-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                          </svg>
+                          this month
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="group relative bg-gradient-to-br from-orange-50 to-white border border-orange-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+                      <div className="relative">
+                        <div className="flex items-center gap-3 mb-4">
+                          <div className="w-12 h-12 bg-orange-500 rounded-xl flex items-center justify-center shadow-lg shadow-orange-500/30 group-hover:scale-110 transition-transform duration-300">
+                            <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                            </svg>
+                          </div>
+                          <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-semibold">Security</span>
+                        </div>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Background Checks</h3>
+                        <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.approvedBackgroundChecks}</div>
+                        <p className="text-sm text-orange-600 font-medium flex items-center gap-1">
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                          </svg>
+                          approved checks
+                        </p>
                       </div>
                     </div>
                   </div>
                 </section>
 
-                {/* Departments */}
+                {/* Roles */}
                 <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Department Overview</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {departments.map((dept) => (
-                      <div key={dept.name} className="apple-card p-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold text-gray-900">{dept.name}</h3>
-                          <div className={`w-3 h-3 rounded-full bg-${dept.color}-500`} />
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Role Overview</h2>
+                    <span className="text-sm text-gray-500 font-medium">Workforce Distribution</span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {calculatedDepartments.map((dept) => (
+                      <div
+                        key={dept.name}
+                        className={`group relative bg-gradient-to-br ${
+                          dept.color === 'blue' ? 'from-blue-50 to-white border-blue-200' : 'from-purple-50 to-white border-purple-200'
+                        } border-2 rounded-2xl p-8 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden`}
+                      >
+                        <div className={`absolute top-0 right-0 w-40 h-40 ${
+                          dept.color === 'blue' ? 'bg-blue-500' : 'bg-purple-500'
+                        } opacity-5 rounded-full -mr-20 -mt-20 group-hover:scale-150 transition-transform duration-500`} />
+                        <div className="relative">
+                          <div className="flex items-start justify-between mb-6">
+                            <div className="flex items-center gap-4">
+                              <div className={`w-14 h-14 ${
+                                dept.color === 'blue' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-purple-500 shadow-purple-500/30'
+                              } rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform duration-300`}>
+                                <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                                </svg>
+                              </div>
+                              <div>
+                                <h3 className="text-xl font-bold text-gray-900 capitalize mb-1">{dept.name}</h3>
+                                <span className={`px-3 py-1 ${
+                                  dept.color === 'blue' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                                } rounded-full text-xs font-semibold`}>
+                                  {dept.color === 'blue' ? 'Vendor Role' : 'Manager Role'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-end justify-between">
+                            <div>
+                              <div className="text-5xl font-bold text-gray-900 mb-2 tracking-tight">{dept.employee_count}</div>
+                              <div className={`text-sm font-medium flex items-center gap-2 ${
+                                dept.color === 'blue' ? 'text-blue-600' : 'text-purple-600'
+                              }`}>
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                                </svg>
+                                {dept.employee_count === 1 ? "employee" : "employees"}
+                              </div>
+                            </div>
+                            <div className={`px-4 py-2 ${
+                              dept.color === 'blue' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+                            } rounded-xl font-semibold text-sm`}>
+                              {((dept.employee_count / hrStats.totalEmployees) * 100).toFixed(0)}%
+                            </div>
+                          </div>
                         </div>
-                        <div className="text-3xl font-bold text-gray-900 mb-2">{dept.employee_count}</div>
-                        <div className="text-sm text-gray-600">{dept.employee_count === 1 ? "employee" : "employees"}</div>
                       </div>
                     ))}
-                  </div>
-                </section>
-
-                {/* Recent Leaves */}
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Recent Leave Requests</h2>
-                    <button onClick={() => setHrView("leaves")} className="text-blue-600 hover:text-blue-700 font-medium text-sm">
-                      View All →
-                    </button>
-                  </div>
-                  <div className="apple-card overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full">
-                        <thead className="bg-gray-50 border-b border-gray-200">
-                          <tr>
-                            <th className="text-left p-4 font-semibold text-gray-700">Employee</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Type</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Dates</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Days</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Status</th>
-                            <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200">
-                          {leaveRequests.slice(0, 3).map((r) => (
-                            <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="p-4">
-                                <div className="font-medium text-gray-900">{r.employee_name}</div>
-                              </td>
-                              <td className="p-4">
-                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${getLeaveTypeColor(r.leave_type)}`}>
-                                  {r.leave_type}
-                                </span>
-                              </td>
-                              <td className="p-4 text-gray-600 text-sm">
-                                {new Date(r.start_date).toLocaleDateString()} - {new Date(r.end_date).toLocaleDateString()}
-                              </td>
-                              <td className="p-4 text-gray-900 font-medium">{r.days}</td>
-                              <td className="p-4">
-                                <span
-                                  className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                    r.status === "pending"
-                                      ? "bg-yellow-100 text-yellow-700"
-                                      : r.status === "approved"
-                                      ? "bg-green-100 text-green-700"
-                                      : "bg-red-100 text-red-700"
-                                  }`}
-                                >
-                                  {r.status}
-                                </span>
-                              </td>
-                              <td className="p-4 text-right">
-                                {r.status === "pending" && (
-                                  <div className="flex items-center justify-end gap-2">
-                                    <button onClick={() => handleApproveLeave(r.id)} className="text-green-600 hover:text-green-700 font-medium text-sm">
-                                      Approve
-                                    </button>
-                                    <button onClick={() => handleRejectLeave(r.id)} className="text-red-600 hover:text-red-700 font-medium text-sm">
-                                      Reject
-                                    </button>
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
                   </div>
                 </section>
               </div>
@@ -1197,89 +1272,6 @@ export default function DashboardPage() {
               </div>
             )}
 
-            {/* HR Leaves */}
-            {hrView === "leaves" && (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Leave Requests</h2>
-                  <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                    <option value="">All Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                  </select>
-                </div>
-
-                <div className="space-y-4">
-                  {leaveRequests.map((r) => (
-                    <div key={r.id} className="apple-card p-6">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-3">
-                            <h3 className="text-xl font-semibold text-gray-900">{r.employee_name}</h3>
-                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${getLeaveTypeColor(r.leave_type)}`}>
-                              {r.leave_type}
-                            </span>
-                            <span
-                              className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                r.status === "pending"
-                                  ? "bg-yellow-100 text-yellow-700"
-                                  : r.status === "approved"
-                                  ? "bg-green-100 text-green-700"
-                                  : "bg-red-100 text-red-700"
-                              }`}
-                            >
-                              {r.status}
-                            </span>
-                          </div>
-                          <div className="space-y-2 text-sm text-gray-600">
-                            <div className="flex items-center">
-                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                              </svg>
-                              {new Date(r.start_date).toLocaleDateString()} - {new Date(r.end_date).toLocaleDateString()}
-                              <span className="ml-2 font-medium text-gray-900">({r.days} day{r.days !== 1 ? "s" : ""})</span>
-                            </div>
-                            <div className="flex items-start">
-                              <svg className="w-4 h-4 mr-2 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                              <span>{r.reason}</span>
-                            </div>
-                          </div>
-                        </div>
-                        {r.status === "pending" && (
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => handleApproveLeave(r.id)} className="apple-button apple-button-primary text-sm">
-                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              Approve
-                            </button>
-                            <button onClick={() => handleRejectLeave(r.id)} className="apple-button apple-button-secondary text-sm">
-                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                              Reject
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {leaveRequests.length === 0 && (
-                  <div className="apple-card text-center py-16">
-                    <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    <p className="text-gray-500 text-lg">No leave requests</p>
-                    <p className="text-gray-400 text-sm mt-2">All caught up!</p>
-                  </div>
-                )}
-              </div>
-            )}
           </>
         )}
       </div>

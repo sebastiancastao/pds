@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
-import { decrypt } from "@/lib/encryption";
+import { safeDecrypt } from "@/lib/encryption";
 import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
@@ -136,55 +136,16 @@ export async function GET(req: NextRequest) {
 
     console.log("[EMPLOYEES] 📦 Raw users fetched:", users?.length || 0);
 
-    // Helper function to check if data appears to be encrypted
-    const isEncrypted = (data: string): boolean => {
-      // Encrypted data from CryptoJS typically:
-      // 1. Is base64 encoded (only contains A-Z, a-z, 0-9, +, /, =)
-      // 2. Often starts with "U2FsdGVk" (base64 for "Salted__")
-      // 3. Is longer than typical plain text names
-      if (!data || data.length < 20) return false;
-      const base64Regex = /^[A-Za-z0-9+/]+=*$/;
-      return base64Regex.test(data) && data.length > 30;
-    };
-
-    // Transform users into employee format - decrypt names only if encrypted
+    // Transform users into employee format - safely decrypt names
     let employees: Employee[] = (users || []).map((user: any) => {
-      // Decrypt first and last names with error handling
-      let decryptedFirstName = "N/A";
-      let decryptedLastName = "N/A";
-
-      if (user.profiles?.first_name) {
-        if (isEncrypted(user.profiles.first_name)) {
-          try {
-            decryptedFirstName = decrypt(user.profiles.first_name);
-          } catch (err) {
-            console.error(`Failed to decrypt first_name for user ${user.id}:`, err);
-            decryptedFirstName = "[Decryption Error]";
-          }
-        } else {
-          // Data is not encrypted, use as-is
-          decryptedFirstName = user.profiles.first_name;
-        }
-      }
-
-      if (user.profiles?.last_name) {
-        if (isEncrypted(user.profiles.last_name)) {
-          try {
-            decryptedLastName = decrypt(user.profiles.last_name);
-          } catch (err) {
-            console.error(`Failed to decrypt last_name for user ${user.id}:`, err);
-            decryptedLastName = "[Decryption Error]";
-          }
-        } else {
-          // Data is not encrypted, use as-is
-          decryptedLastName = user.profiles.last_name;
-        }
-      }
+      // Safely decrypt first and last names (handles both encrypted and non-encrypted data)
+      const firstName = user.profiles?.first_name ? safeDecrypt(user.profiles.first_name) : "N/A";
+      const lastName = user.profiles?.last_name ? safeDecrypt(user.profiles.last_name) : "N/A";
 
       return {
         id: user.id,
-        first_name: decryptedFirstName,
-        last_name: decryptedLastName,
+        first_name: firstName,
+        last_name: lastName,
         email: user.email || "N/A",
         phone: user.profiles?.phone,
         department: "General", // Default department - you can add this field to profiles table later

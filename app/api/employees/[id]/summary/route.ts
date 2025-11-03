@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
+import { safeDecrypt } from "@/lib/encryption";
 
 // Optional admin + anon (token fallback if you use it elsewhere)
 const supabaseAdmin = createClient(
@@ -222,11 +223,15 @@ export async function GET(
     // profiles is an array even with inner join, so we need to access the first element
     const profile = (user.profiles as any)?.[0] || user.profiles;
 
+    // Safely decrypt names (handles both encrypted and non-encrypted data)
+    const firstName = profile.first_name ? safeDecrypt(profile.first_name) : "N/A";
+    const lastName = profile.last_name ? safeDecrypt(profile.last_name) : "N/A";
+
     // Combine user and profile data into employee object
     const employee = {
       id: user.id,
-      first_name: profile.first_name,
-      last_name: profile.last_name,
+      first_name: firstName,
+      last_name: lastName,
       email: user.email,
       phone: profile.phone,
       city: profile.city,
@@ -242,7 +247,7 @@ export async function GET(
     // ---- Pull time_entries with action and timestamp columns
     const { data: rawEntries, error: teErr } = await supabaseAdmin
       .from("time_entries")
-      .select("id, event_id, action, timestamp, created_at, updated_at, user_id")
+      .select("id, event_id, action, timestamp, created_at, user_id")
       .or(`user_id.eq.${userId}`)
       .order("timestamp", { ascending: false });
 
@@ -261,7 +266,6 @@ export async function GET(
       action: string;
       timestamp: string;
       created_at: string;
-      updated_at: string;
     };
 
     // Sort entries by event and timestamp to pair them
@@ -296,7 +300,6 @@ export async function GET(
             clock_out: entry.timestamp,
             duration_hours,
             created_at: clockIn.created_at,
-            updated_at: entry.updated_at,
           });
           clockIn = null; // Reset for next pair
         }
@@ -311,7 +314,6 @@ export async function GET(
           clock_out: null,
           duration_hours: 0,
           created_at: clockIn.created_at,
-          updated_at: clockIn.updated_at,
         });
       }
     }
