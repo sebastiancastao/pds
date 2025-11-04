@@ -74,7 +74,18 @@ export async function GET(
       return NextResponse.json({ error: error.message || error.code || (error as any) }, { status: 500 });
     }
 
-    return NextResponse.json({ event: data }, { status: 200 });
+    // Load merchandise (if exists)
+    const { data: merch, error: merchErr } = await supabaseAdmin
+      .from("event_merchandise")
+      .select("apparel_gross,apparel_tax_rate,apparel_cc_fee_rate,apparel_artist_percent,other_gross,other_tax_rate,other_cc_fee_rate,other_artist_percent,music_gross,music_tax_rate,music_cc_fee_rate,music_artist_percent")
+      .eq("event_id", eventId)
+      .single();
+
+    if (merchErr && merchErr.code !== 'PGRST116') {
+      console.error("Load merchandise error:", merchErr);
+    }
+
+    return NextResponse.json({ event: data, merchandise: merch || null }, { status: 200 });
   } catch (err: any) {
     console.error("SERVER ERROR in event get:", err);
     return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
@@ -260,6 +271,38 @@ export async function PUT(
       );
     }
 
+    // Upsert merchandise payload if provided
+    if (body.merchandise && typeof body.merchandise === 'object') {
+      const m = body.merchandise || {};
+      const upsertPayload: any = {
+        event_id: eventId,
+        apparel_gross: m.apparel_gross !== undefined && m.apparel_gross !== '' ? Number(m.apparel_gross) : 0,
+        apparel_tax_rate: m.apparel_tax_rate !== undefined && m.apparel_tax_rate !== '' ? Number(m.apparel_tax_rate) : 0,
+        apparel_cc_fee_rate: m.apparel_cc_fee_rate !== undefined && m.apparel_cc_fee_rate !== '' ? Number(m.apparel_cc_fee_rate) : 0,
+        apparel_artist_percent: m.apparel_artist_percent !== undefined && m.apparel_artist_percent !== '' ? Number(m.apparel_artist_percent) : 0,
+
+        other_gross: m.other_gross !== undefined && m.other_gross !== '' ? Number(m.other_gross) : 0,
+        other_tax_rate: m.other_tax_rate !== undefined && m.other_tax_rate !== '' ? Number(m.other_tax_rate) : 0,
+        other_cc_fee_rate: m.other_cc_fee_rate !== undefined && m.other_cc_fee_rate !== '' ? Number(m.other_cc_fee_rate) : 0,
+        other_artist_percent: m.other_artist_percent !== undefined && m.other_artist_percent !== '' ? Number(m.other_artist_percent) : 0,
+
+        music_gross: m.music_gross !== undefined && m.music_gross !== '' ? Number(m.music_gross) : 0,
+        music_tax_rate: m.music_tax_rate !== undefined && m.music_tax_rate !== '' ? Number(m.music_tax_rate) : 0,
+        music_cc_fee_rate: m.music_cc_fee_rate !== undefined && m.music_cc_fee_rate !== '' ? Number(m.music_cc_fee_rate) : 0,
+        music_artist_percent: m.music_artist_percent !== undefined && m.music_artist_percent !== '' ? Number(m.music_artist_percent) : 0,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: upsertErr } = await supabaseAdmin
+        .from('event_merchandise')
+        .upsert(upsertPayload, { onConflict: 'event_id' });
+
+      if (upsertErr) {
+        console.error('Merchandise upsert error:', upsertErr);
+        return NextResponse.json({ error: upsertErr.message }, { status: 500 });
+      }
+    }
+
     console.log("SUPABASE UPDATE RESULT:", data);
     return NextResponse.json({ event: data[0] }, { status: 200 });
   } catch (err: any) {
@@ -267,3 +310,4 @@ export async function PUT(
     return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
   }
 }
+

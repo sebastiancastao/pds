@@ -117,3 +117,5 @@ AND al.changes->>'field_updated' = 'profile_photo_data'
 ORDER BY al.created_at DESC 
 LIMIT 10;
 
+
+

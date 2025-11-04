@@ -16,6 +16,7 @@
     "@supabase/auth-helpers-nextjs": "^0.8.7",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.58.0",
+    "@tensorflow/tfjs": "^4.22.0",
     "autoprefixer": "^10.4.0",
     "bcryptjs": "^2.4.3",
     "crypto-js": "^4.2.0",

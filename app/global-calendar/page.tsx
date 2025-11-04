@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { safeDecrypt } from "@/lib/encryption";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import "./dashboard-styles.css";
@@ -106,7 +107,7 @@ type BackgroundCheck = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "hr" | "payments">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
 
   // Auth & Access Control
@@ -148,6 +149,19 @@ export default function DashboardPage() {
   const [loadingEmployees, setLoadingEmployees] = useState(false);
   const [employeesError, setEmployeesError] = useState<string>("");
 
+  // Payments tab state
+  const [paymentsStartDate, setPaymentsStartDate] = useState<string>("");
+  const [paymentsEndDate, setPaymentsEndDate] = useState<string>("");
+  const [paymentsData, setPaymentsData] = useState<any>(null);
+  const [loadingPayments, setLoadingPayments] = useState(false);
+  const [paymentsError, setPaymentsError] = useState<string>("");
+  const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});  // {eventId: {userId: adjustmentAmount}}
+  const [savingAdjustments, setSavingAdjustments] = useState(false);
+  const [sendingPayments, setSendingPayments] = useState(false);
+
+  // Staff predictions for events
+  const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
+
   // Helpers
   const toIsoDateTime = (dateStr: string, timeStr?: string | null) => {
     if (!dateStr) return undefined;
@@ -162,6 +176,41 @@ export default function DashboardPage() {
     d.setHours(d.getHours() + hours);
     return d.toISOString();
   };
+
+  // Load staff prediction for an event
+  const loadPrediction = useCallback(async (eventId: string) => {
+    setPredictions(prev => {
+      if (prev[eventId]?.loading) return prev; // Already loading
+      return { ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: true } };
+    });
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${eventId}/predict-staff`, {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setPredictions(prev => ({
+          ...prev,
+          [eventId]: {
+            predictedStaff: data.predictedStaff || 0,
+            confidence: data.confidence || 0,
+            loading: false,
+          },
+        }));
+      } else {
+        setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
+      }
+    } catch (err) {
+      console.error("[GLOBAL-CALENDAR] Error loading prediction:", err);
+      setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
+    }
+  }, []);
 
   // Load employees function - needs to be outside useEffect to be called by handlers
   const loadEmployees = useCallback(async (stateFilter: string = "all", regionFilter: string = "all") => {
@@ -213,7 +262,7 @@ export default function DashboardPage() {
 
       console.log('[GLOBAL-CALENDAR-HR] 📦 Background checks loaded:', {
         count: data?.length || 0,
-        approved: data?.filter(bc => bc.status === 'approved').length || 0
+        approved: data?.filter((bc: any) => bc.status === 'approved').length || 0
       });
 
       setBackgroundChecks(data || []);
@@ -221,6 +270,321 @@ export default function DashboardPage() {
       console.error('[GLOBAL-CALENDAR-HR] ❌ Error loading background checks:', err);
     }
   }, []);
+
+  // Load payments data for date range
+  const loadPaymentsData = useCallback(async (startDate: string, endDate: string) => {
+    setLoadingPayments(true);
+    setPaymentsError("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      console.log('[PAYMENTS] 🔍 Loading payments from database for', startDate, 'to', endDate);
+
+      // Fetch ALL events using the API endpoint (bypasses RLS issues)
+      const eventsRes = await fetch("/api/all-events", {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!eventsRes.ok) {
+        const errorData = await eventsRes.json();
+        throw new Error(errorData.error || "Failed to load events");
+      }
+
+      const eventsJson = await eventsRes.json();
+      const allEvents = eventsJson.events || [];
+
+      console.log('[PAYMENTS] 📅 All events loaded:', {
+        count: allEvents.length,
+        events: allEvents.slice(0, 5).map((e: any) => ({ name: e.event_name, date: e.event_date }))
+      });
+
+      if (allEvents.length === 0) {
+        console.warn('[PAYMENTS] ⚠️ No events found in database');
+        setPaymentsError('No events found in the database.');
+        setLoadingPayments(false);
+        return;
+      }
+
+      // Use ALL events (no date filtering)
+      const eventsData = allEvents;
+
+      console.log('[PAYMENTS] 📦 Processing ALL', eventsData.length, 'events (date filter ignored)');
+      console.log('[PAYMENTS] Events:', eventsData.map((e: any) => ({ name: e.event_name, date: e.event_date })));
+
+      // Fetch all vendor payments for ALL events using API (bypasses RLS)
+      const eventIds = eventsData.map((e: any) => e.id).join(',');
+      console.log('[PAYMENTS] 🔍 Fetching vendor payments for ALL', eventsData.length, 'events via API');
+
+      const paymentsApiRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}`, {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!paymentsApiRes.ok) {
+        const errorData = await paymentsApiRes.json();
+        throw new Error(errorData.error || "Failed to load vendor payments");
+      }
+
+      const paymentsApiData = await paymentsApiRes.json();
+      const paymentsByEventId = paymentsApiData.paymentsByEvent || {};
+
+      console.log('[PAYMENTS] ✅ Fetched payment data for', Object.keys(paymentsByEventId).length, 'events');
+      console.log('[PAYMENTS] Total vendor payment records:', paymentsApiData.totalVendorPayments);
+
+      const paymentsByVenue: Record<string, any> = {};
+
+      for (const event of eventsData || []) {
+        const eventPaymentData = paymentsByEventId[event.id];
+
+        if (!eventPaymentData || !eventPaymentData.vendorPayments || eventPaymentData.vendorPayments.length === 0) {
+          console.log('[PAYMENTS] ⚠️ No saved payment data for event', event.event_name, '(ID:', event.id, ')');
+          continue;
+        }
+
+        const vendorPayments = eventPaymentData.vendorPayments;
+        const eventPaymentSummary = eventPaymentData.eventPayment;
+
+        console.log('[PAYMENTS] ✅ Found', vendorPayments.length, 'vendor payments for event', event.event_name);
+
+        const baseRate = eventPaymentSummary?.base_rate || 17.28;
+
+        // Initialize venue if not exists
+        if (!paymentsByVenue[event.venue]) {
+          paymentsByVenue[event.venue] = {
+            venue: event.venue,
+            city: event.city,
+            state: event.state,
+            events: [],
+            totalPayment: 0,
+            totalHours: 0,
+          };
+        }
+
+        // Transform vendor payments data
+        const eventPayments = vendorPayments.map((payment: any) => {
+          const user = payment.users;
+          const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+
+          // Debug: Log encrypted vs decrypted names
+          const rawFirstName = profile?.first_name || "N/A";
+          const rawLastName = profile?.last_name || "";
+
+          console.log('[PAYMENTS] 🔍 Raw name data:', {
+            rawFirst: rawFirstName,
+            rawFirstLength: rawFirstName.length,
+            rawLast: rawLastName,
+            rawLastLength: rawLastName.length
+          });
+
+          const firstName = rawFirstName !== "N/A" ? safeDecrypt(rawFirstName) : "N/A";
+          const lastName = rawLastName ? safeDecrypt(rawLastName) : "";
+
+          console.log('[PAYMENTS] ✅ After decryption:', {
+            firstName,
+            lastName,
+            firstChanged: firstName !== rawFirstName,
+            lastChanged: lastName !== rawLastName
+          });
+
+          const adjustmentAmount = Number(payment.adjustment_amount || 0);
+
+          return {
+            userId: payment.user_id,
+            firstName,
+            lastName,
+            email: user?.email || "N/A",
+            actualHours: Number(payment.actual_hours || 0),
+            regularHours: Number(payment.regular_hours || 0),
+            regularPay: Number(payment.regular_pay || 0),
+            overtimeHours: Number(payment.overtime_hours || 0),
+            overtimePay: Number(payment.overtime_pay || 0),
+            doubletimeHours: Number(payment.doubletime_hours || 0),
+            doubletimePay: Number(payment.doubletime_pay || 0),
+            commissions: Number(payment.commissions || 0),
+            tips: Number(payment.tips || 0),
+            totalPay: Number(payment.total_pay || 0),
+            adjustmentAmount,
+            finalPay: Number(payment.total_pay || 0) + adjustmentAmount,
+          };
+        });
+
+        paymentsByVenue[event.venue].events.push({
+          eventId: event.id,
+          eventName: event.event_name,
+          eventDate: event.event_date,
+          baseRate,
+          payments: eventPayments,
+        });
+
+        const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
+        const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
+        paymentsByVenue[event.venue].totalPayment += eventTotal;
+        paymentsByVenue[event.venue].totalHours += eventHours;
+      }
+
+      const venueCount = Object.keys(paymentsByVenue).length;
+      console.log('[PAYMENTS] ✅ Payment data loaded from database:', venueCount, 'venues with payment data');
+
+      if (venueCount === 0 && eventsData && eventsData.length > 0) {
+        console.warn('[PAYMENTS] ⚠️ Found', eventsData.length, 'events in date range but NONE have saved payment data. Go to each event dashboard HR/Payments tab and click "Save Payment Data"');
+        setPaymentsError(`Found ${eventsData.length} event(s) in the selected date range, but none have saved payment data yet. Please go to the event dashboard and click "Save Payment Data" in the HR/Payments tab.`);
+      } else if (venueCount === 0) {
+        console.warn('[PAYMENTS] ⚠️ No events found in the selected date range:', startDate, 'to', endDate);
+        setPaymentsError('No events found in the selected date range. Try adjusting the dates.');
+      }
+
+      // Initialize adjustments state from loaded data
+      const initialAdjustments: Record<string, Record<string, number>> = {};
+      Object.values(paymentsByVenue).forEach((venue: any) => {
+        venue.events.forEach((eventData: any) => {
+          if (!initialAdjustments[eventData.eventId]) {
+            initialAdjustments[eventData.eventId] = {};
+          }
+          eventData.payments.forEach((payment: any) => {
+            initialAdjustments[eventData.eventId][payment.userId] = payment.adjustmentAmount || 0;
+          });
+        });
+      });
+      setAdjustments(initialAdjustments);
+
+      setPaymentsData(paymentsByVenue);
+    } catch (err: any) {
+      console.error('[PAYMENTS] ❌ Error loading payment data:', err);
+      setPaymentsError(err.message || "Failed to load payment data");
+    } finally {
+      setLoadingPayments(false);
+    }
+  }, []);
+
+  // Handle adjustment change
+  const handleAdjustmentChange = (eventId: string, userId: string, value: number) => {
+    setAdjustments(prev => ({
+      ...prev,
+      [eventId]: {
+        ...(prev[eventId] || {}),
+        [userId]: value,
+      },
+    }));
+  };
+
+  // Save adjustments to database
+  const saveAdjustments = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      alert('Not authenticated');
+      return;
+    }
+
+    setSavingAdjustments(true);
+    try {
+      // Flatten adjustments into array format
+      const adjustmentsArray: any[] = [];
+      Object.entries(adjustments).forEach(([eventId, userAdjustments]) => {
+        Object.entries(userAdjustments).forEach(([userId, adjustmentAmount]) => {
+          if (adjustmentAmount !== 0) {  // Only save non-zero adjustments
+            adjustmentsArray.push({
+              event_id: eventId,
+              user_id: userId,
+              adjustment_amount: adjustmentAmount,
+            });
+          }
+        });
+      });
+
+      if (adjustmentsArray.length === 0) {
+        alert('No adjustments to save');
+        return;
+      }
+
+      const res = await fetch('/api/payment-adjustments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ adjustments: adjustmentsArray }),
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to save adjustments');
+      }
+
+      alert('Adjustments saved successfully!');
+      // Reload payment data to get updated values
+      if (paymentsStartDate && paymentsEndDate) {
+        await loadPaymentsData(paymentsStartDate, paymentsEndDate);
+      }
+    } catch (err: any) {
+      console.error('[PAYMENTS] Error saving adjustments:', err);
+      alert(`Error saving adjustments: ${err.message}`);
+    } finally {
+      setSavingAdjustments(false);
+    }
+  };
+
+  // Send payment summaries to vendors
+  const sendPaymentsToVendors = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      alert('Not authenticated');
+      return;
+    }
+
+    if (!paymentsData || Object.keys(paymentsData).length === 0) {
+      alert('No payment data to send');
+      return;
+    }
+
+    const confirmed = confirm(
+      'This will send payment summaries to all vendors for the selected period. Continue?'
+    );
+
+    if (!confirmed) return;
+
+    setSendingPayments(true);
+    try {
+      const res = await fetch('/api/send-vendor-payments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          startDate: paymentsStartDate,
+          endDate: paymentsEndDate,
+          paymentsData,
+          adjustments,
+        }),
+      });
+
+      // Read response safely even if it's not JSON
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (e) {
+        throw new Error(`Server returned non-JSON (status ${res.status}). Body: ${rawText?.slice(0, 300)}`);
+      }
+
+      if (!res.ok || !data?.success) {
+        const serverError = data?.error || rawText || 'Failed to send payments';
+        throw new Error(typeof serverError === 'string' ? serverError : 'Failed to send payments');
+      }
+
+      alert(`Successfully sent payment summaries to ${data.sentCount || 0} vendor(s)!`);
+    } catch (err: any) {
+      console.error('[PAYMENTS] Error sending payments:', err);
+      alert(`Error sending payments: ${err.message}`);
+    } finally {
+      setSendingPayments(false);
+    }
+  };
 
   // Auth check - MUST run first
   useEffect(() => {
@@ -310,6 +674,15 @@ export default function DashboardPage() {
     loadHRMockData();
     loadRegions();
   }, [isAuthorized, loadEmployees, loadBackgroundChecks]);
+
+  // Load predictions when events are loaded
+  useEffect(() => {
+    if (events.length > 0) {
+      events.forEach(ev => {
+        loadPrediction(ev.id);
+      });
+    }
+  }, [events, loadPrediction]);
 
   // Derived stats
   const eventStats = {
@@ -627,7 +1000,9 @@ export default function DashboardPage() {
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."
-                  : "Manage employees, leave requests, and workforce analytics."}
+                  : activeTab === "hr"
+                  ? "Manage employees, leave requests, and workforce analytics."
+                  : "View payment data for all vendors across events and venues."}
               </p>
               <div className="mt-2">
                 <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
@@ -670,6 +1045,15 @@ export default function DashboardPage() {
             >
               HR
               {activeTab === "hr" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
+            <button
+              onClick={() => setActiveTab("payments")}
+              className={`pb-4 px-2 font-semibold text-lg transition-colors relative ${
+                activeTab === "payments" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Payments
+              {activeTab === "payments" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
           </div>
         </div>
@@ -875,6 +1259,30 @@ export default function DashboardPage() {
                               {ev.start_time?.slice(0, 5)} - {ev.end_time?.slice(0, 5)}
                             </span>
                           </div>
+                          {/* Staff Prediction */}
+                          {predictions[ev.id] && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 border border-purple-200 rounded-lg">
+                                <svg className="w-4 h-4 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                                </svg>
+                                <span className="text-xs font-semibold text-purple-700">
+                                  AI Prediction: {predictions[ev.id].loading ? (
+                                    <span className="text-purple-500">Loading...</span>
+                                  ) : (
+                                    <>
+                                      <span className="font-bold">{predictions[ev.id].predictedStaff}</span> staff
+                                      {predictions[ev.id].confidence > 0 && (
+                                        <span className="ml-1 text-purple-500">
+                                          ({Math.round(predictions[ev.id].confidence * 100)}% confidence)
+                                        </span>
+                                      )}
+                                    </>
+                                  )}
+                                </span>
+                              </div>
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
@@ -1460,6 +1868,235 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* PAYMENTS TAB */}
+      {activeTab === "payments" && (
+        <>
+          {/* Date Range Filter */}
+          <div className="mb-8 bg-white border rounded-lg p-6">
+            <h2 className="text-xl font-semibold mb-4">Filter by Date Range</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Start Date</label>
+                <input
+                  type="date"
+                  value={paymentsStartDate}
+                  onChange={(e) => setPaymentsStartDate(e.target.value)}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">End Date</label>
+                <input
+                  type="date"
+                  value={paymentsEndDate}
+                  onChange={(e) => setPaymentsEndDate(e.target.value)}
+                  className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+            <div className="mt-4 flex gap-3">
+              <button
+                onClick={() => loadPaymentsData(paymentsStartDate, paymentsEndDate)}
+                className="apple-button apple-button-primary"
+                disabled={!paymentsStartDate || !paymentsEndDate || loadingPayments}
+              >
+                {loadingPayments ? "Loading..." : "Load Payment Data"}
+              </button>
+              <button
+                onClick={sendPaymentsToVendors}
+                className="apple-button apple-button-secondary"
+                disabled={!paymentsData || Object.keys(paymentsData).length === 0 || sendingPayments || !paymentsStartDate || !paymentsEndDate}
+              >
+                {sendingPayments ? (
+                  <>
+                    <svg className="w-4 h-4 mr-2 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Sending...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                    </svg>
+                    Send Payment Summaries to Vendors
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Payment Data Display */}
+          {loadingPayments ? (
+            <div className="apple-card">
+              <div className="flex items-center justify-center py-16">
+                <div className="apple-spinner" />
+                <span className="ml-3 text-gray-600">Loading payment data...</span>
+              </div>
+            </div>
+          ) : paymentsError ? (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+              <div className="flex items-center gap-3">
+                <svg className="w-6 h-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <h3 className="text-lg font-semibold text-red-900">Error Loading Payments</h3>
+                  <p className="text-red-700 mt-1">{paymentsError}</p>
+                </div>
+              </div>
+            </div>
+          ) : paymentsData ? (
+            <div className="space-y-8">
+              {/* Overall Summary */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-6 shadow-sm">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30">
+                      <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+                      </svg>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-medium text-gray-600 mb-2">Total Venues</h3>
+                  <div className="text-4xl font-bold text-gray-900 tracking-tight">{Object.keys(paymentsData).length}</div>
+                </div>
+
+                <div className="bg-gradient-to-br from-green-50 to-white border border-green-100 rounded-2xl p-6 shadow-sm">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-green-500/30">
+                      <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-medium text-gray-600 mb-2">Total Hours</h3>
+                  <div className="text-4xl font-bold text-gray-900 tracking-tight">
+                    {Object.values(paymentsData).reduce((sum: number, venue: any) => sum + venue.totalHours, 0).toFixed(1)}
+                  </div>
+                </div>
+
+                <div className="bg-gradient-to-br from-purple-50 to-white border border-purple-100 rounded-2xl p-6 shadow-sm">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/30">
+                      <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </div>
+                  </div>
+                  <h3 className="text-sm font-medium text-gray-600 mb-2">Total Payments</h3>
+                  <div className="text-4xl font-bold text-gray-900 tracking-tight">
+                    ${Object.values(paymentsData).reduce((sum: number, venue: any) => sum + venue.totalPayment, 0).toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Data by Venue */}
+              {Object.values(paymentsData).map((venueData: any, index: number) => (
+                <div key={index} className="bg-white border rounded-lg overflow-hidden">
+                  <div className="bg-gradient-to-r from-blue-500 to-blue-600 p-6 text-white">
+                    <h2 className="text-2xl font-semibold">{venueData.venue}</h2>
+                    <p className="text-blue-100 mt-1">{venueData.city}, {venueData.state}</p>
+                    <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-sm text-blue-100">Total Hours</div>
+                        <div className="text-2xl font-bold">{venueData.totalHours.toFixed(1)}h</div>
+                      </div>
+                      <div>
+                        <div className="text-sm text-blue-100">Total Payment</div>
+                        <div className="text-2xl font-bold">${venueData.totalPayment.toFixed(2)}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-6">
+                    {venueData.events.map((eventData: any, eventIndex: number) => (
+                      <div key={eventIndex} className="mb-8 last:mb-0">
+                        <div className="flex items-center justify-between mb-4 pb-3 border-b">
+                          <div>
+                            <h3 className="text-lg font-semibold text-gray-900">{eventData.eventName}</h3>
+                            <p className="text-sm text-gray-600">{eventData.eventDate} • Base Rate: ${eventData.baseRate}/hr</p>
+                          </div>
+                        </div>
+
+                        {eventData.payments.length === 0 ? (
+                          <p className="text-gray-500 text-center py-4">No staff scheduled for this event</p>
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="w-full">
+                              <thead className="bg-gray-50 border-b">
+                                <tr>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">Employee</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">Reg Hours</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">Reg Pay</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">OT Hours</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">OT Pay</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">DT Hours</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">DT Pay</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">Commissions</th>
+                                  <th className="text-left p-3 font-semibold text-gray-700 text-sm">Tips</th>
+                                  <th className="text-right p-3 font-semibold text-gray-700 text-sm">Total</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y">
+                                {eventData.payments.map((payment: any, paymentIndex: number) => (
+                                  <tr key={paymentIndex} className="hover:bg-gray-50 transition-colors">
+                                    <td className="p-3">
+                                      <div className="font-medium text-gray-900">{payment.firstName} {payment.lastName}</div>
+                                      <div className="text-xs text-gray-500">{payment.email}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm">{payment.regularHours.toFixed(2)}h</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm font-medium text-green-600">${payment.regularPay.toFixed(2)}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm">{payment.overtimeHours.toFixed(2)}h</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm font-medium text-green-600">${payment.overtimePay.toFixed(2)}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm">{payment.doubletimeHours.toFixed(2)}h</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm font-medium text-green-600">${payment.doubletimePay.toFixed(2)}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm font-medium text-purple-600">${payment.commissions.toFixed(2)}</div>
+                                    </td>
+                                    <td className="p-3">
+                                      <div className="text-sm font-medium text-orange-600">${payment.tips.toFixed(2)}</div>
+                                    </td>
+                                    <td className="p-3 text-right">
+                                      <div className="text-sm font-bold text-gray-900">${payment.totalPay.toFixed(2)}</div>
+                                      <div className="text-xs text-gray-500">{payment.actualHours.toFixed(2)}h total</div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-12 text-center">
+              <svg className="w-16 h-16 mx-auto text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No Payment Data</h3>
+              <p className="text-gray-600">Select a date range and click "Load Payment Data" to view payment information.</p>
+            </div>
+          )}
+        </>
       )}
 
       {/* Team Creation Modal */}

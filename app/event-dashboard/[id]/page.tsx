@@ -55,6 +55,7 @@ export default function EventDashboardPage() {
 
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [savingPayment, setSavingPayment] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
 
@@ -213,6 +214,25 @@ export default function EventDashboardPage() {
         setTips((eventData as any).tips?.toString() || "");
         setMerchandiseUnits(eventData.merchandise_units?.toString() || "");
         setMerchandiseValue(eventData.merchandise_value?.toString() || "");
+
+        // Load merchandise breakdown if provided
+        const m = data.merchandise || null;
+        if (m) {
+          setApparelGross((m.apparel_gross ?? '').toString());
+          setApparelTaxRate((m.apparel_tax_rate ?? '0').toString());
+          setApparelCCFeeRate((m.apparel_cc_fee_rate ?? '0').toString());
+          setApparelArtistPercent((m.apparel_artist_percent ?? '80').toString());
+
+          setOtherGross((m.other_gross ?? '').toString());
+          setOtherTaxRate((m.other_tax_rate ?? '0').toString());
+          setOtherCCFeeRate((m.other_cc_fee_rate ?? '0').toString());
+          setOtherArtistPercent((m.other_artist_percent ?? '80').toString());
+
+          setMusicGross((m.music_gross ?? '').toString());
+          setMusicTaxRate((m.music_tax_rate ?? '0').toString());
+          setMusicCCFeeRate((m.music_cc_fee_rate ?? '0').toString());
+          setMusicArtistPercent((m.music_artist_percent ?? '90').toString());
+        }
       } else {
         setMessage("Failed to load event details");
       }
@@ -417,6 +437,22 @@ export default function EventDashboardPage() {
           ...event,
           merchandise_units: merchandiseUnits !== "" ? Number(merchandiseUnits) : null,
           merchandise_value: merchandiseValue !== "" ? Number(merchandiseValue) : null,
+          merchandise: {
+            apparel_gross: apparelGross || null,
+            apparel_tax_rate: apparelTaxRate || null,
+            apparel_cc_fee_rate: apparelCCFeeRate || null,
+            apparel_artist_percent: apparelArtistPercent || null,
+
+            other_gross: otherGross || null,
+            other_tax_rate: otherTaxRate || null,
+            other_cc_fee_rate: otherCCFeeRate || null,
+            other_artist_percent: otherArtistPercent || null,
+
+            music_gross: musicGross || null,
+            music_tax_rate: musicTaxRate || null,
+            music_cc_fee_rate: musicCCFeeRate || null,
+            music_artist_percent: musicArtistPercent || null,
+          },
         }),
       });
 
@@ -437,7 +473,7 @@ export default function EventDashboardPage() {
 
   // Sales calc (vertical)
   const calculateShares = () => {
-    if (!event || ticketSales === "") return null;
+    if (!event) return null;
 
     const grossCollected = Number(ticketSales) || 0; // total collected
     const tipsNum = Number(tips) || 0;
@@ -454,6 +490,17 @@ export default function EventDashboardPage() {
     return { grossCollected, tipsNum, totalSales, taxPct, tax, netSales, artistShare, venueShare, pdsShare };
   };
 
+  // Calculate commission amount - updates reactively when inputs change
+  const calculatedCommission = (() => {
+    const s = calculateShares();
+    if (!s) return 0;
+    // Use commissionPool state if set, otherwise fallback to event.commission_pool
+    const pool = commissionPool !== "" 
+      ? Number(commissionPool) 
+      : (event?.commission_pool || 0);
+    return s.netSales * pool;
+  })();
+
   // Helper to format ISO -> "HH:mm" for inputs
   const isoToHHMM = (iso: string | null): string => {
     if (!iso) return "";
@@ -461,6 +508,123 @@ export default function EventDashboardPage() {
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
     return `${hh}:${mm}`;
+  };
+
+  // Save Payment Data - Store payment calculations to database
+  const handleSavePaymentData = async () => {
+    if (!event || !eventId) return;
+
+    setSavingPayment(true);
+    setMessage("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      // Calculate all payment data
+      const stateRates: Record<string, number> = {
+        'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
+      };
+      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+      const baseRate = stateRates[eventState] || 17.28;
+
+      const sharesData = calculateShares();
+      const netSales = sharesData?.netSales || 0;
+      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
+      const totalCommissionPool = netSales * poolPercent;
+      const totalTips = Number(tips) || 0;
+
+      const totalHoursAll = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) / (1000 * 60 * 60);
+
+      // Calculate total team salary first (without commissions)
+      let totalTeamSalary = 0;
+      teamMembers.forEach((member: any) => {
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const totalMs = timesheetTotals[uid] || 0;
+        const actualHours = totalMs / (1000 * 60 * 60);
+        const regularHours = Math.min(actualHours, 8);
+        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
+        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const regularPay = regularHours * baseRate;
+        const overtimePay = overtimeHours * (baseRate * 1.5);
+        const doubletimePay = doubletimeHours * (baseRate * 2);
+        totalTeamSalary += regularPay + overtimePay + doubletimePay;
+      });
+
+      // Constraint: If commission pool <= total team salary, set commissions to 0
+      const shouldDistributeCommissions = totalCommissionPool > totalTeamSalary;
+
+      // Build vendor payments array
+      const vendorPayments = teamMembers.map((member: any) => {
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const totalMs = timesheetTotals[uid] || 0;
+        const actualHours = totalMs / (1000 * 60 * 60);
+
+        // Split into regular/OT/DT
+        const regularHours = Math.min(actualHours, 8);
+        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
+        const doubletimeHours = Math.max(actualHours - 12, 0);
+
+        const regularPay = regularHours * baseRate;
+        const overtimePay = overtimeHours * (baseRate * 1.5);
+        const doubletimePay = doubletimeHours * (baseRate * 2);
+
+        // Only distribute commissions if commission pool > total team salary
+        const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0 
+          ? (totalCommissionPool * actualHours) / totalHoursAll 
+          : 0;
+        const proratedTips = totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
+
+        const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips;
+
+        return {
+          userId: uid,
+          actualHours,
+          regularHours,
+          overtimeHours,
+          doubletimeHours,
+          regularPay,
+          overtimePay,
+          doubletimePay,
+          commissions: proratedCommission,
+          tips: proratedTips,
+          totalPay,
+        };
+      });
+
+      // Call save-payment API
+      const response = await fetch(`/api/events/${eventId}/save-payment`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          commissionPoolPercent: poolPercent,
+          commissionPoolDollars: totalCommissionPool,
+          totalTips,
+          baseRate,
+          netSales,
+          vendorPayments,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || 'Failed to save payment data');
+      }
+
+      console.log('✅ Payment data saved:', result);
+      setMessage('Payment data saved successfully!');
+
+      // Auto-clear message after 5 seconds
+      setTimeout(() => setMessage(""), 5000);
+    } catch (err: any) {
+      console.error('❌ Error saving payment data:', err);
+      setMessage(`Error: ${err.message || 'Failed to save payment data'}`);
+    } finally {
+      setSavingPayment(false);
+    }
   };
 
   // Process Payroll - Send emails to all team members
@@ -488,6 +652,24 @@ export default function EventDashboardPage() {
 
       const totalHoursAll = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) / (1000 * 60 * 60);
 
+      // Calculate total team salary first (without commissions)
+      let totalTeamSalary = 0;
+      teamMembers.forEach((member: any) => {
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const totalMs = timesheetTotals[uid] || 0;
+        const actualHours = totalMs / (1000 * 60 * 60);
+        const regularHours = Math.min(actualHours, 8);
+        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
+        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const regularPay = regularHours * baseRate;
+        const overtimePay = overtimeHours * (baseRate * 1.5);
+        const doubletimePay = doubletimeHours * (baseRate * 2);
+        totalTeamSalary += regularPay + overtimePay + doubletimePay;
+      });
+
+      // Constraint: If commission pool <= total team salary, set commissions to 0
+      const shouldDistributeCommissions = totalCommissionPool > totalTeamSalary;
+
       const payrollData = teamMembers.map((member: any) => {
         const profile = member.users?.profiles;
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
@@ -503,7 +685,10 @@ export default function EventDashboardPage() {
         const overtimePay = overtimeHours * (baseRate * 1.5);
         const doubletimePay = doubletimeHours * (baseRate * 2);
 
-        const proratedCommission = totalHoursAll > 0 ? (totalCommissionPool * actualHours) / totalHoursAll : 0;
+        // Only distribute commissions if commission pool > total team salary
+        const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0 
+          ? (totalCommissionPool * actualHours) / totalHoursAll 
+          : 0;
         const proratedTips = totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
         const adjustment = adjustments[uid] || 0;
 
@@ -1019,16 +1204,27 @@ export default function EventDashboardPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Commission Pool (%)</label>
                     <input
                       type="text"
-                      value={(Number(commissionPool || 0) * 100) + '%'}
+                      value={(() => {
+                        // Convert fraction to percentage for display
+                        const poolValue = Number(commissionPool || event?.commission_pool || 0);
+                        return (poolValue * 100).toFixed(2) + '%';
+                      })()}
                       onChange={(e) => {
                         const val = e.target.value.replace('%', '').trim();
-                        const fraction = Number(val) / 100;
+                        if (val === '' || val === '0') {
+                          setCommissionPool('');
+                          return;
+                        }
+                        const numVal = Number(val);
+                        if (isNaN(numVal)) return;
+                        // Convert percentage to fraction (4% -> 0.04)
+                        const fraction = numVal / 100;
                         setCommissionPool(fraction.toString());
                       }}
                       placeholder="4%"
                       className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                     />
-                    <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4%)</p>
+                    <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4% = 0.04 fraction)</p>
                   </div>
 
                   <div>
@@ -1036,14 +1232,8 @@ export default function EventDashboardPage() {
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
                       <input
-                        type="number"
-                        value={(() => {
-                          const s = calculateShares();
-                          if (!s) return "";
-                          const pool = Number(commissionPool || event?.commission_pool || 0) || 0;
-                          const commissionAmount = s.netSales * pool;
-                          return commissionAmount.toFixed(2);
-                        })()}
+                        type="text"
+                        value={calculatedCommission.toFixed(2)}
                         readOnly
                         className="w-full pl-10 pr-4 py-3 text-lg border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
                       />
@@ -2191,9 +2381,31 @@ export default function EventDashboardPage() {
 
                           const totalCommissionPool = netSales * poolPercent;
 
-                          // Pro-rate by hours (member_hours / total_hours_all)
-                          const proratedCommission =
-                            totalHoursAll > 0 ? (totalCommissionPool * actualHours) / totalHoursAll : 0;
+                          // Calculate total team salary for this member and all members
+                          const memberBasePay = regularPay + overtimePay + doubletimePay;
+                          
+                          // Calculate total team salary (sum of all members' base pay)
+                          let totalTeamSalaryAll = 0;
+                          teamMembers.forEach((m: any) => {
+                            const mUid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+                            const mTotalMs = timesheetTotals[mUid] || 0;
+                            const mActualHours = mTotalMs / (1000 * 60 * 60);
+                            const mRegularHours = Math.min(mActualHours, 8);
+                            const mOvertimeHours = Math.max(Math.min(mActualHours, 12) - 8, 0);
+                            const mDoubletimeHours = Math.max(mActualHours - 12, 0);
+                            const mRegularPay = mRegularHours * baseRate;
+                            const mOvertimePay = mOvertimeHours * overtimeRate;
+                            const mDoubletimePay = mDoubletimeHours * doubletimeRate;
+                            totalTeamSalaryAll += mRegularPay + mOvertimePay + mDoubletimePay;
+                          });
+
+                          // Constraint: If commission pool <= total team salary, set commissions to 0
+                          const shouldDistributeCommissions = totalCommissionPool > totalTeamSalaryAll;
+
+                          // Pro-rate by hours (member_hours / total_hours_all) only if commission pool > total salary
+                          const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0
+                            ? (totalCommissionPool * actualHours) / totalHoursAll
+                            : 0;
 
                           // Tips prorated by hours (same method)
                           const totalTips = Number(tips) || 0;
@@ -2443,10 +2655,35 @@ export default function EventDashboardPage() {
                       return totalPayroll.toFixed(2);
                     })()}</span>
                   </div>
+
+                  {/* Save Payment Data Button */}
+                  <button
+                    onClick={handleSavePaymentData}
+                    disabled={savingPayment || teamMembers.length === 0}
+                    className="w-full mt-4 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+                  >
+                    {savingPayment ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Saving...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
+                        </svg>
+                        Save Payment Data
+                      </>
+                    )}
+                  </button>
+
                   <button
                     onClick={handleProcessPayroll}
                     disabled={submitting || teamMembers.length === 0}
-                    className="w-full mt-4 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
+                    className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
                   >
                     {submitting ? (
                       <>

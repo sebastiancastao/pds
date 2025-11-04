@@ -258,3 +258,5 @@ LIMIT 10;
 - [ ] Progressive JPEG support
 - [ ] WebP format support
 
+
+

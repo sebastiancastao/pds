@@ -67,6 +67,14 @@ type I9Documents = {
   updated_at?: string;
 };
 
+type PDFForm = {
+  form_name: string;
+  display_name: string;
+  form_data: string; // base64
+  updated_at: string;
+  created_at: string;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -99,6 +107,8 @@ export default function EmployeeProfilePage() {
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [i9Documents, setI9Documents] = useState<I9Documents | null>(null);
   const [i9Loading, setI9Loading] = useState(false);
+  const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -204,12 +214,130 @@ export default function EmployeeProfilePage() {
     loadI9Documents();
   }, [employee?.id]);
 
+  // Fetch PDF forms after employee is loaded
+  useEffect(() => {
+    const loadPDFForms = async () => {
+      if (!employee?.id) return;
+
+      console.log("🔵 [DEBUG] Fetching PDF forms for user:", employee.id);
+      setPdfLoading(true);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        const response = await fetch(`/api/pdf-form-progress/user/${employee.id}`, {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log("🟢 [DEBUG] PDF forms loaded:", result.forms?.length || 0);
+          setPdfForms(result.forms || []);
+        } else {
+          console.log("⚠️ [DEBUG] No PDF forms found or error:", response.status);
+          setPdfForms([]);
+        }
+      } catch (error) {
+        console.error("🔴 [DEBUG] Error loading PDF forms:", error);
+        setPdfForms([]);
+      } finally {
+        setPdfLoading(false);
+      }
+    };
+
+    loadPDFForms();
+  }, [employee?.id]);
+
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
     // Re-compute locally as a guard (API already provides total_hours)
     const total = entries.reduce((acc, e) => acc + hoursBetween(e.clock_in, e.clock_out), 0);
     return { totalHoursLocal: total };
   }, [entries]);
+
+  // Download a single PDF form
+  const downloadPDFForm = (form: PDFForm) => {
+    try {
+      // Convert base64 to blob
+      const byteCharacters = atob(form.form_data);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${form.display_name}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading PDF:', error);
+      alert('Failed to download PDF form');
+    }
+  };
+
+  // Download an I-9 document from storage
+  const downloadI9Document = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      console.error('Error downloading I-9 document:', error);
+      alert('Failed to download document');
+    }
+  };
+
+  // Download all documents (PDFs + I-9 documents)
+  const downloadAllDocuments = async () => {
+    try {
+      // Download all PDF forms
+      for (const form of pdfForms) {
+        downloadPDFForm(form);
+        // Small delay between downloads to avoid browser blocking
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Count and download I-9 documents if they exist
+      let i9Count = 0;
+      if (i9Documents) {
+        if (i9Documents.drivers_license_url) {
+          await downloadI9Document(i9Documents.drivers_license_url, i9Documents.drivers_license_filename || 'drivers_license');
+          i9Count++;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        if (i9Documents.ssn_document_url) {
+          await downloadI9Document(i9Documents.ssn_document_url, i9Documents.ssn_document_filename || 'ssn_card');
+          i9Count++;
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        if (i9Documents.additional_doc_url) {
+          await downloadI9Document(i9Documents.additional_doc_url, i9Documents.additional_doc_filename || 'additional_document');
+          i9Count++;
+        }
+      }
+
+      alert(`Downloaded ${pdfForms.length} onboarding forms and ${i9Count} I-9 documents`);
+    } catch (error) {
+      console.error('Error downloading all documents:', error);
+      alert('Some documents may have failed to download');
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -231,16 +359,12 @@ export default function EmployeeProfilePage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/hr">
+            <Link href="/global-calendar">
               <button className="apple-button apple-button-secondary">
-                ← Back to HR
+                ← Back to Dashboard
               </button>
             </Link>
-            <Link href="/hr/employees">
-              <button className="apple-button apple-button-secondary">
-                All Employees
-              </button>
-            </Link>
+            
           </div>
         </div>
 
@@ -510,18 +634,29 @@ export default function EmployeeProfilePage() {
                               {formatDate(i9Documents.drivers_license_uploaded_at)}
                             </div>
                           )}
-                          <a
-                            href={i9Documents.drivers_license_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                            </svg>
-                            View Document
-                          </a>
+                          <div className="flex gap-2 mt-3">
+                            <a
+                              href={i9Documents.drivers_license_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                              View
+                            </a>
+                            <button
+                              onClick={() => downloadI9Document(i9Documents.drivers_license_url!, i9Documents.drivers_license_filename || 'drivers_license')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                              Download
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <p className="text-sm text-gray-400 italic">Not uploaded</p>
@@ -571,18 +706,29 @@ export default function EmployeeProfilePage() {
                               {formatDate(i9Documents.ssn_document_uploaded_at)}
                             </div>
                           )}
-                          <a
-                            href={i9Documents.ssn_document_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                            </svg>
-                            View Document
-                          </a>
+                          <div className="flex gap-2 mt-3">
+                            <a
+                              href={i9Documents.ssn_document_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                              View
+                            </a>
+                            <button
+                              onClick={() => downloadI9Document(i9Documents.ssn_document_url!, i9Documents.ssn_document_filename || 'ssn_card')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                              Download
+                            </button>
+                          </div>
                         </div>
                       ) : (
                         <p className="text-sm text-gray-400 italic">Not uploaded</p>
@@ -626,21 +772,106 @@ export default function EmployeeProfilePage() {
                               {formatDate(i9Documents.additional_doc_uploaded_at)}
                             </div>
                           )}
-                          <a
-                            href={i9Documents.additional_doc_url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-2 mt-3 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                            </svg>
-                            View Document
-                          </a>
+                          <div className="flex gap-2 mt-3">
+                            <a
+                              href={i9Documents.additional_doc_url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                              </svg>
+                              View
+                            </a>
+                            <button
+                              onClick={() => downloadI9Document(i9Documents.additional_doc_url!, i9Documents.additional_doc_filename || 'additional_document')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                              </svg>
+                              Download
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Onboarding PDF Forms */}
+            <section className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Onboarding Forms</h2>
+                {(pdfForms.length > 0 || i9Documents) && (
+                  <button
+                    onClick={downloadAllDocuments}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download All Documents
+                  </button>
+                )}
+              </div>
+              <div className="apple-card p-6">
+                {pdfLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading forms…</span>
+                  </div>
+                ) : pdfForms.length === 0 ? (
+                  <div className="text-center py-8">
+                    <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p className="text-gray-500 font-medium">No onboarding forms submitted yet</p>
+                    <p className="text-sm text-gray-400 mt-1">Employee has not completed the onboarding packet</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {pdfForms.map((form) => (
+                      <div
+                        key={form.form_name}
+                        className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 hover:shadow-md transition-all"
+                      >
+                        <div className="flex items-start justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0">
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <div>
+                              <h3 className="font-semibold text-gray-900 text-sm">{form.display_name}</h3>
+                              <p className="text-xs text-gray-500">PDF Document</p>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="space-y-2">
+                          <div className="flex items-center text-xs text-gray-500">
+                            <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            {formatDate(form.updated_at)}
+                          </div>
+                          <button
+                            onClick={() => downloadPDFForm(form)}
+                            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                            Download PDF
+                          </button>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

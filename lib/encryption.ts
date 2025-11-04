@@ -101,15 +101,25 @@ export const safeDecrypt = (data: string): string => {
   }
 
   // Check if data is encrypted
-  if (!isEncrypted(data)) {
+  const encrypted = isEncrypted(data);
+  console.log('[SAFE_DECRYPT] Checking data:', {
+    dataPreview: data.substring(0, 30),
+    dataLength: data.length,
+    isEncrypted: encrypted
+  });
+
+  if (!encrypted) {
+    console.log('[SAFE_DECRYPT] ⏭️ Not encrypted, returning original');
     return data;
   }
 
   // Try to decrypt
   try {
-    return decrypt(data);
+    const decrypted = decrypt(data);
+    console.log('[SAFE_DECRYPT] ✅ Successfully decrypted:', decrypted);
+    return decrypted;
   } catch (error) {
-    console.error('Safe decryption failed, returning original:', error);
+    console.error('[SAFE_DECRYPT] ❌ Decryption failed, returning original:', error);
     return data;
   }
 };

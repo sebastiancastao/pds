@@ -334,3 +334,5 @@ ORDER BY created_at DESC LIMIT 5;
 
 The binary photo upload implementation provides a secure, compliant solution for storing employee profile photos directly in the database with full encryption and access controls.
 
+
+

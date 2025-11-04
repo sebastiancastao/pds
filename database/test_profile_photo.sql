@@ -43,3 +43,5 @@ WHERE trigger_name = 'trigger_audit_profile_photo_changes';
 -- FROM profiles 
 -- WHERE user_id = auth.uid();
 
+
+
