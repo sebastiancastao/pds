@@ -10,12 +10,94 @@ const resend = new Resend(process.env.RESEND_API_KEY || '');
 
 function userReceiptHtml(first: string) {
   return `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;color:#111;line-height:1.6">
-      <p>Hi ${first || 'there'},</p>
-      <p>Thanks for submitting your background check documents. We’ve received your submission and it is now <strong>subject to approval</strong>.</p>
-      <p>We’ll notify you as soon as there’s an update.</p>
-      <p style="margin-top:24px">— HR Team</p>
-    </div>
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Background Check Submitted Successfully</title>
+    </head>
+    <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background-color: #f5f5f5;">
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+        <tr>
+          <td align="center">
+            <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+
+              <!-- Header -->
+              <tr>
+                <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
+                  <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✓ Submission Successful</h1>
+                  <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Your background check forms have been received</p>
+                </td>
+              </tr>
+
+              <!-- Body -->
+              <tr>
+                <td style="padding: 40px 30px;">
+                  <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                    Hi <strong>${first || 'there'}</strong>,
+                  </p>
+
+                  <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                    Thank you for submitting your background check documents. We have successfully received your submission!
+                  </p>
+
+                  <!-- Status Box -->
+                  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
+                    <tr>
+                      <td style="padding: 20px;">
+                        <p style="color: #856404; margin: 0 0 10px 0; font-size: 15px; font-weight: bold;">⏳ Important: Subject to Approval</p>
+                        <p style="color: #856404; margin: 0; font-size: 14px; line-height: 1.6;">
+                          Your background check is currently under review by our HR team. This is a standard process that typically takes 3-5 business days. We will notify you by email as soon as your background check has been approved.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <!-- Next Steps -->
+                  <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">What happens next?</h3>
+                  <ul style="color: #555555; font-size: 15px; line-height: 1.8; margin: 0; padding-left: 20px;">
+                    <li>Our HR team will review your submission</li>
+                    <li>You'll receive an email notification once approved</li>
+                    <li>After approval, you can proceed with the onboarding process</li>
+                  </ul>
+
+                  <!-- Support -->
+                  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                    <tr>
+                      <td style="padding: 20px;">
+                        <p style="color: #0c5280; margin: 0; font-size: 14px;">
+                          <strong>Questions?</strong> If you have any questions about your background check status, please contact us at
+                          <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+
+                  <p style="color: #777777; font-size: 14px; margin: 30px 0 0 0;">
+                    Thank you,<br>
+                    <strong>PDS HR Team</strong>
+                  </p>
+                </td>
+              </tr>
+
+              <!-- Footer -->
+              <tr>
+                <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+                  <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                    This email was sent by PDS Time Tracking System
+                  </p>
+                  <p style="color: #999999; font-size: 11px; margin: 0;">
+                    © ${new Date().getFullYear()} PDS. All rights reserved.
+                  </p>
+                </td>
+              </tr>
+
+            </table>
+          </td>
+        </tr>
+      </table>
+    </body>
+    </html>
   `;
 }
 
@@ -196,7 +278,7 @@ export async function POST(request: NextRequest) {
     // --- User receipt via Resend (NEW) ---
     let emailSentToUser = false;
     const toEmail = (user.email || '').trim();
-    const fromEmail = (process.env.RESEND_FROM || '').trim();
+    const fromEmail = (process.env.RESEND_FROM || 'service@furnituretaxi.site').trim();
 
     if (!process.env.RESEND_API_KEY) {
       console.warn('[BACKGROUND CHECK COMPLETE] RESEND_API_KEY not set; skipping user receipt email.');
@@ -208,9 +290,9 @@ export async function POST(request: NextRequest) {
       try {
         const first = (firstName || '').split(' ')[0] || 'there';
         await resend.emails.send({
-          from: `HR Team <${fromEmail}>`,
+          from: `PDS HR Team <${fromEmail}>`,
           to: [toEmail],
-          subject: 'Background check submitted — pending approval',
+          subject: 'Background Check Submitted Successfully - Subject to Approval',
           html: userReceiptHtml(first),
         });
         emailSentToUser = true;
