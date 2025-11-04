@@ -2,6 +2,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { sendBackgroundCheckSubmissionNotification } from '@/lib/email';
 import { decrypt } from '@/lib/encryption';
+import { Resend } from 'resend';
+
+export const runtime = 'nodejs'; // ensure Node runtime for Resend
+
+const resend = new Resend(process.env.RESEND_API_KEY || '');
+
+function userReceiptHtml(first: string) {
+  return `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;font-size:16px;color:#111;line-height:1.6">
+      <p>Hi ${first || 'there'},</p>
+      <p>Thanks for submitting your background check documents. We’ve received your submission and it is now <strong>subject to approval</strong>.</p>
+      <p>We’ll notify you as soon as there’s an update.</p>
+      <p style="margin-top:24px">— HR Team</p>
+    </div>
+  `;
+}
 
 /**
  * POST /api/background-waiver/complete
@@ -88,7 +104,6 @@ export async function POST(request: NextRequest) {
 
     if (existingCheck) {
       // Update existing record - only update the timestamp, keep background_check_completed as is
-      // Admin will set it to true via the checkbox in the UI
       console.log('[BACKGROUND CHECK COMPLETE] Updating existing vendor_background_checks record (timestamp only)');
       const { error: updateCheckError } = await (supabase
         .from('vendor_background_checks') as any)
@@ -106,7 +121,6 @@ export async function POST(request: NextRequest) {
       }
     } else {
       // Insert new record with background_check_completed = FALSE
-      // Admin will set it to true via the checkbox in the UI
       console.log('[BACKGROUND CHECK COMPLETE] Creating new vendor_background_checks record (completed = FALSE)');
       const { error: insertCheckError } = await (supabase
         .from('vendor_background_checks') as any)
@@ -127,33 +141,34 @@ export async function POST(request: NextRequest) {
 
     console.log('[BACKGROUND CHECK COMPLETE] ✅ Vendor background check record created/updated (awaiting admin approval)');
 
-    // Get user profile information for email notification
+    // Get user profile information (for names)
     const { data: profileInfo, error: profileInfoError } = await (supabase
       .from('profiles') as any)
       .select('first_name, last_name')
       .eq('user_id', user.id)
       .single();
 
-    if (!profileInfoError && profileInfo) {
-      // Decrypt name fields
-      let firstName = 'User';
-      let lastName = '';
+    // Prepare names (with decryption fallback)
+    let firstName = 'User';
+    let lastName = '';
 
+    if (!profileInfoError && profileInfo) {
       try {
         firstName = profileInfo.first_name ? decrypt(profileInfo.first_name) : 'User';
-      } catch (decryptError) {
-        // If decryption fails, use original value
+      } catch {
         firstName = profileInfo.first_name || 'User';
       }
-
       try {
         lastName = profileInfo.last_name ? decrypt(profileInfo.last_name) : '';
-      } catch (decryptError) {
-        // If decryption fails, use original value
+      } catch {
         lastName = profileInfo.last_name || '';
       }
+    } else {
+      console.error('[BACKGROUND CHECK COMPLETE] ⚠️ Could not fetch profile info for name:', profileInfoError);
+    }
 
-      // Send email notification to admin
+    // --- Admin notification (existing) ---
+    try {
       console.log('[BACKGROUND CHECK COMPLETE] Sending email notification to admin...');
       const emailResult = await sendBackgroundCheckSubmissionNotification({
         userEmail: user.email || 'N/A',
@@ -170,19 +185,45 @@ export async function POST(request: NextRequest) {
       });
 
       if (emailResult.success) {
-        console.log('[BACKGROUND CHECK COMPLETE] ✅ Email notification sent successfully');
+        console.log('[BACKGROUND CHECK COMPLETE] ✅ Admin email sent successfully');
       } else {
-        console.error('[BACKGROUND CHECK COMPLETE] ❌ Failed to send email notification:', emailResult.error);
-        // Don't fail the request if email fails - log it but continue
+        console.error('[BACKGROUND CHECK COMPLETE] ❌ Failed to send admin email:', emailResult.error);
       }
+    } catch (e) {
+      console.error('[BACKGROUND CHECK COMPLETE] ❌ Admin email exception:', e);
+    }
+
+    // --- User receipt via Resend (NEW) ---
+    let emailSentToUser = false;
+    const toEmail = (user.email || '').trim();
+    const fromEmail = (process.env.RESEND_FROM || '').trim();
+
+    if (!process.env.RESEND_API_KEY) {
+      console.warn('[BACKGROUND CHECK COMPLETE] RESEND_API_KEY not set; skipping user receipt email.');
+    } else if (!fromEmail) {
+      console.warn('[BACKGROUND CHECK COMPLETE] RESEND_FROM not set; skipping user receipt email.');
+    } else if (!toEmail) {
+      console.warn('[BACKGROUND CHECK COMPLETE] No user email; skipping user receipt email.');
     } else {
-      console.error('[BACKGROUND CHECK COMPLETE] ⚠️ Could not fetch profile info for email notification:', profileInfoError);
-      // Don't fail the request - continue without sending email
+      try {
+        const first = (firstName || '').split(' ')[0] || 'there';
+        await resend.emails.send({
+          from: `HR Team <${fromEmail}>`,
+          to: [toEmail],
+          subject: 'Background check submitted — pending approval',
+          html: userReceiptHtml(first),
+        });
+        emailSentToUser = true;
+        console.log('[BACKGROUND CHECK COMPLETE] ✅ User receipt email sent');
+      } catch (e) {
+        console.error('[BACKGROUND CHECK COMPLETE] ❌ User receipt email failed:', e);
+      }
     }
 
     return NextResponse.json({
       success: true,
-      message: 'Background check marked as completed'
+      message: 'Background check marked as completed',
+      emailSentToUser,
     });
 
   } catch (error: any) {
@@ -193,3 +234,4 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+

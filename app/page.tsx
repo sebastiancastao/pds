@@ -79,6 +79,11 @@ export default function Home() {
       router.push('/time-tracking');
       return;
     }
+    if (userRole === 'backgroundchecker') {
+      console.log('[DEBUG] Home - Worker role detected, redirecting to /time-tracking');
+      router.push('/background-checks');
+      return;
+    }
 
     console.log('[DEBUG] Home - All checks passed, showing authenticated home page');
     setIsLoading(false);

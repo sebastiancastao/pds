@@ -38,20 +38,50 @@ export default function BackgroundChecksPage() {
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
   const [editingNotes, setEditingNotes] = useState<string | null>(null);
   const [notesValue, setNotesValue] = useState<string>('');
+
+  // NEW: current user's role (from users table)
+  const [myRole, setMyRole] = useState<string | null>(null);
+
   const router = useRouter();
 
   useEffect(() => {
-    loadVendors();
+    Promise.all([loadCurrentUserRole(), loadVendors()]).finally(() => setLoading(false));
   }, []);
+
+  const loadCurrentUserRole = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const userId = session?.user?.id;
+      if (!userId) {
+        setMyRole(null);
+        return;
+      }
+
+      // Adjust table/column names if yours differ
+      const { data, error } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userId)
+        .single();
+
+      if (error) {
+        console.error('[Background Checks] Role fetch error:', error);
+        setMyRole(null);
+        return;
+      }
+
+      const role = (data?.role ?? '').trim().toLowerCase();
+      setMyRole(role || null);
+    } catch (e) {
+      console.error('[Background Checks] Role fetch exception:', e);
+      setMyRole(null);
+    }
+  };
 
   const loadVendors = async () => {
     setError(null);
-    setLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-
-      console.log('[Background Checks] Session check:', { hasSession: !!session, hasToken: !!session?.access_token });
-
+      const { data: { session} } = await supabase.auth.getSession();
       const res = await fetch('/api/background-checks', {
         method: 'GET',
         headers: {
@@ -59,16 +89,9 @@ export default function BackgroundChecksPage() {
         }
       });
 
-      console.log('[Background Checks] API response:', res.status);
-
       const data = await res.json();
 
       if (!res.ok) {
-        console.error('[Background Checks] API Error:', {
-          status: res.status,
-          data: data
-        });
-
         if (res.status === 403) {
           const roleMsg = data.currentRole ? ` Your current role: ${data.currentRole}` : '';
           setError(`Access denied. Admin privileges required.${roleMsg}`);
@@ -83,26 +106,9 @@ export default function BackgroundChecksPage() {
       }
 
       setVendors(data.vendors || []);
-      console.log('[Background Checks] Successfully loaded', data.vendors?.length || 0, 'vendors');
-      console.log('[Background Checks] Vendors with PDF submissions:',
-        data.vendors?.filter((v: Vendor) => v.has_submitted_pdf).length || 0);
-      console.log('[Background Checks] Vendors with background_check records:',
-        data.vendors?.filter((v: Vendor) => v.background_check !== null).length || 0);
-
-      // Show sample vendor data
-      if (data.vendors && data.vendors.length > 0) {
-        console.log('[Background Checks] Sample vendor data:', {
-          user_id: data.vendors[0].user_id,
-          has_submitted_pdf: data.vendors[0].has_submitted_pdf,
-          pdf_submitted_at: data.vendors[0].pdf_submitted_at,
-          background_check: data.vendors[0].background_check
-        });
-      }
     } catch (e: any) {
       console.error('[Background Checks] Error:', e);
       setError(e.message || 'Failed to load vendors');
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -117,13 +123,8 @@ export default function BackgroundChecksPage() {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         }
       });
-
       const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load vendors');
-      }
-
+      if (!res.ok) throw new Error(data.error || 'Failed to load vendors');
       setVendors(data.vendors || []);
     } catch (e: any) {
       console.error('Error fetching vendors:', e);
@@ -153,23 +154,16 @@ export default function BackgroundChecksPage() {
       });
 
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to update background check status');
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to update background check status');
-      }
-
-      // Update the vendors list with the new background check data
-      setVendors(prevVendors =>
-        prevVendors.map(vendor =>
-          vendor.id === vendorId
-            ? { ...vendor, background_check: data.background_check }
-            : vendor
+      setVendors(prev =>
+        prev.map(v =>
+          v.id === vendorId ? { ...v, background_check: data.background_check } : v
         )
       );
     } catch (err: any) {
       console.error('Error updating background check:', err);
       setError(err.message || 'Failed to update background check status. Please try again.');
-      // Revert the checkbox by refetching
       fetchVendors();
     } finally {
       setUpdating(null);
@@ -179,23 +173,17 @@ export default function BackgroundChecksPage() {
   const handleViewPDF = async (userId: string, vendorName: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-
       const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         }
       });
-
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || 'Failed to load PDF');
       }
-
-      // Get the PDF blob
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-
-      // Open in new window
       window.open(url, '_blank');
     } catch (err: any) {
       console.error('Error viewing PDF:', err);
@@ -206,23 +194,17 @@ export default function BackgroundChecksPage() {
   const handleDownloadPDF = async (userId: string, vendorName: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-
       const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         }
       });
-
       if (!response.ok) {
         const data = await response.json();
         throw new Error(data.error || 'Failed to download PDF');
       }
-
-      // Get the PDF blob
       const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
-
-      // Create download link
       const a = document.createElement('a');
       a.href = url;
       a.download = `background_check_${vendorName.replace(/\s+/g, '_')}.pdf`;
@@ -265,18 +247,10 @@ export default function BackgroundChecksPage() {
       });
 
       const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to update notes');
 
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to update notes');
-      }
-
-      // Update the vendors list with the new background check data
-      setVendors(prevVendors =>
-        prevVendors.map(v =>
-          v.id === vendorId
-            ? { ...v, background_check: data.background_check }
-            : v
-        )
+      setVendors(prev =>
+        prev.map(v => (v.id === vendorId ? { ...v, background_check: data.background_check } : v))
       );
 
       setEditingNotes(null);
@@ -295,19 +269,18 @@ export default function BackgroundChecksPage() {
   };
 
   const filteredVendors = vendors.filter(vendor => {
-    const matchesSearch = vendor.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesSearch =
+      vendor.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
 
     if (!matchesSearch) return false;
 
-    // Filter by background check status
     if (filterStatus === 'completed') {
       if (!vendor.background_check?.background_check_completed) return false;
     } else if (filterStatus === 'pending') {
       if (vendor.background_check?.background_check_completed) return false;
     }
 
-    // Filter by password status
     if (filterPassword === 'temporary') {
       if (!vendor.has_temporary_password) return false;
     } else if (filterPassword === 'permanent') {
@@ -321,6 +294,9 @@ export default function BackgroundChecksPage() {
   const pendingCount = vendors.length - completedCount;
   const temporaryPasswordCount = vendors.filter(v => v.has_temporary_password).length;
   const pdfSubmittedCount = vendors.filter(v => v.has_submitted_pdf).length;
+
+  // Allow editing only for HR or Exec
+  const canEditChecks = (myRole?.trim().toLowerCase() === 'hr') || (myRole?.trim().toLowerCase() === 'exec');
 
   if (loading) {
     return (
@@ -428,36 +404,16 @@ export default function BackgroundChecksPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    User Name
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Email
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Role
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Phone
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Password Status
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Background Check
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Completed Date
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    PDF Submitted
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Notes
-                  </th>
-                  <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Actions
-                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Password Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Background Check</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed Date</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDF Submitted</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -579,16 +535,21 @@ export default function BackgroundChecksPage() {
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
                         <div className="flex items-center justify-center gap-2">
-                          <input
-                            type="checkbox"
-                            checked={vendor.background_check?.background_check_completed || false}
-                            onChange={(e) => handleCheckboxChange(vendor.id, e.target.checked)}
-                            disabled={updating === vendor.id}
-                            className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                            title={vendor.background_check?.background_check_completed
-                              ? 'Background check completed'
-                              : 'Mark background check as completed'}
-                          />
+                          {/* SHOW CHECKBOX ONLY FOR HR/EXEC */}
+                          {canEditChecks && (
+                            <input
+                              type="checkbox"
+                              checked={vendor.background_check?.background_check_completed || false}
+                              onChange={(e) => handleCheckboxChange(vendor.id, e.target.checked)}
+                              disabled={updating === vendor.id}
+                              className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+                              title={vendor.background_check?.background_check_completed
+                                ? 'Background check completed'
+                                : 'Mark background check as completed'}
+                            />
+                          )}
+
+                          {/* Keep PDF actions visible for any role */}
                           {vendor.has_submitted_pdf && (
                             <div className="flex gap-1">
                               <button
