@@ -237,21 +237,8 @@ export default function TimeTrackingPage() {
         <div className="text-sm text-gray-500">Status</div>
         <div className="flex items-end justify-between">
           <div>
-            <div className="text-4xl font-extrabold tracking-tight">
-              {openEntry ? msToHMS(openElapsedMs) : "00:00:00"}
-            </div>
-            <div className="text-sm text-gray-500">
-              {openEntry
-                ? `Started at ${new Date(openEntry.started_at).toLocaleTimeString()}`
-                : "No active timer"}
-            </div>
-            <div className="mt-3">
-              <div className="text-xs text-gray-500">Meal</div>
-              <div className="text-xl font-bold">{openMeal ? msToHMS(mealElapsedMs) : "00:00:00"}</div>
-              <div className="text-xs text-gray-500">
-                {openMeal ? `Started at ${new Date(openMeal.started_at).toLocaleTimeString()}` : "No active meal"}
-              </div>
-            </div>
+            
+            
           </div>
 
           <div className="flex gap-3">
@@ -290,55 +277,15 @@ export default function TimeTrackingPage() {
           </div>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="What are you working on?"
-            className="w-full rounded-md border px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            rows={3}
-          />
-          <div className="mt-1 text-xs text-gray-500">Notes are saved on clock in/out.</div>
-        </div>
-      </div>
-
-      <div className="rounded-lg border bg-white p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Today</h2>
-          <div className="text-sm text-gray-600">
-            Total: <span className="font-bold">{msToHMS(todaysTotalMs)}</span>
-          </div>
-        </div>
+        
 
         {entries.length === 0 ? (
           <div className="text-sm text-gray-500">No entries yet today.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-gray-50">
-                <tr>
-                  <th className="text-left px-4 py-2 font-medium text-gray-600">Start</th>
-                  <th className="text-left px-4 py-2 font-medium text-gray-600">End</th>
-                  <th className="text-left px-4 py-2 font-medium text-gray-600">Duration</th>
-                  <th className="text-left px-4 py-2 font-medium text-gray-600">Notes</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y">
-                {entries.map((e) => {
-                  const start = new Date(e.started_at);
-                  const end = e.ended_at ? new Date(e.ended_at) : null;
-                  const durMs = (end?.getTime() ?? Date.now()) - start.getTime();
-                  return (
-                    <tr key={e.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-2">{start.toLocaleTimeString()}</td>
-                      <td className="px-4 py-2">{end ? end.toLocaleTimeString() : "—"}</td>
-                      <td className="px-4 py-2 font-medium">{msToHMS(durMs)}</td>
-                      <td className="px-4 py-2">{e.notes || "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
+              
+              
             </table>
           </div>
         )}

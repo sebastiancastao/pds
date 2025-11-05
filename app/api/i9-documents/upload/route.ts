@@ -1,36 +1,70 @@
+// app/api/i9-documents/upload/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const BUCKET = 'i9-documents';
+
+// Map incoming documentType -> real table column prefix
+// (UI new types + legacy types supported)
+const TYPE_MAP: Record<
+  string,
+  { key: 'drivers_license' | 'ssn_document' | 'additional_doc' }
+> = {
+  // New UI
+  i9_list_a: { key: 'additional_doc' },   // store List A in additional_doc_*
+  i9_list_b: { key: 'drivers_license' },  // List B -> driver license slot
+  i9_list_c: { key: 'ssn_document' },     // List C -> SSN slot
+
+  // Legacy UI
+  drivers_license: { key: 'drivers_license' },
+  ssn_document: { key: 'ssn_document' },
+  additional_doc: { key: 'additional_doc' },
+};
+
+const ALLOWED_MIME = [
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+];
+
+const MAX_BYTES = 10 * 1024 * 1024; // 10MB
+
+function sanitizeFilename(name: string) {
+  return name.replace(/[^\w.\-]+/g, '_');
+}
 
 export async function POST(request: NextRequest) {
   try {
-    // Get auth token from header
     const authHeader = request.headers.get('authorization');
     if (!authHeader) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
-    // Create Supabase client with user's token
     const token = authHeader.replace('Bearer ', '');
+
+    // Service key to allow server-side storage and DB ops; include user header for auditing
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
       global: { headers: { Authorization: authHeader } },
     });
 
-    // Get current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    // Current user
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token);
+
     if (userError || !user) {
       console.error('[I9_UPLOAD] User error:', userError);
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    console.log('[I9_UPLOAD] Processing upload for user:', user.id);
-
-    // Parse form data
+    // Parse form-data
     const formData = await request.formData();
-    const documentType = formData.get('documentType') as string; // 'drivers_license' or 'ssn_document'
-    const file = formData.get('file') as File;
+    const documentType = String(formData.get('documentType') || '');
+    const file = formData.get('file') as unknown as File | null;
 
     if (!documentType || !file) {
       return NextResponse.json(
@@ -39,52 +73,42 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate document type
-    if (!['drivers_license', 'ssn_document', 'additional_doc'].includes(documentType)) {
+    const mapped = TYPE_MAP[documentType];
+    if (!mapped) {
       return NextResponse.json(
         { error: 'Invalid document type' },
         { status: 400 }
       );
     }
 
-    // Validate file type (images and PDFs only)
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
-    if (!allowedTypes.includes(file.type)) {
+    if (!ALLOWED_MIME.includes(file.type)) {
       return NextResponse.json(
-        { error: 'Invalid file type. Only JPG, PNG, WEBP, and PDF files are allowed.' },
+        { error: 'Invalid file type. Only JPG, PNG, WEBP, and PDF are allowed.' },
         { status: 400 }
       );
     }
 
-    // Validate file size (max 10MB)
-    const maxSize = 10 * 1024 * 1024; // 10MB
-    if (file.size > maxSize) {
+    if (file.size > MAX_BYTES) {
       return NextResponse.json(
         { error: 'File too large. Maximum size is 10MB.' },
         { status: 400 }
       );
     }
 
-    console.log('[I9_UPLOAD] File validated:', {
-      name: file.name,
-      type: file.type,
-      size: file.size,
-    });
-
-    // Generate unique filename
+    // Build storage path
     const timestamp = Date.now();
-    const fileExt = file.name.split('.').pop();
-    const fileName = `${user.id}/${documentType}_${timestamp}.${fileExt}`;
+    const safeName = sanitizeFilename(file.name || `upload.${file.type.split('/').pop() || 'bin'}`);
+    // Group by mapped key for neatness (drivers_license/ssn_document/additional_doc)
+    const storageKey = `${user.id}/${mapped.key}/${timestamp}-${safeName}`;
 
-    // Convert File to ArrayBuffer then to Buffer
+    // Convert to Buffer (Node runtime)
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Upload to Supabase Storage
-    console.log('[I9_UPLOAD] Uploading to storage:', fileName);
+    // Upload to Storage
     const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('i9-documents')
-      .upload(fileName, buffer, {
+      .from(BUCKET)
+      .upload(storageKey, buffer, {
         contentType: file.type,
         upsert: true,
       });
@@ -97,158 +121,150 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    console.log('[I9_UPLOAD] File uploaded successfully:', uploadData);
-
-    // Get public URL
-    const { data: urlData } = supabase.storage
-      .from('i9-documents')
-      .getPublicUrl(fileName);
-
+    // Public URL
+    const { data: urlData } = supabase.storage.from(BUCKET).getPublicUrl(storageKey);
     const fileUrl = urlData.publicUrl;
 
-    // Save document info to database
-    console.log('[I9_UPLOAD] Saving to database...');
+    // Prepare DB columns for the mapped key
+    const colPrefix = mapped.key; // 'drivers_license' | 'ssn_document' | 'additional_doc'
+    const nowIso = new Date().toISOString();
 
-    // Check if record exists
-    const { data: existingRecord } = await supabase
-      .from('i9_documents')
-      .select('*')
-      .eq('user_id', user.id)
-      .single();
-
-    const documentData: any = {
+    const updatePayload: Record<string, any> = {
       user_id: user.id,
+      updated_at: nowIso,
+      [`${colPrefix}_url`]: fileUrl,
+      [`${colPrefix}_filename`]: file.name,
+      [`${colPrefix}_uploaded_at`]: nowIso,
     };
 
-    // Set the appropriate fields based on document type
-    if (documentType === 'drivers_license') {
-      documentData.drivers_license_url = fileUrl;
-      documentData.drivers_license_filename = file.name;
-      documentData.drivers_license_uploaded_at = new Date().toISOString();
-    } else if (documentType === 'ssn_document') {
-      documentData.ssn_document_url = fileUrl;
-      documentData.ssn_document_filename = file.name;
-      documentData.ssn_document_uploaded_at = new Date().toISOString();
-    } else if (documentType === 'additional_doc') {
-      documentData.additional_doc_url = fileUrl;
-      documentData.additional_doc_filename = file.name;
-      documentData.additional_doc_uploaded_at = new Date().toISOString();
-    }
+    // Does a row already exist for this user?
+    const { data: existing } = await supabase
+      .from('i9_documents')
+      .select('id')
+      .eq('user_id', user.id)
+      .maybeSingle();
 
-    let dbResult;
-    if (existingRecord) {
-      // Update existing record
-      dbResult = await supabase
+    let dbRes;
+    if (existing) {
+      dbRes = await supabase
         .from('i9_documents')
-        .update(documentData)
+        .update(updatePayload)
         .eq('user_id', user.id)
         .select()
         .single();
     } else {
-      // Insert new record
-      dbResult = await supabase
+      // include created_at for new row
+      updatePayload.created_at = nowIso;
+      dbRes = await supabase
         .from('i9_documents')
-        .insert(documentData)
+        .insert(updatePayload)
         .select()
         .single();
     }
 
-    if (dbResult.error) {
-      console.error('[I9_UPLOAD] Database error:', dbResult.error);
+    if (dbRes.error) {
+      console.error('[I9_UPLOAD] DB error:', dbRes.error);
       return NextResponse.json(
         { error: 'Failed to save document info to database' },
         { status: 500 }
       );
     }
 
-    console.log('[I9_UPLOAD] ✅ Upload complete');
+    console.log('[I9_UPLOAD] ✅ Upload complete', {
+      userId: user.id,
+      key: colPrefix,
+      path: storageKey,
+    });
 
     return NextResponse.json({
       success: true,
       url: fileUrl,
       filename: file.name,
-      documentType,
+      documentType,          // received
+      normalizedKey: colPrefix, // stored under
     });
-  } catch (error) {
-    console.error('[I9_UPLOAD] Error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error('[I9_UPLOAD] Error:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-// GET endpoint to retrieve uploaded documents
 export async function GET(request: NextRequest) {
   try {
-    // Get auth token from header
     const authHeader = request.headers.get('authorization');
     if (!authHeader) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
-    // Create Supabase client with user's token
     const token = authHeader.replace('Bearer ', '');
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
       global: { headers: { Authorization: authHeader } },
     });
 
-    // Get current user
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token);
+
     if (userError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // Check if requesting specific user's documents (HR feature)
+    // HR/admin can view another user's docs with ?userId=...
     const { searchParams } = new URL(request.url);
     const requestedUserId = searchParams.get('userId');
 
     let targetUserId = user.id;
-
-    // If requesting another user's documents, verify HR permissions
     if (requestedUserId && requestedUserId !== user.id) {
-      // Check if current user has HR permissions (admin or hr_admin role)
-      const { data: userData } = await supabase
+      const { data: meRole } = await supabase
         .from('users')
         .select('role')
         .eq('id', user.id)
         .single();
 
-      if (!userData || !['admin', 'hr_admin'].includes(userData.role)) {
+      if (!meRole || !['admin', 'hr_admin'].includes(meRole.role)) {
         return NextResponse.json(
           { error: 'Insufficient permissions to view employee documents' },
           { status: 403 }
         );
       }
-
       targetUserId = requestedUserId;
       console.log('[I9_DOCUMENTS] HR viewing documents for user:', targetUserId);
     }
 
-    // Get documents from database
     const { data, error } = await supabase
       .from('i9_documents')
-      .select('*')
+      .select(
+        `
+        id,
+        user_id,
+        drivers_license_url,
+        drivers_license_filename,
+        drivers_license_uploaded_at,
+        ssn_document_url,
+        ssn_document_filename,
+        ssn_document_uploaded_at,
+        additional_doc_url,
+        additional_doc_filename,
+        additional_doc_uploaded_at,
+        created_at,
+        updated_at
+      `
+      )
       .eq('user_id', targetUserId)
-      .single();
+      .maybeSingle();
 
-    if (error && error.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('[I9_DOCUMENTS] Error fetching documents:', error);
-      return NextResponse.json(
-        { error: 'Failed to fetch documents' },
-        { status: 500 }
-      );
+    if (error && (error as any).code !== 'PGRST116') {
+      console.error('[I9_DOCUMENTS] Fetch error:', error);
+      return NextResponse.json({ error: 'Failed to fetch documents' }, { status: 500 });
     }
 
     return NextResponse.json({
       success: true,
       documents: data || null,
     });
-  } catch (error) {
-    console.error('[I9_DOCUMENTS] Error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
-    );
+  } catch (err) {
+    console.error('[I9_DOCUMENTS] Error:', err);
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

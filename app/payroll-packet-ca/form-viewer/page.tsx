@@ -11,10 +11,13 @@ const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor
   loading: () => <div style={{ padding: '20px', textAlign: 'center' }}>Loading PDF editor...</div>
 });
 
+type I9Mode = 'A' | 'BC';
+
 function FormViewerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -25,18 +28,53 @@ function FormViewerContent() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [signatureMode, setSignatureMode] = useState<'type' | 'draw'>('type');
 
-  // I-9 Document uploads
+  // --- I-9 selection mode + options ---
+  const I9_LIST_A = [
+    'U.S. Passport or U.S. Passport Card',
+    'Permanent Resident Card (Form I-551)',
+    'Employment Authorization Document with Photo (Form I-766)',
+    'Foreign Passport with Form I-94 indicating work authorization',
+    'Passport from Micronesia/Marshall Islands with Form I-94',
+  ];
+  const I9_LIST_B = [
+    'Driver’s license or State ID (with photo or info)',
+    'ID card issued by federal/state/local agency (with photo/info)',
+    'School ID card with photograph',
+    'Voter’s registration card',
+    'U.S. military card or draft record',
+    'Military dependent’s ID card',
+    'U.S. Coast Guard Merchant Mariner Card',
+    'Native American tribal document',
+    'Driver’s license issued by Canadian authority',
+  ];
+  const I9_LIST_C = [
+    'U.S. Social Security Card (unrestricted)',
+    'Certification of Birth Abroad (Form FS-545)',
+    'Certification of Report of Birth (Form DS-1350)',
+    'Original or certified Birth Certificate',
+    'Native American tribal document',
+    'U.S. Citizen ID Card (Form I-197)',
+    'ID Card for Resident Citizen in the U.S. (Form I-179)',
+    'Employment Authorization Document issued by DHS',
+  ];
+
+  const [i9Mode, setI9Mode] = useState<I9Mode>('A');
+  const [i9Selections, setI9Selections] = useState<{ listA?: string; listB?: string; listC?: string }>({});
   const [i9Documents, setI9Documents] = useState<{
-    drivers_license?: { url: string; filename: string };
-    ssn_document?: { url: string; filename: string };
+    listA?: { url: string; filename: string };
+    listB?: { url: string; filename: string };
+    listC?: { url: string; filename: string };
   }>({});
-  const [uploadingDoc, setUploadingDoc] = useState<string | null>(null);
+  const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
 
   // Map form names to display names and API endpoints
-  const formConfig: Record<string, { display: string; api: string; formId: string; next?: string; requiresSignature?: boolean }> = {
-    'fillable': { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
-    'fw4': { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
-    'i9': { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
+  const formConfig: Record<
+    string,
+    { display: string; api: string; formId: string; next?: string; requiresSignature?: boolean }
+  > = {
+    fillable: { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
+    fw4: { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
+    i9: { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
     'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'ui-guide' },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
@@ -92,7 +130,6 @@ function FormViewerContent() {
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
-
     autoSaveTimerRef.current = setTimeout(() => {
       handleManualSave();
     }, 3000); // Auto-save 3 seconds after user stops typing
@@ -121,19 +158,25 @@ function FormViewerContent() {
       console.log(`[SAVE] Converted to base64, length: ${base64.length} characters`);
       console.log(`[SAVE] Base64 preview: ${base64.substring(0, 50)}...`);
 
-      // Save to database
+      // Save to database (+ optionally persist i9 mode/selections)
       console.log(`[SAVE] Sending to API for form: ${currentForm.formId}`);
+      const payload: any = {
+        formName: currentForm.formId,
+        formData: base64,
+      };
+      if (formName === 'i9') {
+        payload.i9Mode = i9Mode;
+        payload.i9Selections = i9Selections;
+      }
+
       const response = await fetch('/api/pdf-form-progress/save', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         },
-        credentials: 'same-origin', // Include cookies with request
-        body: JSON.stringify({
-          formName: currentForm.formId,
-          formData: base64,
-        }),
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
       });
 
       if (response.ok) {
@@ -165,15 +208,34 @@ function FormViewerContent() {
       return;
     }
 
-    // Check if I-9 documents are uploaded (for I-9 form only)
+    // I-9 validations (mode + selections + files)
     if (formName === 'i9') {
-      if (!i9Documents.drivers_license) {
-        alert('Please upload your Driver\'s License or State ID before continuing.');
-        return;
-      }
-      if (!i9Documents.ssn_document) {
-        alert('Please upload your Social Security Card before continuing.');
-        return;
+      if (i9Mode === 'A') {
+        if (!i9Selections.listA) {
+          alert('Please choose a List A document type.');
+          return;
+        }
+        if (!i9Documents.listA) {
+          alert('Please upload your List A document.');
+          return;
+        }
+      } else {
+        if (!i9Selections.listB) {
+          alert('Please choose a List B document type.');
+          return;
+        }
+        if (!i9Documents.listB) {
+          alert('Please upload your List B document.');
+          return;
+        }
+        if (!i9Selections.listC) {
+          alert('Please choose a List C document type.');
+          return;
+        }
+        if (!i9Documents.listC) {
+          alert('Please upload your List C document.');
+          return;
+        }
       }
     }
 
@@ -308,8 +370,11 @@ function FormViewerContent() {
     });
   };
 
-  // I-9 Document Upload Functions
-  const handleDocumentUpload = async (documentType: 'drivers_license' | 'ssn_document', file: File) => {
+  // I-9 Document Upload Functions (A/B/C slots)
+  const handleDocumentUpload = async (
+    documentType: 'i9_list_a' | 'i9_list_b' | 'i9_list_c',
+    file: File
+  ) => {
     try {
       setUploadingDoc(documentType);
 
@@ -336,16 +401,17 @@ function FormViewerContent() {
       const result = await response.json();
       console.log('[I9_UPLOAD] Success:', result);
 
-      // Update state
+      const toKey = documentType === 'i9_list_a' ? 'listA' : documentType === 'i9_list_b' ? 'listB' : 'listC';
+
       setI9Documents(prev => ({
         ...prev,
-        [documentType]: {
+        [toKey]: {
           url: result.url,
           filename: result.filename,
         },
       }));
 
-      alert(`${documentType === 'drivers_license' ? "Driver's License" : 'SSN Document'} uploaded successfully!`);
+      alert('Document uploaded successfully!');
     } catch (error) {
       console.error('[I9_UPLOAD] Error:', error);
       alert(`Failed to upload: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -372,15 +438,35 @@ function FormViewerContent() {
         if (result.documents) {
           const docs: any = {};
 
-          if (result.documents.drivers_license_url) {
-            docs.drivers_license = {
+          // Preferred new keys
+          if (result.documents.list_a_url) {
+            docs.listA = {
+              url: result.documents.list_a_url,
+              filename: result.documents.list_a_filename,
+            };
+          }
+          if (result.documents.list_b_url) {
+            docs.listB = {
+              url: result.documents.list_b_url,
+              filename: result.documents.list_b_filename,
+            };
+          }
+          if (result.documents.list_c_url) {
+            docs.listC = {
+              url: result.documents.list_c_url,
+              filename: result.documents.list_c_filename,
+            };
+          }
+
+          // Back-compat: legacy keys -> B/C
+          if (!docs.listB && result.documents.drivers_license_url) {
+            docs.listB = {
               url: result.documents.drivers_license_url,
               filename: result.documents.drivers_license_filename,
             };
           }
-
-          if (result.documents.ssn_document_url) {
-            docs.ssn_document = {
+          if (!docs.listC && result.documents.ssn_document_url) {
+            docs.listC = {
               url: result.documents.ssn_document_url,
               filename: result.documents.ssn_document_filename,
             };
@@ -477,9 +563,6 @@ function FormViewerContent() {
       }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>{currentForm.display}</h1>
-          <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#666' }}>
-            Fill out the form below. Your progress is automatically saved as you type.
-          </p>
         </div>
 
         {/* Save Status Indicator */}
@@ -606,8 +689,8 @@ function FormViewerContent() {
                     borderRadius: '6px',
                     outline: 'none'
                   }}
-                  onFocus={(e) => e.target.style.borderColor = '#1976d2'}
-                  onBlur={(e) => e.target.style.borderColor = '#ddd'}
+                  onFocus={(e) => (e.target.style.borderColor = '#1976d2')}
+                  onBlur={(e) => (e.target.style.borderColor = '#ddd')}
                 />
                 {currentSignature && !currentSignature.startsWith('data:image') && (
                   <div style={{
@@ -695,202 +778,262 @@ function FormViewerContent() {
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
             marginBottom: '20px'
           }}>
-            <h2 style={{ margin: '0 0 8px 0', fontSize: '20px', fontWeight: 'bold' }}>
-              Identity & Employment Verification Documents
+            <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>
+              Identity & Employment Verification (Form I-9)
             </h2>
-            <p style={{ margin: '0 0 20px 0', fontSize: '14px', color: '#666' }}>
-              Upload clear photos or scans of your identification documents for I-9 verification.
+            <p style={{ margin: '8px 0 20px 0', fontSize: '14px', color: '#666' }}>
+              Choose <strong>one</strong> of the following: provide a <strong>List A</strong> document,
+              or provide <strong>one from List B</strong> <em>and</em> <strong>one from List C</strong>.
             </p>
 
-            {/* Driver's License Upload */}
-            <div style={{ marginBottom: '20px' }}>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>
-                Driver's License or State ID <span style={{ color: '#d32f2f' }}>*</span>
-              </h3>
-              {i9Documents.drivers_license ? (
-                <div style={{
-                  border: '2px solid #4caf50',
-                  borderRadius: '6px',
-                  padding: '16px',
-                  backgroundColor: '#e8f5e9'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                    <svg style={{ width: '24px', height: '24px', fill: '#4caf50' }} viewBox="0 0 24 24">
-                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
-                    </svg>
-                    <div>
-                      <p style={{ margin: 0, fontWeight: 'bold', color: '#2e7d32' }}>Uploaded Successfully</p>
-                      <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>{i9Documents.drivers_license.filename}</p>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <a
-                      href={i9Documents.drivers_license.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#1976d2',
-                        color: 'white',
-                        textDecoration: 'none',
-                        borderRadius: '6px',
-                        fontSize: '14px',
-                        fontWeight: 'bold'
-                      }}
-                    >
-                      View Document
-                    </a>
-                    <label style={{
-                      padding: '8px 16px',
-                      backgroundColor: '#666',
-                      color: 'white',
-                      borderRadius: '6px',
-                      fontSize: '14px',
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
-                    }}>
-                      Replace
-                      <input
-                        type="file"
-                        accept="image/*,application/pdf"
-                        style={{ display: 'none' }}
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) handleDocumentUpload('drivers_license', file);
-                        }}
-                      />
-                    </label>
-                  </div>
-                </div>
-              ) : (
-                <label style={{
-                  display: 'block',
-                  border: '2px dashed #ddd',
-                  borderRadius: '6px',
-                  padding: '24px',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  backgroundColor: uploadingDoc === 'drivers_license' ? '#f5f5f5' : 'white'
-                }}>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    style={{ display: 'none' }}
-                    disabled={uploadingDoc === 'drivers_license'}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleDocumentUpload('drivers_license', file);
-                    }}
-                  />
-                  <div style={{ marginBottom: '12px' }}>
-                    <svg style={{ width: '48px', height: '48px', fill: '#999', margin: '0 auto' }} viewBox="0 0 24 24">
-                      <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" />
-                    </svg>
-                  </div>
-                  <p style={{ margin: 0, fontWeight: 'bold', fontSize: '16px' }}>
-                    {uploadingDoc === 'drivers_license' ? 'Uploading...' : 'Click to upload or drag and drop'}
-                  </p>
-                  <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#666' }}>
-                    JPG, PNG, WEBP, or PDF (max 10MB)
-                  </p>
-                </label>
-              )}
+            {/* Mode selector */}
+            <div style={{ display: 'flex', gap: 16, marginBottom: 16 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="i9mode"
+                  checked={i9Mode === 'A'}
+                  onChange={() => setI9Mode('A')}
+                />
+                <span>Use List A (one document)</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <input
+                  type="radio"
+                  name="i9mode"
+                  checked={i9Mode === 'BC'}
+                  onChange={() => setI9Mode('BC')}
+                />
+                <span>Use List B + List C (two documents)</span>
+              </label>
             </div>
 
-            {/* SSN Document Upload */}
-            <div>
-              <h3 style={{ margin: '0 0 12px 0', fontSize: '16px', fontWeight: 'bold' }}>
-                Social Security Card <span style={{ color: '#d32f2f' }}>*</span>
-              </h3>
-              {i9Documents.ssn_document ? (
-                <div style={{
-                  border: '2px solid #4caf50',
-                  borderRadius: '6px',
-                  padding: '16px',
-                  backgroundColor: '#e8f5e9'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px' }}>
-                    <svg style={{ width: '24px', height: '24px', fill: '#4caf50' }} viewBox="0 0 24 24">
-                      <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
-                    </svg>
-                    <div>
-                      <p style={{ margin: 0, fontWeight: 'bold', color: '#2e7d32' }}>Uploaded Successfully</p>
-                      <p style={{ margin: 0, fontSize: '14px', color: '#666' }}>{i9Documents.ssn_document.filename}</p>
+            {/* List A */}
+            {i9Mode === 'A' && (
+              <div style={{ borderTop: '1px solid #eee', paddingTop: 16 }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: 16, fontWeight: 'bold' }}>List A Document</h3>
+
+                {/* List A dropdown */}
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ display: 'block', fontSize: 13, color: '#444', marginBottom: 6 }}>
+                    Select document type <span style={{ color: '#d32f2f' }}>*</span>
+                  </label>
+                  <select
+                    value={i9Selections.listA || ''}
+                    onChange={(e) => setI9Selections(prev => ({ ...prev, listA: e.target.value || undefined }))}
+                    style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 6 }}
+                  >
+                    <option value="">— Select —</option>
+                    {I9_LIST_A.map(opt => (
+                      <option key={opt} value={opt}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Upload 1 field for List A */}
+                <div>
+                  <h4 style={{ margin: '12px 0', fontSize: 14, fontWeight: 700 }}>
+                    Upload List A document <span style={{ color: '#d32f2f' }}>*</span>
+                  </h4>
+                  {i9Documents.listA ? (
+                    <div style={{ border: '2px solid #4caf50', borderRadius: 6, padding: 12, background: '#e8f5e9' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                        <div>
+                          <div style={{ color: '#2e7d32', fontWeight: 700 }}>Uploaded</div>
+                          <div style={{ fontSize: 13, color: '#555' }}>{i9Documents.listA.filename}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <a
+                            href={i9Documents.listA.url}
+                            target="_blank" rel="noopener noreferrer"
+                            style={{ padding: '8px 12px', background: '#1976d2', color: '#fff', borderRadius: 6, textDecoration: 'none', fontSize: 13, fontWeight: 700 }}
+                          >
+                            View
+                          </a>
+                          <label style={{ padding: '8px 12px', background: '#666', color: '#fff', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                            Replace
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              style={{ display: 'none' }}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleDocumentUpload('i9_list_a', file);
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div style={{ display: 'flex', gap: '12px' }}>
-                    <a
-                      href={i9Documents.ssn_document.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        padding: '8px 16px',
-                        backgroundColor: '#1976d2',
-                        color: 'white',
-                        textDecoration: 'none',
-                        borderRadius: '6px',
-                        fontSize: '14px',
-                        fontWeight: 'bold'
-                      }}
-                    >
-                      View Document
-                    </a>
+                  ) : (
                     <label style={{
-                      padding: '8px 16px',
-                      backgroundColor: '#666',
-                      color: 'white',
-                      borderRadius: '6px',
-                      fontSize: '14px',
-                      fontWeight: 'bold',
-                      cursor: 'pointer'
+                      display: 'block', border: '2px dashed #ddd', borderRadius: 6, padding: 20, textAlign: 'center', cursor: 'pointer',
+                      backgroundColor: uploadingDoc === 'i9_list_a' ? '#f5f5f5' : '#fff'
                     }}>
-                      Replace
                       <input
                         type="file"
                         accept="image/*,application/pdf"
                         style={{ display: 'none' }}
+                        disabled={uploadingDoc === 'i9_list_a'}
                         onChange={(e) => {
                           const file = e.target.files?.[0];
-                          if (file) handleDocumentUpload('ssn_document', file);
+                          if (file) handleDocumentUpload('i9_list_a', file);
                         }}
                       />
+                      <div style={{ marginBottom: 8, color: '#666' }}>
+                        {uploadingDoc === 'i9_list_a' ? 'Uploading…' : 'Click to upload or drag & drop'}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888' }}>JPG, PNG, WEBP, or PDF (max 10MB)</div>
                     </label>
-                  </div>
+                  )}
                 </div>
-              ) : (
-                <label style={{
-                  display: 'block',
-                  border: '2px dashed #ddd',
-                  borderRadius: '6px',
-                  padding: '24px',
-                  textAlign: 'center',
-                  cursor: 'pointer',
-                  backgroundColor: uploadingDoc === 'ssn_document' ? '#f5f5f5' : 'white'
-                }}>
-                  <input
-                    type="file"
-                    accept="image/*,application/pdf"
-                    style={{ display: 'none' }}
-                    disabled={uploadingDoc === 'ssn_document'}
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) handleDocumentUpload('ssn_document', file);
-                    }}
-                  />
-                  <div style={{ marginBottom: '12px' }}>
-                    <svg style={{ width: '48px', height: '48px', fill: '#999', margin: '0 auto' }} viewBox="0 0 24 24">
-                      <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z" />
-                    </svg>
+              </div>
+            )}
+
+            {/* List B + List C */}
+            {i9Mode === 'BC' && (
+              <div style={{ borderTop: '1px solid #eee', paddingTop: 16 }}>
+                {/* List B */}
+                <div style={{ marginBottom: 20 }}>
+                  <h3 style={{ margin: '0 0 12px 0', fontSize: 16, fontWeight: 'bold' }}>List B Document</h3>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: 'block', fontSize: 13, color: '#444', marginBottom: 6 }}>
+                      Select document type <span style={{ color: '#d32f2f' }}>*</span>
+                    </label>
+                    <select
+                      value={i9Selections.listB || ''}
+                      onChange={(e) => setI9Selections(prev => ({ ...prev, listB: e.target.value || undefined }))}
+                      style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 6 }}
+                    >
+                      <option value="">— Select —</option>
+                      {I9_LIST_B.map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
                   </div>
-                  <p style={{ margin: 0, fontWeight: 'bold', fontSize: '16px' }}>
-                    {uploadingDoc === 'ssn_document' ? 'Uploading...' : 'Click to upload or drag and drop'}
-                  </p>
-                  <p style={{ margin: '8px 0 0 0', fontSize: '14px', color: '#666' }}>
-                    JPG, PNG, WEBP, or PDF (max 10MB)
-                  </p>
-                </label>
-              )}
-            </div>
+
+                  {/* Upload for B */}
+                  {i9Documents.listB ? (
+                    <div style={{ border: '2px solid #4caf50', borderRadius: 6, padding: 12, background: '#e8f5e9' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                        <div>
+                          <div style={{ color: '#2e7d32', fontWeight: 700 }}>Uploaded</div>
+                          <div style={{ fontSize: 13, color: '#555' }}>{i9Documents.listB.filename}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <a href={i9Documents.listB.url} target="_blank" rel="noopener noreferrer"
+                             style={{ padding: '8px 12px', background: '#1976d2', color: '#fff', borderRadius: 6, textDecoration: 'none', fontSize: 13, fontWeight: 700 }}>
+                            View
+                          </a>
+                          <label style={{ padding: '8px 12px', background: '#666', color: '#fff', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                            Replace
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              style={{ display: 'none' }}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleDocumentUpload('i9_list_b', file);
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <label style={{
+                      display: 'block', border: '2px dashed #ddd', borderRadius: 6, padding: 20, textAlign: 'center', cursor: 'pointer',
+                      backgroundColor: uploadingDoc === 'i9_list_b' ? '#f5f5f5' : '#fff'
+                    }}>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        style={{ display: 'none' }}
+                        disabled={uploadingDoc === 'i9_list_b'}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleDocumentUpload('i9_list_b', file);
+                        }}
+                      />
+                      <div style={{ marginBottom: 8, color: '#666' }}>
+                        {uploadingDoc === 'i9_list_b' ? 'Uploading…' : 'Click to upload or drag & drop'}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888' }}>JPG, PNG, WEBP, or PDF (max 10MB)</div>
+                    </label>
+                  )}
+                </div>
+
+                {/* List C */}
+                <div>
+                  <h3 style={{ margin: '0 0 12px 0', fontSize: 16, fontWeight: 'bold' }}>List C Document</h3>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: 'block', fontSize: 13, color: '#444', marginBottom: 6 }}>
+                      Select document type <span style={{ color: '#d32f2f' }}>*</span>
+                    </label>
+                    <select
+                      value={i9Selections.listC || ''}
+                      onChange={(e) => setI9Selections(prev => ({ ...prev, listC: e.target.value || undefined }))}
+                      style={{ width: '100%', padding: '10px', border: '1px solid #ddd', borderRadius: 6 }}
+                    >
+                      <option value="">— Select —</option>
+                      {I9_LIST_C.map(opt => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Upload for C */}
+                  {i9Documents.listC ? (
+                    <div style={{ border: '2px solid #4caf50', borderRadius: 6, padding: 12, background: '#e8f5e9' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                        <div>
+                          <div style={{ color: '#2e7d32', fontWeight: 700 }}>Uploaded</div>
+                          <div style={{ fontSize: 13, color: '#555' }}>{i9Documents.listC.filename}</div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <a href={i9Documents.listC.url} target="_blank" rel="noopener noreferrer"
+                             style={{ padding: '8px 12px', background: '#1976d2', color: '#fff', borderRadius: 6, textDecoration: 'none', fontSize: 13, fontWeight: 700 }}>
+                            View
+                          </a>
+                          <label style={{ padding: '8px 12px', background: '#666', color: '#fff', borderRadius: 6, fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                            Replace
+                            <input
+                              type="file"
+                              accept="image/*,application/pdf"
+                              style={{ display: 'none' }}
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleDocumentUpload('i9_list_c', file);
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <label style={{
+                      display: 'block', border: '2px dashed #ddd', borderRadius: 6, padding: 20, textAlign: 'center', cursor: 'pointer',
+                      backgroundColor: uploadingDoc === 'i9_list_c' ? '#f5f5f5' : '#fff'
+                    }}>
+                      <input
+                        type="file"
+                        accept="image/*,application/pdf"
+                        style={{ display: 'none' }}
+                        disabled={uploadingDoc === 'i9_list_c'}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file) handleDocumentUpload('i9_list_c', file);
+                        }}
+                      />
+                      <div style={{ marginBottom: 8, color: '#666' }}>
+                        {uploadingDoc === 'i9_list_c' ? 'Uploading…' : 'Click to upload or drag & drop'}
+                      </div>
+                      <div style={{ fontSize: 12, color: '#888' }}>JPG, PNG, WEBP, or PDF (max 10MB)</div>
+                    </label>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Security Notice */}
             <div style={{
@@ -940,8 +1083,8 @@ function FormViewerContent() {
               cursor: 'pointer',
               fontSize: '16px'
             }}
-            onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#e0e0e0'}
-            onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#f5f5f5'}
+            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
           >
             ← Back
           </button>
