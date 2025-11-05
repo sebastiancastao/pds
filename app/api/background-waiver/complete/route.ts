@@ -277,28 +277,46 @@ export async function POST(request: NextRequest) {
 
     // --- User receipt via Resend (NEW) ---
     let emailSentToUser = false;
+    let emailError: string | null = null;
     const toEmail = (user.email || '').trim();
     const fromEmail = (process.env.RESEND_FROM || 'service@furnituretaxi.site').trim();
 
+    console.log('[BACKGROUND CHECK COMPLETE] 📧 Attempting to send user confirmation email...');
+    console.log('[BACKGROUND CHECK COMPLETE] - To:', toEmail);
+    console.log('[BACKGROUND CHECK COMPLETE] - From:', fromEmail);
+    console.log('[BACKGROUND CHECK COMPLETE] - RESEND_API_KEY set:', !!process.env.RESEND_API_KEY);
+
     if (!process.env.RESEND_API_KEY) {
-      console.warn('[BACKGROUND CHECK COMPLETE] RESEND_API_KEY not set; skipping user receipt email.');
+      emailError = 'RESEND_API_KEY environment variable not set';
+      console.error('[BACKGROUND CHECK COMPLETE] ❌ ' + emailError);
+      console.error('[BACKGROUND CHECK COMPLETE] 💡 To fix: Set RESEND_API_KEY in your deployment environment (Vercel/Production)');
     } else if (!fromEmail) {
-      console.warn('[BACKGROUND CHECK COMPLETE] RESEND_FROM not set; skipping user receipt email.');
+      emailError = 'RESEND_FROM environment variable not set';
+      console.error('[BACKGROUND CHECK COMPLETE] ❌ ' + emailError);
     } else if (!toEmail) {
-      console.warn('[BACKGROUND CHECK COMPLETE] No user email; skipping user receipt email.');
+      emailError = 'User email address is empty';
+      console.error('[BACKGROUND CHECK COMPLETE] ❌ ' + emailError);
     } else {
       try {
+        console.log('[BACKGROUND CHECK COMPLETE] 📤 Sending email via Resend...');
         const first = (firstName || '').split(' ')[0] || 'there';
-        await resend.emails.send({
+        const result = await resend.emails.send({
           from: `PDS HR Team <${fromEmail}>`,
           to: [toEmail],
           subject: 'Background Check Submitted Successfully - Subject to Approval',
           html: userReceiptHtml(first),
         });
         emailSentToUser = true;
-        console.log('[BACKGROUND CHECK COMPLETE] ✅ User receipt email sent');
-      } catch (e) {
+        console.log('[BACKGROUND CHECK COMPLETE] ✅ User receipt email sent successfully!');
+        console.log('[BACKGROUND CHECK COMPLETE] 📬 Email ID:', result.data?.id);
+      } catch (e: any) {
+        emailError = e.message || 'Unknown error';
         console.error('[BACKGROUND CHECK COMPLETE] ❌ User receipt email failed:', e);
+        console.error('[BACKGROUND CHECK COMPLETE] Error details:', {
+          message: e.message,
+          name: e.name,
+          statusCode: e.statusCode
+        });
       }
     }
 
@@ -306,6 +324,7 @@ export async function POST(request: NextRequest) {
       success: true,
       message: 'Background check marked as completed',
       emailSentToUser,
+      emailError: emailError || undefined,
     });
 
   } catch (error: any) {
