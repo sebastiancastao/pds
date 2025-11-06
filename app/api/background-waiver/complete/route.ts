@@ -47,7 +47,7 @@ function userReceiptHtml(first: string) {
                       <td style="padding: 20px;">
                         <p style="color: #856404; margin: 0 0 10px 0; font-size: 15px; font-weight: bold;">⏳ Important: Subject to Approval</p>
                         <p style="color: #856404; margin: 0; font-size: 14px; line-height: 1.6;">
-                          Your background check is currently under review by our HR team. This is a standard process that typically takes 3-5 business days. We will notify you by email as soon as your background check has been approved.
+                          Your background check is currently under review by our HR team. We will notify you by email as soon as your background check has been approved.
                         </p>
                       </td>
                     </tr>
@@ -249,7 +249,7 @@ export async function POST(request: NextRequest) {
       console.error('[BACKGROUND CHECK COMPLETE] ⚠️ Could not fetch profile info for name:', profileInfoError);
     }
 
-    // --- Admin notification (existing) ---
+    // --- Admin notification ---
     try {
       console.log('[BACKGROUND CHECK COMPLETE] Sending email notification to admin...');
       const emailResult = await sendBackgroundCheckSubmissionNotification({

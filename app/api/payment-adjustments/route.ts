@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { cookies } from 'next/headers';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,8 +15,9 @@ const supabaseAnon = createClient(
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
-  let { data: { user } } = await supabase.auth.getUser();
+  const { data: { user } } = await supabase.auth.getUser();
   if (user?.id) return user;
+
   const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
   const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
   if (token) {
@@ -26,110 +27,40 @@ async function getAuthedUser(req: NextRequest) {
   return null;
 }
 
-// GET: Fetch adjustments for specified event IDs
-export async function GET(req: NextRequest) {
-  console.log('[PAYMENT-ADJUSTMENTS] Fetching payment adjustments');
-
-  try {
-    const user = await getAuthedUser(req);
-    if (!user?.id) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
-    }
-
-    const { searchParams } = new URL(req.url);
-    const eventIdsParam = searchParams.get('event_ids');
-
-    if (!eventIdsParam) {
-      return NextResponse.json({ error: 'event_ids parameter required' }, { status: 400 });
-    }
-
-    const eventIds = eventIdsParam.split(',').filter(Boolean);
-    console.log('[PAYMENT-ADJUSTMENTS] Fetching adjustments for events:', eventIds);
-
-    // Fetch adjustments for all event IDs
-    const { data: adjustments, error } = await supabaseAdmin
-      .from('payment_adjustments')
-      .select('*')
-      .in('event_id', eventIds);
-
-    if (error) {
-      console.error('[PAYMENT-ADJUSTMENTS] Error:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    console.log('[PAYMENT-ADJUSTMENTS] Found', adjustments?.length || 0, 'adjustments');
-
-    // Group by event_id and user_id for easy lookup
-    const adjustmentMap: Record<string, Record<string, any>> = {};
-    (adjustments || []).forEach((adj: any) => {
-      if (!adjustmentMap[adj.event_id]) {
-        adjustmentMap[adj.event_id] = {};
-      }
-      adjustmentMap[adj.event_id][adj.user_id] = adj;
-    });
-
-    return NextResponse.json({
-      success: true,
-      adjustments: adjustmentMap,
-    });
-  } catch (err: any) {
-    console.error('[PAYMENT-ADJUSTMENTS] Unhandled error:', err);
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
-  }
-}
-
-// POST: Save/update adjustments
 export async function POST(req: NextRequest) {
-  console.log('[PAYMENT-ADJUSTMENTS] Saving payment adjustments');
-
   try {
     const user = await getAuthedUser(req);
-    if (!user?.id) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    if (!user?.id) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+    const body = await req.json().catch(() => ({}));
+    const { event_id, user_id, adjustment_amount, adjustment_note } = body || {};
+
+    if (!event_id || !user_id || typeof adjustment_amount !== 'number') {
+      return NextResponse.json({ error: 'event_id, user_id and adjustment_amount are required' }, { status: 400 });
     }
 
-    const body = await req.json();
-    const { adjustments } = body; // Array of { event_id, user_id, adjustment_amount, adjustment_note }
-
-    if (!adjustments || !Array.isArray(adjustments)) {
-      return NextResponse.json({ error: 'adjustments array is required' }, { status: 400 });
+    // If adjustment is zero, remove any existing row to keep table lean
+    if (adjustment_amount === 0) {
+      const { error } = await supabaseAdmin
+        .from('payment_adjustments')
+        .delete()
+        .match({ event_id, user_id });
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json({ success: true, removed: true });
     }
 
-    console.log('[PAYMENT-ADJUSTMENTS] Saving', adjustments.length, 'adjustments');
-
-    // Prepare adjustment records
-    const adjustmentRecords = adjustments.map((adj: any) => ({
-      event_id: adj.event_id,
-      user_id: adj.user_id,
-      adjustment_amount: adj.adjustment_amount || 0,
-      adjustment_note: adj.adjustment_note || null,
-      created_by: user.id,
-      updated_at: new Date().toISOString(),
-    }));
-
-    // Upsert adjustments
+    // Upsert non-zero adjustment
     const { data, error } = await supabaseAdmin
       .from('payment_adjustments')
-      .upsert(adjustmentRecords, {
-        onConflict: 'event_id,user_id',
-        ignoreDuplicates: false,
-      })
-      .select();
+      .upsert({ event_id, user_id, adjustment_amount, adjustment_note: adjustment_note || null }, { onConflict: 'event_id,user_id' })
+      .select('*')
+      .single();
 
-    if (error) {
-      console.error('[PAYMENT-ADJUSTMENTS] Error saving:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
-    }
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    console.log('[PAYMENT-ADJUSTMENTS] Successfully saved', data?.length || 0, 'adjustments');
-
-    return NextResponse.json({
-      success: true,
-      adjustments: data,
-      message: 'Adjustments saved successfully',
-    });
+    return NextResponse.json({ success: true, adjustment: data });
   } catch (err: any) {
-    console.error('[PAYMENT-ADJUSTMENTS] Unhandled error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
   }
 }
+

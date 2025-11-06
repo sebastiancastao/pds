@@ -24,12 +24,37 @@ export default function MFASetupPage() {
 
   // Handle redirect after MFA setup success
   useEffect(() => {
-    if (step === 'success' && backupCodes.length > 0) {
-      const timer = setTimeout(() => {
-        router.push('/register');
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
+    const doRedirect = async () => {
+      if (step === 'success' && backupCodes.length > 0) {
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          if (!user) {
+            router.push('/');
+            return;
+          }
+          const { data: userRow } = await (supabase
+            .from('users')
+            .select('role')
+            .eq('id', user.id)
+            .single() as any);
+          const role = (userRow?.role || '').toString().trim().toLowerCase();
+          if (role === 'backgroundchecker') {
+            router.push('/background-checks');
+          } else if (role === 'hr') {
+            router.push('/hr-dashboard');
+          } else if (role === 'exec') {
+            router.push('/global-calendar');
+          } else if (role === 'worker') {
+            router.push('/time-tracking');
+          } else {
+            router.push('/');
+          }
+        } catch {
+          router.push('/');
+        }
+      }
+    };
+    doRedirect();
   }, [step, backupCodes, router]);
 
   const checkAuthAndMFA = async () => {
@@ -521,4 +546,3 @@ export default function MFASetupPage() {
     </AuthGuard>
   );
 }
-

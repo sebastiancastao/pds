@@ -35,7 +35,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Check user role - only admin and exec can see all events
+    // Check user role - only admin, exec, and hr can see all events
     const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
       .select('role')
@@ -47,10 +47,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to verify user role' }, { status: 403 });
     }
 
-    const userRole = userData.role as string;
-    if (userRole !== 'admin' && userRole !== 'exec') {
+    const userRole = (userData.role as string) || '';
+    if (userRole !== 'admin' && userRole !== 'exec' && userRole !== 'hr') {
       console.error('[ALL-EVENTS] Access denied - user role:', userRole);
-      return NextResponse.json({ error: 'Access denied. Only admin and exec users can view all events.' }, { status: 403 });
+      return NextResponse.json({ error: 'Access denied. Only admin, exec, and hr users can view all events.' }, { status: 403 });
     }
 
     // Optional filters

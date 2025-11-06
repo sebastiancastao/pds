@@ -53,16 +53,25 @@ async function loadTensorFlow() {
   if (!tf) {
     // Use @tensorflow/tfjs (works in both Node.js and browser)
     // For better performance on server, @tensorflow/tfjs-node can be used if available
-    try {
-      // Try tfjs-node first for better performance (optional)
-      const tfNode = await import('@tensorflow/tfjs-node');
-      tf = tfNode.default;
-      console.log('[ML] Using @tensorflow/tfjs-node (optimized)');
-    } catch (error) {
-      // Fallback to regular tfjs (works everywhere)
+    const isNode = typeof process !== 'undefined' && !!(process as any).versions?.node;
+    if (isNode) {
+      // Try to require tfjs-node at runtime without bundling it
+      try {
+        const req = (Function('return require'))() as any;
+        const tfNodeMod: any = req('@tensorflow/tfjs-node');
+        tf = tfNodeMod?.default || tfNodeMod;
+        console.log('[ML] Using @tensorflow/tfjs-node (optimized)');
+      } catch (e) {
+        // Fallback to pure JS version if tfjs-node isn't installed/available
+        const tfJs = await import('@tensorflow/tfjs');
+        tf = (tfJs as any).default || tfJs;
+        console.log('[ML] Using @tensorflow/tfjs (standard)');
+      }
+    } else {
+      // Browser/edge: always use pure JS version
       const tfJs = await import('@tensorflow/tfjs');
-      tf = tfJs.default;
-      console.log('[ML] Using @tensorflow/tfjs (standard)');
+      tf = (tfJs as any).default || tfJs;
+      console.log('[ML] Using @tensorflow/tfjs (standard - non-Node env)');
     }
   }
   return tf;

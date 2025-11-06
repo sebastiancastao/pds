@@ -17,12 +17,25 @@ export default function BackgroundChecksForm() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  const waiverBytesRef = useRef<Uint8Array | null>(null);
+  const disclosureBytesRef = useRef<Uint8Array | null>(null);
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [signatureMode, setSignatureMode] = useState<'type' | 'draw'>('type');
   const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
+
+  // Safe Uint8Array -> base64 converter (avoids call-stack overflow on large arrays)
+  const uint8ToBase64 = (bytes: Uint8Array): string => {
+    let binary = '';
+    const chunkSize = 0x8000; // 32KB per chunk to keep apply() arguments small
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, i + chunkSize);
+      binary += String.fromCharCode.apply(null, Array.from(chunk) as any);
+    }
+    return btoa(binary);
+  };
 
   // Check if user is authorized to access this form
   useEffect(() => {
@@ -78,11 +91,27 @@ export default function BackgroundChecksForm() {
     checkAccess();
   }, [router]);
 
-  // Handle PDF save from editor
+  // Handle PDF save from editor (legacy single-arg) - route through unified combiner
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     console.log(`[BACKGROUND CHECK FORM] onSave called with ${pdfBytes.length} bytes`);
     pdfBytesRef.current = pdfBytes;
     console.log('[BACKGROUND CHECK FORM] pdfBytesRef.current updated');
+    void combineAndSave();
+  };
+
+  // New: Save handlers per form that also attempt to merge and persist both
+  const handlePDFSaveFor = (formId: 'background-waiver' | 'background-disclosure') => async (pdfBytes: Uint8Array) => {
+    if (formId === 'background-waiver') {
+      waiverBytesRef.current = pdfBytes;
+    } else {
+      disclosureBytesRef.current = pdfBytes;
+    }
+    try {
+      await combineAndSave();
+    } catch (e) {
+      console.error('[BACKGROUND CHECK FORM] Merge/save error:', e);
+      setSaveStatus('error');
+    }
   };
 
   // Handle field change - trigger auto-save after debounce
@@ -97,15 +126,103 @@ export default function BackgroundChecksForm() {
   };
 
   // Manual save function - saves to background_check_pdfs table
-  const handleManualSave = async () => {
-    if (!pdfBytesRef.current) {
-      console.warn('[SAVE] No PDF data to save');
-      return;
-    }
+  const handleManualSave = async () => { 
+    return combineAndSave();
+  };
 
+  const combineAndSave = async () => {
     try {
-      console.log(`[SAVE] Starting save process, PDF size: ${pdfBytesRef.current.length} bytes`);
       setSaveStatus('saving');
+
+      let waiver = (typeof waiverBytesRef !== 'undefined') ? waiverBytesRef.current : null;
+      let disclosure = (typeof disclosureBytesRef !== 'undefined') ? disclosureBytesRef.current : null;
+
+      // If either doc bytes are missing, fetch raw source PDFs as fallback to ensure both columns are saved
+      if (!waiver) {
+        try {
+          const res = await fetch('/api/background-waiver');
+          if (res.ok) {
+            const buf = new Uint8Array(await res.arrayBuffer());
+            waiver = buf;
+          }
+        } catch {}
+      }
+      if (!disclosure) {
+        try {
+          const res = await fetch('/api/background-disclosure');
+          if (res.ok) {
+            const buf = new Uint8Array(await res.arrayBuffer());
+            disclosure = buf;
+          }
+        } catch {}
+      }
+
+      if (!waiver && !disclosure) {
+        console.warn('[SAVE] No PDF data to save');
+        setSaveStatus('idle');
+        return;
+      }
+
+      const { PDFDocument, rgb } = await import('pdf-lib');
+
+      // Helper: embed signature on last page of a document
+      const stampSignatureOnDoc = async (bytes: Uint8Array): Promise<Uint8Array> => {
+        if (!currentSignature) return bytes;
+        try {
+          const doc = await PDFDocument.load(bytes);
+          const pages = doc.getPages();
+          if (pages.length === 0) return bytes;
+
+          const lastPage = pages[pages.length - 1];
+          const signatureX = 100;
+          const signatureY = 100;
+          const signatureWidth = 200;
+          const signatureHeight = 50;
+
+          if (currentSignature.startsWith('data:image')) {
+            const base64Data = currentSignature.split(',')[1];
+            const imageBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+            const image = await doc.embedPng(imageBytes);
+            lastPage.drawImage(image, {
+              x: signatureX,
+              y: signatureY,
+              width: signatureWidth,
+              height: signatureHeight,
+            });
+          } else {
+            lastPage.drawText(currentSignature, {
+              x: signatureX,
+              y: signatureY,
+              size: 24,
+              color: rgb(0, 0, 0),
+            });
+            lastPage.drawLine({
+              start: { x: signatureX, y: signatureY - 5 },
+              end: { x: signatureX + signatureWidth, y: signatureY - 5 },
+              thickness: 1,
+              color: rgb(0, 0, 0),
+            });
+          }
+
+          const signatureDate = new Date().toLocaleDateString();
+          lastPage.drawText(`Date: ${signatureDate}`, {
+            x: signatureX,
+            y: signatureY - 20,
+            size: 10,
+            color: rgb(0, 0, 0),
+          });
+
+          const stamped = await doc.save();
+          return stamped;
+        } catch (e) {
+          console.warn('[SAVE] Failed to stamp signature on doc, using original bytes', e);
+          return bytes;
+        }
+      };
+
+      // Stamp individual docs; we will store them separately
+      const waiverStamped = waiver ? await stampSignatureOnDoc(waiver) : null;
+      const disclosureStamped = disclosure ? await stampSignatureOnDoc(disclosure) : null;
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
@@ -116,13 +233,13 @@ export default function BackgroundChecksForm() {
         return;
       }
 
-      // Convert Uint8Array to base64
-      const base64 = btoa(
-        Array.from(pdfBytesRef.current)
-          .map(byte => String.fromCharCode(byte))
-          .join('')
-      );
-      console.log(`[SAVE] Converted to base64, length: ${base64.length} characters`);
+      // Convert Uint8Array to base64 per document (chunked)
+      const waiverBase64 = waiverStamped ? uint8ToBase64(waiverStamped) : null;
+      const disclosureBase64 = disclosureStamped ? uint8ToBase64(disclosureStamped) : null;
+      console.log('[SAVE] Prepared payload sizes:', {
+        waiver: waiverBase64?.length || 0,
+        disclosure: disclosureBase64?.length || 0
+      });
 
       // Determine signature type
       const signatureType = currentSignature ?
@@ -133,6 +250,51 @@ export default function BackgroundChecksForm() {
       console.log(`[SAVE] Saving to background_check_pdfs table`);
       console.log(`[SAVE] Signature type:`, signatureType);
 
+      // New: split saving into smaller chunks to avoid body-size limits
+      try {
+        const doSave = async (payload: any) => {
+          const resp = await fetch('/api/background-waiver/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${session.access_token}`
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(payload),
+          });
+          if (!resp.ok) {
+            let errJson: any = null;
+            try { errJson = await resp.json(); } catch {}
+            console.error('[SAVE] Save failed (chunk):', { status: resp.status, errJson });
+            return false;
+          }
+          return true;
+        };
+
+        let ok = true;
+        if (waiverBase64 && disclosureBase64) {
+          ok = await doSave({ waiverPdfData: waiverBase64, signature: currentSignature || null, signatureType })
+            && await doSave({ disclosurePdfData: disclosureBase64, signature: currentSignature || null, signatureType });
+        } else {
+          ok = await doSave({
+            waiverPdfData: waiverBase64 || undefined,
+            disclosurePdfData: disclosureBase64 || undefined,
+            signature: currentSignature || null,
+            signatureType
+          });
+        }
+
+        if (ok) {
+          console.log('[SAVE] Save successful (one or more chunks)');
+          setSaveStatus('saved');
+          setLastSaved(new Date());
+          setTimeout(() => setSaveStatus('idle'), 2000);
+          return; // Avoid hitting legacy single-call block below
+        }
+      } catch (chunkErr) {
+        console.warn('[SAVE] Chunked save attempt failed, falling back to single request');
+      }
+
       const response = await fetch('/api/background-waiver/save', {
         method: 'POST',
         headers: {
@@ -141,7 +303,8 @@ export default function BackgroundChecksForm() {
         },
         credentials: 'same-origin',
         body: JSON.stringify({
-          pdfData: base64,
+          waiverPdfData: waiverBase64,
+          disclosurePdfData: disclosureBase64,
           signature: currentSignature || null,
           signatureType: signatureType
         }),
@@ -168,7 +331,7 @@ export default function BackgroundChecksForm() {
 
   // Continue to next step (dashboard or next form)
   const handleContinue = async () => {
-    console.log('Continue clicked, pdfBytesRef:', pdfBytesRef.current ? 'has data' : 'null');
+    console.log('Continue clicked');
 
     // Check if signature is required but not provided
     if (!currentSignature) {
@@ -179,12 +342,10 @@ export default function BackgroundChecksForm() {
     setSaveStatus('saving');
 
     try {
-      // Save before continuing if we have data
-      if (pdfBytesRef.current) {
-        console.log('Saving before continue...');
-        await handleManualSave();
-        console.log('Save completed');
-      }
+      // Always save before continuing (covers waiver/disclosure refs)
+      console.log('Saving before continue...');
+      await handleManualSave();
+      console.log('Save completed');
 
       // Mark background check as completed in database
       console.log('[BACKGROUND CHECK] Marking as completed...');
@@ -430,7 +591,7 @@ export default function BackgroundChecksForm() {
               key="background-waiver"
               pdfUrl="/api/background-waiver"
               formId="background-waiver"
-              onSave={handlePDFSave}
+              onSave={handlePDFSaveFor('background-waiver')}
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
             />
@@ -452,7 +613,7 @@ export default function BackgroundChecksForm() {
               key="background-disclosure"
               pdfUrl="/api/background-disclosure"
               formId="background-disclosure"
-              onSave={handlePDFSave}
+              onSave={handlePDFSaveFor('background-disclosure')}
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
             />
@@ -708,3 +869,4 @@ export default function BackgroundChecksForm() {
     </div>
   );
 }
+

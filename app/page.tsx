@@ -46,6 +46,25 @@ export default function Home() {
       return;
     }
 
+    // Background checker: if MFA not yet set up, force TOTP setup flow first
+    try {
+      const { data: profArr } = await (supabase
+        .from('profiles')
+        .select('mfa_enabled, mfa_secret')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1) as any);
+      const profile = profArr?.[0] || null;
+      const userRole = userData?.role;
+      if (userRole === 'backgroundchecker' && (!profile?.mfa_secret || profile?.mfa_enabled !== true)) {
+        console.log('[DEBUG] Home - Background Checker without MFA setup, redirecting to /mfa-setup');
+        router.push('/mfa-setup');
+        return;
+      }
+    } catch (e) {
+      console.warn('[DEBUG] Home - MFA setup check failed, continuing to MFA verify check');
+    }
+
     // Check if user has completed MFA verification for this session
     const mfaVerified = sessionStorage.getItem('mfa_verified');
     console.log('[DEBUG] Home - MFA verified in session:', mfaVerified);
@@ -74,13 +93,19 @@ export default function Home() {
       return;
     }
 
+    if (userRole === 'hr') {
+      console.log('[DEBUG] Home - HR role detected, redirecting to /hr-dashboard');
+      router.push('/hr-dashboard');
+      return;
+    }
+
     if (userRole === 'worker') {
       console.log('[DEBUG] Home - Worker role detected, redirecting to /time-tracking');
       router.push('/time-tracking');
       return;
     }
     if (userRole === 'backgroundchecker') {
-      console.log('[DEBUG] Home - Worker role detected, redirecting to /time-tracking');
+      console.log('[DEBUG] Home - Background Checker role detected, redirecting to /background-checks');
       router.push('/background-checks');
       return;
     }

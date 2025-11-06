@@ -64,19 +64,17 @@ export async function POST(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    // Check if user is the event creator
+    // Authorization: event creator OR role in ['exec','admin','hr']
     const isEventCreator = event.created_by === user.id;
-
-    // Check if user is an exec
     const { data: userData } = await supabaseAdmin
       .from('users')
       .select('role')
       .eq('id', user.id)
       .single();
+    const role = (userData?.role || '').toString().trim().toLowerCase();
+    const isPrivileged = role === 'exec' || role === 'admin' || role === 'hr';
 
-    const isExec = userData?.role === 'exec';
-
-    if (!isEventCreator && !isExec) {
+    if (!isEventCreator && !isPrivileged) {
       console.log('❌ User not authorized to save payment data');
       return NextResponse.json(
         { error: 'Not authorized to save payment data for this event' },
@@ -84,7 +82,7 @@ export async function POST(
       );
     }
 
-    console.log('✅ User authorized:', { isEventCreator, isExec });
+    console.log('✅ User authorized:', { isEventCreator, role });
 
     // Parse request body
     const body = await req.json();

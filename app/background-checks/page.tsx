@@ -218,6 +218,75 @@ export default function BackgroundChecksPage() {
     }
   };
 
+  // Download the saved Waiver PDF directly from DB JSON endpoint
+  const handleDownloadWaiver = async (userId: string, vendorName: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/background-waiver/save', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+      const json = await res.json();
+      if (!res.ok || !(json?.data?.waiver_pdf_data || json?.data?.pdf_data)) {
+        throw new Error(json?.error || 'Waiver PDF not found');
+      }
+      // Convert base64 to Blob and download
+      const b64 = (json.data.waiver_pdf_data || json.data.pdf_data) as string;
+      const byteChars = atob(b64);
+      const byteNumbers = new Array(byteChars.length);
+      for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Background_Check_Waiver_${vendorName.replace(/\s+/g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Error downloading Waiver:', err);
+      alert(`Failed to download Waiver: ${err.message}`);
+    }
+  };
+
+  // Download Disclosure using rendered PDF endpoint (with signature if present)
+  const handleDownloadDisclosure = async (userId: string, vendorName: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to download Disclosure');
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `Background_Check_Disclosure_${vendorName.replace(/\s+/g, '_')}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Error downloading Disclosure:', err);
+      alert(`Failed to download Disclosure: ${err.message}`);
+    }
+  };
+
+  const handleDownloadBoth = async (userId: string, vendorName: string) => {
+    // Fire sequentially to avoid popup blockers
+    await handleDownloadWaiver(userId, vendorName);
+    await handleDownloadDisclosure(userId, vendorName);
+  };
+
   const handleEditNotes = (vendorId: string, currentNotes: string | null) => {
     setEditingNotes(vendorId);
     setNotesValue(currentNotes || '');
@@ -313,9 +382,22 @@ export default function BackgroundChecksPage() {
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Background Checks</h1>
-          <p className="mt-2 text-gray-600">Track and manage background check status for all users</p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Background Checks</h1>
+            <p className="mt-2 text-gray-600">Track and manage background check status for all users</p>
+          </div>
+          {(myRole === 'hr' || myRole === 'exec') && (
+            <button
+              onClick={() => router.push('/hr-dashboard')}
+              className="apple-button apple-button-secondary flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
+              Back to Dashboard
+            </button>
+          )}
         </div>
 
         {/* Stats */}
@@ -551,20 +633,13 @@ export default function BackgroundChecksPage() {
 
                           {/* Keep PDF actions visible for any role */}
                           {vendor.has_submitted_pdf && (
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => handleViewPDF(vendor.user_id, vendor.full_name)}
-                                className="px-2 py-1 text-xs font-medium text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded border border-blue-300"
-                                title="View PDF"
-                              >
-                                View
-                              </button>
+                            <div className="flex gap-1 flex-wrap justify-center">
                               <button
                                 onClick={() => handleDownloadPDF(vendor.user_id, vendor.full_name)}
                                 className="px-2 py-1 text-xs font-medium text-green-600 hover:text-green-800 hover:bg-green-50 rounded border border-green-300"
-                                title="Download PDF"
+                                title="Download Documents"
                               >
-                                Download
+                                Download Documents
                               </button>
                             </div>
                           )}

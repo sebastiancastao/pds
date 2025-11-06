@@ -107,7 +107,7 @@ type BackgroundCheck = {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"events" | "hr" | "payments">("events");
+  const [activeTab, setActiveTab] = useState<"events" | "payments">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
 
   // Auth & Access Control
@@ -1000,8 +1000,6 @@ export default function DashboardPage() {
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."
-                  : activeTab === "hr"
-                  ? "Manage employees, leave requests, and workforce analytics."
                   : "View payment data for all vendors across events and venues."}
               </p>
               <div className="mt-2">
@@ -1036,24 +1034,6 @@ export default function DashboardPage() {
             >
               Events
               {activeTab === "events" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-            </button>
-            <button
-              onClick={() => setActiveTab("hr")}
-              className={`pb-4 px-2 font-semibold text-lg transition-colors relative ${
-                activeTab === "hr" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              HR
-              {activeTab === "hr" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-            </button>
-            <button
-              onClick={() => setActiveTab("payments")}
-              className={`pb-4 px-2 font-semibold text-lg transition-colors relative ${
-                activeTab === "payments" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Payments
-              {activeTab === "payments" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
           </div>
         </div>
@@ -1309,7 +1289,7 @@ export default function DashboardPage() {
         )}
 
         {/* HR TAB */}
-        {activeTab === "hr" && (
+        {false && (
           <>
             {/* Quick Actions */}
             <div className="flex flex-wrap gap-3 mb-10">

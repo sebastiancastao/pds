@@ -58,6 +58,7 @@ export default function EventDashboardPage() {
   const [savingPayment, setSavingPayment] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -133,6 +134,20 @@ export default function EventDashboardPage() {
         router.replace("/login");
       } else {
         setIsAuthed(true);
+        // Load current user's role for back navigation routing
+        (async () => {
+          try {
+            const { data, error } = await supabase
+              .from('users')
+              .select('role')
+              .eq('id', user.id)
+              .single();
+            if (!error) {
+              const role = (data?.role ?? '').toString().trim().toLowerCase();
+              setUserRole(role || null);
+            }
+          } catch {}
+        })();
         loadVenues();
         loadEvent();
       }
@@ -145,9 +160,35 @@ export default function EventDashboardPage() {
     if ((activeTab === "team" || activeTab === "timesheet" || activeTab === "hr") && eventId) {
       loadTeam();
       loadTimesheetTotals();
+      loadAdjustmentsFromPayments();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
+
+  // Auto-save adjustments when they change on HR tab
+  useEffect(() => {
+    if (!eventId || activeTab !== 'hr') return;
+    const handler = setTimeout(async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        };
+        const entries = Object.entries(adjustments || {});
+        await Promise.all(entries.map(([uid, amt]) => {
+          return fetch('/api/payment-adjustments', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ event_id: eventId, user_id: uid, adjustment_amount: Number(amt || 0) }),
+          });
+        }));
+      } catch (_) {
+        // ignore transient errors; user can retry
+      }
+    }, 600);
+    return () => clearTimeout(handler);
+  }, [adjustments, activeTab, eventId]);
 
   const loadVenues = async () => {
     try {
@@ -267,6 +308,56 @@ export default function EventDashboardPage() {
       console.error("Error loading team:", err);
     }
     setLoadingTeam(false);
+  };
+
+  const loadAdjustmentsFromPayments = async () => {
+    try {
+      if (!eventId) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const payments = json?.paymentsByEvent?.[eventId]?.vendorPayments || [];
+      const map: Record<string, number> = {};
+      for (const vp of payments) {
+        const uid = (vp.user_id || vp.vendor_id || vp.users?.id || '').toString();
+        if (uid) map[uid] = Number(vp.adjustment_amount || 0);
+      }
+      setAdjustments(map);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const saveAdjustmentForUser = async (uid: string) => {
+    try {
+      if (!eventId || !uid) return;
+      const amount = Number(adjustments[uid] || 0);
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/payment-adjustments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ event_id: eventId, user_id: uid, adjustment_amount: amount }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setMessage(j.error || 'Failed to save adjustment');
+      } else {
+        setMessage('Adjustment saved');
+        // refresh merged view so numbers/notes remain consistent
+        await loadAdjustmentsFromPayments();
+      }
+    } catch (e: any) {
+      setMessage(e.message || 'Network error saving adjustment');
+    }
   };
 
   const loadTimesheetTotals = async () => {
@@ -755,7 +846,7 @@ export default function EventDashboardPage() {
       <div className="container mx-auto max-w-6xl py-10 px-4">
         <div className="bg-red-100 border-red-400 text-red-700 px-6 py-3 rounded">Event not found</div>
         <div className="mt-4">
-          <Link href="/dashboard">
+          <Link href={userRole === 'exec' ? '/global-calendar' : '/dashboard'}>
             <button className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-md">
               &larr; Back to Dashboard
             </button>
@@ -775,7 +866,7 @@ export default function EventDashboardPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
       <div className="container mx-auto max-w-7xl py-8 px-4">
         <div className="flex items-center justify-between mb-8">
-          <Link href="/dashboard">
+          <Link href={userRole === 'exec' ? '/global-calendar' : '/dashboard'}>
             <button className="group flex items-center gap-2 bg-white hover:bg-gray-50 text-gray-700 font-semibold py-2.5 px-5 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 border border-gray-200">
               <svg className="w-5 h-5 transform group-hover:-translate-x-1 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />

@@ -1,0 +1,562 @@
+1303: 
+1304:         {/* HR TAB */}
+1305:         {false && (
+1306:           <>
+1307:             {/* Quick Actions */}
+1308:             <div className="flex flex-wrap gap-3 mb-10">
+1309:               <Link href="/signup">
+1310:                 <button className="apple-button apple-button-primary">
+1311:                   <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1312:                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+1313:                   </svg>
+1314:                   Add Employee
+1315:                 </button>
+1316:               </Link>
+1317:               <Link href="/background-checks">
+1318:                 <button className="apple-button apple-button-secondary">
+1319:                   <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1320:                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+1321:                   </svg>
+1322:                   View Background Checks
+1323:                 </button>
+1324:               </Link>
+1325:             </div>
+1326: 
+1327:             {/* HR Subtabs */}
+1328:             <div className="mb-8 border-b border-gray-200">
+1329:               <div className="flex gap-6">
+1330:                 <button
+1331:                   onClick={() => setHrView("overview")}
+1332:                   className={`pb-4 px-2 font-semibold transition-colors relative ${
+1333:                     hrView === "overview" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+1334:                   }`}
+1335:                 >
+1336:                   Overview
+1337:                   {hrView === "overview" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+1338:                 </button>
+1339:                 <button
+1340:                   onClick={() => setHrView("employees")}
+1341:                   className={`pb-4 px-2 font-semibold transition-colors relative ${
+1342:                     hrView === "employees" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+1343:                   }`}
+1344:                 >
+1345:                   Employees
+1346:                   {hrView === "employees" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+1347:                 </button>
+1348:               </div>
+1349:             </div>
+1350: 
+1351:             {/* HR Overview */}
+1352:             {hrView === "overview" && (
+1353:               <div className="space-y-8">
+1354:                 <section>
+1355:                   <div className="flex items-center justify-between mb-6">
+1356:                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Key Metrics</h2>
+1357:                     <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
+1358:                   </div>
+1359:                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+1360:                     <div className="group relative bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+1361:                       <div className="absolute top-0 right-0 w-32 h-32 bg-blue-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+1362:                       <div className="relative">
+1363:                         <div className="flex items-center gap-3 mb-4">
+1364:                           <div className="w-12 h-12 bg-blue-500 rounded-xl flex items-center justify-center shadow-lg shadow-blue-500/30 group-hover:scale-110 transition-transform duration-300">
+1365:                             <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1366:                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
+1367:                             </svg>
+1368:                           </div>
+1369:                           <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Total</span>
+1370:                         </div>
+1371:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Total Employees</h3>
+1372:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalEmployees}</div>
+1373:                         <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
+1374:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1375:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+1376:                           </svg>
+1377:                           {hrStats.activeEmployees} active
+1378:                         </p>
+1379:                       </div>
+1380:                     </div>
+1381: 
+1382:                     <div className="group relative bg-gradient-to-br from-purple-50 to-white border border-purple-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+1383:                       <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+1384:                       <div className="relative">
+1385:                         <div className="flex items-center gap-3 mb-4">
+1386:                           <div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center shadow-lg shadow-purple-500/30 group-hover:scale-110 transition-transform duration-300">
+1387:                             <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1388:                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+1389:                             </svg>
+1390:                           </div>
+1391:                           <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Roles</span>
+1392:                         </div>
+1393:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Departments</h3>
+1394:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalDepartments}</div>
+1395:                         <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
+1396:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1397:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+1398:                           </svg>
+1399:                           active divisions
+1400:                         </p>
+1401:                       </div>
+1402:                     </div>
+1403: 
+1404:                     <div className="group relative bg-gradient-to-br from-green-50 to-white border border-green-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+1405:                       <div className="absolute top-0 right-0 w-32 h-32 bg-green-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+1406:                       <div className="relative">
+1407:                         <div className="flex items-center gap-3 mb-4">
+1408:                           <div className="w-12 h-12 bg-green-500 rounded-xl flex items-center justify-center shadow-lg shadow-green-500/30 group-hover:scale-110 transition-transform duration-300">
+1409:                             <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1410:                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+1411:                             </svg>
+1412:                           </div>
+1413:                           <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">New</span>
+1414:                         </div>
+1415:                         <h3 className="text-sm font-medium text-gray-600 mb-2">New Hires</h3>
+1416:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.newHiresThisMonth}</div>
+1417:                         <p className="text-sm text-green-600 font-medium flex items-center gap-1">
+1418:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1419:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+1420:                           </svg>
+1421:                           this month
+1422:                         </p>
+1423:                       </div>
+1424:                     </div>
+1425: 
+1426:                     <div className="group relative bg-gradient-to-br from-orange-50 to-white border border-orange-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
+1427:                       <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500 opacity-5 rounded-full -mr-16 -mt-16 group-hover:scale-150 transition-transform duration-500" />
+1428:                       <div className="relative">
+1429:                         <div className="flex items-center gap-3 mb-4">
+1430:                           <div className="w-12 h-12 bg-orange-500 rounded-xl flex items-center justify-center shadow-lg shadow-orange-500/30 group-hover:scale-110 transition-transform duration-300">
+1431:                             <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1432:                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+1433:                             </svg>
+1434:                           </div>
+1435:                           <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-semibold">Security</span>
+1436:                         </div>
+1437:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Background Checks</h3>
+1438:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.approvedBackgroundChecks}</div>
+1439:                         <p className="text-sm text-orange-600 font-medium flex items-center gap-1">
+1440:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1441:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+1442:                           </svg>
+1443:                           approved checks
+1444:                         </p>
+1445:                       </div>
+1446:                     </div>
+1447:                   </div>
+1448:                 </section>
+1449: 
+1450:                 {/* Roles */}
+1451:                 <section>
+1452:                   <div className="flex items-center justify-between mb-6">
+1453:                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Role Overview</h2>
+1454:                     <span className="text-sm text-gray-500 font-medium">Workforce Distribution</span>
+1455:                   </div>
+1456:                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+1457:                     {calculatedDepartments.map((dept) => (
+1458:                       <div
+1459:                         key={dept.name}
+1460:                         className={`group relative bg-gradient-to-br ${
+1461:                           dept.color === 'blue' ? 'from-blue-50 to-white border-blue-200' : 'from-purple-50 to-white border-purple-200'
+1462:                         } border-2 rounded-2xl p-8 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden`}
+1463:                       >
+1464:                         <div className={`absolute top-0 right-0 w-40 h-40 ${
+1465:                           dept.color === 'blue' ? 'bg-blue-500' : 'bg-purple-500'
+1466:                         } opacity-5 rounded-full -mr-20 -mt-20 group-hover:scale-150 transition-transform duration-500`} />
+1467:                         <div className="relative">
+1468:                           <div className="flex items-start justify-between mb-6">
+1469:                             <div className="flex items-center gap-4">
+1470:                               <div className={`w-14 h-14 ${
+1471:                                 dept.color === 'blue' ? 'bg-blue-500 shadow-blue-500/30' : 'bg-purple-500 shadow-purple-500/30'
+1472:                               } rounded-xl flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform duration-300`}>
+1473:                                 <svg className="w-7 h-7 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1474:                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+1475:                                 </svg>
+1476:                               </div>
+1477:                               <div>
+1478:                                 <h3 className="text-xl font-bold text-gray-900 capitalize mb-1">{dept.name}</h3>
+1479:                                 <span className={`px-3 py-1 ${
+1480:                                   dept.color === 'blue' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+1481:                                 } rounded-full text-xs font-semibold`}>
+1482:                                   {dept.color === 'blue' ? 'Vendor Role' : 'Manager Role'}
+1483:                                 </span>
+1484:                               </div>
+1485:                             </div>
+1486:                           </div>
+1487:                           <div className="flex items-end justify-between">
+1488:                             <div>
+1489:                               <div className="text-5xl font-bold text-gray-900 mb-2 tracking-tight">{dept.employee_count}</div>
+1490:                               <div className={`text-sm font-medium flex items-center gap-2 ${
+1491:                                 dept.color === 'blue' ? 'text-blue-600' : 'text-purple-600'
+1492:                               }`}>
+1493:                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1494:                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+1495:                                 </svg>
+1496:                                 {dept.employee_count === 1 ? "employee" : "employees"}
+1497:                               </div>
+1498:                             </div>
+1499:                             <div className={`px-4 py-2 ${
+1500:                               dept.color === 'blue' ? 'bg-blue-100 text-blue-700' : 'bg-purple-100 text-purple-700'
+1501:                             } rounded-xl font-semibold text-sm`}>
+1502:                               {((dept.employee_count / hrStats.totalEmployees) * 100).toFixed(0)}%
+1503:                             </div>
+1504:                           </div>
+1505:                         </div>
+1506:                       </div>
+1507:                     ))}
+1508:                   </div>
+1509:                 </section>
+1510:               </div>
+1511:             )}
+1512: 
+1513:             {/* HR Employees */}
+1514:             {hrView === "employees" && (
+1515:               <div className="space-y-6">
+1516:                 <div className="flex items-center justify-between">
+1517:                   <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">
+1518:                     All Employees
+1519:                     {employees.length > 0 && <span className="ml-3 text-lg font-normal text-gray-500">({employees.length})</span>}
+1520:                   </h2>
+1521:                   <div className="flex items-center gap-3">
+1522:                     <input
+1523:                       type="search"
+1524:                       placeholder="Search employees..."
+1525:                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+1526:                       // (Optional) hook up local filter later
+1527:                     />
+1528:                     <select
+1529:                       value={selectedEmployeeRegion}
+1530:                       onChange={(e) => handleEmployeeRegionChange(e.target.value)}
+1531:                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+1532:                     >
+1533:                       <option value="all">All Regions</option>
+1534:                       {regions.map((r) => (
+1535:                         <option key={r.id} value={r.id}>
+1536:                           {r.name}
+1537:                         </option>
+1538:                       ))}
+1539:                     </select>
+1540:                     <select
+1541:                       value={selectedState}
+1542:                       onChange={(e) => handleStateFilterChange(e.target.value)}
+1543:                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+1544:                     >
+1545:                       <option value="all">All States</option>
+1546:                       {availableStates.map((state) => (
+1547:                         <option key={state} value={state}>
+1548:                           {state}
+1549:                         </option>
+1550:                       ))}
+1551:                     </select>
+1552:                     <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
+1553:                       <option value="">All Departments</option>
+1554:                       {departments.map((dept) => (
+1555:                         <option key={dept.name} value={dept.name}>
+1556:                           {dept.name}
+1557:                         </option>
+1558:                       ))}
+1559:                     </select>
+1560:                   </div>
+1561:                 </div>
+1562: 
+1563:                 {(selectedState !== "all" || selectedEmployeeRegion !== "all") && (
+1564:                   <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
+1565:                     <div className="flex items-center text-sm text-blue-800">
+1566:                       <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1567:                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
+1568:                       </svg>
+1569:                       <span className="font-medium">Filters Active:</span>
+1570:                       {selectedEmployeeRegion !== "all" && (
+1571:                         <span className="ml-1">{regions.find(r => r.id === selectedEmployeeRegion)?.name || selectedEmployeeRegion}</span>
+1572:                       )}
+1573:                       {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">•</span>}
+1574:                       {selectedState !== "all" && <span>{selectedState}</span>}
+1575:                       <span className="ml-2 text-blue-600">• {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
+1576:                     </div>
+1577:                     <button onClick={() => { handleStateFilterChange("all"); handleEmployeeRegionChange("all"); }} className="text-xs text-blue-700 hover:text-blue-900 font-medium flex items-center">
+1578:                       <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1579:                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+1580:                       </svg>
+1581:                       Clear All Filters
+1582:                     </button>
+1583:                   </div>
+1584:                 )}
+1585: 
+1586:                 {loadingEmployees && (
+1587:                   <div className="apple-card">
+1588:                     <div className="flex items-center justify-center py-16">
+1589:                       <div className="apple-spinner" />
+1590:                       <span className="ml-3 text-gray-600">Loading employees...</span>
+1591:                     </div>
+1592:                   </div>
+1593:                 )}
+1594:                 {employeesError && <div className="apple-alert apple-alert-error">{employeesError}</div>}
+1595:                 {!loadingEmployees && !employeesError && employees.length === 0 && (
+1596:                   <div className="apple-card text-center py-16">
+1597:                     <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1598:                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
+1599:                     </svg>
+1600:                     <p className="text-gray-500 text-lg">No employees found</p>
+1601:                     <p className="text-gray-400 text-sm mt-2">
+1602:                       {selectedState !== "all" ? "Try selecting a different state" : "No employees in the system yet"}
+1603:                     </p>
+1604:                   </div>
+1605:                 )}
+1606: 
+1607:                 {!loadingEmployees && !employeesError && employees.length > 0 && (
+1608:                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+1609:                     {employees.map((e) => (
+1610:                       <Link key={e.id} href={`/hr/employees/${e.id}`} className="block group">
+1611:                         <div className="apple-card p-6 hover:shadow-lg transition-shadow group-hover:translate-y-[-1px]">
+1612:                           <div className="flex items-start gap-4">
+1613:                             {e.profile_photo_url ? (
+1614:                               <img
+1615:                                 src={e.profile_photo_url}
+1616:                                 alt={`${e.first_name} ${e.last_name}`}
+1617:                                 className="w-16 h-16 rounded-full object-cover flex-shrink-0"
+1618:                               />
+1619:                             ) : (
+1620:                               <div className="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-xl flex-shrink-0">
+1621:                                 {e.first_name.charAt(0)}
+1622:                                 {e.last_name.charAt(0)}
+1623:                               </div>
+1624:                             )}
+1625:                             <div className="flex-1">
+1626:                               <h3 className="text-lg font-semibold text-gray-900 mb-1">
+1627:                                 {e.first_name} {e.last_name}
+1628:                               </h3>
+1629:                               <p className="text-sm text-gray-600 mb-2">{e.position}</p>
+1630:                               <div className="space-y-1">
+1631:                                 <div className="flex items-center text-xs text-gray-500">
+1632:                                   <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1633:                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
+1634:                                   </svg>
+1635:                                   {e.department}
+1636:                                 </div>
+1637:                                 <div className="flex items-center text-xs text-gray-500">
+1638:                                   <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1639:                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+1640:                                   </svg>
+1641:                                   {e.email}
+1642:                                 </div>
+1643:                                 {e.phone && (
+1644:                                   <div className="flex items-center text-xs text-gray-500">
+1645:                                     <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1646:                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+1647:                                     </svg>
+1648:                                     {e.phone}
+1649:                                   </div>
+1650:                                 )}
+1651:                               </div>
+1652:                               <div className="mt-3 flex items-center justify-between">
+1653:                                 <span
+1654:                                   className={`px-2 py-1 rounded-full text-xs font-medium ${
+1655:                                     e.status === "active"
+1656:                                       ? "bg-green-100 text-green-700"
+1657:                                       : e.status === "on_leave"
+1658:                                       ? "bg-yellow-100 text-yellow-700"
+1659:                                       : "bg-gray-100 text-gray-700"
+1660:                                   }`}
+1661:                                 >
+1662:                                   {e.status === "active" ? "Active" : e.status === "on_leave" ? "On Leave" : "Inactive"}
+1663:                                 </span>
+1664:                                 <span className="text-xs text-gray-500">Since {new Date(e.hire_date).toLocaleDateString()}</span>
+1665:                               </div>
+1666:                             </div>
+1667:                           </div>
+1668:                         </div>
+1669:                       </Link>
+1670:                     ))}
+1671:                   </div>
+1672:                 )}
+1673:               </div>
+1674:             )}
+1675: 
+1676:           </>
+1677:         )}
+1678:       </div>
+1679: 
+1680:       {/* Calendar Availability Modal */}
+1681:       {showVendorModal && (
+1682:         <div className="apple-modal-overlay">
+1683:           <div className="apple-modal">
+1684:             <div className="apple-modal-header">
+1685:               <div>
+1686:                 <h2 className="text-2xl font-semibold text-gray-900">Calendar Availability Request</h2>
+1687:                 <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 3 weeks</p>
+1688:               </div>
+1689:               <button onClick={closeVendorModal} className="apple-close-button">
+1690:                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1691:                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+1692:                 </svg>
+1693:               </button>
+1694:             </div>
+1695: 
+1696:             <div className="apple-modal-body">
+1697:               {message && (
+1698:                 <div
+1699:                   className={`apple-alert ${
+1700:                     message.toLowerCase().includes("success") ? "apple-alert-success" : "apple-alert-error"
+1701:                   }`}
+1702:                 >
+1703:                   {message}
+1704:                   <button onClick={() => setMessage("")} className="apple-close-button-small">
+1705:                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1706:                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+1707:                     </svg>
+1708:                   </button>
+1709:                 </div>
+1710:               )}
+1711: 
+1712:               {loadingVendors ? (
+1713:                 <div className="apple-empty-state">
+1714:                   <div className="apple-spinner mb-4" />
+1715:                   <p className="text-gray-600">Loading vendors...</p>
+1716:                 </div>
+1717:               ) : vendors.length === 0 ? (
+1718:                 <div className="apple-empty-state">
+1719:                   <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1720:                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+1721:                   </svg>
+1722:                   <p className="text-lg font-medium text-gray-600">No vendors available</p>
+1723:                   <p className="text-sm text-gray-500 mt-2">No active vendors found for your events</p>
+1724:                 </div>
+1725:               ) : (
+1726:                 <>
+1727:                   <div className="apple-info-banner">
+1728:                     <svg className="w-5 h-5 text-blue-600 mr-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1729:                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+1730:                     </svg>
+1731:                     <div className="text-sm text-gray-700">
+1732:                       <div className="font-semibold mb-1">3-Week Work Period</div>
+1733:                       <div className="text-xs text-gray-600">We'll invite selected vendors to share availability</div>
+1734:                     </div>
+1735:                   </div>
+1736: 
+1737:                   <div className="mb-6">
+1738:                     <label className="block text-sm font-semibold text-gray-700 mb-2">
+1739:                       Filter by Region
+1740:                       {regions.length > 0 && (
+1741:                         <span className="ml-2 text-xs font-normal text-gray-500">({regions.length} regions)</span>
+1742:                       )}
+1743:                     </label>
+1744:                     <select
+1745:                       value={selectedRegion}
+1746:                       onChange={(e) => handleRegionChange(e.target.value)}
+1747:                       className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+1748:                     >
+1749:                       <option value="all">🌎 All Regions</option>
+1750:                       {regions.map((r) => (
+1751:                         <option key={r.id} value={r.id}>
+1752:                           📍 {r.name}
+1753:                         </option>
+1754:                       ))}
+1755:                     </select>
+1756:                     <div className="flex items-center justify-between mt-1.5">
+1757:                       <p className="text-xs text-gray-500">
+1758:                         {selectedRegion === "all" ? "Showing vendors from all regions" : "Filtered by region"}
+1759:                       </p>
+1760:                       {selectedRegion !== "all" && (
+1761:                         <button onClick={() => handleRegionChange("all")} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+1762:                           Clear filter
+1763:                         </button>
+1764:                       )}
+1765:                     </div>
+1766:                   </div>
+1767: 
+1768:                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
+1769:                     <label className="flex items-center cursor-pointer group">
+1770:                       <input
+1771:                         type="checkbox"
+1772:                         checked={selectedVendors.size === vendors.length && vendors.length > 0}
+1773:                         onChange={handleSelectAll}
+1774:                         className="apple-checkbox"
+1775:                       />
+1776:                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
+1777:                         Select All ({vendors.length})
+1778:                       </span>
+1779:                     </label>
+1780:                     <button
+1781:                       onClick={handleInvite}
+1782:                       disabled={selectedVendors.size === 0 || submitting}
+1783:                       className={`apple-button ${
+1784:                         selectedVendors.size === 0 || submitting ? "apple-button-disabled" : "apple-button-primary"
+1785:                       }`}
+1786:                     >
+1787:                       {submitting ? "Sending..." : `Send ${selectedVendors.size} Invitation${selectedVendors.size !== 1 ? "s" : ""}`}
+1788:                     </button>
+1789:                   </div>
+1790: 
+1791:                   <div className="space-y-3">
+1792:                     {vendors.map((v) => (
+1793:                       <div key={v.id} className="apple-vendor-card" onClick={() => toggleVendorSelection(v.id)}>
+1794:                         <input
+1795:                           type="checkbox"
+1796:                           checked={selectedVendors.has(v.id)}
+1797:                           onChange={() => toggleVendorSelection(v.id)}
+1798:                           className="apple-checkbox"
+1799:                         />
+1800:                         {v.profiles.profile_photo_url ? (
+1801:                           <img
+1802:                             src={v.profiles.profile_photo_url}
+1803:                             alt={`${v.profiles.first_name} ${v.profiles.last_name}`}
+1804:                             className="w-12 h-12 rounded-full object-cover flex-shrink-0"
+1805:                             onError={(e) => {
+1806:                               const t = e.target as HTMLImageElement;
+1807:                               t.style.display = "none";
+1808:                               if (t.nextSibling) (t.nextSibling as HTMLElement).style.display = "flex";
+1809:                             }}
+1810:                           />
+1811:                         ) : null}
+1812:                         <div
+1813:                           className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold flex-shrink-0"
+1814:                           style={{ display: v.profiles.profile_photo_url ? "none" : "flex" }}
+1815:                         >
+1816:                           {v.profiles.first_name?.charAt(0)}
+1817:                           {v.profiles.last_name?.charAt(0)}
+1818:                         </div>
+1819:                         <div className="flex-1">
+1820:                           <div className="flex items-center justify-between mb-2">
+1821:                             <div className="font-semibold text-gray-900">
+1822:                               {v.profiles.first_name} {v.profiles.last_name}
+1823:                             </div>
+1824:                             {v.distance !== null ? (
+1825:                               <div className="apple-distance-badge">{v.distance} mi</div>
+1826:                             ) : (
+1827:                               <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
+1828:                             )}
+1829:                           </div>
+1830:                           <div className="text-gray-600 text-sm mb-1">
+1831:                             {v.email}
+1832:                             {v.profiles.phone && (
+1833:                               <>
+1834:                                 <span className="mx-2 text-gray-400">•</span>
+1835:                                 {v.profiles.phone}
+1836:                               </>
+1837:                             )}
+1838:                           </div>
+1839:                           <div className="flex items-center gap-3 text-xs text-gray-500">
+1840:                             {v.profiles.city && v.profiles.state && (
+1841:                               <>
+1842:                                 <span className="flex items-center">
+1843:                                   <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+1844:                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+1845:                                   </svg>
+1846:                                   {v.profiles.city}, {v.profiles.state}
+1847:                                 </span>
+1848:                                 <span className="text-gray-400">•</span>
+1849:                               </>
+1850:                             )}
+1851:                             <span>{v.division}</span>
+1852:                             <span className="text-gray-400">•</span>
+1853:                             <span>{v.role}</span>
+1854:                           </div>
+1855:                         </div>
+1856:                       </div>
+1857:                     ))}
+1858:                   </div>
+1859:                 </>
+1860:               )}
+1861:             </div>
+1862:           </div>
+1863:         </div>
+1864:       )}

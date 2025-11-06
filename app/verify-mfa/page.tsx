@@ -66,7 +66,7 @@ function VerifyMFAContent() {
       // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
       const { data: userData } = await (supabase
         .from('users')
-        .select('is_temporary_password, must_change_password')
+        .select('is_temporary_password, must_change_password, role')
         .eq('id', retrySession.user.id)
         .single() as any);
 
@@ -91,7 +91,7 @@ function VerifyMFAContent() {
     // CRITICAL: Check if user has temporary password BEFORE allowing MFA verification
     const { data: userData } = await (supabase
       .from('users')
-      .select('is_temporary_password, must_change_password')
+      .select('is_temporary_password, must_change_password, role')
       .eq('id', session.user.id)
       .single() as any);
 
@@ -105,6 +105,24 @@ function VerifyMFAContent() {
       console.log('[DEBUG] User must change password BEFORE MFA verification');
       router.replace('/password');
       return;
+    }
+
+    // Background Checker: if MFA not yet set up, redirect to /mfa-setup
+    try {
+      const { data: profArr } = await (supabase
+        .from('profiles')
+        .select('mfa_enabled, mfa_secret')
+        .eq('user_id', session.user.id)
+        .order('created_at', { ascending: false })
+        .limit(1) as any);
+      const profile = profArr?.[0] || null;
+      if (userData?.role === 'backgroundchecker' && (!profile?.mfa_secret || profile?.mfa_enabled !== true)) {
+        console.log('[VERIFY-MFA DEBUG] Background Checker missing MFA setup - Redirecting to /mfa-setup');
+        router.replace('/mfa-setup');
+        return;
+      }
+    } catch (e) {
+      console.warn('[VERIFY-MFA DEBUG] MFA setup status check failed');
     }
 
     // User is authenticated and has no temporary password - ready for MFA
@@ -254,8 +272,14 @@ function VerifyMFAContent() {
       });
 
       // If user hasn't completed background check, redirect there
+      // Background checker role: go straight to background-checks after MFA
+      if (userData?.role === 'backgroundchecker') {
+        console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
+        router.push('/background-checks');
+        return;
+      }
       // This applies to ALL users, not just new users
-      if (!userData?.background_check_completed) {
+      const userRole = userData?.role; if (!userData?.background_check_completed && userRole !== 'backgroundchecker') {
         console.log('[VERIFY-MFA DEBUG] ⚠️ Background check NOT completed');
         console.log('[VERIFY-MFA DEBUG] 🔄 Redirecting to /background-checks-form');
         router.push('/background-checks-form');
@@ -268,16 +292,19 @@ function VerifyMFAContent() {
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
         if (userRole === 'manager') {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Manager role - Redirecting to /dashboard');
+          console.log('[VERIFY-MFA DEBUG] Manager role - Redirecting to /dashboard');
           router.push('/dashboard');
         } else if (userRole === 'exec') {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Exec role - Redirecting to /global-calendar');
+          console.log('[VERIFY-MFA DEBUG] Exec role - Redirecting to /global-calendar');
           router.push('/global-calendar');
+        } else if (userRole === 'backgroundchecker') {
+          console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
+          router.push('/background-checks');
         } else if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Worker role - Redirecting to /time-tracking');
+          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /time-tracking');
           router.push('/time-tracking');
         } else {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Other role - Redirecting to home page');
+          console.log('[VERIFY-MFA DEBUG] Other role - Redirecting to home page');
           router.push('/');
         }
       }
@@ -648,3 +675,6 @@ export default function VerifyMFAPage() {
     </Suspense>
   );
 }
+
+
+
