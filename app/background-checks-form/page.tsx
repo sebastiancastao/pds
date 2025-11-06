@@ -25,6 +25,16 @@ export default function BackgroundChecksForm() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [signatureMode, setSignatureMode] = useState<'type' | 'draw'>('type');
   const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
+  const [waiverProgress, setWaiverProgress] = useState(0);
+  const [disclosureProgress, setDisclosureProgress] = useState(0);
+
+  // Compute what's missing for submit and whether continue should be disabled
+  const incompleteRequirements = [
+    waiverProgress < 0.6 ? `Waiver ${Math.round(waiverProgress * 100)}% (need to complete)` : null,
+    disclosureProgress < 0.6 ? `Disclosure ${Math.round(disclosureProgress * 100)}% (need to complete)` : null,
+    !currentSignature ? 'Signature missing' : null,
+  ].filter(Boolean) as string[];
+  const continueDisabled = saveStatus === 'saving' || incompleteRequirements.length > 0;
 
   // Safe Uint8Array -> base64 converter (avoids call-stack overflow on large arrays)
   const uint8ToBase64 = (bytes: Uint8Array): string => {
@@ -107,6 +117,23 @@ export default function BackgroundChecksForm() {
       disclosureBytesRef.current = pdfBytes;
     }
     try {
+      // Persist per-form progress so it reloads filled state
+      try {
+        const base64 = uint8ToBase64(pdfBytes);
+        const { data: { session } } = await supabase.auth.getSession();
+        await fetch('/api/pdf-form-progress/save', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
+          credentials: 'same-origin',
+          body: JSON.stringify({ formName: formId, formData: base64 })
+        });
+      } catch (pErr) {
+        console.warn('[BACKGROUND CHECK FORM] Progress save failed (non-fatal):', pErr);
+      }
+
       await combineAndSave();
     } catch (e) {
       console.error('[BACKGROUND CHECK FORM] Merge/save error:', e);
@@ -333,6 +360,16 @@ export default function BackgroundChecksForm() {
   const handleContinue = async () => {
     console.log('Continue clicked');
 
+    // Enforce 60% completion on both forms before submit
+    const waiverOk = waiverProgress >= 0.6;
+    const disclosureOk = disclosureProgress >= 0.6;
+    if (!waiverOk || !disclosureOk) {
+      const waiverPct = Math.round(waiverProgress * 100);
+      const disclosurePct = Math.round(disclosureProgress * 100);
+      alert(`Please complete of both forms before submitting.\n\nWaiver: ${waiverPct}%\nDisclosure: ${disclosurePct}%`);
+      return;
+    }
+
     // Check if signature is required but not provided
     if (!currentSignature) {
       alert('Please provide your signature before continuing.');
@@ -367,9 +404,15 @@ export default function BackgroundChecksForm() {
       });
 
       if (!response.ok) {
-        const error = await response.json();
-        console.error('[BACKGROUND CHECK] Failed to mark as completed:', error);
-        alert('Failed to complete background check. Please try again.');
+        let errDetail = '';
+        try {
+          const error = await response.json();
+          errDetail = error?.error || error?.details || JSON.stringify(error);
+        } catch {
+          try { errDetail = await response.text(); } catch {}
+        }
+        console.error('[BACKGROUND CHECK] Failed to mark as completed:', errDetail || response.status);
+        alert(`Failed to complete background check.\n${errDetail || `Status: ${response.status}`}`);
         setSaveStatus('error');
         return;
       }
@@ -542,6 +585,9 @@ export default function BackgroundChecksForm() {
           <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#666' }}>
             Please review and sign both background check forms below. Your progress is automatically saved.
           </p>
+          <p style={{ margin: '6px 0 0 0', fontSize: '13px', color: '#555' }}>
+            Note: You must complete both forms and provide your signature to continue.
+          </p>
         </div>
 
         {/* Save Status Indicator */}
@@ -586,6 +632,9 @@ export default function BackgroundChecksForm() {
           }}>
             1. Background Check Waiver
           </h2>
+          <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
+            Completed: {Math.round(waiverProgress * 100)}%
+          </div>
           <div style={{ marginBottom: '20px' }}>
             <PDFFormEditor
               key="background-waiver"
@@ -594,6 +643,7 @@ export default function BackgroundChecksForm() {
               onSave={handlePDFSaveFor('background-waiver')}
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
+              onProgress={setWaiverProgress}
             />
           </div>
         </div>
@@ -608,6 +658,9 @@ export default function BackgroundChecksForm() {
           }}>
             2. Background Check Disclosure and Authorization
           </h2>
+          <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
+            Completed: {Math.round(disclosureProgress * 100)}%
+          </div>
           <div style={{ marginBottom: '20px' }}>
             <PDFFormEditor
               key="background-disclosure"
@@ -616,7 +669,34 @@ export default function BackgroundChecksForm() {
               onSave={handlePDFSaveFor('background-disclosure')}
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
+              onProgress={setDisclosureProgress}
             />
+          </div>
+          {/* Garbled rendering advisory for Disclosure form */}
+          <div style={{
+            backgroundColor: '#e7f3ff',
+            border: '1px solid #b6daff',
+            color: '#0c5280',
+            borderRadius: '6px',
+            padding: '10px 12px',
+            fontSize: '13px'
+          }}>
+            If this PDF looks garbled or shows strange characters, please reload the page. Your progress is saved.
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                marginLeft: '10px',
+                padding: '6px 10px',
+                backgroundColor: '#1976d2',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                fontWeight: 'bold',
+                cursor: 'pointer'
+              }}
+            >
+              Reload Page
+            </button>
           </div>
         </div>
 
@@ -692,6 +772,7 @@ export default function BackgroundChecksForm() {
                 value={currentSignature}
                 onChange={(e) => handleSignatureChange(e.target.value)}
                 placeholder="Type your full name here"
+                className="signature-input"
                 style={{
                   width: '100%',
                   padding: '12px',
@@ -839,24 +920,25 @@ export default function BackgroundChecksForm() {
 
             <button
               onClick={handleContinue}
-              disabled={saveStatus === 'saving'}
+              disabled={saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature}
+              title={(saveStatus === 'saving' || incompleteRequirements.length > 0) ? `Complete before continuing: ${incompleteRequirements.join(' • ')}` : 'Continue'}
               style={{
                 padding: '12px 24px',
-                backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
+                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) ? '#ccc' : '#1976d2',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontWeight: 'bold',
-                cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+                cursor: (saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) ? 'not-allowed' : 'pointer',
                 fontSize: '16px'
               }}
               onMouseOver={(e) => {
-                if (saveStatus !== 'saving') {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1565c0';
                 }
               }}
               onMouseOut={(e) => {
-                if (saveStatus !== 'saving') {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1976d2';
                 }
               }}
@@ -865,6 +947,21 @@ export default function BackgroundChecksForm() {
             </button>
           </div>
         </div>
+
+        {/* Submit gating hint */}
+        {(waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) && (
+          <div style={{
+            marginTop: '12px',
+            color: '#d32f2f',
+            fontSize: '13px',
+            backgroundColor: '#fdecea',
+            border: '1px solid #f5c2c0',
+            borderRadius: '6px',
+            padding: '10px 12px'
+          }}>
+            To continue, please complete: {incompleteRequirements.join(' • ')}
+          </div>
+        )}
       </div>
     </div>
   );

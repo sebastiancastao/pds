@@ -16,6 +16,7 @@ interface PDFFormEditorProps {
   onSave?: (pdfBytes: Uint8Array) => void;
   onFieldChange?: () => void;
   onContinue?: () => void;
+  onProgress?: (progress: number) => void; // 0.0 - 1.0
 }
 
 interface FormField {
@@ -26,7 +27,7 @@ interface FormField {
   value: string;
 }
 
-export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue }: PDFFormEditorProps) {
+export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
@@ -41,6 +42,26 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   const [continueButtonRect, setContinueButtonRect] = useState<{x: number, y: number, width: number, height: number} | null>(null);
   const renderTaskRef = useRef<any>(null);
   const isLoadingRef = useRef(false);
+
+  // Report completion progress to parent whenever fields/values change
+  useEffect(() => {
+    if (!onProgress) return;
+    const total = formFields.length;
+    if (total === 0) {
+      onProgress(0);
+      return;
+    }
+    let filled = 0;
+    for (const f of formFields) {
+      const v = fieldValues.get(f.name) || '';
+      if (f.type === 'checkbox') {
+        if (v === 'true') filled += 1;
+      } else {
+        if (String(v).trim().length > 0) filled += 1;
+      }
+    }
+    onProgress(filled / total);
+  }, [formFields, fieldValues, onProgress]);
 
   useEffect(() => {
     loadPDF();
@@ -559,15 +580,35 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     return (
       <div style={{
         display: 'flex',
+        flexDirection: 'column',
         justifyContent: 'center',
         alignItems: 'center',
+        gap: '10px',
         height: '100%',
         fontSize: '16px',
         color: '#d32f2f',
         padding: '20px',
         textAlign: 'center'
       }}>
-        {error}
+        <div>{error}</div>
+        <div style={{ color: '#555', fontSize: '14px' }}>
+          If the problem persists, please reload the page and try again.
+        </div>
+        <button
+          onClick={() => window.location.reload()}
+          style={{
+            padding: '8px 14px',
+            backgroundColor: '#1976d2',
+            color: 'white',
+            border: 'none',
+            borderRadius: '6px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            fontSize: '14px'
+          }}
+        >
+          Reload Page
+        </button>
       </div>
     );
   }

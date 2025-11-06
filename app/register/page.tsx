@@ -672,7 +672,7 @@ export default function RegisterPage() {
                       
                       <div>
                         <p className="text-sm font-medium text-gray-900">
-                          {isDragOver ? 'Drop your photo here' : 'Click to upload or drag and drop'}
+                          {isDragOver ? 'Drop your photo here' : 'Click to upload profile photo or drag and drop'}
                         </p>
                         <p className="text-xs text-gray-500 mt-1">
                           PNG, JPG up to 5MB

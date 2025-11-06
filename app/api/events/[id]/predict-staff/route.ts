@@ -187,6 +187,12 @@ export async function GET(
           console.log('[PREDICT] Model trained successfully');
         }
 
+        // Ensure modelCache is initialized (TypeScript narrowing for non-null)
+        const cache = modelCache;
+        if (!cache) {
+          throw new Error('Model cache not initialized after training check');
+        }
+
         // Make prediction using TensorFlow.js model
         predictedStaff = await predict(
           {
@@ -197,9 +203,9 @@ export async function GET(
             endTime: event.end_time,
             artist: event.artist,
           },
-          modelCache.model,
-          modelCache.venueEncoder,
-          modelCache.stats
+          cache.model,
+          cache.venueEncoder,
+          cache.stats
         );
 
         modelType = "tensorflow-neural-network";
@@ -250,4 +256,3 @@ export async function GET(
     );
   }
 }
-

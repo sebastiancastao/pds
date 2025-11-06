@@ -216,6 +216,25 @@ body::before {
     color: rgba(31, 41, 55, 0.6);
   }
 
+  /* Ensure signature input placeholder uses the same font as the app */
+  .signature-input::placeholder {
+    font-family: var(--font-system);
+    font-style: normal;
+  }
+  /* Vendor prefixes for broader support */
+  .signature-input::-webkit-input-placeholder {
+    font-family: var(--font-system);
+    font-style: normal;
+  }
+  .signature-input::-moz-placeholder {
+    font-family: var(--font-system);
+    font-style: normal;
+  }
+  .signature-input:-ms-input-placeholder {
+    font-family: var(--font-system);
+    font-style: normal;
+  }
+
   .liquid-select {
     @apply liquid-input;
     appearance: none;

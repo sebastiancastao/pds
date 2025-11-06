@@ -67,6 +67,8 @@ function FormViewerContent() {
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
 
+  // (Email notification moved to explicit Save click per request)
+
   // Map form names to display names and API endpoints
   const formConfig: Record<
     string,
@@ -198,6 +200,33 @@ function FormViewerContent() {
     }
   };
 
+  // Save button click: save form, then notify onboarding for LGBTQ Rights
+  const handleManualSaveClick = async () => {
+    await handleManualSave();
+    if (formName === 'lgbtq-rights') {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const resp = await fetch('/api/onboarding-notification', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
+          body: JSON.stringify({ form: formName, trigger: 'save-click' })
+        });
+        if (!resp.ok) {
+          let detail = '';
+          try { detail = await resp.text(); } catch {}
+          console.warn('[FORM VIEWER] Onboarding notification (save) failed:', resp.status, detail);
+        } else {
+          console.log('[FORM VIEWER] Onboarding notification (save) sent successfully');
+        }
+      } catch (e) {
+        console.warn('[FORM VIEWER] Onboarding notification (save) exception:', e);
+      }
+    }
+  };
+
   // Continue to next form
   const handleContinue = async () => {
     console.log('Continue clicked, pdfBytesRef:', pdfBytesRef.current ? 'has data' : 'null');
@@ -246,6 +275,30 @@ function FormViewerContent() {
       console.log('Save completed');
     } else {
       console.log('No PDF data to save, continuing anyway');
+    }
+
+    // If on final form (lgbtq-rights), send onboarding notification on Save & Finish
+    if (formName === 'lgbtq-rights') {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const resp = await fetch('/api/onboarding-notification', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          },
+          body: JSON.stringify({ form: formName, trigger: 'save-finish' })
+        });
+        if (!resp.ok) {
+          let detail = '';
+          try { detail = await resp.text(); } catch {}
+          console.warn('[FORM VIEWER] Onboarding notification (finish) failed:', resp.status, detail);
+        } else {
+          console.log('[FORM VIEWER] Onboarding notification (finish) sent successfully');
+        }
+      } catch (e) {
+        console.warn('[FORM VIEWER] Onboarding notification (finish) exception:', e);
+      }
     }
 
     // Navigate to next form
@@ -1091,7 +1144,7 @@ function FormViewerContent() {
 
           <div style={{ display: 'flex', gap: '12px' }}>
             <button
-              onClick={handleManualSave}
+              onClick={handleManualSaveClick}
               disabled={saveStatus === 'saving'}
               style={{
                 padding: '12px 24px',
