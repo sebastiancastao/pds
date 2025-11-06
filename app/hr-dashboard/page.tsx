@@ -130,6 +130,8 @@ export default function HRDashboardPage() {
           vendor_id: v.id,
           status: undefined,
           background_check_completed: !!bc.background_check_completed,
+          check_date: bc.check_date || bc.completed_date || new Date().toISOString(),
+          verified_by: bc.verified_by || null,
           completed_date: bc.completed_date || null,
           notes: bc.notes || null,
           created_at: bc.created_at || v.created_at || new Date().toISOString(),
@@ -174,11 +176,11 @@ export default function HRDashboardPage() {
           router.push('/login');
           return;
         }
-        const { data, error } = await supabase
+        const { data, error } = await (supabase
           .from('users')
           .select('role')
           .eq('id', userId)
-          .single();
+          .single() as any);
         const role = (data?.role || '').toString().trim().toLowerCase();
         if (!error && (role === 'admin' || role === 'hr')) {
           setIsAuthorized(true);
@@ -298,7 +300,7 @@ export default function HRDashboardPage() {
             finalPay: totalPay + adjustmentAmount,
           };
         });
-        console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map(p => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
+        console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map((p: any) => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
@@ -766,7 +768,7 @@ export default function HRDashboardPage() {
                                                     <input
                                                       type="number"
                                                       className="w-24 px-2 py-1 border rounded text-sm"
-                                                      value={Number((adjustments[ev.id] || {})[p.userId] ?? p.adjustmentAmount || 0)}
+                                                      value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
                                                       onChange={(e) => {
                                                         const val = Number(e.target.value) || 0;
                                                         setAdjustments(prev => ({

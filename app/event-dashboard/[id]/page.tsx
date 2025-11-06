@@ -137,11 +137,11 @@ export default function EventDashboardPage() {
         // Load current user's role for back navigation routing
         (async () => {
           try {
-            const { data, error } = await supabase
+            const { data, error } = await (supabase
               .from('users')
               .select('role')
               .eq('id', user.id)
-              .single();
+              .single() as any);
             if (!error) {
               const role = (data?.role ?? '').toString().trim().toLowerCase();
               setUserRole(role || null);

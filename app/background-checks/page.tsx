@@ -58,11 +58,11 @@ export default function BackgroundChecksPage() {
       }
 
       // Adjust table/column names if yours differ
-      const { data, error } = await supabase
+      const { data, error } = await (supabase
         .from('users')
         .select('role')
         .eq('id', userId)
-        .single();
+        .single() as any);
 
       if (error) {
         console.error('[Background Checks] Role fetch error:', error);

@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
             lastName: p.lastName,
             totalPay: 0,
             totalHours: 0,
-            events: [],
+            events: [] as VendorTotals["events"],
           };
           existing.totalPay += regularizedPay;
           existing.totalHours += hours;
