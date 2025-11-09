@@ -92,41 +92,103 @@ export async function POST(req: NextRequest) {
     const eventById: Record<string, any> = {};
     (events || []).forEach(e => { eventById[e.id] = e; });
 
-    // Group rows per (event_id, user_id) and send emails
-    let sent = 0; const failures: any[] = [];
+    // Group payments by vendor
+    const vendorEmailData = new Map<string, {
+      email: string;
+      firstName: string;
+      lastName: string;
+      events: Array<{
+        eventName: string;
+        eventDate: string;
+        venue: string;
+        city: string;
+        state: string;
+        totalPay: number;
+        adjustment: number;
+        finalPay: number;
+      }>;
+    }>();
+
+    // Organize data by vendor
     for (const row of vendorPayments || []) {
-      const eventId = row.event_id;
       const userId = row.user_id;
+      const eventId = row.event_id;
       const user = row.users;
       const email = user?.email;
+
+      if (!email) continue;
+
       const prof = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
       let firstName = prof?.first_name || '';
       let lastName = prof?.last_name || '';
       try { if (firstName) firstName = decrypt(firstName); } catch {}
       try { if (lastName) lastName = decrypt(lastName); } catch {}
 
-      if (!email) continue;
+      if (!vendorEmailData.has(userId)) {
+        vendorEmailData.set(userId, {
+          email,
+          firstName,
+          lastName,
+          events: []
+        });
+      }
 
       const adjustment = adjMap.get(`${eventId}::${userId}`) || 0;
-      const finalPay = Number(row.total_pay || 0) + Number(adjustment || 0);
+      const totalPay = Number(row.total_pay || 0);
+      const finalPay = totalPay + Number(adjustment || 0);
 
       const ev = eventById[eventId] || {};
-      const subject = `PDS Payment Summary - ${ev.event_name || 'Event'} (${ev.event_date || ''})`;
+      vendorEmailData.get(userId)!.events.push({
+        eventName: ev.event_name || 'Event',
+        eventDate: ev.event_date || 'N/A',
+        venue: ev.venue || 'N/A',
+        city: ev.city || '',
+        state: ev.state || '',
+        totalPay,
+        adjustment,
+        finalPay
+      });
+    }
+
+    // Send one consolidated email per vendor
+    let sent = 0;
+    const failures: any[] = [];
+
+    for (const [userId, data] of vendorEmailData.entries()) {
+      const { email, firstName, lastName, events } = data;
+
+      // Calculate grand total
+      const grandTotal = events.reduce((sum, e) => sum + e.finalPay, 0);
+
+      // Build events list HTML
+      const eventsHtml = events.map(e => `
+        <div style="background-color: #f3f4f6; border-left: 4px solid #3b82f6; padding: 15px; margin: 15px 0; border-radius: 4px;">
+          <h3 style="margin-top: 0; color: #1f2937;">Event: ${e.eventName}</h3>
+          <p style="margin: 5px 0;"><strong>Date:</strong> ${e.eventDate}</p>
+          <p style="margin: 5px 0;"><strong>Venue:</strong> ${e.venue}${e.city ? `, ${e.city}` : ''}${e.state ? `, ${e.state}` : ''}</p>
+          ${e.adjustment !== 0 ? `<p style="margin: 5px 0;"><strong>Adjustment:</strong> $${e.adjustment.toFixed(2)}</p>` : ''}
+          <h4 style="color: #059669; margin-top: 10px; margin-bottom: 0;">Event Payment: $${e.finalPay.toFixed(2)}</h4>
+        </div>
+      `).join('');
+
+      const subject = `PDS Payment Summary - ${events.length} Event${events.length !== 1 ? 's' : ''}`;
       const html = `
-        <div style="font-family: Arial, sans-serif; line-height:1.6">
-          <h2>Payment Summary</h2>
-          <p>Hello ${firstName || ''} ${lastName || ''},</p>
-          <p>Your final payment for <strong>${ev.event_name || 'Event'}</strong> on <strong>${ev.event_date || ''}</strong>:</p>
-          <ul>
-            <li>Regular Pay: $${Number(row.regular_pay || 0).toFixed(2)}</li>
-            <li>Overtime Pay: $${Number(row.overtime_pay || 0).toFixed(2)}</li>
-            <li>Doubletime Pay: $${Number(row.doubletime_pay || 0).toFixed(2)}</li>
-            <li>Commissions: $${Number(row.commissions || 0).toFixed(2)}</li>
-            <li>Tips: $${Number(row.tips || 0).toFixed(2)}</li>
-            <li>Adjustment: $${Number(adjustment || 0).toFixed(2)}</li>
-          </ul>
-          <h3>Total: $${finalPay.toFixed(2)}</h3>
-          <p>Venue: ${ev.venue || ''}${ev.city ? `, ${ev.city}` : ''}${ev.state ? `, ${ev.state}` : ''}</p>
+        <div style="font-family: Arial, sans-serif; line-height:1.6; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2 style="color: #1f2937; border-bottom: 2px solid #3b82f6; padding-bottom: 10px;">Payment Summary</h2>
+          <p>Hello <strong>${firstName} ${lastName}</strong>,</p>
+          <p>Your payment details for ${events.length} event${events.length !== 1 ? 's' : ''}:</p>
+
+          ${eventsHtml}
+
+          <div style="background-color: #dcfce7; border: 2px solid #059669; padding: 20px; margin: 20px 0; border-radius: 8px; text-align: center;">
+            <h2 style="color: #1f2937; margin: 0 0 10px 0;">Total Payment</h2>
+            <h1 style="color: #059669; margin: 0; font-size: 32px;">$${grandTotal.toFixed(2)}</h1>
+          </div>
+
+          <p style="color: #6b7280; font-size: 14px;">Thank you for your service!</p>
+          <p style="color: #6b7280; font-size: 12px; margin-top: 30px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+            This is an automated payment notification from PDS. Please contact HR if you have any questions.
+          </p>
         </div>
       `;
 
@@ -140,7 +202,7 @@ export async function POST(req: NextRequest) {
         if (error) throw error;
         sent += 1;
       } catch (e: any) {
-        failures.push({ eventId, userId, email, error: e?.message || 'send failed' });
+        failures.push({ userId, email, error: e?.message || 'send failed' });
       }
     }
 

@@ -359,7 +359,7 @@ export default function EmployeeProfilePage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <Link href="/global-calendar">
+            <Link href="/hr-dashboard">
               <button className="apple-button apple-button-secondary">
                 ← Back to Dashboard
               </button>

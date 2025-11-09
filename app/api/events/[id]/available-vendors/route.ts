@@ -36,6 +36,9 @@ function calculateDistance(
 /**
  * GET /api/events/[id]/available-vendors
  * Get vendors who have confirmed availability for this event's date
+ * Query params:
+ *  - region_id: Filter by region
+ *  - geo_filter: Use geographic filtering (distance from region center)
  */
 export async function GET(
   req: NextRequest,
@@ -44,6 +47,13 @@ export async function GET(
   try {
     const eventId = params.id;
     const supabase = createRouteHandlerClient({ cookies });
+
+    // Get query params
+    const { searchParams } = new URL(req.url);
+    const regionId = searchParams.get('region_id');
+    const geoFilter = searchParams.get('geo_filter') === 'true';
+
+    console.log('[AVAILABLE-VENDORS] 🔍 Query params:', { eventId, regionId, geoFilter });
 
     // Authenticate user
     let { data: { user } } = await supabase.auth.getUser();
@@ -189,6 +199,7 @@ export async function GET(
         role,
         division,
         is_active,
+        region_id,
         profiles!inner (
           first_name,
           last_name,
@@ -196,7 +207,8 @@ export async function GET(
           city,
           state,
           latitude,
-          longitude
+          longitude,
+          region_id
         )
       `)
       .in('id', availableVendorIds)
@@ -216,8 +228,63 @@ export async function GET(
       }, { status: 200 });
     }
 
+    let filteredVendors = vendors || [];
+
+    // Apply region filtering if specified
+    if (regionId && regionId !== 'all') {
+      console.log('[AVAILABLE-VENDORS] 🌍 Applying region filter:', { regionId, geoFilter });
+
+      if (geoFilter) {
+        // Geographic filtering: filter by distance from region center
+        const { data: regionData } = await supabaseAdmin
+          .from('regions')
+          .select('center_lat, center_lng, radius_miles')
+          .eq('id', regionId)
+          .single();
+
+        if (regionData) {
+          console.log('[AVAILABLE-VENDORS] 📍 Region center:', {
+            lat: regionData.center_lat,
+            lng: regionData.center_lng,
+            radius: regionData.radius_miles
+          });
+
+          filteredVendors = filteredVendors.filter((vendor: any) => {
+            if (!vendor.profiles.latitude || !vendor.profiles.longitude) {
+              console.log(`  ⚠️ Vendor ${vendor.id} has no coordinates, excluding`);
+              return false;
+            }
+
+            const distance = calculateDistance(
+              regionData.center_lat,
+              regionData.center_lng,
+              vendor.profiles.latitude,
+              vendor.profiles.longitude
+            );
+
+            const isInRegion = distance <= regionData.radius_miles;
+            console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${regionData.radius_miles}mi)`);
+            return isInRegion;
+          });
+
+          console.log('[AVAILABLE-VENDORS] ✅ After geo filter:', filteredVendors.length, 'vendors');
+        }
+      } else {
+        // Simple region_id filtering
+        console.log('[AVAILABLE-VENDORS] 🔍 Filtering by region_id field');
+        filteredVendors = filteredVendors.filter((vendor: any) => {
+          // Check if vendor has region_id in profiles or users table
+          const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
+          const matches = vendorRegionId === regionId;
+          console.log(`  ${matches ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: region_id=${vendorRegionId}`);
+          return matches;
+        });
+        console.log('[AVAILABLE-VENDORS] ✅ After region_id filter:', filteredVendors.length, 'vendors');
+      }
+    }
+
     // Calculate distances and sort by proximity
-    const vendorsWithDistance = (vendors || [])
+    const vendorsWithDistance = filteredVendors
       .map((vendor: any) => {
         let distance: number | null = null;
         if (vendor.profiles.latitude != null && vendor.profiles.longitude != null) {
@@ -234,6 +301,7 @@ export async function GET(
           role: vendor.role,
           division: vendor.division,
           is_active: vendor.is_active,
+          region_id: vendor.region_id,
           profiles: {
             first_name: vendor.profiles.first_name,
             last_name: vendor.profiles.last_name,
@@ -241,7 +309,8 @@ export async function GET(
             city: vendor.profiles.city,
             state: vendor.profiles.state,
             latitude: vendor.profiles.latitude,
-            longitude: vendor.profiles.longitude
+            longitude: vendor.profiles.longitude,
+            region_id: vendor.profiles.region_id
           },
           distance: distance !== null ? Math.round(distance * 10) / 10 : null
         };

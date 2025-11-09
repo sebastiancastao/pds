@@ -333,6 +333,8 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - isTemporaryPassword:', isTemporaryPassword, '(type:', typeof isTemporaryPassword, ')');
       console.log('[LOGIN DEBUG] - mustChangePassword:', mustChangePassword, '(type:', typeof mustChangePassword, ')');
       console.log('[LOGIN DEBUG] - backgroundCheckCompleted:', backgroundCheckCompleted, '(type:', typeof backgroundCheckCompleted, ')');
+      const userRole = (currentUserData?.role || '').toString().trim().toLowerCase();
+      console.log('[LOGIN DEBUG] - role:', userRole);
 
       console.log('[LOGIN DEBUG] User status after login:', {
         userId: authData.user.id,
@@ -347,6 +349,15 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - If background_check_completed = FALSE → /background-checks-form');
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + temp password → /password');
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + permanent password → /verify-mfa');
+
+      // BackgroundChecker special case: temp password goes directly to MFA setup
+      if ((isTemporaryPassword || mustChangePassword) && userRole === 'backgroundchecker') {
+        console.log('[LOGIN DEBUG] Background Checker with temp password → /mfa-setup');
+        sessionStorage.removeItem('mfa_checkpoint');
+        sessionStorage.removeItem('mfa_verified');
+        router.replace('/mfa-setup');
+        return;
+      }
 
       // Step 1: Check if background check is completed
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {

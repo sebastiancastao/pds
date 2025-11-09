@@ -257,19 +257,107 @@ export default function HRDashboardPage() {
       });
       const byVenue: Record<string, { venue: string; city?: string | null; state?: string | null; totalPayment: number; totalHours: number; events: any[] }> = {};
 
-      // Drive the rendering list from paymentsByEvent keys to ensure we show all events with data
+      // Show ALL filtered events, not just those with payment data
       const eventsMap: Record<string, any> = Object.fromEntries(allEvents.map((e: any) => [e.id, e]));
-      const eventIdsToShow = Object.keys(paymentsByEventId);
-      for (const eventId of eventIdsToShow) {
+
+      console.log('[HR PAYMENTS] Processing filtered events:', { filteredCount: filtered.length, withPaymentData: Object.keys(paymentsByEventId).length });
+
+      for (const eventInfo of filtered) {
+        const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
-        if (!eventPaymentData || !Array.isArray(eventPaymentData.vendorPayments) || eventPaymentData.vendorPayments.length === 0) continue;
+
+        // Initialize venue entry
+        if (!byVenue[eventInfo.venue]) {
+          byVenue[eventInfo.venue] = {
+            venue: eventInfo.venue,
+            city: eventInfo.city,
+            state: eventInfo.state,
+            totalPayment: 0,
+            totalHours: 0,
+            events: []
+          };
+        }
+
+        // If no payment data exists for this event, check if there's an assigned team
+        if (!eventPaymentData || !Array.isArray(eventPaymentData.vendorPayments) || eventPaymentData.vendorPayments.length === 0) {
+          console.log('[HR PAYMENTS] Event without payment data, checking for team:', eventId, eventInfo.event_name);
+
+          // Fetch event team to show assigned staff even without payment calculations
+          try {
+            const teamRes = await fetch(`/api/events/${eventId}/team`, {
+              method: 'GET',
+              headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+            });
+
+            if (teamRes.ok) {
+              const teamData = await teamRes.json();
+              const teamMembers = teamData.team || [];
+
+              if (teamMembers.length > 0) {
+                console.log('[HR PAYMENTS] Found team members:', teamMembers.length);
+
+                // Map team members to payment format with zeros
+                const teamPayments = teamMembers.map((member: any) => {
+                  const user = member.users;
+                  const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+                  const firstName = profile?.first_name || 'N/A';
+                  const lastName = profile?.last_name || '';
+
+                  return {
+                    userId: member.vendor_id,
+                    firstName,
+                    lastName,
+                    email: user?.email || 'N/A',
+                    actualHours: 0,
+                    regularHours: 0,
+                    regularPay: 0,
+                    overtimeHours: 0,
+                    overtimePay: 0,
+                    doubletimeHours: 0,
+                    doubletimePay: 0,
+                    commissions: 0,
+                    tips: 0,
+                    totalPay: 0,
+                    adjustmentAmount: 0,
+                    finalPay: 0,
+                    status: member.status // Include confirmation status
+                  };
+                });
+
+                byVenue[eventInfo.venue].events.push({
+                  id: eventId,
+                  name: eventInfo.event_name,
+                  date: eventInfo.event_date,
+                  baseRate: 17.28,
+                  eventTotal: 0,
+                  eventHours: 0,
+                  payments: teamPayments
+                });
+                continue;
+              }
+            }
+          } catch (e) {
+            console.error('[HR PAYMENTS] Failed to fetch team for event:', eventId, e);
+          }
+
+          // No team found either, add empty event
+          byVenue[eventInfo.venue].events.push({
+            id: eventId,
+            name: eventInfo.event_name,
+            date: eventInfo.event_date,
+            baseRate: 17.28,
+            eventTotal: 0,
+            eventHours: 0,
+            payments: []
+          });
+          continue;
+        }
+
+        // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
         const eventPaymentSummary = eventPaymentData.eventPayment || {};
-        const eventInfo = eventPaymentData.eventInfo || eventsMap[eventId] || { id: eventId, event_name: 'Unknown Event', event_date: '', venue: 'Unknown Venue', city: '', state: '' };
         const baseRate = Number(eventPaymentSummary.base_rate || 17.28);
-        console.log('[HR PAYMENTS] event', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length, hasSummary: !!eventPaymentSummary });
-
-        if (!byVenue[eventInfo.venue]) byVenue[eventInfo.venue] = { venue: eventInfo.venue, city: eventInfo.city, state: eventInfo.state, totalPayment: 0, totalHours: 0, events: [] };
+        console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
         // Map vendor payments to the normalized shape used in Global Calendar
         const eventPayments = vendorPayments.map((payment: any) => {
@@ -307,7 +395,15 @@ export default function HRDashboardPage() {
 
         byVenue[eventInfo.venue].totalPayment += eventTotal;
         byVenue[eventInfo.venue].totalHours += eventHours;
-        byVenue[eventInfo.venue].events.push({ id: eventId, name: eventInfo.event_name, date: eventInfo.event_date, baseRate, eventTotal, eventHours, payments: eventPayments });
+        byVenue[eventInfo.venue].events.push({
+          id: eventId,
+          name: eventInfo.event_name,
+          date: eventInfo.event_date,
+          baseRate,
+          eventTotal,
+          eventHours,
+          payments: eventPayments
+        });
       }
       console.log('[HR PAYMENTS] venues assembled', { venueCount: Object.keys(byVenue).length });
       const venuesArr = Object.values(byVenue);
@@ -750,8 +846,21 @@ export default function HRDashboardPage() {
                                           {ev.payments.map((p: any, idx: number) => (
                                             <tr key={idx} className="hover:bg-gray-50">
                                               <td className="p-2">
-                                                <div className="text-sm font-medium text-gray-900">{p.firstName} {p.lastName}</div>
-                                                <div className="text-xs text-gray-500">{p.email}</div>
+                                                <div className="flex items-center gap-2">
+                                                  <div>
+                                                    <div className="text-sm font-medium text-gray-900">{p.firstName} {p.lastName}</div>
+                                                    <div className="text-xs text-gray-500">{p.email}</div>
+                                                  </div>
+                                                  {p.status && p.totalPay === 0 && (
+                                                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                                      p.status === 'confirmed' ? 'bg-green-100 text-green-700' :
+                                                      p.status === 'pending_confirmation' ? 'bg-yellow-100 text-yellow-700' :
+                                                      'bg-gray-100 text-gray-600'
+                                                    }`} title="Team member assigned, awaiting time tracking">
+                                                      {p.status === 'confirmed' ? 'Confirmed' : p.status === 'pending_confirmation' ? 'Pending' : p.status}
+                                                    </span>
+                                                  )}
+                                                </div>
                                               </td>
                                               <td className="p-2 text-sm">{Number(p.regularHours || 0).toFixed(2)}h</td>
                                               <td className="p-2 text-sm text-green-600">${Number(p.regularPay || 0).toFixed(2)}</td>

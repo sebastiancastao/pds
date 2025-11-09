@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase";
 import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
+import { safeDecrypt } from "@/lib/encryption";
 import "./dashboard-styles.css";
 
 type EventItem = {
@@ -130,6 +131,7 @@ export default function DashboardPage() {
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const [savingTeam, setSavingTeam] = useState(false);
   const [teamMessage, setTeamMessage] = useState("");
+  const [selectedTeamRegion, setSelectedTeamRegion] = useState<string>("all");
 
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
@@ -812,32 +814,68 @@ export default function DashboardPage() {
     }
   };
 
+  const loadTeamVendors = async (event: EventItem, regionId: string = "all") => {
+    setLoadingAvailable(true);
+    console.log('[DASHBOARD-TEAM] 🔍 Loading team vendors for event:', event.id, 'with regionId:', regionId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      // Use geographic filtering when a specific region is selected
+      // This ensures vendors are filtered by geographic boundaries (radius from region center)
+      const useGeoFilter = regionId !== "all";
+      const params = new URLSearchParams();
+      if (regionId && regionId !== "all") {
+        params.append("region_id", regionId);
+        if (useGeoFilter) {
+          params.append("geo_filter", "true");
+        }
+      }
+      const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
+      console.log('[DASHBOARD-TEAM] 📡 Fetching available vendors from:', url, { useGeoFilter, regionId });
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const data = await res.json();
+      if (res.ok) {
+        console.log('[DASHBOARD-TEAM] ✅ Loaded', data.vendors?.length || 0, 'available vendors');
+        setAvailableVendors(data.vendors || []);
+      } else {
+        console.error('[DASHBOARD-TEAM] ❌ Failed to load available vendors:', data.error);
+        setTeamMessage("Failed to load available vendors");
+      }
+    } catch (err) {
+      console.error('[DASHBOARD-TEAM] ❌ Network error loading available vendors:', err);
+      setTeamMessage("Network error loading available vendors");
+    }
+    setLoadingAvailable(false);
+  };
+
   const openTeamModal = async (event: EventItem) => {
     setSelectedEvent(event);
     setShowTeamModal(true);
     setSelectedTeamMembers(new Set());
     setTeamMessage("");
-    setLoadingAvailable(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${event.id}/available-vendors`, {
-        method: "GET",
-        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-      });
-      const data = await res.json();
-      if (res.ok) setAvailableVendors(data.vendors || []);
-      else setTeamMessage("Failed to load available vendors");
-    } catch {
-      setTeamMessage("Network error loading available vendors");
-    }
-    setLoadingAvailable(false);
+    setSelectedTeamRegion("all");
+    await loadTeamVendors(event, "all");
   };
+
+  const handleTeamRegionChange = async (regionId: string) => {
+    setSelectedTeamRegion(regionId);
+    setSelectedTeamMembers(new Set());
+    if (selectedEvent) {
+      await loadTeamVendors(selectedEvent, regionId);
+    }
+  };
+
   const closeTeamModal = () => {
     setShowTeamModal(false);
     setSelectedEvent(null);
     setAvailableVendors([]);
     setSelectedTeamMembers(new Set());
     setTeamMessage("");
+    setSelectedTeamRegion("all");
   };
   const toggleTeamMember = (id: string) => {
     const s = new Set(selectedTeamMembers);
@@ -1920,6 +1958,42 @@ export default function DashboardPage() {
                 </div>
               )}
 
+              {/* Region Filter */}
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Filter by Region
+                  {regions.length > 0 && (
+                    <span className="ml-2 text-xs font-normal text-gray-500">({regions.length} regions)</span>
+                  )}
+                </label>
+                <select
+                  value={selectedTeamRegion}
+                  onChange={(e) => handleTeamRegionChange(e.target.value)}
+                  disabled={loadingAvailable}
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                >
+                  <option value="all">🌎 All Regions</option>
+                  {regions.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      📍 {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center justify-between mt-1.5">
+                  <p className="text-xs text-gray-500">
+                    {selectedTeamRegion === "all"
+                      ? "Showing vendors from all regions"
+                      : `Showing ${availableVendors.length} ${availableVendors.length === 1 ? "vendor" : "vendors"} in ${regions.find(r => r.id === selectedTeamRegion)?.name || 'selected region'}`
+                    }
+                  </p>
+                  {selectedTeamRegion !== "all" && (
+                    <button onClick={() => handleTeamRegionChange("all")} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {loadingAvailable ? (
                 <div className="apple-empty-state">
                   <div className="apple-spinner mb-4" />
@@ -1969,38 +2043,43 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
-                    {availableVendors.map((v) => (
-                      <div key={v.id} className="apple-vendor-card" onClick={() => toggleTeamMember(v.id)}>
-                        <input
-                          type="checkbox"
-                          checked={selectedTeamMembers.has(v.id)}
-                          onChange={() => toggleTeamMember(v.id)}
-                          className="apple-checkbox"
-                        />
-                        {v.profiles.profile_photo_url ? (
-                          <img
-                            src={v.profiles.profile_photo_url}
-                            alt={`${v.profiles.first_name} ${v.profiles.last_name}`}
-                            className="w-12 h-12 rounded-full object-cover flex-shrink-0"
-                            onError={(e) => {
-                              const t = e.target as HTMLImageElement;
-                              t.style.display = "none";
-                              if (t.nextSibling) (t.nextSibling as HTMLElement).style.display = "flex";
-                            }}
+                    {availableVendors.map((v) => {
+                      const firstName = safeDecrypt(v.profiles.first_name);
+                      const lastName = safeDecrypt(v.profiles.last_name);
+                      const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
+
+                      return (
+                        <div key={v.id} className="apple-vendor-card" onClick={() => toggleTeamMember(v.id)}>
+                          <input
+                            type="checkbox"
+                            checked={selectedTeamMembers.has(v.id)}
+                            onChange={() => toggleTeamMember(v.id)}
+                            className="apple-checkbox"
                           />
-                        ) : null}
-                        <div
-                          className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold flex-shrink-0"
-                          style={{ display: v.profiles.profile_photo_url ? "none" : "flex" }}
-                        >
-                          {v.profiles.first_name?.charAt(0)}
-                          {v.profiles.last_name?.charAt(0)}
-                        </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-2">
-                            <div className="font-semibold text-gray-900">
-                              {v.profiles.first_name} {v.profiles.last_name}
-                            </div>
+                          {v.profiles.profile_photo_url ? (
+                            <img
+                              src={v.profiles.profile_photo_url}
+                              alt={`${firstName} ${lastName}`}
+                              className="w-12 h-12 rounded-full object-cover flex-shrink-0"
+                              onError={(e) => {
+                                const t = e.target as HTMLImageElement;
+                                t.style.display = "none";
+                                if (t.nextSibling) (t.nextSibling as HTMLElement).style.display = "flex";
+                              }}
+                            />
+                          ) : null}
+                          <div
+                            className="w-12 h-12 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold flex-shrink-0"
+                            style={{ display: v.profiles.profile_photo_url ? "none" : "flex" }}
+                          >
+                            {firstName?.charAt(0)}
+                            {lastName?.charAt(0)}
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center justify-between mb-2">
+                              <div className="font-semibold text-gray-900">
+                                {firstName} {lastName}
+                              </div>
                             {v.distance !== null ? (
                               <div className="apple-distance-badge">{v.distance} mi</div>
                             ) : (
@@ -2009,10 +2088,10 @@ export default function DashboardPage() {
                           </div>
                           <div className="text-gray-600 text-sm mb-1">
                             {v.email}
-                            {v.profiles.phone && (
+                            {phone && (
                               <>
                                 <span className="mx-2 text-gray-400">•</span>
-                                {v.profiles.phone}
+                                {phone}
                               </>
                             )}
                           </div>
@@ -2034,7 +2113,8 @@ export default function DashboardPage() {
                           </div>
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </>
               )}

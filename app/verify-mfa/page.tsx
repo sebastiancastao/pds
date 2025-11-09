@@ -70,6 +70,13 @@ function VerifyMFAContent() {
         .eq('id', retrySession.user.id)
         .single() as any);
 
+      // BackgroundChecker with temporary password should go to MFA setup
+      if ((userData?.is_temporary_password || userData?.must_change_password) && ((userData?.role || '').toString().trim().toLowerCase() === 'backgroundchecker')) {
+        console.log('[DEBUG] Background Checker with temp password (retry flow) → /mfa-setup');
+        router.replace('/mfa-setup');
+        return;
+      }
+
       if (userData?.is_temporary_password || userData?.must_change_password) {
         console.log('[DEBUG] ❌ User has temporary password - redirecting to /password');
         console.log('[DEBUG] User must change password BEFORE MFA verification');
@@ -94,6 +101,13 @@ function VerifyMFAContent() {
       .select('is_temporary_password, must_change_password, role')
       .eq('id', session.user.id)
       .single() as any);
+
+    // BackgroundChecker with temporary password should go to MFA setup
+    if ((userData?.is_temporary_password || userData?.must_change_password) && ((userData?.role || '').toString().trim().toLowerCase() === 'backgroundchecker')) {
+      console.log('[DEBUG] Background Checker with temp password → /mfa-setup');
+      router.replace('/mfa-setup');
+      return;
+    }
 
     console.log('[DEBUG] Temporary password check:', {
       is_temporary_password: userData?.is_temporary_password,

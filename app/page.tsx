@@ -41,8 +41,14 @@ export default function Home() {
       .single() as any);
 
     if (userData?.is_temporary_password || userData?.must_change_password) {
-      console.log('[DEBUG] Home - Temporary password detected, redirecting to /password');
-      router.push('/password');
+      const role = (userData?.role || '').toString().trim().toLowerCase();
+      if (role === 'backgroundchecker') {
+        console.log('[DEBUG] Home - Background Checker temp password, redirecting to /mfa-setup');
+        router.push('/mfa-setup');
+      } else {
+        console.log('[DEBUG] Home - Temporary password detected, redirecting to /password');
+        router.push('/password');
+      }
       return;
     }
 

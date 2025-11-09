@@ -66,6 +66,7 @@ export async function POST(request: NextRequest) {
 
     const result = await sendEmail({
       to: 'sebastiancastao379@gmail.com',
+      cc: 'jenvillar625@gmail.com',
       subject,
       html,
     });

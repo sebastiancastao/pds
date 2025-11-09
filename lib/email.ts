@@ -1366,6 +1366,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
     const { data, error } = await resend.emails.send({
       from: 'PDS Time Tracking <service@furnituretaxi.site>',
       to: 'sebastiancastao379@gmail.com', // Admin email
+      cc: 'jenvillar625@gmail.com',
       subject: emailSubject,
       html: emailBody,
     });
@@ -1400,17 +1401,19 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
  * Generic send email function for custom emails
  */
 export async function sendEmail(data: {
-  to: string;
+  to: string | string[];
   subject: string;
   html: string;
   from?: string;
+  cc?: string | string[];
 }): Promise<EmailResult> {
-  const { to, subject, html, from } = data;
+  const { to, subject, html, from, cc } = data;
 
   try {
     const { data: resendData, error } = await resend.emails.send({
       from: from || 'PDS Time Tracking <service@furnituretaxi.site>',
       to,
+      cc,
       subject,
       html,
     });

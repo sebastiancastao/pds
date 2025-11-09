@@ -6,7 +6,6 @@ import "./invitation-styles.css";
 type DayAvailability = {
   date: string; // YYYY-MM-DD
   available: boolean;
-  notes?: string;
 };
 
 export default function InvitationPage() {
@@ -17,6 +16,7 @@ export default function InvitationPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>("");
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   // Generate the next 21 days (including today)
   const buildNext21Days = (): DayAvailability[] => {
@@ -26,7 +26,7 @@ export default function InvitationPage() {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
       const iso = d.toISOString().slice(0, 10);
-      arr.push({ date: iso, available: false, notes: "" });
+      arr.push({ date: iso, available: false });
     }
     return arr;
   };
@@ -63,14 +63,6 @@ export default function InvitationPage() {
     });
   };
 
-  const setNote = (idx: number, note: string) => {
-    setDays(prev => {
-      const copy = [...prev];
-      copy[idx] = { ...copy[idx], notes: note };
-      return copy;
-    });
-  };
-
   const handleSave = async () => {
     if (!token) return setMessage("Invalid invitation link.");
     setSaving(true);
@@ -83,12 +75,12 @@ export default function InvitationPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error || "Save failed");
-      setMessage("Availability saved successfully. Thank you!");
+      setShowSuccessModal(true);
     } catch (err: any) {
       setMessage(err?.message || "Error saving availability.");
+      setTimeout(() => setMessage(""), 5000);
     } finally {
       setSaving(false);
-      setTimeout(() => setMessage(""), 5000);
     }
   };
 
@@ -115,9 +107,9 @@ export default function InvitationPage() {
           <p className="text-lg text-gray-600 font-normal">Select the days you're available to work over the next 3 weeks.</p>
         </div>
 
-        {/* Alert Message */}
-        {message && (
-          <div className={`apple-alert mb-6 ${message.toLowerCase().includes("error") ? "apple-alert-error" : "apple-alert-success"}`}>
+        {/* Error Message */}
+        {message && message.toLowerCase().includes("error") && (
+          <div className="apple-alert apple-alert-error mb-6">
             {message}
           </div>
         )}
@@ -132,12 +124,12 @@ export default function InvitationPage() {
         ) : (
           <>
             {/* Action Buttons */}
-            <div className="flex flex-wrap gap-3 mb-8">
+            <div className="flex flex-wrap gap-4 mb-8">
               <button
                 onClick={() => setDays(prev => prev.map(d => ({ ...d, available: true })))}
-                className="apple-button apple-button-secondary"
+                className="group relative inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"
               >
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                 </svg>
                 Select All Days
@@ -145,9 +137,9 @@ export default function InvitationPage() {
 
               <button
                 onClick={() => setDays(prev => prev.map(d => ({ ...d, available: false })))}
-                className="apple-button apple-button-secondary"
+                className="group relative inline-flex items-center px-6 py-3 bg-white text-gray-700 font-semibold rounded-xl border-2 border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md transform hover:-translate-y-0.5 transition-all duration-200"
               >
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg className="w-5 h-5 mr-2 text-gray-500 group-hover:text-red-500 group-hover:scale-110 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                 </svg>
                 Clear All
@@ -186,12 +178,6 @@ export default function InvitationPage() {
                         <span className="checkmark"></span>
                       </label>
                     </div>
-                    <input
-                      placeholder="Add notes (optional)"
-                      value={d.notes || ""}
-                      onChange={(e) => setNote(i, e.target.value)}
-                      className="invitation-notes-input"
-                    />
                   </div>
                 );
               })}
@@ -212,7 +198,11 @@ export default function InvitationPage() {
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className={`apple-button apple-button-primary text-lg px-12 py-4 ${saving ? 'opacity-60 cursor-not-allowed' : ''}`}
+                className={`group relative inline-flex items-center px-12 py-4 text-lg font-bold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-2xl shadow-xl shadow-blue-500/40 transform transition-all duration-200 ${
+                  saving
+                    ? 'opacity-60 cursor-not-allowed'
+                    : 'hover:shadow-2xl hover:shadow-blue-500/50 hover:from-blue-700 hover:to-blue-800 hover:scale-105'
+                }`}
               >
                 {saving ? (
                   <>
@@ -221,7 +211,7 @@ export default function InvitationPage() {
                   </>
                 ) : (
                   <>
-                    <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <svg className="w-6 h-6 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                     Submit Availability
@@ -232,6 +222,46 @@ export default function InvitationPage() {
           </>
         )}
       </div>
+
+      {/* Success Modal */}
+      {showSuccessModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm animate-fadeIn"
+          onClick={() => setShowSuccessModal(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl max-w-md w-full p-8 transform animate-scaleIn"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-center">
+              {/* Success Icon */}
+              <div className="mx-auto w-20 h-20 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-green-500/50 animate-bounce-once">
+                <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+
+              {/* Success Message */}
+              <h2 className="text-3xl font-bold text-gray-900 mb-3">Success!</h2>
+              <p className="text-lg text-gray-600 mb-2">Your availability has been saved.</p>
+              <p className="text-sm text-gray-500 mb-8">
+                You selected <span className="font-semibold text-green-600">{days.filter(d => d.available).length} day{days.filter(d => d.available).length !== 1 ? 's' : ''}</span>. Thank you!
+              </p>
+
+              {/* Close Button */}
+              <button
+                onClick={() => setShowSuccessModal(false)}
+                className="group w-full inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-gradient-to-r from-green-500 to-green-600 rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"
+              >
+                <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+                Got it!
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
