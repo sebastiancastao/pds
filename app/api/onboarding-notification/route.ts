@@ -52,8 +52,8 @@ export async function POST(request: NextRequest) {
     // If this is the final form completion (lgbtq-rights + save-finish), mark onboarding as complete
     if (form === 'lgbtq-rights' && trigger === 'save-finish' && userId) {
       console.log('[ONBOARDING-NOTIFICATION] Final form completed, setting onboarding_completed_at');
-      const { error: updateErr } = await supabase
-        .from('profiles')
+      const { error: updateErr } = await (supabase
+        .from('profiles') as any)
         .update({
           onboarding_completed_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
