@@ -224,7 +224,7 @@ export default function TimeTrackingPage() {
     <div className="container mx-auto max-w-3xl p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Time Tracking</h1>
-        <a href="/dashboard" className="text-sm text-blue-600 hover:underline">← Back to Dashboard</a>
+        
       </div>
 
       {message && (

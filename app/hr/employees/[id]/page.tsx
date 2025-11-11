@@ -34,7 +34,7 @@ type TimeEntry = {
 };
 
 type PerEvent = {
-  event_id: string;
+  event_id: string | null;
   shifts: number;
   hours: number;
   event_name: string | null;
@@ -84,7 +84,10 @@ function hoursBetween(clock_in: string | null, clock_out: string | null) {
 }
 
 function formatHours(h: number) {
-  // Show 1 decimal but keep trailing .0
+  // Show 2 decimals for small numbers (< 1), 1 decimal for larger numbers
+  if (h < 1) {
+    return h.toFixed(2);
+  }
   return (Math.round(h * 10) / 10).toFixed(1);
 }
 
@@ -257,6 +260,19 @@ export default function EmployeeProfilePage() {
     return { totalHoursLocal: total };
   }, [entries]);
 
+  // Create event name lookup from per_event data
+  const eventNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    if (summary?.per_event) {
+      summary.per_event.forEach((event) => {
+        if (event.event_id && event.event_name) {
+          map.set(event.event_id, event.event_name);
+        }
+      });
+    }
+    return map;
+  }, [summary?.per_event]);
+
   // Download a single PDF form
   const downloadPDFForm = (form: PDFForm) => {
     try {
@@ -390,130 +406,150 @@ export default function EmployeeProfilePage() {
             {/* Top section */}
             <section className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
               {/* Profile card */}
-              <div className="apple-card p-6">
-                <div className="flex items-start gap-4">
+              <div className="apple-card p-8 bg-gradient-to-br from-white to-gray-50 border-2 border-gray-100">
+                <div className="flex flex-col items-center text-center">
                   {employee.profile_photo_url ? (
                     <img
                       src={employee.profile_photo_url}
                       alt={`${employee.first_name} ${employee.last_name}`}
-                      className="w-16 h-16 rounded-full object-cover"
+                      className="w-24 h-24 rounded-full object-cover border-4 border-white shadow-lg mb-4"
                       onError={(e) => {
                         const t = e.target as HTMLImageElement;
                         t.style.display = "none";
                       }}
                     />
                   ) : (
-                    <div className="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-xl">
+                    <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold text-3xl shadow-lg border-4 border-white mb-4">
                       {employee.first_name?.[0]}
                       {employee.last_name?.[0]}
                     </div>
                   )}
-                  <div className="flex-1">
-                    <h2 className="text-xl font-semibold text-gray-900">
-                      {employee.first_name} {employee.last_name}
-                    </h2>
-                    <p className="text-sm text-gray-600">{employee.position} • {employee.department}</p>
-                    <div className="mt-3 space-y-1 text-sm text-gray-600">
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M16 2v4M8 2v4M3 10h18M5 22h14a2 2 0 002-2v-8H3v8a2 2 0 002 2z"/>
-                        </svg>
-                        Hired: {formatDate(employee.hire_date)}
-                      </div>
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2z"/>
-                        </svg>
-                        {employee.email}
-                      </div>
-                      {employee.phone && (
-                        <div className="flex items-center">
-                          <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                            <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.95.69l1.5 4.49a1 1 0 01-.5 1.21l-2.26 1.13a11.04 11.04 0 005.52 5.52l1.13-2.26a1 1 0 011.21-.5l4.49 1.5a1 1 0 01.69.95V19a2 2 0 01-2 2h-1C9.72 21 3 14.28 3 6V5z"/>
-                          </svg>
-                          {employee.phone}
-                        </div>
-                      )}
-                      <div className="flex items-center">
-                        <svg className="w-4 h-4 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0L6.343 16.657a8 8 0 1111.314 0z"/>
-                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
-                        </svg>
-                        {(employee.city && employee.state) ? `${employee.city}, ${employee.state}` : (employee.state || "—")}
-                      </div>
+
+                  <h2 className="text-2xl font-bold text-gray-900 mb-1">
+                    {employee.first_name} {employee.last_name}
+                  </h2>
+
+                  <div className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 rounded-lg mb-4">
+                    <svg className="w-5 h-5 text-blue-600" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"/>
+                    </svg>
+                    <span className="text-sm font-semibold text-blue-900">{employee.position}</span>
+                    <span className="text-sm text-blue-600">•</span>
+                    <span className="text-sm font-medium text-blue-700">{employee.department}</span>
+                  </div>
+
+                  <div className="w-full space-y-3 mb-4">
+                    <div className="flex items-center justify-center gap-3 text-sm text-gray-600 bg-gray-50 rounded-lg py-2 px-4">
+                      <svg className="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M16 2v4M8 2v4M3 10h18M5 22h14a2 2 0 002-2v-8H3v8a2 2 0 002 2z"/>
+                      </svg>
+                      <span className="font-medium">Hired:</span>
+                      <span>{formatDate(employee.hire_date)}</span>
                     </div>
-                    <div className="mt-3">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
-                        employee.status === "active"
-                          ? "bg-green-100 text-green-700"
-                          : employee.status === "on_leave"
-                          ? "bg-yellow-100 text-yellow-700"
-                          : "bg-gray-100 text-gray-700"
-                      }`}>
-                        {employee.status === "active" ? "Active" : employee.status === "on_leave" ? "On Leave" : "Inactive"}
-                      </span>
+
+                    <div className="flex items-center justify-center gap-3 text-sm text-gray-600 bg-gray-50 rounded-lg py-2 px-4">
+                      <svg className="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2z"/>
+                      </svg>
+                      <span className="truncate">{employee.email}</span>
+                    </div>
+
+                    {employee.phone && (
+                      <div className="flex items-center justify-center gap-3 text-sm text-gray-600 bg-gray-50 rounded-lg py-2 px-4">
+                        <svg className="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.95.69l1.5 4.49a1 1 0 01-.5 1.21l-2.26 1.13a11.04 11.04 0 005.52 5.52l1.13-2.26a1 1 0 011.21-.5l4.49 1.5a1 1 0 01.69.95V19a2 2 0 01-2 2h-1C9.72 21 3 14.28 3 6V5z"/>
+                        </svg>
+                        <span>{employee.phone}</span>
+                      </div>
+                    )}
+
+                    <div className="flex items-center justify-center gap-3 text-sm text-gray-600 bg-gray-50 rounded-lg py-2 px-4">
+                      <svg className="w-4 h-4 text-gray-500" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0L6.343 16.657a8 8 0 1111.314 0z"/>
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/>
+                      </svg>
+                      <span>{(employee.city && employee.state) ? `${employee.city}, ${employee.state}` : (employee.state || "—")}</span>
                     </div>
                   </div>
+
+                  <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold shadow-sm ${
+                    employee.status === "active"
+                      ? "bg-green-100 text-green-700 border-2 border-green-200"
+                      : employee.status === "on_leave"
+                      ? "bg-yellow-100 text-yellow-700 border-2 border-yellow-200"
+                      : "bg-gray-100 text-gray-700 border-2 border-gray-200"
+                  }`}>
+                    <span className={`w-2 h-2 rounded-full ${
+                      employee.status === "active" ? "bg-green-500" : employee.status === "on_leave" ? "bg-yellow-500" : "bg-gray-500"
+                    }`}></span>
+                    {employee.status === "active" ? "Active" : employee.status === "on_leave" ? "On Leave" : "Inactive"}
+                  </span>
                 </div>
               </div>
 
               {/* Stats cards */}
               <div className="lg:col-span-2 grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="apple-stat-card apple-stat-card-blue">
-                  <div className="apple-stat-icon apple-stat-icon-blue">
-                    <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
-                    </svg>
-                  </div>
-                  <div className="apple-stat-content">
-                    <div className="apple-stat-label">Total Hours</div>
-                    <div className="apple-stat-value">
-                      {formatHours(summary?.total_hours ?? computed.totalHoursLocal)}
+                <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-6 border-2 border-blue-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-lg">
+                      <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                      </svg>
                     </div>
-                    <div className="apple-stat-sublabel">all time</div>
+                    <div>
+                      <div className="text-sm font-medium text-blue-700">Total Hours</div>
+                      <div className="text-xs text-blue-600">all time</div>
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-blue-900">
+                    {formatHours(summary?.total_hours ?? computed.totalHoursLocal)}
                   </div>
                 </div>
 
-                <div className="apple-stat-card apple-stat-card-green">
-                  <div className="apple-stat-icon apple-stat-icon-green">
-                    <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M16 17l-4 4m0 0l-4-4m4 4V3"/>
-                    </svg>
-                  </div>
-                  <div className="apple-stat-content">
-                    <div className="apple-stat-label">Total Shifts</div>
-                    <div className="apple-stat-value">
-                      {summary?.total_shifts ?? entries.length}
+                <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-6 border-2 border-green-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-green-500 to-green-600 flex items-center justify-center shadow-lg">
+                      <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
+                      </svg>
                     </div>
-                    <div className="apple-stat-sublabel">clock-ins</div>
+                    <div>
+                      <div className="text-sm font-medium text-green-700">Total Shifts</div>
+                      <div className="text-xs text-green-600">clock-ins</div>
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-green-900">
+                    {summary?.total_shifts ?? entries.length}
                   </div>
                 </div>
 
-                <div className="apple-stat-card apple-stat-card-purple">
-                  <div className="apple-stat-icon apple-stat-icon-purple">
-                    <svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                      <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M8 17l4-4 4 4M12 12V3"/>
-                    </svg>
-                  </div>
-                  <div className="apple-stat-content">
-                    <div className="apple-stat-label">Avg Hours / Shift</div>
-                    <div className="apple-stat-value">
-                      {(() => {
-                        const h = summary?.total_hours ?? computed.totalHoursLocal;
-                        const s = (summary?.total_shifts ?? entries.length) || 1;
-                        return formatHours(h / s);
-                      })()}
+                <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-6 border-2 border-purple-200 shadow-sm hover:shadow-md transition-shadow">
+                  <div className="flex items-center gap-4 mb-3">
+                    <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-purple-500 to-purple-600 flex items-center justify-center shadow-lg">
+                      <svg className="w-6 h-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+                      </svg>
                     </div>
-                    <div className="apple-stat-sublabel">derived</div>
+                    <div>
+                      <div className="text-sm font-medium text-purple-700">Avg Hours / Shift</div>
+                      <div className="text-xs text-purple-600">average</div>
+                    </div>
+                  </div>
+                  <div className="text-3xl font-bold text-purple-900">
+                    {(() => {
+                      const h = summary?.total_hours ?? computed.totalHoursLocal;
+                      const s = (summary?.total_shifts ?? entries.length) || 1;
+                      return formatHours(h / s);
+                    })()}
                   </div>
                 </div>
               </div>
             </section>
 
-            {/* Per-event Breakdown */}
+            {/* All Vendor Events (Confirmed) */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Per-Event Breakdown</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">All Vendor Events</h2>
               </div>
               <div className="apple-card overflow-hidden">
                 <div className="overflow-x-auto">
@@ -524,7 +560,6 @@ export default function EmployeeProfilePage() {
                         <th className="text-left p-4 font-semibold text-gray-700">Date</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Shifts</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                        <th className="text-right p-4 font-semibold text-gray-700">Open</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-200">
@@ -544,22 +579,11 @@ export default function EmployeeProfilePage() {
                           <td className="p-4 text-gray-900 font-medium">
                             {formatHours(row.hours)}
                           </td>
-                          <td className="p-4 text-right">
-                            {row.event_id && (
-                              <Link href={`/event-dashboard/${row.event_id}`}>
-                                <button className="apple-icon-button" title="Open event">
-                                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                                  </svg>
-                                </button>
-                              </Link>
-                            )}
-                          </td>
                         </tr>
                       ))}
                       {(!summary?.per_event || summary.per_event.length === 0) && (
                         <tr>
-                          <td colSpan={5} className="p-6 text-center text-gray-500">
+                          <td colSpan={4} className="p-6 text-center text-gray-500">
                             No shifts recorded for events yet.
                           </td>
                         </tr>
@@ -904,7 +928,7 @@ export default function EmployeeProfilePage() {
                             <td className="p-4 text-gray-600 text-sm">
                               {e.event_id ? (
                                 <Link href={`/event-dashboard/${e.event_id}`} className="text-blue-600 hover:text-blue-700">
-                                  {e.event_id}
+                                  {eventNameMap.get(e.event_id) || e.event_id}
                                 </Link>
                               ) : (
                                 "—"

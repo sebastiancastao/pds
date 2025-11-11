@@ -63,7 +63,10 @@ export async function GET(
       .eq('id', user.id)
       .single();
 
-    if (!userData || !['exec'].includes(userData.role)) {
+    const role = (userData?.role || '').toString().trim().toLowerCase();
+    const isPrivileged = role === 'exec' || role === 'admin' || role === 'hr';
+
+    if (!isPrivileged) {
       return NextResponse.json(
         { error: 'Insufficient permissions. Only HR can view employee forms.' },
         { status: 403 }
@@ -75,7 +78,7 @@ export async function GET(
     // Retrieve all form progress for the user
     const { data: forms, error } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('form_name, form_data, updated_at')
+      .select('form_name, form_data, updated_at, created_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: true });
 
@@ -93,6 +96,7 @@ export async function GET(
       display_name: formDisplayNames[form.form_name] || form.form_name,
       form_data: form.form_data,
       updated_at: form.updated_at,
+      created_at: form.created_at,
     }));
 
     console.log('[PDF_FORMS] Retrieved', transformedForms.length, 'forms');

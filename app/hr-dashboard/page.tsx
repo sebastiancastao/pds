@@ -54,7 +54,7 @@ export default function HRDashboardPage() {
   const [availableStates, setAvailableStates] = useState<string[]>([]);
   const [loadingEmployees, setLoadingEmployees] = useState(false);
   const [employeesError, setEmployeesError] = useState<string>("");
-  // Payments tab state
+  // Payroll tab state
   const [paymentsStartDate, setPaymentsStartDate] = useState<string>("");
   const [paymentsEndDate, setPaymentsEndDate] = useState<string>("");
   const [paymentsByVenue, setPaymentsByVenue] = useState<Array<{ venue: string; city?: string | null; state?: string | null; totalPayment: number; totalHours: number; events: any[] }>>([]);
@@ -644,7 +644,7 @@ export default function HRDashboardPage() {
                 hrView === "payments" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
               }`}
             >
-              Payments
+              Payroll
               {hrView === "payments" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
           </div>

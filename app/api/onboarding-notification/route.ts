@@ -31,7 +31,8 @@ export async function POST(request: NextRequest) {
 
     const body = await request.json().catch(() => ({}));
     const form = body?.form || 'unknown';
-    console.log('[ONBOARDING-NOTIFICATION] Body:', { form });
+    const trigger = body?.trigger || 'unknown';
+    console.log('[ONBOARDING-NOTIFICATION] Body:', { form, trigger });
 
     // Fetch optional profile data for nicer email
     let firstName = '';
@@ -45,6 +46,24 @@ export async function POST(request: NextRequest) {
       if (!pErr && profile) {
         try { firstName = profile.first_name ? decrypt(profile.first_name) : ''; } catch { firstName = profile.first_name || ''; }
         try { lastName = profile.last_name ? decrypt(profile.last_name) : ''; } catch { lastName = profile.last_name || ''; }
+      }
+    }
+
+    // If this is the final form completion (lgbtq-rights + save-finish), mark onboarding as complete
+    if (form === 'lgbtq-rights' && trigger === 'save-finish' && userId) {
+      console.log('[ONBOARDING-NOTIFICATION] Final form completed, setting onboarding_completed_at');
+      const { error: updateErr } = await supabase
+        .from('profiles')
+        .update({
+          onboarding_completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq('user_id', userId);
+
+      if (updateErr) {
+        console.error('[ONBOARDING-NOTIFICATION] Failed to update onboarding_completed_at:', updateErr);
+      } else {
+        console.log('[ONBOARDING-NOTIFICATION] Successfully set onboarding_completed_at');
       }
     }
 

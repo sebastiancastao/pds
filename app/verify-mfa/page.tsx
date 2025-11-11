@@ -301,6 +301,15 @@ function VerifyMFAContent() {
         console.log('[VERIFY-MFA DEBUG] ✅ Background check completed');
         sessionStorage.removeItem('new_user_onboarding'); // Clean up flag
 
+        // Check if worker has pending onboarding redirect (from login)
+        const pendingOnboardingRedirect = sessionStorage.getItem('pending_onboarding_redirect');
+        if (pendingOnboardingRedirect) {
+          console.log('[VERIFY-MFA DEBUG] 🔄 Worker has pending onboarding, redirecting to:', pendingOnboardingRedirect);
+          sessionStorage.removeItem('pending_onboarding_redirect'); // Clean up
+          router.push(pendingOnboardingRedirect);
+          return;
+        }
+
         // Role-based routing
         const userRole = userData?.role;
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);

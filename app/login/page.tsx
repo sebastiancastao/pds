@@ -290,7 +290,7 @@ export default function LoginPage() {
 
       const { data: currentUserData, error: fetchError } = await (supabase
         .from('users')
-        .select('is_temporary_password, must_change_password, background_check_completed')
+        .select('is_temporary_password, must_change_password, background_check_completed, role')
         .eq('id', authData.user.id)
         .single() as any);
 
@@ -307,6 +307,67 @@ export default function LoginPage() {
         console.error('[LOGIN DEBUG] User ID:', authData.user.id);
       } else {
         console.log('[LOGIN DEBUG] ✅ User data fetched successfully:', currentUserData);
+      }
+
+      // Step 5a: Check vendor background check status for workers
+      const userRole = (currentUserData?.role || '').toString().trim().toLowerCase();
+      console.log('[LOGIN DEBUG] User role:', userRole);
+
+      if (userRole === 'worker' || userRole === 'vendor') {
+        console.log('[LOGIN DEBUG] 🔍 Checking vendor_background_checks for worker/vendor...');
+
+        // Use server-side API to bypass RLS issues
+        const { data: { session: currentSession } } = await supabase.auth.getSession();
+
+        try {
+          const bgCheckResponse = await fetch('/api/auth/check-background', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${currentSession?.access_token}`
+            },
+          });
+
+          const bgCheckResult = await bgCheckResponse.json();
+
+          console.log('[LOGIN DEBUG] Background check API result:', bgCheckResult);
+
+          if (!bgCheckResponse.ok) {
+            console.error('[LOGIN DEBUG] ❌ Background check API error:', bgCheckResult);
+            setError('Unable to verify background check status.\n\nPlease try again or contact your administrator.');
+            setIsLoading(false);
+            return;
+          }
+
+          if (!bgCheckResult.approved) {
+            console.log('[LOGIN DEBUG] ❌ Background check not approved:', bgCheckResult.message);
+            setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nIf you believe this is an error, please contact your supervisor.');
+            setIsLoading(false);
+            return;
+          }
+
+          console.log('[LOGIN DEBUG] ✅ Background check approved');
+
+          // Check if onboarding is completed - store redirect path but DON'T redirect yet
+          // UNIVERSAL RULE: All users with permanent passwords MUST go through MFA first
+          if (!bgCheckResult.onboardingCompleted && bgCheckResult.onboardingRedirect) {
+            console.log('[LOGIN DEBUG] ⚠️ Onboarding not completed');
+            console.log('[LOGIN DEBUG] Storing onboarding redirect:', bgCheckResult.onboardingRedirect);
+            console.log('[LOGIN DEBUG] User will complete MFA first, then be redirected to onboarding');
+
+            // Store the onboarding redirect path for after MFA
+            sessionStorage.setItem('pending_onboarding_redirect', bgCheckResult.onboardingRedirect);
+          } else {
+            console.log('[LOGIN DEBUG] ✅ Onboarding completed');
+          }
+
+          console.log('[LOGIN DEBUG] Worker will now proceed through standard login flow (password check → MFA)');
+        } catch (apiError) {
+          console.error('[LOGIN DEBUG] ❌ Failed to check background status:', apiError);
+          setError('Unable to verify background check status.\n\nPlease try again or contact your administrator.');
+          setIsLoading(false);
+          return;
+        }
       }
 
       // Check if the column exists and log its exact value
@@ -333,7 +394,6 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - isTemporaryPassword:', isTemporaryPassword, '(type:', typeof isTemporaryPassword, ')');
       console.log('[LOGIN DEBUG] - mustChangePassword:', mustChangePassword, '(type:', typeof mustChangePassword, ')');
       console.log('[LOGIN DEBUG] - backgroundCheckCompleted:', backgroundCheckCompleted, '(type:', typeof backgroundCheckCompleted, ')');
-      const userRole = (currentUserData?.role || '').toString().trim().toLowerCase();
       console.log('[LOGIN DEBUG] - role:', userRole);
 
       console.log('[LOGIN DEBUG] User status after login:', {
@@ -387,8 +447,9 @@ export default function LoginPage() {
       }
 
       // Step 3: Background check completed AND permanent password → proceed to MFA
+      // UNIVERSAL RULE: All users (including workers with completed onboarding) MUST go through MFA
       console.log('[LOGIN DEBUG] ✅ background_check_completed = TRUE + permanent password');
-      console.log('[LOGIN DEBUG] 🔄 Proceeding to MFA verification');
+      console.log('[LOGIN DEBUG] 🔄 Proceeding to MFA verification (REQUIRED FOR ALL USERS)');
 
       // Step 4: Log success
       await logAuditEvent({

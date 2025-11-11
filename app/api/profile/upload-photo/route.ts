@@ -171,7 +171,6 @@ export async function POST(request: NextRequest) {
         profile_photo_size: photo.size,
         profile_photo_uploaded_at: new Date().toISOString(),
         onboarding_status: 'pending',
-        onboarding_completed_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       }, {
         onConflict: 'user_id'

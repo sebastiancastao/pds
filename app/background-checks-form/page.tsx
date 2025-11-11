@@ -277,51 +277,7 @@ export default function BackgroundChecksForm() {
       console.log(`[SAVE] Saving to background_check_pdfs table`);
       console.log(`[SAVE] Signature type:`, signatureType);
 
-      // New: split saving into smaller chunks to avoid body-size limits
-      try {
-        const doSave = async (payload: any) => {
-          const resp = await fetch('/api/background-waiver/save', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${session.access_token}`
-            },
-            credentials: 'same-origin',
-            body: JSON.stringify(payload),
-          });
-          if (!resp.ok) {
-            let errJson: any = null;
-            try { errJson = await resp.json(); } catch {}
-            console.error('[SAVE] Save failed (chunk):', { status: resp.status, errJson });
-            return false;
-          }
-          return true;
-        };
-
-        let ok = true;
-        if (waiverBase64 && disclosureBase64) {
-          ok = await doSave({ waiverPdfData: waiverBase64, signature: currentSignature || null, signatureType })
-            && await doSave({ disclosurePdfData: disclosureBase64, signature: currentSignature || null, signatureType });
-        } else {
-          ok = await doSave({
-            waiverPdfData: waiverBase64 || undefined,
-            disclosurePdfData: disclosureBase64 || undefined,
-            signature: currentSignature || null,
-            signatureType
-          });
-        }
-
-        if (ok) {
-          console.log('[SAVE] Save successful (one or more chunks)');
-          setSaveStatus('saved');
-          setLastSaved(new Date());
-          setTimeout(() => setSaveStatus('idle'), 2000);
-          return; // Avoid hitting legacy single-call block below
-        }
-      } catch (chunkErr) {
-        console.warn('[SAVE] Chunked save attempt failed, falling back to single request');
-      }
-
+      // Save both PDFs in a single request
       const response = await fetch('/api/background-waiver/save', {
         method: 'POST',
         headers: {

@@ -331,7 +331,41 @@ export async function GET(
       .filter((r) => r.clock_in && new Date(r.clock_in) >= last30)
       .reduce((a, r) => a + r.duration_hours, 0);
 
-    // Group by event
+    // First, get all events this vendor is part of from event_teams
+    const { data: eventTeams, error: eventTeamsErr } = await supabaseAdmin
+      .from("event_teams")
+      .select("event_id")
+      .eq("vendor_id", userId);
+
+    console.log("🔵 [DEBUG] Event teams for vendor:", eventTeams);
+    console.log("🔵 [DEBUG] Event teams query error:", eventTeamsErr);
+
+    // Get unique event IDs from event_teams
+    const vendorEventIds = eventTeams ? [...new Set(eventTeams.map(et => et.event_id).filter(Boolean))] : [];
+
+    // Fetch event details from events table
+    let eventsMap: Record<string, { id: string; event_name: string | null; event_date: string | null; venue: string | null }> = {};
+    if (vendorEventIds.length > 0) {
+      const { data: events, error: evErr } = await supabaseAdmin
+        .from("events")
+        .select("id, event_name, event_date, venue")
+        .in("id", vendorEventIds);
+
+      console.log("🔵 [DEBUG] Queried event IDs from event_teams:", vendorEventIds);
+      console.log("🔵 [DEBUG] Events returned from DB:", events);
+      console.log("🔵 [DEBUG] Query error:", evErr);
+
+      if (!evErr && events) {
+        eventsMap = Object.fromEntries(
+          events.map((ev) => [
+            ev.id,
+            { id: ev.id, event_name: ev.event_name, event_date: ev.event_date, venue: ev.venue ?? null },
+          ])
+        );
+      }
+    }
+
+    // Group time entries by event
     const byEventMap = new Map<
       string,
       { event_id: string; shifts: number; hours: number }
@@ -343,39 +377,40 @@ export async function GET(
       row.hours += r.duration_hours || 0;
       byEventMap.set(key, row);
     }
-    const by_event = Array.from(byEventMap.values()).sort((a, b) => b.hours - a.hours);
 
-    // Enrich events (best-effort)
-    let eventsMap: Record<string, { id: string; event_name: string; event_date: string | null; venue: string | null }> = {};
-    const eventIds = by_event.map((x) => x.event_id).filter((x) => x !== "unknown");
-    if (eventIds.length) {
-      const { data: events, error: evErr } = await supabaseAdmin
-        .from("events")
-        .select("id, event_name, event_date, venue")
-        .in("id", eventIds);
-      if (!evErr && events) {
-        eventsMap = Object.fromEntries(
-          events.map((ev) => [
-            ev.id,
-            { id: ev.id, event_name: ev.event_name, event_date: ev.event_date, venue: ev.venue ?? null },
-          ])
-        );
-      }
-    }
+    // Build per_event array from event_teams (not just time_entries)
+    const by_event = vendorEventIds.map(eventId => {
+      const timeData = byEventMap.get(eventId);
+      return {
+        event_id: eventId,
+        shifts: timeData?.shifts || 0,
+        hours: timeData?.hours || 0,
+      };
+    }).sort((a, b) => b.hours - a.hours);
+
+    // Calculate totals based only on events in event_teams
+    const totalShiftsForTeamEvents = by_event.reduce((sum, e) => sum + e.shifts, 0);
+    const totalHoursForTeamEvents = by_event.reduce((sum, e) => sum + e.hours, 0);
 
     return NextResponse.json(
       {
         employee,
         summary: {
-          total_hours: Number(total_hours.toFixed(3)),
-          total_shifts: normalized.length,
+          total_hours: Number(totalHoursForTeamEvents.toFixed(3)),
+          total_shifts: totalShiftsForTeamEvents,
           month_hours: Number(month_hours.toFixed(3)),
           last_30d_hours: Number(last_30d_hours.toFixed(3)),
-          per_event: by_event.map((row) => ({
-            ...row,
-            hours: Number(row.hours.toFixed(3)),
-            event: row.event_id !== "unknown" ? eventsMap[row.event_id] ?? null : null,
-          })),
+          per_event: by_event.map((row) => {
+              const eventData = eventsMap[row.event_id] ?? null;
+              return {
+                event_id: row.event_id,
+                shifts: row.shifts,
+                hours: Number(row.hours.toFixed(3)),
+                event_name: eventData?.event_name || row.event_id,
+                event_date: eventData?.event_date ?? null,
+                venue: eventData?.venue ?? null,
+              };
+            }),
         },
         // Each entry now has clock_in/clock_out derived from actions for your UI column
         entries: normalized,
