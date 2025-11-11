@@ -28,40 +28,43 @@ export async function POST(request: NextRequest) {
     console.log('[BG CHECK API] Checking background check for user:', user.id);
 
     // Get profile data including onboarding status (bypasses RLS since we're using service role)
-    const profileResult = await supabase
+    type ProfileData = {
+      id: string;
+      onboarding_completed_at: string | null;
+      state: string | null;
+      address: string | null;
+    };
+
+    const { data: profileData, error: profileError } = await supabase
       .from('profiles')
       .select('id, onboarding_completed_at, state, address')
       .eq('user_id', user.id)
-      .single();
+      .single<ProfileData>();
 
-    if (profileResult.error) {
-      console.error('[BG CHECK API] Profile query error:', profileResult.error);
+    if (profileError || !profileData) {
+      console.error('[BG CHECK API] Profile not found:', profileError);
       return NextResponse.json({
         approved: false,
         message: 'Profile not found'
       }, { status: 200 });
     }
-
-    if (!profileResult.data) {
-      console.error('[BG CHECK API] Profile not found');
-      return NextResponse.json({
-        approved: false,
-        message: 'Profile not found'
-      }, { status: 200 });
-    }
-
-    const profileData = profileResult.data;
 
     console.log('[BG CHECK API] Profile ID:', profileData.id);
     console.log('[BG CHECK API] Onboarding completed:', profileData.onboarding_completed_at);
     console.log('[BG CHECK API] State:', profileData.state);
 
     // Check vendor_background_checks table
+    type BgCheckData = {
+      background_check_completed: boolean | null;
+      completed_date: string | null;
+      notes: string | null;
+    };
+
     const { data: bgCheckData, error: bgCheckError } = await supabase
       .from('vendor_background_checks')
       .select('background_check_completed, completed_date, notes')
       .eq('profile_id', profileData.id)
-      .single();
+      .single<BgCheckData>();
 
     if (bgCheckError) {
       console.log('[BG CHECK API] No background check record:', bgCheckError.message);
