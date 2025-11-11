@@ -28,19 +28,29 @@ export async function POST(request: NextRequest) {
     console.log('[BG CHECK API] Checking background check for user:', user.id);
 
     // Get profile data including onboarding status (bypasses RLS since we're using service role)
-    const { data: profileData, error: profileError } = await supabase
+    const profileResult = await supabase
       .from('profiles')
       .select('id, onboarding_completed_at, state, address')
       .eq('user_id', user.id)
       .single();
 
-    if (profileError || !profileData) {
-      console.error('[BG CHECK API] Profile not found:', profileError);
+    if (profileResult.error) {
+      console.error('[BG CHECK API] Profile query error:', profileResult.error);
       return NextResponse.json({
         approved: false,
         message: 'Profile not found'
       }, { status: 200 });
     }
+
+    if (!profileResult.data) {
+      console.error('[BG CHECK API] Profile not found');
+      return NextResponse.json({
+        approved: false,
+        message: 'Profile not found'
+      }, { status: 200 });
+    }
+
+    const profileData = profileResult.data;
 
     console.log('[BG CHECK API] Profile ID:', profileData.id);
     console.log('[BG CHECK API] Onboarding completed:', profileData.onboarding_completed_at);
