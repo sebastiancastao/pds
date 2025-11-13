@@ -254,6 +254,7 @@ export async function GET(
         users!event_teams_vendor_id_fkey (
           id,
           email,
+          division,
           profiles (
             first_name,
             last_name,

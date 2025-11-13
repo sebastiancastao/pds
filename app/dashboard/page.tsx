@@ -45,6 +45,7 @@ type Vendor = {
   is_active: boolean;
   distance: number | null;
   hasCoordinates?: boolean;
+  recently_responded?: boolean;
   profiles: {
     first_name: string;
     last_name: string;
@@ -1882,11 +1883,16 @@ export default function DashboardPage() {
                             <div className="font-semibold text-gray-900">
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
-                            {v.distance !== null ? (
-                              <div className="apple-distance-badge">{v.distance} mi</div>
-                            ) : (
-                              <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {v.recently_responded && (
+                                <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
+                              )}
+                              {v.distance !== null ? (
+                                <div className="apple-distance-badge">{v.distance} mi</div>
+                              ) : (
+                                <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
+                              )}
+                            </div>
                           </div>
                           <div className="text-gray-600 text-sm mb-1">
                             {v.email}

@@ -64,6 +64,7 @@ export default function EventDashboardPage() {
   const [ticketCount, setTicketCount] = useState<string>("");
   const [commissionPool, setCommissionPool] = useState<string>(""); // fraction like 0.04
   const [taxRate, setTaxRate] = useState<string>("0");
+  const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
   const [tips, setTips] = useState<string>("");
 
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
@@ -106,6 +107,38 @@ export default function EventDashboardPage() {
   // HR/Payroll adjustments (user_id -> adjustment amount)
   const [adjustments, setAdjustments] = useState<Record<string, number>>({});
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+
+  // HR/Payments filters
+  const [staffSearch, setStaffSearch] = useState<string>("");
+  const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
+
+  // Derived: filtered team members based on search and role filter
+  const filteredTeamMembers = (teamMembers || []).filter((member: any) => {
+    try {
+      const division = (member?.users?.division || '').toString().toLowerCase();
+      const email = (member?.users?.email || '').toString().toLowerCase();
+      const fn = (member?.users?.profiles?.first_name || '').toString().toLowerCase();
+      const ln = (member?.users?.profiles?.last_name || '').toString().toLowerCase();
+      const fullName = `${fn} ${ln}`.trim();
+
+      // Role filter mapping: 'vendor' => division in ['vendor','both']; 'cwt' => division === 'trailers'
+      let matchesRole = true;
+      const f = staffRoleFilter.toLowerCase();
+      if (f === 'vendor') {
+        matchesRole = division === 'vendor' || division === 'both';
+      } else if (f === 'cwt') {
+        matchesRole = division === 'trailers';
+      }
+
+      // Search filter against name or email
+      const q = staffSearch.trim().toLowerCase();
+      const matchesQuery = q === '' || fullName.includes(q) || email.includes(q);
+
+      return matchesRole && matchesQuery;
+    } catch {
+      return true;
+    }
+  });
 
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
@@ -255,6 +288,43 @@ export default function EventDashboardPage() {
         setTips((eventData as any).tips?.toString() || "");
         setMerchandiseUnits(eventData.merchandise_units?.toString() || "");
         setMerchandiseValue(eventData.merchandise_value?.toString() || "");
+
+        // Fetch tax rate from state_rates table based on venue state (with debug)
+        if (eventData.state) {
+          console.debug('[SALES-DEBUG] Event state detected:', eventData.state);
+          try {
+            const { data: { session: taxSession } } = await supabase.auth.getSession();
+            const headers = {
+              ...(taxSession?.access_token ? { Authorization: `Bearer ${taxSession.access_token}` } : {}),
+            } as Record<string, string>;
+            console.debug('[SALES-DEBUG] Fetching /api/rates with headers:', Object.keys(headers));
+            const taxRes = await fetch('/api/rates', { method: 'GET', headers });
+            if (taxRes.ok) {
+              const taxData = await taxRes.json();
+              console.debug('[SALES-DEBUG] /api/rates ok. Count:', taxData?.rates?.length ?? 0);
+              const stateRate = taxData.rates?.find(
+                (r: any) => r.state_code?.toUpperCase() === eventData.state?.toUpperCase()
+              );
+              console.debug('[SALES-DEBUG] Matched state rate:', stateRate);
+              if (stateRate) {
+                setStateTaxRate(stateRate.tax_rate || 0);
+              } else {
+                console.warn('[SALES-DEBUG] No state rate match. Using event.tax_rate_percent fallback:', eventData.tax_rate_percent);
+                setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
+              }
+            } else {
+              const text = await taxRes.text();
+              console.warn('[SALES-DEBUG] /api/rates failed:', taxRes.status, text);
+              // Fallback to event's stored tax_rate_percent if rates API is not accessible
+              setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
+            }
+          } catch (err) {
+            console.error('[SALES-DEBUG] Error loading state tax rate:', err);
+            setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
+          }
+        } else {
+          console.warn('[SALES-DEBUG] Event has no state; cannot load state tax rate.');
+        }
 
         // Load merchandise breakdown if provided
         const m = data.merchandise || null;
@@ -479,6 +549,15 @@ export default function EventDashboardPage() {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
+      const payload = {
+        ...event,
+        ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
+        ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
+        commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
+        tax_rate_percent: stateTaxRate || 0,
+        tips: tips !== "" ? Number(tips) : null,
+      };
+      try { console.debug('[SALES-DEBUG] handleSaveSales payload:', payload); } catch {}
       const res = await fetch(`/api/events/${eventId}`, {
         method: "PUT",
         headers: {
@@ -487,14 +566,7 @@ export default function EventDashboardPage() {
             ? { Authorization: `Bearer ${session.access_token}` }
             : {}),
         },
-        body: JSON.stringify({
-          ...event,
-          ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
-          ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
-          commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
-          tax_rate_percent: taxRate !== "" ? Number(taxRate) : 0,
-          tips: tips !== "" ? Number(tips) : null,
-        }),
+        body: JSON.stringify(payload),
       });
 
       const data = await res.json();
@@ -502,9 +574,11 @@ export default function EventDashboardPage() {
         setMessage("Sales data updated successfully");
         setEvent(data.event);
       } else {
+        try { console.warn('[SALES-DEBUG] handleSaveSales server error:', data); } catch {}
         setMessage(data.error || "Failed to update sales data");
       }
     } catch (err: any) {
+      try { console.error('[SALES-DEBUG] handleSaveSales network error:', err); } catch {}
       setMessage("Network error updating sales data");
     }
     setSubmitting(false);
@@ -568,9 +642,9 @@ export default function EventDashboardPage() {
 
     const grossCollected = Number(ticketSales) || 0; // total collected
     const tipsNum = Number(tips) || 0;
-    const taxPct = clamp(Number(taxRate || 0), 0, 100);
+    const taxPct = stateTaxRate; // Use tax rate from database based on venue state
 
-    const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected − Tips
+    const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected - Tips
     const tax = totalSales * (taxPct / 100);
     const netSales = Math.max(totalSales - tax, 0);
 
@@ -578,8 +652,28 @@ export default function EventDashboardPage() {
     const venueShare = netSales * (event.venue_share_percent / 100);
     const pdsShare = netSales * (event.pds_share_percent / 100);
 
-    return { grossCollected, tipsNum, totalSales, taxPct, tax, netSales, artistShare, venueShare, pdsShare };
+    const result = { grossCollected, tipsNum, totalSales, taxPct, tax, netSales, artistShare, venueShare, pdsShare };
+    try {
+      console.debug('[SALES-DEBUG] calculateShares:', result);
+    } catch {}
+    return result;
   };
+
+  // Debug changes in inputs affecting tax computation
+  useEffect(() => {
+    try {
+      const gross = Number(ticketSales) || 0;
+      const t = Number(tips) || 0;
+      const totalSales = Math.max(gross - t, 0);
+      const taxAmt = totalSales * ((stateTaxRate || 0) / 100);
+      console.debug('[SALES-DEBUG] Inputs changed', {
+        ticketSales: gross,
+        tips: t,
+        stateTaxRate,
+        computedTaxAmount: taxAmt,
+      });
+    } catch {}
+  }, [ticketSales, tips, stateTaxRate]);
 
   // Calculate commission amount - updates reactively when inputs change
   const calculatedCommission = (() => {
@@ -624,7 +718,14 @@ export default function EventDashboardPage() {
       const totalCommissionPool = netSales * poolPercent;
       const totalTips = Number(tips) || 0;
 
-      const totalHoursAll = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) / (1000 * 60 * 60);
+      // Only include non-trailers in the hours pool for commissions/tips prorating
+      const totalEligibleHours = teamMembers.reduce((sum: number, member: any) => {
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const memberDivision = member.users?.division;
+        if (memberDivision === 'trailers') return sum;
+        const ms = timesheetTotals[uid] || 0;
+        return sum + (ms / (1000 * 60 * 60));
+      }, 0);
 
       // Calculate total team salary first (without commissions)
       let totalTeamSalary = 0;
@@ -649,6 +750,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = timesheetTotals[uid] || 0;
         const actualHours = totalMs / (1000 * 60 * 60);
+        const memberDivision = member.users?.division;
 
         // Split into regular/OT/DT
         const regularHours = Math.min(actualHours, 8);
@@ -659,11 +761,14 @@ export default function EventDashboardPage() {
         const overtimePay = overtimeHours * (baseRate * 1.5);
         const doubletimePay = doubletimeHours * (baseRate * 2);
 
-        // Only distribute commissions if commission pool > total team salary
-        const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0 
-          ? (totalCommissionPool * actualHours) / totalHoursAll 
+        // Users with division "trailers" should NOT receive commissions or tips
+        const isTrailersDivision = memberDivision === 'trailers';
+
+        // Only distribute commissions if commission pool > total team salary AND not trailers division
+        const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHours > 0
+          ? (totalCommissionPool * actualHours) / totalEligibleHours
           : 0;
-        const proratedTips = totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
+        const proratedTips = !isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
 
         const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips;
 
@@ -741,7 +846,14 @@ export default function EventDashboardPage() {
       const totalCommissionPool = netSales * poolPercent;
       const totalTips = Number(tips) || 0;
 
-      const totalHoursAll = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) / (1000 * 60 * 60);
+      // Only include non-trailers in the hours pool for email/payroll preview prorating
+      const totalEligibleHoursEmail = teamMembers.reduce((sum: number, member: any) => {
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+        const memberDivision = member.users?.division;
+        if (memberDivision === 'trailers') return sum;
+        const ms = timesheetTotals[uid] || 0;
+        return sum + (ms / (1000 * 60 * 60));
+      }, 0);
 
       // Calculate total team salary first (without commissions)
       let totalTeamSalary = 0;
@@ -766,6 +878,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = timesheetTotals[uid] || 0;
         const actualHours = totalMs / (1000 * 60 * 60);
+        const memberDivision = member.users?.division;
 
         // Calculate pay
         const regularHours = Math.min(actualHours, 8);
@@ -776,11 +889,14 @@ export default function EventDashboardPage() {
         const overtimePay = overtimeHours * (baseRate * 1.5);
         const doubletimePay = doubletimeHours * (baseRate * 2);
 
-        // Only distribute commissions if commission pool > total team salary
-        const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0 
-          ? (totalCommissionPool * actualHours) / totalHoursAll 
+        // Users with division "trailers" should NOT receive commissions or tips
+        const isTrailersDivision = memberDivision === 'trailers';
+
+        // Only distribute commissions if commission pool > total team salary AND not trailers division
+        const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHoursEmail > 0
+          ? (totalCommissionPool * actualHours) / totalEligibleHoursEmail
           : 0;
-        const proratedTips = totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
+        const proratedTips = !isTrailersDivision && totalEligibleHoursEmail > 0 ? (totalTips * actualHours) / totalEligibleHoursEmail : 0;
         const adjustment = adjustments[uid] || 0;
 
         const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips + adjustment;
@@ -1262,17 +1378,23 @@ export default function EventDashboardPage() {
                   </div>
 
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tax Rate (%)</label>
-                    <input
-                      type="text"
-                      value={taxRate + '%'}
-                      onChange={(e) => {
-                        const val = e.target.value.replace('%', '').trim();
-                        setTaxRate(val);
-                      }}
-                      placeholder="0%"
-                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
-                    />
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Tax Amount ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="text"
+                        value={(() => {
+                          const totalCollected = Number(ticketSales) || 0;
+                          const tipsNum = Number(tips) || 0;
+                          const totalSales = Math.max(totalCollected - tipsNum, 0);
+                          const taxAmount = totalSales * (stateTaxRate / 100);
+                          return taxAmount.toFixed(2);
+                        })()}
+                        readOnly
+                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Auto: {event?.state} tax rate ({stateTaxRate.toFixed(2)}%) × Total sales</p>
                   </div>
 
                   <div>
@@ -1374,7 +1496,7 @@ export default function EventDashboardPage() {
                       </div>
 
                       <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                        <span className="font-semibold text-gray-700">= Total Sales</span>
+                        <span className="font-semibold text-gray-700">= Total sales</span>
                         <span className="text-2xl font-bold text-gray-900">
                           ${shares.totalSales.toFixed(2)}
                         </span>
@@ -1824,7 +1946,7 @@ export default function EventDashboardPage() {
 
                       {/* Total Sales */}
                       <div>
-                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Total Sales</h3>
+                        <h3 className="text-lg font-bold bg-gray-200 p-3 rounded-t">Total Collected</h3>
                         <div className="bg-white border border-gray-200 rounded-b p-4 space-y-3">
                           <div className="space-y-2 text-sm">
                             <div className="flex justify-between">
@@ -2391,9 +2513,15 @@ export default function EventDashboardPage() {
                   <input
                     type="text"
                     placeholder="Search staff..."
+                    value={staffSearch}
+                    onChange={(e) => setStaffSearch(e.target.value)}
                     className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
                   />
-                  <select className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500">
+                  <select
+                    value={staffRoleFilter}
+                    onChange={(e) => setStaffRoleFilter(e.target.value)}
+                    className="px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  >
                     <option value="">All Roles</option>
                     <option value="vendor">Vendor</option>
                     <option value="cwt">CWT</option>
@@ -2418,25 +2546,50 @@ export default function EventDashboardPage() {
                       </tr>
                     </thead>
                     <tbody className="divide-y">
-                      {teamMembers.length === 0 ? (
+                      {filteredTeamMembers.length === 0 ? (
                         <tr>
                           <td colSpan={11} className="p-8 text-center text-gray-500">
-                            No staff scheduled yet
+                            No staff found
                           </td>
                         </tr>
                       ) : (
-                        teamMembers.map((member: any) => {
+                        filteredTeamMembers.map((member: any) => {
                           const profile = member.users?.profiles;
                           const firstName = profile?.first_name || "N/A";
                           const lastName = profile?.last_name || "";
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
 
                           // Worked hours for member & all
-                          const totalMs = timesheetTotals[uid] || 0;
+                          // Prefer server-computed totals; fall back to span-based calc if missing
+                          let totalMs = timesheetTotals[uid] || 0;
+                          if (!totalMs || totalMs <= 0) {
+                            const span = timesheetSpans[uid] || {} as any;
+                            if (span.firstIn && span.lastOut) {
+                              try {
+                                let ms = new Date(span.lastOut).getTime() - new Date(span.firstIn).getTime();
+                                let mealMs = 0;
+                                if (span.firstMealStart && span.lastMealEnd) {
+                                  mealMs += new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
+                                }
+                                if (span.secondMealStart && span.secondMealEnd) {
+                                  mealMs += new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
+                                }
+                                if (ms > 0) totalMs = Math.max(ms - mealMs, 0);
+                              } catch {}
+                            }
+                          }
                           const actualHours = totalMs / (1000 * 60 * 60);
+                          // Hours pool for prorating excludes 'trailers' division
                           const totalHoursAll =
                             Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) /
                             (1000 * 60 * 60);
+                          const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
+                            const mDivision = m.users?.division;
+                            if (mDivision === 'trailers') return sum;
+                            const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
+                            const mMs = timesheetTotals[mUid] || 0;
+                            return sum + (mMs / (1000 * 60 * 60));
+                          }, 0);
 
                           // State-specific base rates (2025)
                           // Based on VENUE location (where event takes place), not vendor address
@@ -2493,15 +2646,17 @@ export default function EventDashboardPage() {
                           // Constraint: If commission pool <= total team salary, set commissions to 0
                           const shouldDistributeCommissions = totalCommissionPool > totalTeamSalaryAll;
 
-                          // Pro-rate by hours (member_hours / total_hours_all) only if commission pool > total salary
-                          const proratedCommission = shouldDistributeCommissions && totalHoursAll > 0
-                            ? (totalCommissionPool * actualHours) / totalHoursAll
+                          // Pro-rate by hours (excluding trailers) only if commission pool > total salary
+                          const isTrailersDivision = member.users?.division === 'trailers';
+                          const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHours > 0
+                            ? (totalCommissionPool * actualHours) / totalEligibleHours
                             : 0;
 
                           // Tips prorated by hours (same method)
                           const totalTips = Number(tips) || 0;
-                          const proratedTips =
-                            totalHoursAll > 0 ? (totalTips * actualHours) / totalHoursAll : 0;
+                          const proratedTips = !isTrailersDivision && totalEligibleHours > 0
+                            ? (totalTips * actualHours) / totalEligibleHours
+                            : 0;
 
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
@@ -2771,28 +2926,7 @@ export default function EventDashboardPage() {
                     )}
                   </button>
 
-                  <button
-                    onClick={handleProcessPayroll}
-                    disabled={submitting || teamMembers.length === 0}
-                    className="w-full mt-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
-                  >
-                    {submitting ? (
-                      <>
-                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                        </svg>
-                        Process Payroll & Send Emails
-                      </>
-                    )}
-                  </button>
+                  {/* Process Payroll & Send Emails button removed per request */}
                 </div>
               </div>
 

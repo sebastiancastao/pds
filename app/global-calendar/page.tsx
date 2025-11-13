@@ -44,6 +44,7 @@ type Vendor = {
   is_active: boolean;
   distance: number | null;
   hasCoordinates?: boolean;
+  recently_responded?: boolean;
   profiles: {
     first_name: string;
     last_name: string;
@@ -113,6 +114,7 @@ export default function DashboardPage() {
   // Auth & Access Control
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
+  const [userRole, setUserRole] = useState<string | null>(null);
 
   // Events
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -612,14 +614,15 @@ export default function DashboardPage() {
         }
 
         // Only allow admin and exec users
-        const userRole = userData.role as string;
-        if (userRole !== 'admin' && userRole !== 'exec') {
-          console.error('[GLOBAL-CALENDAR] Access denied - user role:', userRole);
+        const role = userData.role as string;
+        if (role !== 'admin' && role !== 'exec') {
+          console.error('[GLOBAL-CALENDAR] Access denied - user role:', role);
           router.replace('/dashboard');
           return;
         }
 
-        console.log('[GLOBAL-CALENDAR] Access granted - user role:', userRole);
+        console.log('[GLOBAL-CALENDAR] Access granted - user role:', role);
+        setUserRole(role);
         setIsAuthorized(true);
       } catch (err) {
         console.error('[GLOBAL-CALENDAR] Auth check error:', err);
@@ -1011,15 +1014,28 @@ export default function DashboardPage() {
                 </span>
               </div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="apple-button apple-button-secondary flex items-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-              Logout
-            </button>
+            <div className="flex items-center gap-3">
+              {userRole === 'exec' && (
+                <Link
+                  href="/rates"
+                  className="apple-button apple-button-secondary flex items-center gap-2"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Rates
+                </Link>
+              )}
+              <button
+                onClick={handleLogout}
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                Logout
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1808,11 +1824,16 @@ export default function DashboardPage() {
                             <div className="font-semibold text-gray-900">
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
-                            {v.distance !== null ? (
-                              <div className="apple-distance-badge">{v.distance} mi</div>
-                            ) : (
-                              <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
-                            )}
+                            <div className="flex items-center gap-2">
+                              {v.recently_responded && (
+                                <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
+                              )}
+                              {v.distance !== null ? (
+                                <div className="apple-distance-badge">{v.distance} mi</div>
+                              ) : (
+                                <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
+                              )}
+                            </div>
                           </div>
                           <div className="text-gray-600 text-sm mb-1">
                             {v.email}

@@ -178,7 +178,7 @@ function generateEmailTemplate(data: {
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
                 <tr>
                   <td align="center">
-                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/login" 
+                    <a href="https://pds-murex.vercel.app/login"
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
                       Login to Your Account
                     </a>
@@ -1193,6 +1193,7 @@ export async function sendTeamConfirmationEmail(data: {
       from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
+      cc:"jenvillar625@gmail.com",
       html: emailBody,
     });
 
@@ -1366,7 +1367,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
     const { data, error } = await resend.emails.send({
       from: 'PDS Time Tracking <service@furnituretaxi.site>',
       to: 'sebastiancastao379@gmail.com', // Admin email
-      cc: 'jenvillar625@gmail.com',
+      
       subject: emailSubject,
       html: emailBody,
     });

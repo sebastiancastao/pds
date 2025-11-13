@@ -164,7 +164,7 @@ export default function HRDashboardPage() {
     }
   }, []);
 
-  // Gate access: only 'admin' and 'hr'
+  // Gate access: 'admin', 'hr', and 'exec'
   useEffect(() => {
     const checkAccess = async () => {
       try {
@@ -182,7 +182,7 @@ export default function HRDashboardPage() {
           .eq('id', userId)
           .single() as any);
         const role = (data?.role || '').toString().trim().toLowerCase();
-        if (!error && (role === 'admin' || role === 'hr')) {
+        if (!error && (role === 'admin' || role === 'hr' || role === 'exec')) {
           setIsAuthorized(true);
         } else {
           setIsAuthorized(false);

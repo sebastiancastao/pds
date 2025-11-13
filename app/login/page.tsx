@@ -1,11 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { supabase, isValidEmail } from '@/lib/supabase';
 import { logAuditEvent } from '@/lib/audit';
-import { getCurrentLocation, isGeolocationSupported, formatDistance } from '@/lib/geofence';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -15,159 +14,11 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [locationStatus, setLocationStatus] = useState<string>('');
-  const [locationGranted, setLocationGranted] = useState(false);
-  const [userLocation, setUserLocation] = useState<{latitude: number, longitude: number, accuracy?: number} | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string>('');
-
-  // Check if location was previously granted on component mount
-  useEffect(() => {
-    const checkStoredLocation = () => {
-      try {
-        const storedLocation = localStorage.getItem('pds_location_granted');
-        const storedCoords = localStorage.getItem('pds_user_location');
-        const storedTimestamp = localStorage.getItem('pds_location_timestamp');
-        
-        if (storedLocation === 'true' && storedCoords && storedTimestamp) {
-          const timestamp = parseInt(storedTimestamp, 10);
-          const now = Date.now();
-          const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
-          
-          if (now - timestamp < oneHour) {
-            const coords = JSON.parse(storedCoords);
-            const ageMinutes = Math.round((now - timestamp) / 60000);
-            console.log('CACHE Using cached location from', ageMinutes, 'minutes ago');
-            setUserLocation(coords);
-            setLocationGranted(true);
-            setLocationStatus(`Location verified (cached ${ageMinutes}min ago)`);
-            setTimeout(() => setLocationStatus(''), 3000);
-          } else {
-            console.log('CACHE Cached location expired, will request fresh');
-            localStorage.removeItem('pds_location_granted');
-            localStorage.removeItem('pds_user_location');
-            localStorage.removeItem('pds_location_timestamp');
-          }
-        }
-      } catch (error) {
-        console.warn('CACHE Error reading cached location:', error);
-      }
-    };
-
-    checkStoredLocation();
-  }, []);
-
-  // Handle location request
-  const handleRequestLocation = async () => {
-    setError('');
-    setLocationStatus('Checking location permission...');
-    
-    const debugData = {
-      browser: navigator.userAgent,
-      protocol: window.location.protocol,
-      hostname: window.location.hostname,
-      fullUrl: window.location.href,
-      geolocationSupported: 'geolocation' in navigator,
-      permissionsAPI: 'permissions' in navigator,
-      secureContext: window.isSecureContext,
-      permissionState: 'checking...',
-    };
-    
-    console.log('DEBUG Manual location request triggered');
-    console.log('DEBUG Initial debug data:', debugData);
-    
-    if (!isGeolocationSupported()) {
-      setLocationStatus('');
-      const debugText = `DEBUG INFO:\nBrowser: ${debugData.browser.substring(0, 100)}...\nGeolocation API: Not Available`;
-      setDebugInfo(debugText);
-      setError(`Geolocation Not Supported\n\nYour browser doesn't support location services.\n\n${debugText}`);
-      return;
-    }
-
-    if (!window.isSecureContext) {
-      setLocationStatus('');
-      const debugText = `DEBUG INFO:\nProtocol: ${debugData.protocol}\nURL: ${debugData.fullUrl}\nSecure Context: No`;
-      setDebugInfo(debugText);
-      setError(`HTTPS Required\n\nLocation services require a secure connection (HTTPS).\n\nYour URL: ${window.location.href}\n\n${debugText}`);
-      return;
-    }
-
-    try {
-      if ('permissions' in navigator) {
-        const permissionStatus = await navigator.permissions.query({ name: 'geolocation' as PermissionName });
-        debugData.permissionState = permissionStatus.state;
-        
-        if (permissionStatus.state === 'denied') {
-          setLocationStatus('');
-          const debugText = `DEBUG INFO:\nBrowser: ${debugData.browser.substring(0, 100)}...\nPermission State: DENIED\nSecure Context: Yes`;
-          setDebugInfo(debugText);
-          setError(`Location Blocked for This Site\n\nYour browser has blocked location access.\n\nFix: Reset permissions in browser settings.\n\n${debugText}`);
-          return;
-        }
-        
-        setLocationStatus(permissionStatus.state === 'granted' ? 'Getting your location...' : 'Requesting your location...');
-      } else {
-        setLocationStatus('Requesting your location...');
-      }
-    } catch (permErr) {
-      console.warn('DEBUG Permissions API error:', permErr);
-      setLocationStatus('Requesting your location...');
-    }
-
-    try {
-      const location = await getCurrentLocation();
-      console.log('DEBUG Location obtained:', {
-        latitude: location.latitude,
-        longitude: location.longitude,
-        accuracy: location.accuracy ? `${Math.round(location.accuracy)}m` : 'unknown'
-      });
-
-      const successDebugText = `DEBUG INFO:\nBrowser: ${debugData.browser.substring(0, 100)}...\nSecure Context: Yes\nLatitude: ${location.latitude.toFixed(6)}\nLongitude: ${location.longitude.toFixed(6)}\nAccuracy: ${location.accuracy ? location.accuracy.toFixed(1) + 'm' : 'unknown'}`;
-      setDebugInfo(successDebugText);
-
-      setUserLocation(location);
-      setLocationGranted(true);
-      
-      try {
-        localStorage.setItem('pds_location_granted', 'true');
-        localStorage.setItem('pds_user_location', JSON.stringify(location));
-        localStorage.setItem('pds_location_timestamp', Date.now().toString());
-        console.log('CACHE Location stored in localStorage');
-      } catch (error) {
-        console.warn('CACHE Failed to store location:', error);
-      }
-      
-      setLocationStatus('Location verified - Ready to sign in');
-      setTimeout(() => setLocationStatus(''), 3000);
-      
-    } catch (locationError: any) {
-      console.error('DEBUG Location error:', locationError);
-      setLocationStatus('');
-      setLocationGranted(false);
-      
-      let userMessage = '';
-      if (locationError.message.includes('denied') || locationError.code === 1) {
-        userMessage = `Location Blocked\n\nPlease allow location access for this site in your browser settings.`;
-      } else if (locationError.message.includes('timeout') || locationError.code === 3) {
-        userMessage = `Location Timeout\n\nTry enabling High Accuracy mode and refreshing.`;
-      } else {
-        userMessage = `Location Error\n\n${locationError.message}`;
-      }
-      
-      const errorDebugText = `DEBUG INFO:\nError: ${locationError.message}\nCode: ${locationError.code || 'unknown'}`;
-      setDebugInfo(errorDebugText);
-      setError(`${userMessage}\n\n${errorDebugText}`);
-    }
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    
-    if (!locationGranted || !userLocation) {
-      setError('Please allow location access first.');
-      return;
-    }
-    
+
     if (!email.trim() || !password.trim()) {
       setError('Please enter both email and password');
       return;
@@ -200,36 +51,7 @@ export default function LoginPage() {
 
       const userId = preLoginData.userId || null;
 
-      // Step 2: Validate location
-      setLocationStatus('Validating location...');
-      
-      const locationResponse = await fetch('/api/auth/validate-location', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
-          accuracy: userLocation.accuracy,
-          email: email.toLowerCase().trim(),
-        }),
-      });
-
-      const locationData = await locationResponse.json();
-
-      if (!locationData.allowed) {
-        setLocationStatus('');
-        const distanceMsg = locationData.distanceMeters 
-          ? ` You are ${formatDistance(locationData.distanceMeters)} away.`
-          : '';
-        setError(`Access denied: Not in authorized location.${distanceMsg}`);
-        setIsLoading(false);
-        return;
-      }
-
-      setLocationStatus('Location verified');
-      setTimeout(() => setLocationStatus(''), 1000);
-
-      // Step 3: Supabase auth
+      // Step 2: Supabase auth
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: email.toLowerCase().trim(),
         password,
@@ -278,14 +100,14 @@ export default function LoginPage() {
         return;
       }
 
-      // Step 4: Reset failed attempts
+      // Step 3: Reset failed attempts
       await fetch('/api/auth/update-login-attempts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId: authData.user.id, reset: true }),
       });
 
-      // Step 5: Re-fetch user data including background check status
+      // Step 4: Re-fetch user data including background check status
       console.log('[LOGIN DEBUG] Fetching user data for:', authData.user.id);
 
       const { data: currentUserData, error: fetchError } = await (supabase
@@ -309,7 +131,7 @@ export default function LoginPage() {
         console.log('[LOGIN DEBUG] ✅ User data fetched successfully:', currentUserData);
       }
 
-      // Step 5a: Check vendor background check status for workers
+      // Step 4a: Check vendor background check status for workers
       const userRole = (currentUserData?.role || '').toString().trim().toLowerCase();
       console.log('[LOGIN DEBUG] User role:', userRole);
 
@@ -451,7 +273,7 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] ✅ background_check_completed = TRUE + permanent password');
       console.log('[LOGIN DEBUG] 🔄 Proceeding to MFA verification (REQUIRED FOR ALL USERS)');
 
-      // Step 4: Log success
+      // Step 5: Log success
       await logAuditEvent({
         userId: authData.user!.id,
         action: 'login_success',
@@ -460,7 +282,7 @@ export default function LoginPage() {
         metadata: { email, temporaryPassword: isTemporaryPassword }
       });
 
-      // Step 5: Verify session
+      // Step 6: Verify session
       await new Promise(resolve => setTimeout(resolve, 100));
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) {
@@ -585,51 +407,6 @@ export default function LoginPage() {
             </div>
 
             <form onSubmit={handleSubmit} className="space-y-5">
-              {/* HTTPS Warning */}
-              {typeof window !== 'undefined' && window.location.protocol !== 'https:' && !['localhost', '127.0.0.1'].includes(window.location.hostname) && (
-                <div className="bg-red-100 border-2 border-red-500 rounded-lg p-4 mb-4">
-                  <p className="font-bold text-red-900">NOT SECURE - Location Won't Work!</p>
-                  <p className="text-sm text-red-800">Use <code className="bg-red-200 px-1 rounded">https://</code></p>
-                </div>
-              )}
-
-              {/* Location Button */}
-              {!locationGranted ? (
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-300 rounded-lg p-4">
-                  <p className="text-sm font-bold text-blue-900">Location Required</p>
-                  <button
-                    type="button"
-                    onClick={handleRequestLocation}
-                    className="liquid-btn-primary w-full mt-2"
-                  >
-                    Allow Location Access
-                  </button>
-                </div>
-              ) : (
-                <div className="bg-green-50 border-2 border-green-300 rounded-lg p-4">
-                  <p className="text-sm font-bold text-green-900">Location Verified</p>
-                  {userLocation && (
-                    <div className="text-xs text-green-700 mt-1">
-                      Lat: {userLocation.latitude.toFixed(6)}, Lng: {userLocation.longitude.toFixed(6)}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      localStorage.removeItem('pds_location_granted');
-                      localStorage.removeItem('pds_user_location');
-                      localStorage.removeItem('pds_location_timestamp');
-                      setLocationGranted(false);
-                      setUserLocation(null);
-                      handleRequestLocation();
-                    }}
-                    className="text-xs underline mt-2 text-ios-blue hover:text-ios-indigo"
-                  >
-                    Refresh
-                  </button>
-                </div>
-              )}
-
               {/* Email & Password */}
               <input
                 type="email"
@@ -665,27 +442,15 @@ export default function LoginPage() {
                 <Link href="/forgot-password" className="text-primary-600">Forgot?</Link>
               </div>
 
-              {locationStatus && (
-                <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800">
-                  {locationStatus}
-                </div>
-              )}
-
               {error && (
                 <div className="bg-red-50 border-2 border-red-300 rounded-lg p-4 text-sm text-red-900 whitespace-pre-line">
                   {error}
-                  {debugInfo && (
-                    <details className="mt-2 text-xs">
-                      <summary className="cursor-pointer font-semibold">Details</summary>
-                      <pre className="mt-1 p-2 bg-red-100 rounded overflow-x-auto">{debugInfo}</pre>
-                    </details>
-                  )}
                 </div>
               )}
 
               <button
                 type="submit"
-                disabled={isLoading || !locationGranted}
+                disabled={isLoading}
                 className="liquid-btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isLoading ? 'Authenticating...' : 'Sign In'}

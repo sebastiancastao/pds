@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { decrypt } from "@/lib/encryption";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -286,6 +287,20 @@ export async function GET(
     // Calculate distances and sort by proximity
     const vendorsWithDistance = filteredVendors
       .map((vendor: any) => {
+        // Decrypt sensitive profile fields for display
+        let firstName = '';
+        let lastName = '';
+        let phone = '';
+        try {
+          firstName = vendor.profiles?.first_name ? decrypt(vendor.profiles.first_name) : '';
+          lastName = vendor.profiles?.last_name ? decrypt(vendor.profiles.last_name) : '';
+          phone = vendor.profiles?.phone ? decrypt(vendor.profiles.phone) : '';
+        } catch (_) {
+          // fallback to blanks if decryption fails
+          firstName = firstName || 'Vendor';
+          lastName = lastName || '';
+          phone = phone || '';
+        }
         let distance: number | null = null;
         if (vendor.profiles.latitude != null && vendor.profiles.longitude != null) {
           distance = calculateDistance(
@@ -303,9 +318,9 @@ export async function GET(
           is_active: vendor.is_active,
           region_id: vendor.region_id,
           profiles: {
-            first_name: vendor.profiles.first_name,
-            last_name: vendor.profiles.last_name,
-            phone: vendor.profiles.phone,
+            first_name: firstName,
+            last_name: lastName,
+            phone: phone,
             city: vendor.profiles.city,
             state: vendor.profiles.state,
             latitude: vendor.profiles.latitude,

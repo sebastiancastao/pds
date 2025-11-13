@@ -112,6 +112,9 @@ export default function EmployeeProfilePage() {
   const [i9Loading, setI9Loading] = useState(false);
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [showDeactivateModal, setShowDeactivateModal] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -355,6 +358,72 @@ export default function EmployeeProfilePage() {
     }
   };
 
+  // Deactivate user
+  const handleDeactivateUser = async () => {
+    if (!employee) return;
+
+    setActionLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`/api/employees/${employee.id}/deactivate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to deactivate user');
+      }
+
+      alert('User deactivated successfully');
+      setShowDeactivateModal(false);
+      // Reload employee data
+      window.location.reload();
+    } catch (error) {
+      console.error('Error deactivating user:', error);
+      alert(error instanceof Error ? error.message : 'Failed to deactivate user');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Delete user data
+  const handleDeleteUser = async () => {
+    if (!employee) return;
+
+    setActionLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`/api/employees/${employee.id}/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete user');
+      }
+
+      alert('User data deleted successfully');
+      setShowDeleteModal(false);
+      // Redirect to HR dashboard
+      window.location.href = '/hr-dashboard';
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      alert(error instanceof Error ? error.message : 'Failed to delete user');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <div className="container mx-auto max-w-6xl py-10 px-6">
@@ -375,12 +444,25 @@ export default function EmployeeProfilePage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {employee && employee.status === 'active' && (
+              <button
+                onClick={() => setShowDeactivateModal(true)}
+                className="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors font-medium text-sm"
+              >
+                Deactivate User
+              </button>
+            )}
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium text-sm"
+            >
+              Delete User
+            </button>
             <Link href="/hr-dashboard">
               <button className="apple-button apple-button-secondary">
                 ← Back to Dashboard
               </button>
             </Link>
-            
           </div>
         </div>
 
@@ -950,6 +1032,88 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
           </>
+        )}
+
+        {/* Deactivate User Modal */}
+        {showDeactivateModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-full bg-yellow-100 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-yellow-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900">Deactivate User</h3>
+              </div>
+              <p className="text-gray-600 mb-6">
+                Are you sure you want to deactivate <strong>{employee?.first_name} {employee?.last_name}</strong>?
+                This will set their status to inactive and they will not be able to clock in or access the system.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeactivateModal(false)}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeactivateUser}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 bg-yellow-600 text-white rounded-lg hover:bg-yellow-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {actionLoading ? 'Deactivating...' : 'Deactivate'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Delete User Modal */}
+        {showDeleteModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900">Delete User Data</h3>
+              </div>
+              <p className="text-gray-600 mb-2">
+                Are you sure you want to permanently delete <strong>{employee?.first_name} {employee?.last_name}</strong>?
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-6">
+                <p className="text-sm text-red-800 font-medium">
+                  ⚠️ This action cannot be undone. This will permanently delete:
+                </p>
+                <ul className="text-sm text-red-700 mt-2 ml-4 list-disc">
+                  <li>User account and profile</li>
+                  <li>All time entries and work history</li>
+                  <li>Onboarding documents and forms</li>
+                  <li>Background check records</li>
+                </ul>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowDeleteModal(false)}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleDeleteUser}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {actionLoading ? 'Deleting...' : 'Delete Permanently'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

@@ -10,7 +10,7 @@ SELECT
     role,
     created_at
 FROM profiles
-WHERE email = 'your-email@example.com';  -- ⚠️ CHANGE THIS TO YOUR EMAIL
+WHERE email = 'sebastiancastao379@gmail.com';  -- ⚠️ CHANGE THIS TO YOUR EMAIL
 
 -- STEP 2: If the role is not 'admin', run this to update it:
 -- Remove the -- comment to run this line after updating your email above

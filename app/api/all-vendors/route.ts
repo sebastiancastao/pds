@@ -84,7 +84,7 @@ export async function GET(req: NextRequest) {
           region_id
         )
       `)
-      .in('division', ['vendor', 'both'])
+      .in('division', ['vendor', 'both', 'trailers'])
       .eq('is_active', true);
 
     // Apply region filter if provided (database-level filtering by region_id)
@@ -99,6 +99,24 @@ export async function GET(req: NextRequest) {
     }
 
     const { data: vendors, error } = await vendorQuery;
+
+    // Gather recent responders within the past week for these vendors (invitations sent by current user)
+    let recentResponderSet = new Set<string>();
+    try {
+      const vendorIds = (vendors || []).map((v: any) => v.id);
+      if (vendorIds.length > 0) {
+        const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const { data: recent, error: recentErr } = await supabaseAdmin
+          .from('vendor_invitations')
+          .select('vendor_id, responded_at')
+          .in('vendor_id', vendorIds)
+          .eq('invited_by', (user as any).id)
+          .gte('responded_at', weekAgoIso);
+        if (!recentErr && Array.isArray(recent)) {
+          recentResponderSet = new Set(recent.map((r: any) => r.vendor_id));
+        }
+      }
+    } catch {}
 
     if (error) {
       console.error('[ALL-VENDORS] ❌ SUPABASE SELECT ERROR:', error);
@@ -210,6 +228,7 @@ export async function GET(req: NextRequest) {
           role: vendor.role,
           division: vendor.division,
           is_active: vendor.is_active,
+          recently_responded: recentResponderSet.has(vendor.id),
           profiles: {
             first_name: firstName,
             last_name: lastName,
@@ -276,6 +295,8 @@ export async function GET(req: NextRequest) {
 
           return {
             ...vendor,
+            // Expose a generic `distance` like other endpoints (e.g., available-vendors)
+            distance: Math.round(distance * 10) / 10,
             distance_from_center: Math.round(distance * 10) / 10 // Round to 1 decimal place
           };
         })

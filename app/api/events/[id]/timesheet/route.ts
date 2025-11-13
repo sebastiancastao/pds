@@ -53,7 +53,6 @@ export async function GET(
       .from('events')
       .select('id, event_date, start_time, end_time, created_by')
       .eq('id', eventId)
-      .eq('created_by', user.id)
       .maybeSingle();
 
     console.log('📋 Event query result:', { event, error: evtErr });
@@ -75,7 +74,7 @@ export async function GET(
       .from('event_teams')
       .select('vendor_id')
       .eq('event_id', eventId)
-      .eq('status', 'confirmed'); // Only get confirmed team members
+      
 
     console.log('👥 Team query result:', { team, error: teamErr, teamCount: team?.length || 0 });
 
@@ -120,13 +119,12 @@ export async function GET(
 
     console.log('⏰ Query window (FULL DAY):', { startIso, endIso });
 
-    // Fetch all time entries for these users in the window
-    const { data: entries, error: teErr } = await supabaseAdmin
+    // Fetch all time entries for these users for this event (prefer event_id over date window)
+    let { data: entries, error: teErr } = await supabaseAdmin
       .from('time_entries')
-      .select('user_id, action, timestamp')
+      .select('user_id, action, timestamp, started_at, event_id')
       .in('user_id', userIds)
-      .gte('timestamp', startIso)
-      .lte('timestamp', endIso)
+      .eq('event_id', eventId)
       .order('timestamp', { ascending: true });
     if (teErr) return NextResponse.json({ error: teErr.message }, { status: 500 });
 
@@ -141,7 +139,31 @@ export async function GET(
       queryError: teErr
     });
 
+        // Fallback 1: try date window on timestamp
     if (!entries || entries.length === 0) {
+      const { data: byTimestamp } = await supabaseAdmin
+        .from('time_entries')
+        .select('user_id, action, timestamp, started_at, event_id')
+        .in('user_id', userIds)
+        .gte('timestamp', startIso)
+        .lte('timestamp', endIso)
+        .order('timestamp', { ascending: true });
+      if (byTimestamp && byTimestamp.length > 0) {
+        entries = byTimestamp;
+      } else {
+        // Fallback 2: try date window on started_at
+        const { data: byStarted } = await supabaseAdmin
+          .from('time_entries')
+          .select('user_id, action, timestamp, started_at, event_id')
+          .in('user_id', userIds)
+          .gte('started_at', startIso)
+          .lte('started_at', endIso)
+          .order('started_at', { ascending: true });
+        if (byStarted && byStarted.length > 0) {
+          entries = byStarted;
+        }
+      }
+    }if (!entries || entries.length === 0) {
       console.log('⚠️ No time entries found for this event');
       console.log('💡 TIP: Check that time_entries exist for:');
       console.log(`   - User IDs: ${userIds.join(', ')}`);
@@ -266,6 +288,10 @@ export async function GET(
     return NextResponse.json({ error: err.message || 'Unhandled error' }, { status: 500 });
   }
 }
+
+
+
+
 
 
 
