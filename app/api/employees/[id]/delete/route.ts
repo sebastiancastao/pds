@@ -27,13 +27,17 @@ export async function DELETE(
       }
 
       // Check if user has HR role
-      const { data: profile } = await supabase
+      const { data: profile, error: profileError } = await supabase
         .from('profiles')
         .select('role')
         .eq('user_id', user.id)
         .single();
 
-      if (profile?.role !== 'hr') {
+      if (profileError || !profile) {
+        return NextResponse.json({ error: 'Failed to verify user role' }, { status: 500 });
+      }
+
+      if (profile.role !== 'hr') {
         return NextResponse.json({ error: 'Forbidden - HR access required' }, { status: 403 });
       }
     } else {
@@ -43,7 +47,7 @@ export async function DELETE(
     console.log('[DELETE USER] Starting deletion for user:', employeeId);
 
     // Get profile ID first
-    const { data: profileData } = await supabase
+    const { data: profileData, error: profileDataError } = await supabase
       .from('profiles')
       .select('id')
       .eq('user_id', employeeId)
