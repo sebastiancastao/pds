@@ -11,7 +11,10 @@
       "Bash(npm run build:*)",
       "Bash(node -c:*)",
       "Bash(timeout 60 npm run build:*)",
-      "Bash(npx tsc:*)"
+      "Bash(npx tsc:*)",
+      "Bash(test:*)",
+      "Bash(npm install:*)",
+      "Bash(npm run type-check:*)"
     ],
     "deny": [],
     "ask": []

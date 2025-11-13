@@ -76,6 +76,8 @@ export async function GET(req: NextRequest) {
         id,
         first_name,
         last_name,
+        email,
+        phone,
         role,
         created_at,
         vendor_background_checks (
@@ -97,7 +99,8 @@ export async function GET(req: NextRequest) {
     // Transform the data to make it easier to work with
     const transformedVendors = vendors.map(vendor => ({
       id: vendor.id,
-      first_name: vendor.full_name,
+      first_name: vendor.first_name,
+      last_name: vendor.last_name,
       email: vendor.email,
       phone: vendor.phone,
       created_at: vendor.created_at,

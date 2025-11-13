@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { WebGLShader } from "@/components/ui/web-gl-shader";
 
 type TimeEntry = {
   id: string;
@@ -32,6 +33,7 @@ export default function TimeTrackingPage() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
 
   const [message, setMessage] = useState<string>("");
+  const [userRole, setUserRole] = useState<string>("");
 
   const tickRef = useRef<number | null>(null);
   const [now, setNow] = useState<number>(Date.now());
@@ -43,6 +45,14 @@ export default function TimeTrackingPage() {
       } else {
         const { data } = await supabase.auth.getSession();
         setAccessToken(data.session?.access_token || null);
+        try {
+          const { data: roleRow } = await supabase
+            .from('users')
+            .select('role')
+            .eq('id', user.id)
+            .single();
+          setUserRole((roleRow?.role || '').toString().trim().toLowerCase());
+        } catch {}
         setIsAuthed(true);
       }
     });
@@ -57,6 +67,66 @@ export default function TimeTrackingPage() {
       setLoading(false);
     })();
   }, [isAuthed]);
+
+  // Determine if this user should use the "worker" experience
+  const isWorker = useMemo(() => {
+    const r = (userRole || '').toLowerCase();
+    // Treat non-admin/hr/exec as worker; also include explicit 'worker'
+    if (r === 'admin' || r === 'hr' || r === 'exec') return false;
+    return true;
+  }, [userRole]);
+
+  // Auto clock-in when worker lands on the page; auto clock-out when they leave
+  const autoClockedRef = useRef(false);
+  useEffect(() => {
+    if (!isAuthed || loading) return;
+    if (!isWorker) return;
+    if (autoClockedRef.current) return;
+    // After initial refreshOpen finished (loading === false), clock in if not already clocked in
+    if (!openEntry) {
+      handleClockIn().finally(() => {
+        autoClockedRef.current = true;
+      });
+    } else {
+      autoClockedRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthed, isWorker, loading]);
+
+  async function clockOutKeepAlive() {
+    try {
+      // @ts-ignore keepalive is supported in fetch init in modern browsers
+      await fetch("/api/time-entries", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+        },
+        body: JSON.stringify({ notes }),
+        keepalive: true,
+      });
+    } catch {}
+  }
+
+  useEffect(() => {
+    if (!isWorker) return;
+    const onPageHide = () => {
+      if (openEntry) {
+        clockOutKeepAlive();
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden' && openEntry) {
+        clockOutKeepAlive();
+      }
+    };
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [isWorker, openEntry]);
 
   useEffect(() => {
     if (openEntry || openMeal) {
@@ -198,6 +268,15 @@ export default function TimeTrackingPage() {
     }
   }
 
+  // Logout helper
+  async function handleLogout() {
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      window.location.href = "/login";
+    }
+  }
+
   const todaysTotalMs = useMemo(() => {
     return entries.reduce((acc, e) => {
       const start = new Date(e.started_at).getTime();
@@ -220,11 +299,42 @@ export default function TimeTrackingPage() {
     );
   }
 
+  // Worker view: WebGL shader background with concentric circles
+  if (isWorker) {
+    return (
+      <div className="relative flex w-full flex-col items-center justify-center overflow-hidden min-h-screen">
+        <WebGLShader />
+        <button
+          onClick={handleLogout}
+          className="absolute top-4 right-4 px-3 py-1.5 rounded-md text-sm font-semibold bg-gray-900/80 text-white hover:bg-gray-900 transition z-20"
+        >
+          Logout
+        </button>
+        <div className="relative w-64 h-64 z-10">
+          <div className="absolute inset-0 rounded-full bg-green-400/20 backdrop-blur-sm animate-ping"></div>
+          <div className="absolute inset-6 rounded-full bg-green-400/30 backdrop-blur-sm animate-pulse"></div>
+          <div className="absolute inset-12 rounded-full bg-green-500/70 shadow-2xl border border-white/20"></div>
+          <div className="absolute inset-12 flex items-center justify-center">
+            <div className="px-4 py-2 rounded-full bg-white/20 backdrop-blur-md text-white text-sm font-semibold shadow">
+              Tracking active
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Manager/admin view: keep full controls
   return (
     <div className="container mx-auto max-w-3xl p-6 space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Time Tracking</h1>
-        
+        <button
+          onClick={handleLogout}
+          className="px-3 py-1.5 rounded-md text-sm font-semibold bg-gray-900 text-white hover:bg-black transition"
+        >
+          Logout
+        </button>
       </div>
 
       {message && (
@@ -236,10 +346,7 @@ export default function TimeTrackingPage() {
       <div className="rounded-lg border bg-white p-6 space-y-4">
         <div className="text-sm text-gray-500">Status</div>
         <div className="flex items-end justify-between">
-          <div>
-            
-            
-          </div>
+          <div></div>
 
           <div className="flex gap-3">
             <button
@@ -277,16 +384,11 @@ export default function TimeTrackingPage() {
           </div>
         </div>
 
-        
-
         {entries.length === 0 ? (
           <div className="text-sm text-gray-500">No entries yet today.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              
-              
-            </table>
+            <table className="min-w-full text-sm"></table>
           </div>
         )}
       </div>

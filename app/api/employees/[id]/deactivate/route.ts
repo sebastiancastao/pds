@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServerClient } from '@/lib/supabase';
+import { createClient } from '@supabase/supabase-js';
+import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { cookies } from 'next/headers';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 export async function POST(
   request: NextRequest,
@@ -16,40 +21,54 @@ export async function POST(
     const authHeader = request.headers.get('authorization');
     const token = authHeader?.replace('Bearer ', '');
 
-    // Initialize Supabase with service role
-    const supabase = createServerClient();
+    // Create auth client for user authentication
+    const cookieStore = await cookies();
+    const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
+
+    // Use admin client for operations
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
     // Verify user is authenticated and has HR role
+    let user;
     if (token) {
-      const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-      if (userError || !user) {
+      const { data: { user: tokenUser }, error: userError } = await supabase.auth.getUser(token);
+      if (userError || !tokenUser) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       }
-
-      // Check if user has HR role
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('user_id', user.id)
-        .single();
-
-      if (profile?.role !== 'hr') {
-        return NextResponse.json({ error: 'Forbidden - HR access required' }, { status: 403 });
-      }
+      user = tokenUser;
     } else {
-      return NextResponse.json({ error: 'No authorization token' }, { status: 401 });
+      const { data: { user: cookieUser } } = await supabase.auth.getUser();
+      if (!cookieUser) {
+        return NextResponse.json({ error: 'No authorization token' }, { status: 401 });
+      }
+      user = cookieUser;
+    }
+
+    // Check if user has HR role using admin client
+    const { data: userProfile, error: profileError } = await adminClient
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (profileError || !userProfile) {
+      return NextResponse.json({ error: 'Failed to verify user role' }, { status: 500 });
+    }
+
+    if (userProfile.role !== 'hr' && userProfile.role !== 'exec') {
+      return NextResponse.json({ error: 'Forbidden - HR/Exec access required' }, { status: 403 });
     }
 
     console.log('[DEACTIVATE] Deactivating user:', employeeId);
 
-    // Update profile status to inactive
-    const { error: updateError } = await supabase
-      .from('profiles')
+    // Update user is_active status to false
+    const { error: updateError } = await adminClient
+      .from('users')
       .update({
-        status: 'inactive',
+        is_active: false,
         updated_at: new Date().toISOString()
       })
-      .eq('user_id', employeeId);
+      .eq('id', employeeId);
 
     if (updateError) {
       console.error('[DEACTIVATE] Error updating profile:', updateError);
