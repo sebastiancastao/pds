@@ -31,7 +31,7 @@ export async function DELETE(
         .from('profiles')
         .select('role')
         .eq('user_id', user.id)
-        .single();
+        .single<{ role: string }>();
 
       if (profileError || !profile) {
         return NextResponse.json({ error: 'Failed to verify user role' }, { status: 500 });
@@ -51,7 +51,7 @@ export async function DELETE(
       .from('profiles')
       .select('id')
       .eq('user_id', employeeId)
-      .single();
+      .single<{ id: string }>();
 
     const profileId = profileData?.id;
 
