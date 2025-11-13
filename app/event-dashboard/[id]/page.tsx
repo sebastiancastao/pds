@@ -1503,7 +1503,7 @@ export default function EventDashboardPage() {
                       </div>
 
                       <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                        <span className="font-semibold text-red-600">− Tax ({shares.taxPct}%)</span>
+                        <span className="font-semibold text-red-600">− Tax Amount</span>
                         <span className="text-xl font-bold text-red-600">−${shares.tax.toFixed(2)}</span>
                       </div>
 
@@ -1551,34 +1551,7 @@ export default function EventDashboardPage() {
                     </div>
                   )}
 
-                  {/* Split */}
-                  <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-                    <h3 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-900">
-                      <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z" />
-                      </svg>
-                      Revenue Split (from Net Sales)
-                    </h3>
-
-                    <div className="bg-gradient-to-br from-gray-50 to-slate-50 rounded-xl p-6 space-y-4 border border-gray-200">
-                      {event.artist && (
-                        <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                          <span className="font-semibold text-gray-700">Artist ({event.artist_share_percent}%)</span>
-                          <span className="text-2xl font-bold text-green-600">${shares.artistShare.toFixed(2)}</span>
-                        </div>
-                      )}
-
-                      <div className="flex justify-between items-center pb-3 border-b border-gray-200">
-                        <span className="font-semibold text-gray-700">Venue ({event.venue_share_percent}%)</span>
-                        <span className="text-2xl font-bold text-blue-600">${shares.venueShare.toFixed(2)}</span>
-                      </div>
-
-                      <div className="flex justify-between items-center">
-                        <span className="font-semibold text-gray-700">PDS ({event.pds_share_percent}%)</span>
-                        <span className="text-2xl font-bold text-indigo-600">${shares.pdsShare.toFixed(2)}</span>
-                      </div>
-                    </div>
-                  </div>
+                  {/* Split removed per request */}
                 </>
               )}
             </div>

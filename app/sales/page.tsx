@@ -439,40 +439,7 @@ function SalesContent() {
                   </div>
                 </div>
 
-                <h3 className="text-xl font-semibold mb-4">
-                  Revenue Split (from Net Sales)
-                </h3>
-
-                <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-                  {event.artist && (
-                    <div className="flex justify-between items-center">
-                      <span className="font-medium">
-                        Artist ({event.artist_share_percent}%)
-                      </span>
-                      <span className="text-lg font-bold">
-                        ${shares.artistShare.toFixed(2)}
-                      </span>
-                    </div>
-                  )}
-
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium">
-                      Venue ({event.venue_share_percent}%)
-                    </span>
-                    <span className="text-lg font-bold">
-                      ${shares.venueShare.toFixed(2)}
-                    </span>
-                  </div>
-
-                  <div className="flex justify-between items-center">
-                    <span className="font-medium">
-                      PDS ({event.pds_share_percent}%)
-                    </span>
-                    <span className="text-lg font-bold">
-                      ${shares.pdsShare.toFixed(2)}
-                    </span>
-                  </div>
-                </div>
+                {/* Revenue Split removed per request */}
               </div>
             </>
           )}
