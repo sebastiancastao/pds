@@ -50,7 +50,7 @@ export default function TimeTrackingPage() {
             .from('users')
             .select('role')
             .eq('id', user.id)
-            .single();
+            .single<{ role: string }>();
           setUserRole((roleRow?.role || '').toString().trim().toLowerCase());
         } catch {}
         setIsAuthed(true);
