@@ -96,7 +96,7 @@ export default function RatesPage() {
           .from('users')
           .select('role')
           .eq('id', session.user.id)
-          .single();
+          .single<{ role: string }>();
 
         if (userError || !userData) {
           console.error('[RATES] User error:', userError);
