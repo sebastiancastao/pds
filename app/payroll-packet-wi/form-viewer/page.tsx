@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourWIPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12WIPage from '../meal-waiver-10-12/page';
@@ -21,6 +21,14 @@ const WI_FORMS: FormSpec[] = [
 ];
 
 export default function PayrollPacketWIFormViewer() {
+  return (
+    <Suspense fallback={<div className="p-6 text-center">Loading form...</div>}>
+      <PayrollPacketWIFormViewerContent />
+    </Suspense>
+  );
+}
+
+function PayrollPacketWIFormViewerContent() {
   const searchParams = useSearchParams();
   const selectedForm = searchParams.get('form');
 

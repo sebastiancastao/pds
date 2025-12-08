@@ -4,6 +4,8 @@ import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decryptData } from '@/lib/encryption';
 
+export const dynamic = 'force-dynamic';
+
 // Create service role client for database operations
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,

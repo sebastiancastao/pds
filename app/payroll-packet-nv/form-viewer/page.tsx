@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourNVPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12NVPage from '../meal-waiver-10-12/page';
@@ -20,6 +20,14 @@ const NV_FORMS: FormSpec[] = [
 ];
 
 export default function PayrollPacketNVFormViewer() {
+  return (
+    <Suspense fallback={<div className="p-6 text-center">Loading form...</div>}>
+      <PayrollPacketNVFormViewerContent />
+    </Suspense>
+  );
+}
+
+function PayrollPacketNVFormViewerContent() {
   const searchParams = useSearchParams();
   const selectedForm = searchParams.get('form');
 

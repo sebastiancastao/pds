@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourAZPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12AZPage from '../meal-waiver-10-12/page';
@@ -21,6 +21,14 @@ const AZ_FORMS: FormSpec[] = [
 ];
 
 export default function PayrollPacketAZFormViewer() {
+  return (
+    <Suspense fallback={<div className="p-6 text-center">Loading form...</div>}>
+      <PayrollPacketAZFormViewerContent />
+    </Suspense>
+  );
+}
+
+function PayrollPacketAZFormViewerContent() {
   const searchParams = useSearchParams();
   const selectedForm = searchParams.get('form');
 

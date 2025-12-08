@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
@@ -39,7 +39,7 @@ type BackgroundCheck = {
   updated_at: string;
 };
 
-export default function HRDashboardPage() {
+function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -1265,6 +1265,14 @@ export default function HRDashboardPage() {
         )}
       </div>
     </div>
+  );
+}
+
+export default function HRDashboardPage() {
+  return (
+    <Suspense fallback={<div className="min-h-screen flex items-center justify-center">Loading dashboard...</div>}>
+      <HRDashboardContent />
+    </Suspense>
   );
 }
 

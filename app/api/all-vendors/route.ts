@@ -5,6 +5,8 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, decryptData } from "@/lib/encryption";
 import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
 
+export const dynamic = 'force-dynamic';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
