@@ -75,6 +75,22 @@ type PDFForm = {
   created_at: string;
 };
 
+type OnboardingTemplate = {
+  id: string;
+  form_name: string;
+  form_display_name: string;
+  form_description: string | null;
+  state_code: string | null;
+  form_category: string;
+  form_order: number;
+  pdf_data: string; // base64
+  file_size: number | null;
+  is_active: boolean;
+  is_required: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -112,6 +128,9 @@ export default function EmployeeProfilePage() {
   const [i9Loading, setI9Loading] = useState(false);
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [formsError, setFormsError] = useState<string>('');
+  const [onboardingTemplates, setOnboardingTemplates] = useState<OnboardingTemplate[]>([]);
+  const [templatesLoading, setTemplatesLoading] = useState(false);
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -239,10 +258,13 @@ export default function EmployeeProfilePage() {
 
         if (response.ok) {
           const result = await response.json();
-          console.log("🟢 [DEBUG] PDF forms loaded:", result.forms?.length || 0);
+          console.log("🟢 [DEBUG] PDF forms response:", result);
+          console.log("🟢 [DEBUG] PDF forms count:", result.forms?.length || 0);
+          console.log("🟢 [DEBUG] PDF forms array:", result.forms);
           setPdfForms(result.forms || []);
         } else {
-          console.log("⚠️ [DEBUG] No PDF forms found or error:", response.status);
+          const errorText = await response.text();
+          console.log("⚠️ [DEBUG] PDF forms error response:", response.status, errorText);
           setPdfForms([]);
         }
       } catch (error) {
@@ -256,12 +278,57 @@ export default function EmployeeProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
+  // Fetch onboarding form templates after employee is loaded
+  useEffect(() => {
+    const loadOnboardingTemplates = async () => {
+      if (!employee?.state) return;
+
+      console.log("🔵 [DEBUG] Fetching onboarding templates for state:", employee.state);
+      setTemplatesLoading(true);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        const response = await fetch(`/api/onboarding-forms?state=${employee.state}`, {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          console.log("🟢 [DEBUG] Onboarding templates loaded:", result.forms?.length || 0);
+          setOnboardingTemplates(result.forms || []);
+        } else {
+          console.log("⚠️ [DEBUG] No onboarding templates found or error:", response.status);
+          setOnboardingTemplates([]);
+        }
+      } catch (error) {
+        console.error("🔴 [DEBUG] Error loading onboarding templates:", error);
+        setOnboardingTemplates([]);
+      } finally {
+        setTemplatesLoading(false);
+      }
+    };
+
+    loadOnboardingTemplates();
+  }, [employee?.state]);
+
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
     // Re-compute locally as a guard (API already provides total_hours)
     const total = entries.reduce((acc, e) => acc + hoursBetween(e.clock_in, e.clock_out), 0);
     return { totalHoursLocal: total };
   }, [entries]);
+
+  const onboardingFormsLink = useMemo(() => {
+    const params = new URLSearchParams();
+    params.set('view', 'forms');
+    if (employee?.state) {
+      params.set('state', employee.state);
+    }
+    return `/hr-dashboard?${params.toString()}`;
+  }, [employee?.state]);
 
   // Create event name lookup from per_event data
   const eventNameMap = useMemo(() => {
@@ -322,13 +389,46 @@ export default function EmployeeProfilePage() {
     }
   };
 
-  // Download all documents (PDFs + I-9 documents)
+  // Download an onboarding template
+  const downloadTemplate = (template: OnboardingTemplate) => {
+    try {
+      // Convert base64 to blob
+      const byteCharacters = atob(template.pdf_data);
+      const byteNumbers = new Array(byteCharacters.length);
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i);
+      }
+      const byteArray = new Uint8Array(byteNumbers);
+      const blob = new Blob([byteArray], { type: 'application/pdf' });
+
+      // Create download link
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${template.form_display_name}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error downloading template:', error);
+      alert('Failed to download template');
+    }
+  };
+
+  // Download all documents (PDFs + I-9 documents + Templates)
   const downloadAllDocuments = async () => {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
         downloadPDFForm(form);
         // Small delay between downloads to avoid browser blocking
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      // Download all onboarding templates
+      for (const template of onboardingTemplates) {
+        downloadTemplate(template);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -351,7 +451,8 @@ export default function EmployeeProfilePage() {
         }
       }
 
-      alert(`Downloaded ${pdfForms.length} onboarding forms and ${i9Count} I-9 documents`);
+      const totalCount = pdfForms.length + onboardingTemplates.length + i9Count;
+      alert(`Downloaded ${totalCount} documents (${pdfForms.length} filled forms, ${onboardingTemplates.length} templates, ${i9Count} I-9 documents)`);
     } catch (error) {
       console.error('Error downloading all documents:', error);
       alert('Some documents may have failed to download');
@@ -913,71 +1014,162 @@ export default function EmployeeProfilePage() {
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Onboarding Forms</h2>
-                {(pdfForms.length > 0 || i9Documents) && (
-                  <button
-                    onClick={downloadAllDocuments}
-                    className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                <div className="flex items-center gap-2">
+                  <Link
+                    href={onboardingFormsLink}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
                   >
                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                     </svg>
-                    Download All Documents
-                  </button>
-                )}
+                    Manage Onboarding Forms
+                  </Link>
+                  {(pdfForms.length > 0 || onboardingTemplates.length > 0 || i9Documents) && (
+                    <button
+                      onClick={downloadAllDocuments}
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download All Documents
+                    </button>
+                  )}
+                </div>
               </div>
               <div className="apple-card p-6">
-                {pdfLoading ? (
+                {(pdfLoading || templatesLoading) ? (
                   <div className="flex items-center justify-center py-8">
                     <div className="apple-spinner" />
                     <span className="ml-3 text-gray-600">Loading forms…</span>
                   </div>
-                ) : pdfForms.length === 0 ? (
+                ) : (pdfForms.length === 0 && onboardingTemplates.length === 0) ? (
                   <div className="text-center py-8">
                     <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    <p className="text-gray-500 font-medium">No onboarding forms submitted yet</p>
-                    <p className="text-sm text-gray-400 mt-1">Employee has not completed the onboarding packet</p>
+                    <p className="text-gray-500 font-medium">No onboarding forms available</p>
+                    <p className="text-sm text-gray-400 mt-1">
+                      {!employee?.state
+                        ? 'Employee has no state assigned'
+                        : 'No templates configured for this state or employee has not submitted forms yet'
+                      }
+                    </p>
+                    <p className="text-xs text-gray-400 mt-2">
+                      Check browser console for debugging information
+                    </p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {pdfForms.map((form) => (
-                      <div
-                        key={form.form_name}
-                        className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 hover:shadow-md transition-all"
-                      >
-                        <div className="flex items-start justify-between mb-3">
-                          <div className="flex items-center gap-3">
-                            <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0">
-                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
+                  <div className="space-y-6">
+                    {/* Filled Forms Section */}
+                    {pdfForms.length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-green-100 text-green-700 text-xs font-bold">
+                            {pdfForms.length}
+                          </span>
+                          Completed Forms
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {pdfForms.map((form) => (
+                            <div
+                              key={form.form_name}
+                              className="border border-green-200 bg-green-50 rounded-xl p-4 hover:border-green-300 hover:shadow-md transition-all"
+                            >
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-lg bg-green-500 text-white flex items-center justify-center flex-shrink-0">
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                  </div>
+                                  <div>
+                                    <h3 className="font-semibold text-gray-900 text-sm">{form.display_name}</h3>
+                                    <p className="text-xs text-green-700">Filled & Submitted</p>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="flex items-center text-xs text-gray-500">
+                                  <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  </svg>
+                                  {formatDate(form.updated_at)}
+                                </div>
+                                <button
+                                  onClick={() => downloadPDFForm(form)}
+                                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download Filled PDF
+                                </button>
+                              </div>
                             </div>
-                            <div>
-                              <h3 className="font-semibold text-gray-900 text-sm">{form.display_name}</h3>
-                              <p className="text-xs text-gray-500">PDF Document</p>
-                            </div>
-                          </div>
-                        </div>
-                        <div className="space-y-2">
-                          <div className="flex items-center text-xs text-gray-500">
-                            <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            {formatDate(form.updated_at)}
-                          </div>
-                          <button
-                            onClick={() => downloadPDFForm(form)}
-                            className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                            Download PDF
-                          </button>
+                          ))}
                         </div>
                       </div>
-                    ))}
+                    )}
+
+                    {/* Templates Section */}
+                    {onboardingTemplates.length > 0 && (
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
+                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">
+                            {onboardingTemplates.length}
+                          </span>
+                          Available Templates
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          {onboardingTemplates.map((template) => (
+                            <div
+                              key={template.id}
+                              className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 hover:shadow-md transition-all"
+                            >
+                              <div className="flex items-start justify-between mb-3">
+                                <div className="flex items-center gap-3">
+                                  <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0">
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                  </div>
+                                  <div>
+                                    <h3 className="font-semibold text-gray-900 text-sm">{template.form_display_name}</h3>
+                                    <p className="text-xs text-gray-500">
+                                      {template.state_code ? `${template.state_code} Form` : 'Universal Form'}
+                                      {template.is_required && <span className="text-red-600 ml-1">*</span>}
+                                    </p>
+                                  </div>
+                                </div>
+                              </div>
+                              {template.form_description && (
+                                <p className="text-xs text-gray-600 mb-2 line-clamp-2">{template.form_description}</p>
+                              )}
+                              <div className="space-y-2">
+                                <div className="flex items-center justify-between text-xs text-gray-500">
+                                  <span className="px-2 py-1 bg-gray-100 rounded text-xs font-medium capitalize">
+                                    {template.form_category.replace('_', ' ')}
+                                  </span>
+                                  {template.file_size && (
+                                    <span>{(template.file_size / 1024).toFixed(1)} KB</span>
+                                  )}
+                                </div>
+                                <button
+                                  onClick={() => downloadTemplate(template)}
+                                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download Template
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

@@ -141,17 +141,30 @@ export async function GET(
 
         // Fallback 1: try date window on timestamp
     if (!entries || entries.length === 0) {
-      const { data: byTimestamp } = await supabaseAdmin
+      console.log('[TIMESHEET] No entries with event_id, trying timestamp range fallback');
+      const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
         .select('user_id, action, timestamp, started_at, event_id')
         .in('user_id', userIds)
         .gte('timestamp', startIso)
         .lte('timestamp', endIso)
         .order('timestamp', { ascending: true });
+
+      console.log('[TIMESHEET] Timestamp range query:', {
+        startIso,
+        endIso,
+        userIds,
+        foundCount: byTimestamp?.length || 0,
+        error: tsErr,
+        sample: byTimestamp?.slice(0, 3)
+      });
+
       if (byTimestamp && byTimestamp.length > 0) {
         entries = byTimestamp;
+        console.log('[TIMESHEET] ✅ Using timestamp range fallback');
       } else {
         // Fallback 2: try date window on started_at
+        console.log('[TIMESHEET] Trying started_at range fallback');
         const { data: byStarted } = await supabaseAdmin
           .from('time_entries')
           .select('user_id, action, timestamp, started_at, event_id')
@@ -159,8 +172,10 @@ export async function GET(
           .gte('started_at', startIso)
           .lte('started_at', endIso)
           .order('started_at', { ascending: true });
+        console.log('[TIMESHEET] Started_at range query found:', byStarted?.length || 0);
         if (byStarted && byStarted.length > 0) {
           entries = byStarted;
+          console.log('[TIMESHEET] ✅ Using started_at range fallback');
         }
       }
     }if (!entries || entries.length === 0) {
@@ -175,6 +190,16 @@ export async function GET(
     const entriesByUser: Record<string, any[]> = {};
     for (const uid of userIds) {
       entriesByUser[uid] = (entries || []).filter(e => e.user_id === uid);
+    }
+
+    // Log all entries for each user for debugging
+    console.log('[TIMESHEET] All entries by user:');
+    for (const uid of userIds) {
+      const userEntries = entriesByUser[uid] || [];
+      console.log(`  User ${uid}: ${userEntries.length} entries`);
+      userEntries.forEach((entry, idx) => {
+        console.log(`    ${idx + 1}. ${entry.action} at ${entry.timestamp}`);
+      });
     }
 
     // Calculate totals and spans per user
@@ -233,6 +258,7 @@ export async function GET(
       // Calculate total worked time by pairing clock_in with clock_out
       // Handle imperfect data gracefully
       let currentClockIn: string | null = null;
+      const workIntervals: Array<{ start: Date; end: Date }> = [];
 
       for (const entry of userEntries) {
         if (entry.action === 'clock_in') {
@@ -248,6 +274,7 @@ export async function GET(
             const duration = endMs - startMs;
             if (duration > 0) {
               totals[uid] += duration;
+              workIntervals.push({ start: new Date(currentClockIn), end: new Date(entry.timestamp) });
             }
             currentClockIn = null;
           } else {
@@ -259,6 +286,54 @@ export async function GET(
       // If still clocked in by end of day, don't count it
       if (currentClockIn) {
         console.warn(`⚠️ User ${uid}: Still clocked in at end of day, not counting incomplete shift`);
+      }
+
+      // AUTO-DETECT MEAL BREAKS: Analyze gaps between work intervals
+      // If there are no explicit meal_start/meal_end, infer from gaps
+      const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
+      if (!hasExplicitMeals && workIntervals.length >= 2) {
+        console.log(`[MEAL-DETECT] User ${uid}: Analyzing ${workIntervals.length} work intervals for gaps`);
+
+        // Sort intervals by start time
+        workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+
+        // Find gaps between consecutive work intervals
+        const gaps: Array<{ start: Date; end: Date }> = [];
+        for (let i = 0; i < workIntervals.length - 1; i++) {
+          const gapStart = workIntervals[i].end;
+          const gapEnd = workIntervals[i + 1].start;
+          const gapMs = gapEnd.getTime() - gapStart.getTime();
+
+          if (gapMs > 0) {
+            console.log(`[MEAL-DETECT] User ${uid}: Found gap ${i + 1}: ${gapStart.toISOString()} to ${gapEnd.toISOString()} (${Math.round(gapMs / 1000 / 60)} minutes)`);
+            gaps.push({ start: gapStart, end: gapEnd });
+          }
+
+          // Limit to 2 meal breaks
+          if (gaps.length >= 2) break;
+        }
+
+        // Apply detected gaps as meal breaks
+        if (gaps[0]) {
+          spans[uid].firstMealStart = gaps[0].start.toISOString();
+          spans[uid].lastMealEnd = gaps[0].end.toISOString();
+          console.log(`[MEAL-DETECT] User ${uid}: Set first meal break: ${spans[uid].firstMealStart} to ${spans[uid].lastMealEnd}`);
+        }
+        if (gaps[1]) {
+          spans[uid].secondMealStart = gaps[1].start.toISOString();
+          spans[uid].secondMealEnd = gaps[1].end.toISOString();
+          console.log(`[MEAL-DETECT] User ${uid}: Set second meal break: ${spans[uid].secondMealStart} to ${spans[uid].secondMealEnd}`);
+        }
+
+        if (gaps.length > 0) {
+          console.log(`[MEAL-DETECT] User ${uid}: Detected ${gaps.length} meal break(s) from gaps`);
+        } else {
+          console.log(`[MEAL-DETECT] User ${uid}: No gaps found (continuous work or single interval)`);
+        }
+      } else if (hasExplicitMeals) {
+        console.log(`[MEAL-DETECT] User ${uid}: Using explicit meal_start/meal_end entries`);
+      } else {
+        console.log(`[MEAL-DETECT] User ${uid}: Not enough work intervals (${workIntervals.length}) to detect meal breaks`);
       }
     }
 

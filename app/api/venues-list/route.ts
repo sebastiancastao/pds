@@ -35,15 +35,55 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Query all venues from venue_reference table
-    const { data: venues, error } = await supabaseAdmin
-      .from('venue_reference')
-      .select('*')
-      .order('venue_name', { ascending: true });
+    // Check user role
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
 
-    if (error) {
-      console.error('SUPABASE SELECT ERROR:', error);
-      return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+    if (userError || !userData) {
+      console.error('Error fetching user role:', userError);
+      return NextResponse.json({ error: 'Failed to fetch user role' }, { status: 500 });
+    }
+
+    let venues;
+    let error;
+
+    // If user is a manager, only return venues they are assigned to
+    if (userData.role === 'manager') {
+      const { data: managerVenues, error: managerError } = await supabaseAdmin
+        .from('venue_managers')
+        .select(`
+          venue:venue_reference(*)
+        `)
+        .eq('manager_id', user.id)
+        .eq('is_active', true);
+
+      if (managerError) {
+        console.error('SUPABASE SELECT ERROR (manager venues):', managerError);
+        return NextResponse.json({ error: managerError.message || managerError.code || managerError }, { status: 500 });
+      }
+
+      // Extract venues from the joined data and filter out nulls
+      venues = (managerVenues || [])
+        .map((mv: any) => mv.venue)
+        .filter((v: any) => v !== null)
+        .sort((a: any, b: any) => a.venue_name.localeCompare(b.venue_name));
+    } else {
+      // For exec, admin, and other roles, return all venues
+      const { data: allVenues, error: venuesError } = await supabaseAdmin
+        .from('venue_reference')
+        .select('*')
+        .order('venue_name', { ascending: true });
+
+      venues = allVenues;
+      error = venuesError;
+
+      if (error) {
+        console.error('SUPABASE SELECT ERROR:', error);
+        return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+      }
     }
 
     return NextResponse.json({ venues: venues ?? [] }, { status: 200 });

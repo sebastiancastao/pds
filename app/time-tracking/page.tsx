@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
-import { WebGLShader } from "@/components/ui/web-gl-shader";
 
 type TimeEntry = {
   id: string;
@@ -299,23 +298,52 @@ export default function TimeTrackingPage() {
     );
   }
 
-  // Worker view: WebGL shader background with concentric circles
+  // Worker view: gradient background with concentric circles
   if (isWorker) {
     return (
-      <div className="relative flex w-full flex-col items-center justify-center overflow-hidden min-h-screen">
-        <WebGLShader />
+      <div className="relative flex w-full flex-col items-center justify-center overflow-hidden min-h-screen bg-gradient-to-br from-primary-50 to-primary-100">
+        {/* Background waves synced with foreground pulse */}
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="relative w-[28rem] h-[28rem] sm:w-[32rem] sm:h-[32rem]">
+            <div className="time-wave-pulse" />
+            <div className="time-wave-pulse time-wave-pulse--delayed" />
+          </div>
+        </div>
+
         <button
           onClick={handleLogout}
-          className="absolute top-4 right-4 px-3 py-1.5 rounded-md text-sm font-semibold bg-gray-900/80 text-white hover:bg-gray-900 transition z-20"
+          className="absolute top-4 right-4 inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500 z-20"
         >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
           Logout
         </button>
-        <div className="relative w-64 h-64 z-10">
-          <div className="absolute inset-0 rounded-full bg-green-400/20 backdrop-blur-sm animate-ping"></div>
-          <div className="absolute inset-6 rounded-full bg-green-400/30 backdrop-blur-sm animate-pulse"></div>
-          <div className="absolute inset-12 rounded-full bg-green-500/70 shadow-2xl border border-white/20"></div>
-          <div className="absolute inset-12 flex items-center justify-center">
-            <div className="px-4 py-2 rounded-full bg-white/20 backdrop-blur-md text-white text-sm font-semibold shadow">
+        <div className="relative w-80 h-80 z-10">
+          {/* Outermost expanding ring */}
+          <div
+            className="absolute inset-0 rounded-full bg-green-500/20 animate-ping"
+            style={{ animationDuration: '2s' }}
+          ></div>
+
+          {/* Middle pulsing ring */}
+          <div
+            className="absolute inset-8 rounded-full bg-green-500/30 animate-pulse"
+            style={{ animationDuration: '2s' }}
+          ></div>
+
+          {/* Inner solid circle with pulse */}
+          <div
+            className="absolute inset-16 rounded-full bg-green-500/70 shadow-2xl animate-pulse"
+            style={{
+              animationDuration: '2s',
+              boxShadow: '0 0 40px rgba(34, 197, 94, 0.6), 0 0 80px rgba(34, 197, 94, 0.3)'
+            }}
+          ></div>
+
+          {/* Center badge */}
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="px-6 py-3 rounded-full bg-white/95 backdrop-blur-sm shadow-xl text-green-700 text-lg font-semibold border-2 border-green-200">
               Tracking active
             </div>
           </div>
@@ -324,15 +352,19 @@ export default function TimeTrackingPage() {
     );
   }
 
-  // Manager/admin view: keep full controls
+  // Manager/admin view: keep full controls with gradient background
   return (
-    <div className="container mx-auto max-w-3xl p-6 space-y-6">
+    <div className="relative min-h-screen bg-gradient-to-br from-primary-50 to-primary-100">
+      <div className="container mx-auto max-w-3xl p-6 space-y-6 relative z-10">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Time Tracking</h1>
+        <h1 className="text-2xl font-bold text-primary-900">Time Tracking</h1>
         <button
           onClick={handleLogout}
-          className="px-3 py-1.5 rounded-md text-sm font-semibold bg-gray-900 text-white hover:bg-black transition"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500"
         >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
           Logout
         </button>
       </div>
@@ -391,6 +423,7 @@ export default function TimeTrackingPage() {
             <table className="min-w-full text-sm"></table>
           </div>
         )}
+      </div>
       </div>
     </div>
   );

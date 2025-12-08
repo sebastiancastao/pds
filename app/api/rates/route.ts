@@ -22,7 +22,6 @@ interface StateRate {
   overtime_rate: number;
   doubletime_enabled: boolean;
   doubletime_rate: number;
-  tax_rate: number;
   effective_date: string;
 }
 
@@ -119,10 +118,6 @@ export async function POST(req: NextRequest) {
       if (rate.doubletime_enabled && (typeof rate.doubletime_rate !== 'number' || rate.doubletime_rate <= 0)) {
         return NextResponse.json({ error: 'Invalid doubletime_rate value' }, { status: 400 });
       }
-
-      if (typeof rate.tax_rate !== 'number' || rate.tax_rate < 0 || rate.tax_rate > 100) {
-        return NextResponse.json({ error: 'Invalid tax_rate value (must be 0-100)' }, { status: 400 });
-      }
     }
 
     // Update or insert each rate
@@ -138,7 +133,6 @@ export async function POST(req: NextRequest) {
           overtime_rate: rate.overtime_rate,
           doubletime_enabled: rate.doubletime_enabled,
           doubletime_rate: rate.doubletime_rate,
-          tax_rate: rate.tax_rate,
           effective_date: rate.effective_date,
         }, {
           onConflict: 'state_code',

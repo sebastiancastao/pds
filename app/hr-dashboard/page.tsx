@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -41,9 +41,14 @@ type BackgroundCheck = {
 
 export default function HRDashboardPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  const initialView = (searchParams?.get("view") as "overview" | "employees" | "payments" | "forms" | null) || "overview";
+  const initialFormState = searchParams?.get("state") || "all";
+
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [hrView, setHrView] = useState<"overview" | "employees" | "payments">("overview");
+  const [hrView, setHrView] = useState<"overview" | "employees" | "payments" | "forms">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [backgroundChecks, setBackgroundChecks] = useState<BackgroundCheck[]>([]);
@@ -66,6 +71,14 @@ export default function HRDashboardPage() {
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
   const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string } | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
+
+  // Onboarding forms state
+  const [onboardingForms, setOnboardingForms] = useState<any[]>([]);
+  const [loadingForms, setLoadingForms] = useState(false);
+  const [formsError, setFormsError] = useState<string>('');
+  const [uploadingForm, setUploadingForm] = useState(false);
+  const [filterFormState, setFilterFormState] = useState<string>(initialFormState);
+  const [filterFormCategory, setFilterFormCategory] = useState<string>('all');
 
   const handleLogout = async () => {
     try {
@@ -511,6 +524,94 @@ export default function HRDashboardPage() {
     }
   }, [paymentsByVenue]);
 
+  // Load onboarding forms
+  const loadOnboardingForms = useCallback(async () => {
+    setLoadingForms(true);
+    setFormsError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const params = new URLSearchParams();
+      if (filterFormState !== 'all') params.set('state', filterFormState);
+      if (filterFormCategory !== 'all') params.set('category', filterFormCategory);
+      params.set('active_only', 'false'); // Show all forms for HR
+
+      const res = await fetch(`/api/onboarding-forms?${params.toString()}`, {
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to load forms');
+      }
+
+      const data = await res.json();
+      setOnboardingForms(data.forms || []);
+    } catch (e: any) {
+      setFormsError(e.message || 'Failed to load forms');
+    } finally {
+      setLoadingForms(false);
+    }
+  }, [filterFormState, filterFormCategory, supabase]);
+
+  // Auto-load onboarding forms when navigating directly to the Forms tab via URL (?view=forms)
+  useEffect(() => {
+    if (hrView === "forms") {
+      loadOnboardingForms();
+    }
+  }, [hrView, loadOnboardingForms]);
+
+  // Upload new form
+  const handleUploadForm = useCallback(async (formData: any) => {
+    setUploadingForm(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/onboarding-forms', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify(formData),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to upload form');
+      }
+
+      alert('Form uploaded successfully!');
+      await loadOnboardingForms();
+    } catch (e: any) {
+      alert(e.message || 'Failed to upload form');
+    } finally {
+      setUploadingForm(false);
+    }
+  }, [supabase, loadOnboardingForms]);
+
+  // Toggle form active status
+  const toggleFormActive = useCallback(async (formId: string, currentStatus: boolean) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/onboarding-forms', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ id: formId, is_active: !currentStatus }),
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Failed to update form');
+      }
+
+      await loadOnboardingForms();
+    } catch (e: any) {
+      alert(e.message || 'Failed to update form');
+    }
+  }, [supabase, loadOnboardingForms]);
+
   const hrStats = {
     totalEmployees: employees.length,
     activeEmployees: employees.filter((e) => e.status === "active").length,
@@ -646,6 +747,18 @@ export default function HRDashboardPage() {
             >
               Payroll
               {hrView === "payments" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
+            <button
+              onClick={() => {
+                setHrView("forms");
+                loadOnboardingForms();
+              }}
+              className={`pb-4 px-2 font-semibold transition-colors relative ${
+                hrView === "forms" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Onboarding Forms Update
+              {hrView === "forms" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
           </div>
         </div>
@@ -1016,7 +1129,393 @@ export default function HRDashboardPage() {
             </div>
           </div>
         )}
+
+        {hrView === "forms" && (
+          <div className="space-y-8">
+            <section>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Onboarding Forms Management</h2>
+                <span className="text-sm text-gray-500 font-medium">Upload & Manage Forms</span>
+              </div>
+
+              {/* Upload Form */}
+              <OnboardingFormUpload
+                onUpload={handleUploadForm}
+                uploading={uploadingForm}
+              />
+
+              {/* Filters */}
+              <div className="apple-card p-6 mb-6">
+                <div className="flex flex-wrap gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Filter by State</label>
+                    <select
+                      value={filterFormState}
+                      onChange={(e) => setFilterFormState(e.target.value)}
+                      className="apple-input"
+                    >
+                      <option value="all">All States</option>
+                      <option value="CA">California</option>
+                      <option value="NY">New York</option>
+                      <option value="AZ">Arizona</option>
+                      <option value="WI">Wisconsin</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Filter by Category</label>
+                    <select
+                      value={filterFormCategory}
+                      onChange={(e) => setFilterFormCategory(e.target.value)}
+                      className="apple-input"
+                    >
+                      <option value="all">All Categories</option>
+                      <option value="background_check">Background Check</option>
+                      <option value="tax">Tax</option>
+                      <option value="employment">Employment</option>
+                      <option value="benefits">Benefits</option>
+                      <option value="compliance">Compliance</option>
+                      <option value="other">Other</option>
+                    </select>
+                  </div>
+                  <div className="flex items-end">
+                    <button
+                      onClick={loadOnboardingForms}
+                      disabled={loadingForms}
+                      className="apple-button apple-button-primary"
+                    >
+                      {loadingForms ? 'Loading...' : 'Refresh Forms'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Error Message */}
+              {formsError && (
+                <div className="apple-error-banner mb-6">{formsError}</div>
+              )}
+
+              {/* Forms List */}
+              {loadingForms ? (
+                <div className="text-center py-12">
+                  <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+                  <p className="mt-4 text-gray-600">Loading forms...</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {onboardingForms.length === 0 ? (
+                    <div className="apple-card p-12 text-center">
+                      <p className="text-gray-500">No forms found. Upload a new form to get started.</p>
+                    </div>
+                  ) : (
+                    onboardingForms.map((form) => (
+                      <div key={form.id} className="apple-card p-6 hover:shadow-lg transition-shadow">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h3 className="text-lg font-semibold text-gray-900">{form.form_display_name}</h3>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                form.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600'
+                              }`}>
+                                {form.is_active ? 'Active' : 'Inactive'}
+                              </span>
+                              {form.is_required && (
+                                <span className="px-2 py-1 rounded text-xs font-medium bg-red-100 text-red-700">
+                                  Required
+                                </span>
+                              )}
+                              <span className="px-2 py-1 rounded text-xs font-medium bg-blue-100 text-blue-700">
+                                {form.form_category}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600 mb-2">
+                              <strong>Form ID:</strong> {form.form_name}
+                            </p>
+                            {form.form_description && (
+                              <p className="text-sm text-gray-600 mb-2">{form.form_description}</p>
+                            )}
+                            <div className="flex gap-4 text-sm text-gray-500">
+                              <span><strong>State:</strong> {form.state_code || 'Universal'}</span>
+                              <span><strong>Order:</strong> {form.form_order}</span>
+                              <span><strong>Size:</strong> {Math.round((form.file_size || 0) / 1024)} KB</span>
+                            </div>
+                            <p className="text-xs text-gray-400 mt-2">
+                              Uploaded {new Date(form.created_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => toggleFormActive(form.id, form.is_active)}
+                              className={`px-4 py-2 rounded-lg font-medium text-sm transition-colors ${
+                                form.is_active
+                                  ? 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                                  : 'bg-green-100 text-green-700 hover:bg-green-200'
+                              }`}
+                            >
+                              {form.is_active ? 'Deactivate' : 'Activate'}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// Onboarding Form Upload Component
+function OnboardingFormUpload({ onUpload, uploading }: { onUpload: (formData: any) => void; uploading: boolean }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [formName, setFormName] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [description, setDescription] = useState('');
+  const [stateCode, setStateCode] = useState('');
+  const [category, setCategory] = useState('tax');
+  const [formOrder, setFormOrder] = useState(0);
+  const [isRequired, setIsRequired] = useState(false);
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [converting, setConverting] = useState(false);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type === 'application/pdf') {
+      setPdfFile(file);
+    } else {
+      alert('Please select a valid PDF file');
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    if (!formName || !displayName || !category || !pdfFile) {
+      alert('Please fill in all required fields and select a PDF file');
+      return;
+    }
+
+    try {
+      setConverting(true);
+
+      // Convert PDF to base64
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const arrayBuffer = reader.result as ArrayBuffer;
+        const uint8Array = new Uint8Array(arrayBuffer);
+
+        // Convert to base64 in chunks to avoid stack overflow
+        const chunkSize = 32768;
+        let base64 = '';
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+          const chunk = uint8Array.subarray(i, Math.min(i + chunkSize, uint8Array.length));
+          base64 += String.fromCharCode.apply(null, Array.from(chunk));
+        }
+        const pdfData = btoa(base64);
+
+        const formData = {
+          form_name: formName,
+          form_display_name: displayName,
+          form_description: description || null,
+          state_code: stateCode || null,
+          form_category: category,
+          form_order: formOrder,
+          is_required: isRequired,
+          pdf_data: pdfData,
+        };
+
+        await onUpload(formData);
+
+        // Reset form
+        setFormName('');
+        setDisplayName('');
+        setDescription('');
+        setStateCode('');
+        setCategory('tax');
+        setFormOrder(0);
+        setIsRequired(false);
+        setPdfFile(null);
+        setIsExpanded(false);
+        setConverting(false);
+      };
+
+      reader.onerror = () => {
+        alert('Failed to read PDF file');
+        setConverting(false);
+      };
+
+      reader.readAsArrayBuffer(pdfFile);
+    } catch (error: any) {
+      alert(error.message || 'Failed to upload form');
+      setConverting(false);
+    }
+  };
+
+  return (
+    <div className="apple-card p-6 mb-8">
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="flex items-center justify-between w-full text-left"
+      >
+        <h3 className="text-lg font-semibold text-gray-900">Upload New Form</h3>
+        <svg
+          className={`w-5 h-5 transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+          fill="none"
+          stroke="currentColor"
+          viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {isExpanded && (
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Form ID <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="e.g., ca-de4, w4, i9"
+                className="apple-input"
+                required
+              />
+              <p className="text-xs text-gray-500 mt-1">Unique identifier for the form</p>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Display Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="e.g., California DE-4 Form"
+                className="apple-input"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                State Code
+              </label>
+              <select
+                value={stateCode}
+                onChange={(e) => setStateCode(e.target.value)}
+                className="apple-input"
+              >
+                <option value="">Universal (All States)</option>
+                <option value="CA">California</option>
+                <option value="NY">New York</option>
+                <option value="AZ">Arizona</option>
+                <option value="WI">Wisconsin</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Category <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                className="apple-input"
+                required
+              >
+                <option value="background_check">Background Check</option>
+                <option value="tax">Tax</option>
+                <option value="employment">Employment</option>
+                <option value="benefits">Benefits</option>
+                <option value="compliance">Compliance</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Form Order
+              </label>
+              <input
+                type="number"
+                value={formOrder}
+                onChange={(e) => setFormOrder(parseInt(e.target.value) || 0)}
+                placeholder="0"
+                className="apple-input"
+              />
+              <p className="text-xs text-gray-500 mt-1">Display order in workflow</p>
+            </div>
+
+            <div className="flex items-center">
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isRequired}
+                  onChange={(e) => setIsRequired(e.target.checked)}
+                  className="mr-2"
+                />
+                <span className="text-sm font-medium text-gray-700">Required Form</span>
+              </label>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Description
+            </label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Brief description of the form..."
+              rows={3}
+              className="apple-input"
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              PDF File <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="file"
+              accept="application/pdf"
+              onChange={handleFileChange}
+              className="apple-input"
+              required
+            />
+            {pdfFile && (
+              <p className="text-sm text-green-600 mt-2">
+                Selected: {pdfFile.name} ({Math.round(pdfFile.size / 1024)} KB)
+              </p>
+            )}
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <button
+              type="submit"
+              disabled={uploading || converting}
+              className="apple-button apple-button-primary"
+            >
+              {converting ? 'Converting PDF...' : uploading ? 'Uploading...' : 'Upload Form'}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsExpanded(false)}
+              disabled={uploading || converting}
+              className="apple-button apple-button-secondary"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

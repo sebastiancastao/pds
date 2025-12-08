@@ -1,12 +1,36 @@
 import { NextResponse } from 'next/server';
 import { PDFDocument, PDFTextField, PDFCheckBox, rgb, degrees, PDFName, PDFNumber } from 'pdf-lib';
-import { readFileSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
+
+function loadAzBasePdf() {
+  const primaryPath = join(process.cwd(), 'Arizona Form A-4-1.pdf');
+  const secondaryPath = join(process.cwd(), 'Arizona Form A-4.pdf');
+  const fallbackPath = join(process.cwd(), 'PDS AZ Payroll Packet 2025 _1_.pdf');
+
+  const candidates = [
+    { path: primaryPath, label: 'primary AZ A-4 (-1) file' },
+    { path: secondaryPath, label: 'alternate AZ A-4 file' },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const stats = statSync(candidate.path);
+      if (stats.size > 0) {
+        return readFileSync(candidate.path);
+      }
+      console.warn(`[PAYROLL-PACKET-AZ] ${candidate.label} exists but is empty, checking next option. (${candidate.path})`);
+    } catch (error) {
+      console.warn(`[PAYROLL-PACKET-AZ] ${candidate.label} unavailable, checking next option. (${candidate.path})`, error);
+    }
+  }
+
+  return readFileSync(fallbackPath);
+}
 
 export async function GET() {
   try {
-    const pdfPath = join(process.cwd(), 'PDS AZ Payroll Packet 2025 _1_.pdf');
-    const existingPdfBytes = readFileSync(pdfPath);
+    const existingPdfBytes = loadAzBasePdf();
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     const form = pdfDoc.getForm();
     const pages = pdfDoc.getPages();
@@ -26,7 +50,7 @@ export async function GET() {
       }
     };
 
-    // DEMO FIELDS for AZ - expand as needed after validation/testing
+    // First page fields only (avoid overflowing to later pages)
     const azFirstName = form.createTextField('azFirstName');
     addRotatedField(azFirstName, {
       x: 40,
@@ -236,330 +260,6 @@ export async function GET() {
     });
     twoCheckBox.enableRequired();
 
-    const W4FirstMName  = form.createTextField('W4FirstMName');
-    addRotatedField(W4FirstMName, {
-      x: 100,
-      y: height - (3905 - 1405),
-      width: 150,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4FirstMName.enableRequired();
-
-    const W4LastMName  = form.createTextField('W4LastMName');
-    addRotatedField(W4LastMName, {
-      x: 280,
-      y: height - (3905 - 1405),
-      width: 120,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4LastMName.enableRequired();
-
-    const W4SSN  = form.createTextField('W4SSN');
-    addRotatedField(W4SSN, {
-      x: 480,
-      y: height - (3905 - 1405),
-      width: 100,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4SSN.enableRequired();
-
-
-    const W4Adress  = form.createTextField('W4Adress');
-    addRotatedField(W4Adress, {
-      x: 100,
-      y: height - (3930 - 1405),
-      width: 150,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Adress.enableRequired();
-
-
-    const W4CityTownZip  = form.createTextField('W4CityTownZip');
-    addRotatedField(W4CityTownZip, {
-      x: 100,
-      y: height - (3953 - 1405),
-      width: 150,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4CityTownZip.enableRequired();
-
-
-    const W4SingleMarried  = form.createCheckBox('W4CSingleMarried');
-    addRotatedField(W4SingleMarried, {
-      x: 117,
-      y: height - (3965 - 1405),
-      width: 8,
-      height: 8,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4SingleMarried.enableRequired();
-
-    const W4MarriedFilingJointly  = form.createCheckBox('W4MarriedFilingJointly');
-    addRotatedField(W4MarriedFilingJointly, {
-      x: 117,
-      y: height - (3976 - 1405),
-      width: 8,
-      height: 8,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4MarriedFilingJointly.enableRequired();
-
-
-    const W4HeadOfHousehold  = form.createCheckBox('W4HeadOfHousehold');
-    addRotatedField(W4HeadOfHousehold, {
-      x: 117,
-      y: height - (3987 - 1405),
-      width: 8,
-      height: 8,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4HeadOfHousehold.enableRequired();
-
-
-    const W4total2Jobs  = form.createCheckBox('W4total2Jobs');
-    addRotatedField(W4total2Jobs, {
-      x: 564,
-      y: height - (3585-850),
-      width: 8,
-      height: 8,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4total2Jobs.enableRequired();
-
-
-    const W4200kless  = form.createTextField('W4200kless');
-    addRotatedField(W4200kless, {
-      x: 415,
-      y: height - (3650 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4200kless.enableRequired();
-
-    const W4200klessDependents  = form.createTextField('W4200klessDependents');
-    addRotatedField(W4200klessDependents, {
-      x: 415,
-      y: height - (3670 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4200klessDependents.enableRequired();
-
-    const W4200klessQualifyingChild  = form.createTextField('W4200klessQualifyingChild');
-    addRotatedField(W4200klessQualifyingChild, {
-      x: 515,
-      y: height - (3700 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4200klessQualifyingChild.enableRequired();
-
-    const W4otherIncome  = form.createTextField('W4otherIncome');
-    addRotatedField(W4otherIncome, {
-      x: 515,
-      y: height - (3735 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4otherIncome.enableRequired();
-
-    const W4Deductions  = form.createTextField('W4Deductions');
-    addRotatedField(W4Deductions, {
-      x: 515,
-      y: height - (3777 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Deductions.enableRequired();
-
-    const W4ExtraWithholding  = form.createTextField('W4ExtraWithholding');
-    addRotatedField(W4ExtraWithholding, {
-      x: 515,
-      y: height - (3802 - 850),
-      width: 60,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4ExtraWithholding.enableRequired();
-
-    const W4Signature  = form.createTextField('W4Signature');
-    addRotatedField(W4Signature, {
-      x: 100,
-      y: height - (3865 - 850),
-      width: 180,
-      height: 18,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Signature.enableRequired();
-
-    const W4Date  = form.createTextField('W4Date');
-    addRotatedField(W4Date, {
-      x: 470,
-      y: height - (3865 - 850),
-      width: 100,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Date.enableRequired();
-
-    const W4FirstDateOfEmployment  = form.createTextField('W4FirstDateOfEmployment');
-    addRotatedField(W4FirstDateOfEmployment, {
-      x: 390,
-      y: height - (3930 - 850),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4FirstDateOfEmployment.enableRequired();
-
-    const W4Step2TwoJobs  = form.createTextField('W4Step2TwoJobs');
-    addRotatedField(W4Step2TwoJobs, {
-      x: 515,
-      y: height - (4975-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2TwoJobs.enableRequired();
-
-    const W4Step2ThreeJobs  = form.createTextField('W4Step2ThreeJobs');
-    addRotatedField(W4Step2ThreeJobs, {
-      x: 515,
-      y: height - (5055-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2ThreeJobs.enableRequired();
-
-    const W4Step2ThreeJobsb  = form.createTextField('W4Step2ThreeJobsb');
-    addRotatedField(W4Step2ThreeJobsb, {
-      x: 515,
-      y: height - (5110-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2ThreeJobsb.enableRequired();
-
-    const W4Step2ThreeJobsc  = form.createTextField('W4Step2ThreeJobsc');
-    addRotatedField(W4Step2ThreeJobsc, {
-      x: 515,
-      y: height - (5130-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2ThreeJobsc.enableRequired();
-
-    const W4Step2NumberPayPeriod  = form.createTextField('W4Step2NumberPayPeriod');
-    addRotatedField(W4Step2NumberPayPeriod, {
-      x: 515,
-      y: height - (5160-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2NumberPayPeriod.enableRequired();
-
-    const W4Step2divide  = form.createTextField('W4Step2divide');
-    addRotatedField(W4Step2divide, {
-      x: 515,
-      y: height - (5200-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step2divide.enableRequired();
-
-    const W4Step4estimatedWages  = form.createTextField('W4Step4estimatedWages');
-    addRotatedField(W4Step4estimatedWages, {
-      x: 515,
-      y: height - (5270-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step4estimatedWages.enableRequired();
-
-    const W4Step4enterRangeCivilState  = form.createTextField('W4Step4enterRangeCivilState');
-    addRotatedField(W4Step4enterRangeCivilState, {
-      x: 515,
-      y: height - (5300-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step4enterRangeCivilState.enableRequired();
-
-    const W4Step4subtract  = form.createTextField('W4Step4subtract');
-    addRotatedField(W4Step4subtract, {
-      x: 515,
-      y: height - (5340-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step4subtract.enableRequired();
-
-    const W4Step4studentLoan  = form.createTextField('W4Step4studentLoan');
-    addRotatedField(W4Step4studentLoan, {
-      x: 515,
-      y: height - (5375-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step4studentLoan.enableRequired();
-
-    const W4Step4lines3and4  = form.createTextField('W4Step4lines3and4');
-    addRotatedField(W4Step4lines3and4, {
-      x: 515,
-      y: height - (5395-800),
-      width: 70,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    W4Step4lines3and4.enableRequired();
 
     // Save and return the PDF with editable fields
     const pdfBytes = await pdfDoc.save();

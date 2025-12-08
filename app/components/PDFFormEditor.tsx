@@ -1,4 +1,4 @@
-'use client';
+﻿'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
@@ -121,14 +121,42 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       // Check for saved progress
       console.log('Step 1: Checking for saved progress...');
-      const savedResponse = await fetch(`/api/pdf-form-progress/retrieve?formName=${formId}`, {
-        credentials: 'same-origin', // Include cookies with request
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+      const getLocalProgress = () =>
+        typeof localStorage !== 'undefined' ? localStorage.getItem(`pdf-progress-${formId}`) : null;
+
+      let savedData: any = { found: false };
+      if (!session?.access_token) {
+        const local = getLocalProgress();
+        if (local) {
+          savedData = { found: true, formData: local };
+          console.log('[LOAD] No session; using local fallback progress for', formId);
         }
-      });
-      console.log('Saved response status:', savedResponse.status);
-      const savedData = await savedResponse.json();
+      } else {
+        try {
+          const savedResponse = await fetch(`/api/pdf-form-progress/retrieve?formName=${formId}`, {
+            credentials: 'same-origin', // Include cookies with request
+            headers: {
+              Authorization: `Bearer ${session.access_token}`
+            }
+          });
+          console.log('Saved response status:', savedResponse.status);
+          if (savedResponse.status === 401) {
+            const local = getLocalProgress();
+            if (local) {
+              savedData = { found: true, formData: local };
+              console.log('[LOAD] Using local fallback progress after 401 for', formId);
+            }
+          } else {
+            savedData = await savedResponse.json();
+          }
+        } catch (err) {
+          console.warn('[LOAD] Retrieve failed, trying local fallback', err);
+          const local = getLocalProgress();
+          if (local) {
+            savedData = { found: true, formData: local };
+          }
+        }
+      }
       console.log('Saved data:', savedData);
 
       let pdfBytes: ArrayBuffer;
@@ -153,13 +181,13 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           const header = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4]);
           console.log('PDF header:', header);
           if (!header.startsWith('%PDF')) {
-            console.warn('⚠️ Saved PDF is corrupted (invalid header), fetching fresh PDF instead');
+            console.warn('ÔÜá´©Å Saved PDF is corrupted (invalid header), fetching fresh PDF instead');
             throw new Error('Invalid PDF header');
           }
-          console.log('✅ Saved PDF loaded successfully, size:', pdfBytes.byteLength, 'bytes');
+          console.log('Ô£à Saved PDF loaded successfully, size:', pdfBytes.byteLength, 'bytes');
         } catch (loadErr: any) {
-          console.error('❌ Error loading saved PDF:', loadErr.message);
-          console.log('📥 Fetching fresh PDF from URL:', pdfUrl);
+          console.error('ÔØî Error loading saved PDF:', loadErr.message);
+          console.log('­ƒôÑ Fetching fresh PDF from URL:', pdfUrl);
           const response = await fetch(pdfUrl);
           console.log('PDF fetch response status:', response.status);
           if (!response.ok) {
@@ -254,9 +282,9 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       console.log('Step 8b: Rendering first page...');
       try {
         await renderPage(1);
-        console.log('✅ First page rendered successfully');
+        console.log('Ô£à First page rendered successfully');
       } catch (renderError: any) {
-        console.error('❌ Error rendering first page:', renderError);
+        console.error('ÔØî Error rendering first page:', renderError);
         console.error('Stack:', renderError?.stack);
         throw renderError; // Re-throw to see in main error handler
       }
@@ -446,12 +474,12 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     }
 
     if (!pdfDocRef.current) {
-      console.error('[RENDER] ❌ pdfDocRef.current is null!');
+      console.error('[RENDER] ÔØî pdfDocRef.current is null!');
       return;
     }
 
     if (!canvasContainerRef.current) {
-      console.error('[RENDER] ❌ canvasContainerRef.current is null!');
+      console.error('[RENDER] ÔØî canvasContainerRef.current is null!');
       return;
     }
 
@@ -473,7 +501,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       const context = canvas.getContext('2d');
       if (!context) {
-        console.error('[RENDER] ❌ Failed to get 2d context!');
+        console.error('[RENDER] ÔØî Failed to get 2d context!');
         return;
       }
 
@@ -492,7 +520,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       await renderTask.promise;
       renderTaskRef.current = null;
-      console.log('[RENDER] ✅ Page rendered successfully!');
+      console.log('[RENDER] Ô£à Page rendered successfully!');
 
       setCurrentPage(pageNum);
       setViewport(pageViewport);
@@ -501,7 +529,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         console.log('[RENDER] Render was cancelled (expected during navigation)');
         return;
       }
-      console.error('[RENDER] ❌ Error rendering page:', err);
+      console.error('[RENDER] ÔØî Error rendering page:', err);
       console.error('[RENDER] Stack:', err?.stack);
       throw err; // Re-throw so it's caught by the caller
     }
@@ -647,7 +675,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
               fontWeight: 'bold'
             }}
           >
-            ← Previous
+            ÔåÉ Previous
           </button>
 
           <span style={{ fontSize: '14px', fontWeight: '500' }}>
@@ -668,7 +696,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
               fontWeight: 'bold'
             }}
           >
-            Next →
+            Next ÔåÆ
           </button>
         </div>
       )}

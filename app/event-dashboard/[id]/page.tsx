@@ -66,6 +66,8 @@ export default function EventDashboardPage() {
   const [taxRate, setTaxRate] = useState<string>("0");
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
   const [tips, setTips] = useState<string>("");
+  // Manual tax amount for Sales tab (no auto rate calc)
+  const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
 
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
   const [merchandiseValue, setMerchandiseValue] = useState<string>("");
@@ -106,6 +108,8 @@ export default function EventDashboardPage() {
 
   // HR/Payroll adjustments (user_id -> adjustment amount)
   const [adjustments, setAdjustments] = useState<Record<string, number>>({});
+  // HR/Payroll reimbursements (user_id -> reimbursement amount)
+  const [reimbursements, setReimbursements] = useState<Record<string, number>>({});
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
 
   // HR/Payments filters
@@ -198,7 +202,7 @@ export default function EventDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
 
-  // Auto-save adjustments when they change on HR tab
+  // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
     if (!eventId || activeTab !== 'hr') return;
     const handler = setTimeout(async () => {
@@ -208,12 +212,19 @@ export default function EventDashboardPage() {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         };
-        const entries = Object.entries(adjustments || {});
-        await Promise.all(entries.map(([uid, amt]) => {
+        // Union of user_ids present in adjustments or reimbursements
+        const userIds = Array.from(new Set([
+          ...Object.keys(adjustments || {}),
+          ...Object.keys(reimbursements || {}),
+        ]));
+        await Promise.all(userIds.map((uid) => {
+          const adj = Number(adjustments?.[uid] || 0);
+          const reimb = Number(reimbursements?.[uid] || 0);
+          const total = adj + reimb; // Persist as a single net adjustment
           return fetch('/api/payment-adjustments', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ event_id: eventId, user_id: uid, adjustment_amount: Number(amt || 0) }),
+            body: JSON.stringify({ event_id: eventId, user_id: uid, adjustment_amount: total }),
           });
         }));
       } catch (_) {
@@ -221,7 +232,7 @@ export default function EventDashboardPage() {
       }
     }, 600);
     return () => clearTimeout(handler);
-  }, [adjustments, activeTab, eventId]);
+  }, [adjustments, reimbursements, activeTab, eventId]);
 
   const loadVenues = async () => {
     try {
@@ -642,10 +653,10 @@ export default function EventDashboardPage() {
 
     const grossCollected = Number(ticketSales) || 0; // total collected
     const tipsNum = Number(tips) || 0;
-    const taxPct = stateTaxRate; // Use tax rate from database based on venue state
+    const taxPct = stateTaxRate; // kept for reference/debug; not used for tax amount
 
     const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected - Tips
-    const tax = totalSales * (taxPct / 100);
+    const tax = Math.max(Number(manualTaxAmount) || 0, 0);
     const netSales = Math.max(totalSales - tax, 0);
 
     const artistShare = netSales * (event.artist_share_percent / 100);
@@ -659,21 +670,20 @@ export default function EventDashboardPage() {
     return result;
   };
 
-  // Debug changes in inputs affecting tax computation
+  // Debug changes in inputs affecting sales computation
   useEffect(() => {
     try {
       const gross = Number(ticketSales) || 0;
       const t = Number(tips) || 0;
       const totalSales = Math.max(gross - t, 0);
-      const taxAmt = totalSales * ((stateTaxRate || 0) / 100);
+      const taxAmt = Math.max(Number(manualTaxAmount) || 0, 0);
       console.debug('[SALES-DEBUG] Inputs changed', {
         ticketSales: gross,
         tips: t,
-        stateTaxRate,
-        computedTaxAmount: taxAmt,
+        manualTaxAmount: taxAmt,
       });
     } catch {}
-  }, [ticketSales, tips, stateTaxRate]);
+  }, [ticketSales, tips, manualTaxAmount]);
 
   // Calculate commission amount - updates reactively when inputs change
   const calculatedCommission = (() => {
@@ -1382,19 +1392,15 @@ export default function EventDashboardPage() {
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
                       <input
-                        type="text"
-                        value={(() => {
-                          const totalCollected = Number(ticketSales) || 0;
-                          const tipsNum = Number(tips) || 0;
-                          const totalSales = Math.max(totalCollected - tipsNum, 0);
-                          const taxAmount = totalSales * (stateTaxRate / 100);
-                          return taxAmount.toFixed(2);
-                        })()}
-                        readOnly
-                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-200 rounded-lg bg-gray-50 cursor-not-allowed text-gray-600"
+                        type="number"
+                        value={manualTaxAmount}
+                        onChange={(e) => setManualTaxAmount(e.target.value)}
+                        placeholder="0"
+                        step="1"
+                        min="0"
+                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                       />
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">Auto: {event?.state} tax rate ({stateTaxRate.toFixed(2)}%) × Total sales</p>
                   </div>
 
                   <div>
@@ -2171,6 +2177,8 @@ export default function EventDashboardPage() {
                                   {firstName} {lastName}
                                 </div>
                               </td>
+
+                              
                               <td className="px-6 py-4 whitespace-nowrap">
                                 <div className="text-sm text-gray-900">{email}</div>
                               </td>
@@ -2515,13 +2523,14 @@ export default function EventDashboardPage() {
                         <th className="text-left p-4 font-semibold text-gray-700">Commissions</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Tips</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Adjustments</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Reimbursements</th>
                         <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={11} className="p-8 text-center text-gray-500">
+                          <td colSpan={12} className="p-8 text-center text-gray-500">
                             No staff found
                           </td>
                         </tr>
@@ -2748,6 +2757,40 @@ export default function EventDashboardPage() {
                                 <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
                               </td>
 
+                              {/* Reimbursements - Editable */}
+                              <td className="p-4">
+                                {editingMemberId === member.id ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-gray-500">$</span>
+                                    <input
+                                      type="number"
+                                      value={reimbursements[uid] || 0}
+                                      onChange={(e) => {
+                                        const value = Number(e.target.value) || 0;
+                                        setReimbursements(prev => ({ ...prev, [uid]: value }));
+                                      }}
+                                      className="w-24 px-2 py-1 border border-blue-500 rounded focus:ring-2 focus:ring-blue-500 text-sm"
+                                      placeholder="0"
+                                      step="1"
+                                    />
+                                  </div>
+                                ) : (
+                                  <div
+                                    onClick={() => setEditingMemberId(member.id)}
+                                    className="cursor-pointer hover:bg-gray-100 rounded px-2 py-1 text-sm font-medium"
+                                  >
+                                    {reimbursements[uid] ? (
+                                      <span className={reimbursements[uid] >= 0 ? "text-green-600" : "text-red-600"}>
+                                        ${reimbursements[uid] >= 0 ? '+' : ''}{reimbursements[uid].toFixed(2)}
+                                      </span>
+                                    ) : (
+                                      <span className="text-gray-400">$0.00</span>
+                                    )}
+                                  </div>
+                                )}
+                                <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
+                              </td>
+
                               <td className="p-4 text-right">
                                 <button
                                   onClick={() => {
@@ -2846,8 +2889,16 @@ export default function EventDashboardPage() {
                     </span>
                   </div>
                   <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Deductions</span>
-                    <span className="font-semibold text-gray-900">$0.00</span>
+                    <span className="text-gray-600">Reimbursements</span>
+                    <span className={`font-semibold ${(() => {
+                      const total = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
+                      return total >= 0 ? 'text-green-600' : 'text-red-600';
+                    })()}`}>
+                      ${(() => {
+                        const total = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
+                        return (total >= 0 ? '+' : '') + total.toFixed(2);
+                      })()}
+                    </span>
                   </div>
                   <div className="flex justify-between items-center pt-2">
                     <span className="text-lg font-bold text-gray-900">Total Payroll</span>
@@ -2869,7 +2920,8 @@ export default function EventDashboardPage() {
                       const basePay = totalHours * baseRate;
                       const tipsAmount = Number(tips) || 0;
                       const adjustmentsTotal = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
-                      const totalPayroll = basePay + tipsAmount + adjustmentsTotal;
+                      const reimbursementsTotal = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
+                      const totalPayroll = basePay + tipsAmount + adjustmentsTotal + reimbursementsTotal;
 
                       return totalPayroll.toFixed(2);
                     })()}</span>

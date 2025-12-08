@@ -24,7 +24,7 @@ export async function GET() {
     lastPage.drawRectangle({ x: continueButtonX, y: continueButtonY, width: continueButtonWidth, height: continueButtonHeight, color: rgb(0.25, 0.53, 0.96), borderColor: rgb(0.2, 0.45, 0.85), borderWidth: 1 });
     lastPage.drawText('Continue', { x: continueButtonX + 18, y: continueButtonY + 12, size: 10, color: rgb(1, 1, 1), font: helveticaFont });
     lastPage.drawText('>>', { x: continueButtonX + continueButtonWidth - 18, y: continueButtonY + 12, size: 11, color: rgb(1, 1, 1), font: helveticaFont });
-    const continueLinkAnnot = pdfDoc.context.obj({ Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'), Rect: [continueButtonX, continueButtonY, continueButtonX + continueButtonWidth, continueButtonY + continueButtonHeight], Border: [0, 0, 0], C: [0.25, 0.53, 0.96], A: pdfDoc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('http://localhost:3000/payroll-packet-ca/discrimination-law') }) });
+    const continueLinkAnnot = pdfDoc.context.obj({ Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'), Rect: [continueButtonX, continueButtonY, continueButtonX + continueButtonWidth, continueButtonY + continueButtonHeight], Border: [0, 0, 0], C: [0.25, 0.53, 0.96], A: pdfDoc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('http://localhost:3000/payroll-packet-ca/notice-to-employee') }) });
     const annotsArray = lastPage.node.get(PDFName.of('Annots'));
     if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(continueLinkAnnot)])); }

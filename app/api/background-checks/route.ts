@@ -2,121 +2,186 @@ import { createClient } from "@supabase/supabase-js";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from 'next/server';
+import { safeDecrypt } from "@/lib/encryption";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
+/**
+ * GET /api/background-checks
+ * Returns list of all vendors with their background check status
+ * Only accessible by admin, hr, or exec roles
+ */
 export async function GET(req: NextRequest) {
   try {
-    // Create auth client for user authentication
+    console.log('[Background Checks API] GET request received');
+
+    // Create auth client
     const cookieStore = await cookies();
     const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
 
     let { data: { user } } = await supabase.auth.getUser();
-
-    console.log('[Background Checks API] User from cookies:', { userId: user?.id });
 
     // Fallback to Authorization header
     if (!user || !user.id) {
       const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
       const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
-      console.log('[Background Checks API] Trying auth header:', { hasToken: !!token });
       if (token) {
         const { data: { user: tokenUser } } = await supabase.auth.getUser(token);
         if (tokenUser) {
           user = tokenUser;
-          console.log('[Background Checks API] User from token:', { userId: user?.id });
         }
       }
     }
 
     if (!user) {
-      console.log('[Background Checks API] No user found');
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      console.log('[Background Checks API] No authenticated user');
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
     // Use admin client to check user's role (bypasses RLS)
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: profile, error: profileError } = await adminClient
-      .from('profiles')
+    const { data: userData, error: userError } = await adminClient
+      .from('users')
       .select('role')
       .eq('id', user.id)
       .single();
 
-    console.log('[Background Checks API] Profile check:', {
+    console.log('[Background Checks API] User role check:', {
       userId: user.id,
-      profile,
-      profileError,
-      role: profile?.role
+      userData,
+      userError,
+      role: userData?.role
     });
 
-    if (profileError) {
-      console.error('[Background Checks API] Error fetching profile:', profileError);
+    if (userError) {
+      console.error('[Background Checks API] Error fetching user role:', userError);
       return NextResponse.json({
-        error: 'Failed to verify admin access',
-        details: profileError.message
+        error: 'Failed to verify access',
+        details: userError.message
       }, { status: 500 });
     }
 
-    if (profile?.role !== 'admin') {
-      console.log('[Background Checks API] Not admin. Role:', profile?.role);
+    const role = (userData?.role || '').toString().trim().toLowerCase();
+
+    // Check if user has admin-like privileges
+    const isAdminLike = role === 'admin' || role === 'hr' || role === 'exec';
+
+    if (!isAdminLike) {
+      console.log('[Background Checks API] Access denied for role:', role);
       return NextResponse.json({
-        error: 'Forbidden - Admin access required',
-        currentRole: profile?.role
+        error: 'Access denied. Admin privileges required.',
+        currentRole: role
       }, { status: 403 });
     }
 
-    console.log('[Background Checks API] Admin verified');
+    console.log('[Background Checks API] Access granted for role:', role);
 
-    // Fetch all vendors with their background check status
-    const { data: vendors, error: vendorsError } = await adminClient
-      .from('profiles')
+    // Fetch all background checks first (only vendors with background check records)
+    const { data: backgroundChecks, error: bgError } = await adminClient
+      .from('vendor_background_checks')
       .select(`
         id,
-        first_name,
-        last_name,
-        email,
-        phone,
-        role,
+        profile_id,
+        background_check_completed,
+        completed_date,
+        notes,
         created_at,
-        vendor_background_checks (
+        updated_at,
+        profiles!inner (
           id,
-          background_check_completed,
-          completed_date,
-          notes,
-          updated_at
+          user_id,
+          first_name,
+          last_name,
+          phone,
+          created_at,
+          users!inner (
+            id,
+            email,
+            role,
+            is_temporary_password,
+            must_change_password
+          )
         )
-      `)
-      .eq('role', 'vendor')
-      .order('first_name', { ascending: true });
+      `);
 
-    if (vendorsError) {
-      console.error('Error fetching vendors:', vendorsError);
-      return NextResponse.json({ error: 'Failed to fetch vendors' }, { status: 500 });
+    if (bgError) {
+      console.error('Error fetching vendors:', bgError);
+      return NextResponse.json({
+        error: 'Failed to fetch vendors',
+        details: bgError.message
+      }, { status: 500 });
     }
 
-    // Transform the data to make it easier to work with
-    const transformedVendors = vendors.map(vendor => ({
-      id: vendor.id,
-      first_name: vendor.first_name,
-      last_name: vendor.last_name,
-      email: vendor.email,
-      phone: vendor.phone,
-      created_at: vendor.created_at,
-      background_check: vendor.vendor_background_checks?.[0] || null
-    }));
+    // Fetch all background check PDFs to determine if PDF was submitted
+    const { data: pdfData, error: pdfError } = await adminClient
+      .from('background_check_pdfs')
+      .select('user_id, created_at');
 
-    return NextResponse.json({ vendors: transformedVendors }, { status: 200 });
-  } catch (error) {
-    console.error('Unexpected error in background-checks GET:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    if (pdfError) {
+      console.error('Error fetching PDF data:', pdfError);
+    }
+
+    // Transform the data - only include vendors with background check records
+    const vendors = (backgroundChecks || []).map((bgCheck: any) => {
+      const profile = Array.isArray(bgCheck.profiles) ? bgCheck.profiles[0] : bgCheck.profiles;
+      const userObj = profile?.users ? (Array.isArray(profile.users) ? profile.users[0] : profile.users) : null;
+
+      // Find PDF submission for this user
+      const pdfSubmission = (pdfData || []).find((pdf: any) => pdf.user_id === profile?.user_id);
+
+      // Safely decrypt names
+      const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
+      const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
+      const fullName = `${firstName} ${lastName}`.trim() || 'N/A';
+
+      return {
+        id: profile?.id || bgCheck.profile_id,
+        user_id: profile?.user_id || '',
+        full_name: fullName,
+        email: userObj?.email || 'N/A',
+        role: userObj?.role || 'vendor',
+        phone: profile?.phone,
+        created_at: profile?.created_at || bgCheck.created_at,
+        is_temporary_password: userObj?.is_temporary_password || false,
+        must_change_password: userObj?.must_change_password || false,
+        has_temporary_password: userObj?.is_temporary_password || false,
+        background_check: {
+          id: bgCheck.id,
+          background_check_completed: bgCheck.background_check_completed,
+          completed_date: bgCheck.completed_date,
+          notes: bgCheck.notes,
+          updated_at: bgCheck.updated_at,
+        },
+        has_submitted_pdf: !!pdfSubmission,
+        pdf_submitted_at: pdfSubmission?.created_at || null,
+      };
+    });
+
+    console.log('[Background Checks API] Returning', vendors.length, 'vendors');
+
+    return NextResponse.json({ vendors }, { status: 200 });
+
+  } catch (err: any) {
+    console.error('[Background Checks API] Error:', err);
+    return NextResponse.json(
+      { error: err?.message || 'Server error' },
+      { status: 500 }
+    );
   }
 }
 
-export async function POST(request: NextRequest) {
+/**
+ * POST /api/background-checks
+ * Update background check status or notes for a vendor
+ * Only accessible by admin, hr, or exec roles
+ */
+export async function POST(req: NextRequest) {
   try {
-    // Create auth client for user authentication
+    console.log('[Background Checks API] POST request received');
+
+    // Create auth client
     const cookieStore = await cookies();
     const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
 
@@ -124,7 +189,7 @@ export async function POST(request: NextRequest) {
 
     // Fallback to Authorization header
     if (!user || !user.id) {
-      const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+      const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
       const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
       if (token) {
         const { data: { user: tokenUser } } = await supabase.auth.getUser(token);
@@ -135,115 +200,98 @@ export async function POST(request: NextRequest) {
     }
 
     if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      console.log('[Background Checks API] No authenticated user');
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
     // Use admin client to check user's role (bypasses RLS)
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
-    const { data: profile, error: profileError } = await adminClient
-      .from('profiles')
+    const { data: userData, error: userError } = await adminClient
+      .from('users')
       .select('role')
       .eq('id', user.id)
       .single();
 
-    console.log('[Background Checks API POST] Profile check:', {
-      userId: user.id,
-      profile,
-      profileError,
-      role: profile?.role
-    });
-
-    if (profileError) {
-      console.error('[Background Checks API POST] Error fetching profile:', profileError);
+    if (userError) {
+      console.error('[Background Checks API] Error fetching user role:', userError);
       return NextResponse.json({
-        error: 'Failed to verify admin access',
-        details: profileError.message
+        error: 'Failed to verify access',
+        details: userError.message
       }, { status: 500 });
     }
 
-    if (profile?.role !== 'admin') {
-      console.log('[Background Checks API POST] Not admin. Role:', profile?.role);
+    const role = (userData?.role || '').toString().trim().toLowerCase();
+
+    // Check if user has admin-like privileges
+    const isAdminLike = role === 'admin' || role === 'hr' || role === 'exec';
+
+    if (!isAdminLike) {
+      console.log('[Background Checks API] Access denied for role:', role);
       return NextResponse.json({
-        error: 'Forbidden - Admin access required',
-        currentRole: profile?.role
+        error: 'Access denied. Admin privileges required.',
+        currentRole: role
       }, { status: 403 });
     }
 
-    console.log('[Background Checks API POST] Admin verified');
-
-    const body = await request.json();
+    // Parse request body
+    const body = await req.json();
     const { profile_id, background_check_completed, notes } = body;
 
     if (!profile_id) {
-      return NextResponse.json({ error: 'Profile ID is required' }, { status: 400 });
+      return NextResponse.json({ error: 'profile_id is required' }, { status: 400 });
     }
 
-    // Check if a background check record already exists (using adminClient from above)
-    const { data: existingCheck } = await adminClient
+    console.log('[Background Checks API] Updating background check:', {
+      profile_id,
+      background_check_completed,
+      notes
+    });
+
+    // Upsert the background check record
+    const updateData: any = {
+      profile_id,
+      background_check_completed: background_check_completed || false,
+      updated_at: new Date().toISOString(),
+    };
+
+    // Set completed_date if marking as completed
+    if (background_check_completed) {
+      updateData.completed_date = new Date().toISOString();
+    } else {
+      updateData.completed_date = null;
+    }
+
+    // Add notes if provided (allow null to clear notes)
+    if (notes !== undefined) {
+      updateData.notes = notes;
+    }
+
+    const { data: bgCheck, error: bgError } = await adminClient
       .from('vendor_background_checks')
-      .select('id')
-      .eq('profile_id', profile_id)
+      .upsert(updateData, {
+        onConflict: 'profile_id'
+      })
+      .select()
       .single();
 
-    let result;
-
-    if (existingCheck) {
-      // Update existing record
-      const updateData: any = {
-        background_check_completed,
-        notes: notes || null,
-      };
-
-      // If marking as completed and there's no completed_date, set it
-      if (background_check_completed) {
-        updateData.completed_date = new Date().toISOString();
-      } else {
-        updateData.completed_date = null;
-      }
-
-      const { data, error } = await adminClient
-        .from('vendor_background_checks')
-        .update(updateData)
-        .eq('profile_id', profile_id)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Error updating background check:', error);
-        return NextResponse.json({ error: 'Failed to update background check' }, { status: 500 });
-      }
-
-      result = data;
-    } else {
-      // Insert new record
-      const insertData: any = {
-        profile_id,
-        background_check_completed,
-        notes: notes || null,
-      };
-
-      if (background_check_completed) {
-        insertData.completed_date = new Date().toISOString();
-      }
-
-      const { data, error } = await adminClient
-        .from('vendor_background_checks')
-        .insert([insertData])
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Error inserting background check:', error);
-        return NextResponse.json({ error: 'Failed to create background check' }, { status: 500 });
-      }
-
-      result = data;
+    if (bgError) {
+      console.error('[Background Checks API] Error updating background check:', bgError);
+      return NextResponse.json({
+        error: 'Failed to update background check',
+        details: bgError.message
+      }, { status: 500 });
     }
 
-    return NextResponse.json({ background_check: result }, { status: 200 });
-  } catch (error) {
-    console.error('Unexpected error in background-checks POST:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.log('[Background Checks API] Background check updated successfully');
+
+    return NextResponse.json({ background_check: bgCheck }, { status: 200 });
+
+  } catch (err: any) {
+    console.error('[Background Checks API] Error:', err);
+    return NextResponse.json(
+      { error: err?.message || 'Server error' },
+      { status: 500 }
+    );
   }
 }

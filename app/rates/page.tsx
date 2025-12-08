@@ -13,7 +13,6 @@ interface StateRate {
   overtime_rate: number;
   doubletime_enabled: boolean;
   doubletime_rate: number;
-  tax_rate: number;
   effective_date: string;
   updated_at?: string;
 }
@@ -27,7 +26,6 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: true,
     doubletime_rate: 2.0,
-    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -38,7 +36,6 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
-    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -49,7 +46,6 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
-    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -60,7 +56,6 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
-    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
 ];
@@ -73,7 +68,6 @@ export default function RatesPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState('');
-  const [userRole, setUserRole] = useState<string | null>(null);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -112,7 +106,6 @@ export default function RatesPage() {
         }
 
         console.log('[RATES] Auth successful, role:', userData.role);
-        setUserRole(userData.role);
         setIsAuthorized(true);
 
         // Load rates after successful auth
@@ -250,7 +243,7 @@ export default function RatesPage() {
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">State Rates Management</h1>
           <p className="text-gray-600">
-            Configure base rates, overtime, doubletime, and tax rates for each state
+            Configure base rates, overtime, and doubletime for each state
           </p>
           <div className="mt-2">
             <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
@@ -290,9 +283,6 @@ export default function RatesPage() {
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Doubletime
-                  </th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                    Tax Rate (%)
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                     Effective Date
@@ -373,21 +363,6 @@ export default function RatesPage() {
                       </div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <div className="flex items-center gap-1">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          max="100"
-                          value={rate.tax_rate}
-                          onChange={(e) => updateRate(index, 'tax_rate', parseFloat(e.target.value))}
-                          className="w-20 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                          placeholder="0"
-                        />
-                        <span className="text-sm text-gray-600">%</span>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap">
                       <input
                         type="date"
                         value={rate.effective_date}
@@ -403,7 +378,7 @@ export default function RatesPage() {
         </div>
 
         {/* Information Boxes */}
-        <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Overtime Info */}
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
             <div className="flex items-start gap-3">
@@ -441,27 +416,6 @@ export default function RatesPage() {
                 </p>
                 <p className="text-xs text-purple-700 mt-2">
                   Example: $17.28 × 2.0 = $34.56/hr
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Tax Rate Info */}
-          <div className="bg-green-50 border border-green-200 rounded-lg p-6">
-            <div className="flex items-start gap-3">
-              <svg className="w-6 h-6 text-green-600 flex-shrink-0 mt-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-              </svg>
-              <div>
-                <h3 className="text-lg font-semibold text-green-900 mb-2">Tax Rate</h3>
-                <p className="text-sm text-green-800 mb-2">
-                  Enter tax rate as a percentage (0-100).
-                </p>
-                <p className="text-sm text-green-800">
-                  <strong>Format:</strong> Enter 5 for 5%, not 0.05
-                </p>
-                <p className="text-xs text-green-700 mt-2">
-                  Example: Enter "8.5" for 8.5% tax rate
                 </p>
               </div>
             </div>

@@ -54,6 +54,39 @@ body::before {
   animation: float 20s ease-in-out infinite;
 }
 
+/* Time-tracking green wave pulses that sync with foreground circle */
+.time-wave-pulse {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background:
+    radial-gradient(circle at center,
+      rgba(34, 197, 94, 0.35) 0%,
+      rgba(34, 197, 94, 0.12) 35%,
+      rgba(34, 197, 94, 0.0) 70%);
+  transform-origin: center;
+  animation: time-wave-pulse 2s ease-out infinite;
+}
+
+.time-wave-pulse--delayed {
+  animation-delay: 1s;
+}
+
+@keyframes time-wave-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.6;
+  }
+  60% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(2.7);
+    opacity: 0;
+  }
+}
+
 @layer components {
 
   /* ============================================

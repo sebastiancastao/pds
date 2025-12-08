@@ -13,6 +13,11 @@ const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor
 
 type I9Mode = 'A' | 'BC';
 
+const MEAL_WAIVER_ROUTE_MAP: Record<string, { path: string; label: string }> = {
+  'meal-waiver-6hour': { path: '/payroll-packet-ca/meal-waiver-6hour', label: 'Meal Waiver 6-hour' },
+  'meal-waiver-10-12': { path: '/payroll-packet-ca/meal-waiver-10-12', label: 'Meal Waiver 10/12 Hour' },
+};
+
 function FormViewerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -77,7 +82,7 @@ function FormViewerContent() {
     fillable: { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
     fw4: { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
     i9: { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
-    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'ui-guide' },
+    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'ui-guide', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
@@ -85,14 +90,22 @@ function FormViewerContent() {
     'survivors-rights': { display: 'Survivors Rights', api: '/api/payroll-packet-ca/survivors-rights', formId: 'survivors-rights', next: 'transgender-rights' },
     'transgender-rights': { display: 'Transgender Rights', api: '/api/payroll-packet-ca/transgender-rights', formId: 'transgender-rights', next: 'health-insurance' },
     'health-insurance': { display: 'Health Insurance', api: '/api/payroll-packet-ca/health-insurance', formId: 'health-insurance', next: 'time-of-hire' },
-    'time-of-hire': { display: 'Time of Hire Notice', api: '/api/payroll-packet-ca/time-of-hire', formId: 'time-of-hire', next: 'discrimination-law' },
+    'time-of-hire': { display: 'Time of Hire Notice', api: '/api/payroll-packet-ca/time-of-hire', formId: 'time-of-hire', next: 'notice-to-employee' },
+    'notice-to-employee': { display: 'LC 2810.5 Notice to Employee', api: '/api/payroll-packet-ca/notice-to-employee', formId: 'notice-to-employee', next: 'discrimination-law' },
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights' },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'meal-waiver-6hour' },
   };
 
   const currentForm = formConfig[formName];
+  const mealWaiverRoute = MEAL_WAIVER_ROUTE_MAP[formName];
+
+  useEffect(() => {
+    if (!currentForm && mealWaiverRoute) {
+      router.push(mealWaiverRoute.path);
+    }
+  }, [currentForm, mealWaiverRoute, router]);
 
   // Handle invalid form name
   if (!currentForm) {
@@ -116,6 +129,23 @@ function FormViewerContent() {
         >
           Go to first form
         </button>
+        {mealWaiverRoute && (
+          <button
+            onClick={() => router.push(mealWaiverRoute.path)}
+            style={{
+              padding: '12px 24px',
+              backgroundColor: '#1976d2',
+              color: 'white',
+              border: 'none',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              marginTop: '12px'
+            }}
+          >
+            Open {mealWaiverRoute.label}
+          </button>
+        )}
       </div>
     );
   }
@@ -200,31 +230,9 @@ function FormViewerContent() {
     }
   };
 
-  // Save button click: save form, then notify onboarding for LGBTQ Rights
+  // Save button click
   const handleManualSaveClick = async () => {
     await handleManualSave();
-    if (formName === 'lgbtq-rights') {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const resp = await fetch('/api/onboarding-notification', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-          },
-          body: JSON.stringify({ form: formName, trigger: 'save-click' })
-        });
-        if (!resp.ok) {
-          let detail = '';
-          try { detail = await resp.text(); } catch {}
-          console.warn('[FORM VIEWER] Onboarding notification (save) failed:', resp.status, detail);
-        } else {
-          console.log('[FORM VIEWER] Onboarding notification (save) sent successfully');
-        }
-      } catch (e) {
-        console.warn('[FORM VIEWER] Onboarding notification (save) exception:', e);
-      }
-    }
   };
 
   // Continue to next form
@@ -277,34 +285,14 @@ function FormViewerContent() {
       console.log('No PDF data to save, continuing anyway');
     }
 
-    // If on final form (lgbtq-rights), send onboarding notification on Save & Finish
-    if (formName === 'lgbtq-rights') {
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const resp = await fetch('/api/onboarding-notification', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-          },
-          body: JSON.stringify({ form: formName, trigger: 'save-finish' })
-        });
-        if (!resp.ok) {
-          let detail = '';
-          try { detail = await resp.text(); } catch {}
-          console.warn('[FORM VIEWER] Onboarding notification (finish) failed:', resp.status, detail);
-        } else {
-          console.log('[FORM VIEWER] Onboarding notification (finish) sent successfully');
-        }
-      } catch (e) {
-        console.warn('[FORM VIEWER] Onboarding notification (finish) exception:', e);
-      }
-    }
-
     // Navigate to next form
     if (currentForm.next) {
       console.log('Navigating to:', currentForm.next);
-      router.push(`/payroll-packet-ca/form-viewer?form=${currentForm.next}`);
+      if (currentForm.next === 'meal-waiver-6hour') {
+        router.push('/payroll-packet-ca/meal-waiver-6hour');
+      } else {
+        router.push(`/payroll-packet-ca/form-viewer?form=${currentForm.next}`);
+      }
     } else {
       console.log('No next form, going to homepage');
       router.push('/');

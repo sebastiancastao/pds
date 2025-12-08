@@ -216,6 +216,8 @@ function getRedirectPath(state: string): string {
     return '/payroll-packet-az';
   } else if (['wi', 'wisconsin'].includes(normalized)) {
     return '/payroll-packet-wi';
+  } else if (['nv', 'nevada'].includes(normalized)) {
+    return '/payroll-packet-nv';
   }
   
   return '/dashboard'; // Default redirect
