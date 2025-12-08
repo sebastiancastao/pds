@@ -22,6 +22,8 @@ type Manager = {
   role: string;
 };
 
+type UserRoleRow = { role: string | null };
+
 type VenueAssignment = {
   id: string;
   venue_id: string;
@@ -77,10 +79,11 @@ export default function VenueManagementPage() {
           .eq("id", session.user.id)
           .single();
 
-        setUserRole(userData?.role || null);
+        const role = (userData as UserRoleRow | null)?.role ?? null;
+        setUserRole(role);
 
         // Only exec/admin can access
-        if (userData?.role !== "exec" && userData?.role !== "admin") {
+        if (role !== "exec" && role !== "admin") {
           alert("Access denied. This page is for executives only.");
           window.location.href = "/dashboard";
           return;
