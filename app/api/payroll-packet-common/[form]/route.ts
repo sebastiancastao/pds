@@ -56,7 +56,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   handbook: 'Employee Handbook Acknowledgment (Pending)',
 };
 
-const PLACEHOLDER_MESSAGE: Record<FormKey | 'default', string> = {
+const PLACEHOLDER_MESSAGE: Partial<Record<FormKey, string>> & { default: string } = {
   'meal-waiver-6hour': 'Complete the 6-hour meal period waiver. A finalized PDF version will be attached here once provided.',
   'meal-waiver-10-12': 'Complete the 10/12-hour meal period waiver. A finalized PDF version will be attached here once provided.',
   handbook: 'The finalized employee handbook acknowledgement is pending. Use this placeholder to continue the workflow until the signed handbook PDF is ready.',
