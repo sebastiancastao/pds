@@ -63,20 +63,21 @@ export async function GET(req: NextRequest) {
       }, { status: 500 });
     }
 
-    const role = (userData?.role || '').toString().trim().toLowerCase();
+    const normalizedRole = (userData?.role || '').toString().trim().toLowerCase();
+    const isBackgroundCheckerRole = normalizedRole === 'backgroundchecker' || normalizedRole === 'background-checker';
+    const adminLikeRoles = ['admin', 'hr', 'exec'];
+    const isAdminLike = adminLikeRoles.includes(normalizedRole);
+    const canView = isAdminLike || isBackgroundCheckerRole;
 
-    // Check if user has admin-like privileges
-    const isAdminLike = role === 'admin' || role === 'hr' || role === 'exec';
-
-    if (!isAdminLike) {
-      console.log('[Background Checks API] Access denied for role:', role);
+    if (!canView) {
+      console.log('[Background Checks API] Access denied for role:', normalizedRole);
       return NextResponse.json({
         error: 'Access denied. Admin privileges required.',
-        currentRole: role
+        currentRole: normalizedRole
       }, { status: 403 });
     }
 
-    console.log('[Background Checks API] Access granted for role:', role);
+    console.log('[Background Checks API] Access granted for role:', normalizedRole);
 
     // Fetch all background checks first (only vendors with background check records)
     const { data: backgroundChecks, error: bgError } = await adminClient

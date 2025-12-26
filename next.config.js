@@ -5,11 +5,8 @@ const nextConfig = {
 
   // Webpack optimization for PDF libraries
   webpack: (config, { isServer }) => {
-    // Optimize PDF library bundling
-    config.externals = config.externals || [];
-
     if (!isServer) {
-      // Make sure PDF libraries are only loaded client-side
+      // Make sure server-only modules aren't bundled client-side
       config.resolve.fallback = {
         ...config.resolve.fallback,
         fs: false,
@@ -25,8 +22,13 @@ const nextConfig = {
         chunks: 'all',
         cacheGroups: {
           pdf: {
-            test: /[\\/]node_modules[\\/](pdf-lib|pdfjs-dist|react-pdf)[\\/]/,
+            test: /[\\/]node_modules[\\/](pdf-lib|pdfjs-dist)[\\/]/,
             name: 'pdf-libraries',
+            priority: 10,
+          },
+          tesseract: {
+            test: /[\\/]node_modules[\\/](tesseract\.js)[\\/]/,
+            name: 'tesseract',
             priority: 10,
           },
         },

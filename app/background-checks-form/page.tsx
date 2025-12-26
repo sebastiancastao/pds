@@ -24,8 +24,29 @@ export default function BackgroundChecksForm() {
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [isAuthorized, setIsAuthorized] = useState<boolean>(false);
+  const [userRole, setUserRole] = useState<string>('');
   const [waiverProgress, setWaiverProgress] = useState(0);
   const [disclosureProgress, setDisclosureProgress] = useState(0);
+
+  const getPostOnboardingRoute = (role?: string) => {
+    const normalized = (role ?? '').toString().trim().toLowerCase();
+    if (normalized === 'exec') {
+      return '/global-calendar';
+    }
+    if (normalized === 'hr') {
+      return '/hr-dashboard';
+    }
+    if (normalized === 'manager') {
+      return '/dashboard';
+    }
+    if (normalized === 'worker' || normalized === 'vendor') {
+      return '/time-tracking';
+    }
+    if (normalized === 'backgroundchecker' || normalized === 'background-checker') {
+      return '/background-checks';
+    }
+    return '/dashboard';
+  };
 
   // Compute what's missing for submit and whether continue should be disabled
   const incompleteRequirements = [
@@ -73,7 +94,7 @@ export default function BackgroundChecksForm() {
 
       const { data: userData, error: userError } = await (supabase
         .from('users')
-        .select('background_check_completed')
+        .select('background_check_completed, role')
         .eq('id', session.user.id)
         .single() as any);
 
@@ -83,11 +104,14 @@ export default function BackgroundChecksForm() {
 
       console.log('[BACKGROUND CHECK PAGE] User data:', userData);
       console.log('[BACKGROUND CHECK PAGE] background_check_completed value:', userData?.background_check_completed);
+      const normalizedRole = (userData?.role || '').toString().trim().toLowerCase();
+      setUserRole(normalizedRole);
 
       if (userData?.background_check_completed === true) {
-        // Already completed - redirect to dashboard
-        console.log('[BACKGROUND CHECK PAGE] ✅ Background check already completed, redirecting to dashboard');
-        router.push('/dashboard');
+        // Already completed - redirect based on role
+        const destination = getPostOnboardingRoute(userData?.role);
+        console.log(`[BACKGROUND CHECK PAGE] ƒo. Background check already completed, redirecting to ${destination}`);
+        router.push(destination);
         return;
       }
 
@@ -375,9 +399,10 @@ export default function BackgroundChecksForm() {
       // Clear the new user onboarding flag
       sessionStorage.removeItem('new_user_onboarding');
 
-      // Navigate to dashboard
+      // Navigate to the role-specific landing page
       setSaveStatus('saved');
-      router.push('/dashboard');
+      const destination = getPostOnboardingRoute(userRole);
+      router.push(destination);
 
     } catch (error) {
       console.error('[BACKGROUND CHECK] Error:', error);
@@ -760,7 +785,7 @@ export default function BackgroundChecksForm() {
             onMouseOver={(e) => e.currentTarget.style.backgroundColor = '#e0e0e0'}
             onMouseOut={(e) => e.currentTarget.style.backgroundColor = '#f5f5f5'}
           >
-            ← Back to Dashboard
+            ← Back to Login
           </button>
 
           <div style={{ display: 'flex', gap: '12px' }}>
@@ -816,7 +841,7 @@ export default function BackgroundChecksForm() {
                 }
               }}
             >
-              Save & Continue to Dashboard →
+              Save →
             </button>
           </div>
         </div>

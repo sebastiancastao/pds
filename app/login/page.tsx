@@ -135,6 +135,15 @@ export default function LoginPage() {
       const userRole = (currentUserData?.role || '').toString().trim().toLowerCase();
       console.log('[LOGIN DEBUG] User role:', userRole);
 
+      if (userRole === 'backgroundchecker' || userRole === 'background-checker') {
+        console.log('[LOGIN DEBUG] Background Checker detected → redirecting to /background-checks');
+        sessionStorage.removeItem('mfa_checkpoint');
+        sessionStorage.removeItem('mfa_verified');
+        sessionStorage.removeItem('pending_onboarding_redirect');
+        router.replace('/background-checks');
+        return;
+      }
+
       if (userRole === 'worker' || userRole === 'vendor') {
         console.log('[LOGIN DEBUG] 🔍 Checking vendor_background_checks for worker/vendor...');
 
@@ -163,9 +172,13 @@ export default function LoginPage() {
 
           if (!bgCheckResult.approved) {
             console.log('[LOGIN DEBUG] ❌ Background check not approved:', bgCheckResult.message);
-            setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nIf you believe this is an error, please contact your supervisor.');
-            setIsLoading(false);
-            return;
+            const isTempPasswordDuringCheck = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
+            if (!isTempPasswordDuringCheck) {
+              setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nIf you believe this is an error, please contact your supervisor.');
+              setIsLoading(false);
+              return;
+            }
+            console.log('[LOGIN DEBUG] Background check is pending but user has a temporary password; allowing entry to background-check form.');
           }
 
           console.log('[LOGIN DEBUG] ✅ Background check approved');
@@ -233,14 +246,6 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + permanent password → /verify-mfa');
 
       // BackgroundChecker special case: temp password goes directly to MFA setup
-      if ((isTemporaryPassword || mustChangePassword) && userRole === 'backgroundchecker') {
-        console.log('[LOGIN DEBUG] Background Checker with temp password → /mfa-setup');
-        sessionStorage.removeItem('mfa_checkpoint');
-        sessionStorage.removeItem('mfa_verified');
-        router.replace('/mfa-setup');
-        return;
-      }
-
       // Step 1: Check if background check is completed
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
         // Background check not completed → go to background-checks-form

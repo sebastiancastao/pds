@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS venue_managers (
     UNIQUE(venue_id, manager_id)
 );
 
+
 -- Indexes for faster queries
 CREATE INDEX IF NOT EXISTS idx_venue_managers_venue ON venue_managers(venue_id);
 CREATE INDEX IF NOT EXISTS idx_venue_managers_manager ON venue_managers(manager_id);

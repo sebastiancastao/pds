@@ -705,6 +705,31 @@ export default function EventDashboardPage() {
     return `${hh}:${mm}`;
   };
 
+  /**
+   * Calculate regular/overtime/doubletime hours based on state labor laws
+   * California: OT after 8hrs/day, DT after 12hrs/day
+   * Other states: All hours at regular rate per event (weekly OT of 40hrs/week calculated at payroll aggregation)
+   */
+  const calculateHoursByState = (actualHours: number, state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
+    const normalizedState = (state || '').toUpperCase().trim();
+
+    if (normalizedState === 'CA') {
+      // California: Daily overtime rules
+      const regularHours = Math.min(actualHours, 8);
+      const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
+      const doubletimeHours = Math.max(actualHours - 12, 0);
+      return { regularHours, overtimeHours, doubletimeHours };
+    } else {
+      // All other states: No daily OT, pay all hours at regular rate
+      // Weekly OT (40hrs/week) must be calculated at payroll aggregation level
+      return {
+        regularHours: actualHours,
+        overtimeHours: 0,
+        doubletimeHours: 0,
+      };
+    }
+  };
+
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -743,9 +768,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = timesheetTotals[uid] || 0;
         const actualHours = totalMs / (1000 * 60 * 60);
-        const regularHours = Math.min(actualHours, 8);
-        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
         const regularPay = regularHours * baseRate;
         const overtimePay = overtimeHours * (baseRate * 1.5);
         const doubletimePay = doubletimeHours * (baseRate * 2);
@@ -763,9 +786,7 @@ export default function EventDashboardPage() {
         const memberDivision = member.users?.division;
 
         // Split into regular/OT/DT
-        const regularHours = Math.min(actualHours, 8);
-        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
 
         const regularPay = regularHours * baseRate;
         const overtimePay = overtimeHours * (baseRate * 1.5);
@@ -871,9 +892,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = timesheetTotals[uid] || 0;
         const actualHours = totalMs / (1000 * 60 * 60);
-        const regularHours = Math.min(actualHours, 8);
-        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
         const regularPay = regularHours * baseRate;
         const overtimePay = overtimeHours * (baseRate * 1.5);
         const doubletimePay = doubletimeHours * (baseRate * 2);
@@ -891,9 +910,7 @@ export default function EventDashboardPage() {
         const memberDivision = member.users?.division;
 
         // Calculate pay
-        const regularHours = Math.min(actualHours, 8);
-        const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-        const doubletimeHours = Math.max(actualHours - 12, 0);
+        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
 
         const regularPay = regularHours * baseRate;
         const overtimePay = overtimeHours * (baseRate * 1.5);
@@ -2588,10 +2605,8 @@ export default function EventDashboardPage() {
                           const overtimeRate = baseRate * 1.5;
                           const doubletimeRate = baseRate * 2;
 
-                          // Split hours into regular/OT/DT
-                          const regularHours = Math.min(actualHours, 8);
-                          const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-                          const doubletimeHours = Math.max(actualHours - 12, 0);
+                          // Split hours into regular/OT/DT based on state
+                          const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
 
                           const regularPay = regularHours * baseRate;
                           const overtimePay = overtimeHours * overtimeRate;

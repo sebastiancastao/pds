@@ -197,9 +197,20 @@ export async function GET(req: NextRequest) {
       const rows: any[] = [];
       for (const uid of vendorIds) {
         const hours = Number(totalsHours[uid] || 0);
-        const regularHours = Math.min(hours, 8);
-        const overtimeHours = Math.max(Math.min(hours, 12) - 8, 0);
-        const doubletimeHours = Math.max(hours - 12, 0);
+
+        // California: Daily overtime rules (OT after 8hrs, DT after 12hrs)
+        // Other states: All hours regular (weekly OT calculated at payroll aggregation)
+        let regularHours: number, overtimeHours: number, doubletimeHours: number;
+        if (eventState === 'CA') {
+          regularHours = Math.min(hours, 8);
+          overtimeHours = Math.max(Math.min(hours, 12) - 8, 0);
+          doubletimeHours = Math.max(hours - 12, 0);
+        } else {
+          regularHours = hours;
+          overtimeHours = 0;
+          doubletimeHours = 0;
+        }
+
         const regularPay = regularHours * baseRate;
         const overtimePay = overtimeHours * overtimeRate;
         const doubletimePay = doubletimeHours * doubletimeRate;

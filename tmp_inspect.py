@@ -1,0 +1,1 @@
+﻿from pathlib import Path\nlines = Path('app/background-checks-form/page.tsx').read_text(encoding='utf-8').splitlines()\nfor i,l in enumerate(lines):\n    if 'Next' in l or 'Ô' in l or 'â' in l: print(i+1, l)

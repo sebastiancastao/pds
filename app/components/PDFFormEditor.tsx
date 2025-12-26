@@ -675,7 +675,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
               fontWeight: 'bold'
             }}
           >
-            ÔåÉ Previous
+            {'\u2190 Previous'}
           </button>
 
           <span style={{ fontSize: '14px', fontWeight: '500' }}>
@@ -696,7 +696,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
               fontWeight: 'bold'
             }}
           >
-            Next ÔåÆ
+            {'Next \u2192'}
           </button>
         </div>
       )}

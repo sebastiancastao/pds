@@ -30,6 +30,21 @@ function hoursBetween(clock_in: string | null, clock_out: string | null) {
   return ms > 0 ? ms / (1000 * 60 * 60) : 0;
 }
 
+function fullMonthsBetween(start?: string | null, end = new Date()) {
+  if (!start) return 0;
+  const startDate = toDateSafe(start);
+  if (!startDate) return 0;
+  const endDate = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  const startUTC = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  let months =
+    (endDate.getUTCFullYear() - startUTC.getUTCFullYear()) * 12 +
+    (endDate.getUTCMonth() - startUTC.getUTCMonth());
+  if (endDate.getUTCDate() < startUTC.getUTCDate()) {
+    months -= 1;
+  }
+  return Math.max(0, months);
+}
+
 type ActionItem = {
   type?: string | null;
   action?: string | null;
@@ -392,6 +407,49 @@ export async function GET(
     const totalShiftsForTeamEvents = by_event.reduce((sum, e) => sum + e.shifts, 0);
     const totalHoursForTeamEvents = by_event.reduce((sum, e) => sum + e.hours, 0);
 
+    const { data: sickLeaveRows, error: sickLeaveErr } = await supabaseAdmin
+      .from("sick_leaves")
+      .select("id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at")
+      .eq("user_id", userId)
+      .order("start_date", { ascending: false });
+
+    if (sickLeaveErr) {
+      console.error("sick_leaves query error:", sickLeaveErr);
+      return NextResponse.json(
+        { error: sickLeaveErr.message || "Failed to load sick leave data" },
+        { status: 500 }
+      );
+    }
+
+    const sickLeaveEntries = (sickLeaveRows ?? []).map((row: any) => ({
+      id: row.id,
+      start_date: row.start_date,
+      end_date: row.end_date,
+      duration_hours: Number(row.duration_hours ?? 0),
+      status: String(row.status ?? "pending").toLowerCase(),
+      reason: row.reason ?? null,
+      approved_at: row.approved_at ?? null,
+      approved_by: row.approved_by ?? null,
+      created_at: row.created_at ?? null,
+    }));
+
+    const totalSickHours = sickLeaveEntries.reduce((sum, entry) => sum + (entry.duration_hours || 0), 0);
+    const accruedMonths = fullMonthsBetween(employee.hire_date);
+    const accruedDays = accruedMonths;
+    const accruedHours = Number((accruedDays * 8).toFixed(2));
+    const availableHours = Number(Math.max(0, accruedHours - totalSickHours).toFixed(2));
+    const availableDays = Number((availableHours / 8).toFixed(2));
+    const sickLeaveSummary = {
+      total_hours: Number(totalSickHours.toFixed(2)),
+      total_days: Number((totalSickHours / 8).toFixed(2)),
+      entries: sickLeaveEntries,
+      accrued_months: accruedMonths,
+      accrued_hours: accruedHours,
+      accrued_days: accruedDays,
+      balance_hours: availableHours,
+      balance_days: availableDays,
+    };
+
     return NextResponse.json(
       {
         employee,
@@ -411,6 +469,7 @@ export async function GET(
                 venue: eventData?.venue ?? null,
               };
             }),
+          sick_leave: sickLeaveSummary,
         },
         // Each entry now has clock_in/clock_out derived from actions for your UI column
         entries: normalized,

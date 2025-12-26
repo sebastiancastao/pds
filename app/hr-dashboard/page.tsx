@@ -43,12 +43,12 @@ function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const initialView = (searchParams?.get("view") as "overview" | "employees" | "payments" | "forms" | null) || "overview";
+  const initialView = (searchParams?.get("view") as "overview" | "employees" | "payments" | "forms" | "paystub" | null) || "overview";
   const initialFormState = searchParams?.get("state") || "all";
 
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [hrView, setHrView] = useState<"overview" | "employees" | "payments" | "forms">(initialView);
+  const [hrView, setHrView] = useState<"overview" | "employees" | "payments" | "forms" | "paystub">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [backgroundChecks, setBackgroundChecks] = useState<BackgroundCheck[]>([]);
@@ -749,6 +749,15 @@ function HRDashboardContent() {
               {hrView === "payments" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
             <button
+              onClick={() => setHrView("paystub")}
+              className={`pb-4 px-2 font-semibold transition-colors relative ${
+                hrView === "paystub" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Paystub Tools
+              {hrView === "paystub" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
+            <button
               onClick={() => {
                 setHrView("forms");
                 loadOnboardingForms();
@@ -1037,6 +1046,41 @@ function HRDashboardContent() {
               )}
             </div>
           </>
+        )}
+        {hrView === "paystub" && (
+          <div className="space-y-6">
+            <section className="rounded-2xl border border-slate-200 bg-white shadow-sm p-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Paystub Tools</h2>
+                  <p className="text-sm text-gray-500">
+                    Launch the standalone utilities when you need a larger workspace.
+                  </p>
+                </div>
+                <span className="text-xs uppercase tracking-wider text-slate-500 px-3 py-1 border border-slate-200 rounded-full">
+                  Single-click access
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <a
+                  href="/pdf-reader"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  PDF Reader
+                </a>
+                <a
+                  href="/paystub-generator"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+                >
+                  Paystub Generator
+                </a>
+              </div>
+            </section>
+          </div>
         )}
         {hrView === "employees" && (
           <div className="space-y-6">

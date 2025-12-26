@@ -21,7 +21,13 @@
       "Bash(nul)",
       "Bash(npm uninstall:*)",
       "Bash(find:*)",
-      "Bash(git checkout:*)"
+      "Bash(git checkout:*)",
+      "Bash(grep:*)",
+      "Bash(pkill:*)",
+      "Bash(npm run dev:*)",
+      "Bash(node scripts/generate-paystub-template.js:*)",
+      "Bash(node -e:*)",
+      "Bash(dir /s /b *.xlsx)"
     ],
     "deny": [],
     "ask": []

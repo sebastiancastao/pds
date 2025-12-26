@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type Venue = {
@@ -15,6 +15,9 @@ type Venue = {
 
 export default function CreateEventPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const returnTo = searchParams?.get("returnTo") || "dashboard";
+
   const [form, setForm] = useState({
     event_name: "",
     artist: "",
@@ -144,7 +147,7 @@ export default function CreateEventPage() {
           is_active: true
         });
         setTimeout(() => {
-          router.replace("/dashboard");
+          router.replace(`/${returnTo}`);
         }, 200);
       } else {
         setMessage(data.error || "Failed to create event");
@@ -167,10 +170,10 @@ export default function CreateEventPage() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50 py-12 px-4">
       <div className="container mx-auto max-w-3xl">
         <div className="flex mb-8">
-          <Link href="/dashboard">
+          <Link href={`/${returnTo}`}>
             <button className="group flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 font-medium py-2.5 px-5 rounded-xl shadow-sm hover:shadow-md transition-all duration-200 border border-slate-200">
               <span className="text-lg group-hover:-translate-x-1 transition-transform duration-200">&larr;</span>
-              <span>Back to Dashboard</span>
+              <span>Back to {returnTo === "global-calendar" ? "Global Calendar" : "Dashboard"}</span>
             </button>
           </Link>
         </div>

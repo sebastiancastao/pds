@@ -2,6 +2,28 @@
 
 import { useRouter } from 'next/navigation';
 
+const californiaWorkflowForms = [
+  'CA DE-4 State Tax Form',
+  'Federal W-4',
+  'I-9 Employment Verification',
+  'ADP Direct Deposit',
+  'UI Guide',
+  'Disability Insurance',
+  'Paid Family Leave',
+  'Sexual Harassment',
+  'Survivors Rights',
+  'Transgender Rights',
+  'Health Insurance',
+  'Time of Hire Notice',
+  'LC 2810.5 Notice to Employee',
+  'Discrimination Law',
+  'Immigration Rights',
+  'Military Rights',
+  'LGBTQ Rights',
+  'Meal Waiver (6 Hour)',
+  'Meal Waiver (10/12 Hour)',
+];
+
 export default function PayrollPacketCAPage() {
   const router = useRouter();
 
@@ -87,11 +109,9 @@ export default function PayrollPacketCAPage() {
             paddingLeft: '20px',
             lineHeight: '1.8'
           }}>
-            <li>CA DE-4 State Tax Form</li>
-            <li>Federal W-4</li>
-            <li>I-9 Employment Verification</li>
-            <li>ADP Direct Deposit</li>
-            <li>Various information notices</li>
+            {californiaWorkflowForms.map((form) => (
+              <li key={form}>{form}</li>
+            ))}
           </ul>
         </div>
       </div>

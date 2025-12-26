@@ -17,6 +17,7 @@ DROP TYPE IF EXISTS division_type CASCADE;
 DROP TYPE IF EXISTS document_type CASCADE;
 DROP TYPE IF EXISTS onboarding_status CASCADE;
 DROP TYPE IF EXISTS clock_action CASCADE;
+DROP TYPE IF EXISTS leave_status CASCADE;
 
 -- Create types
 CREATE TYPE user_role AS ENUM ('worker', 'manager', 'finance', 'exec');
@@ -24,6 +25,7 @@ CREATE TYPE division_type AS ENUM ('vendor', 'trailers', 'both');
 CREATE TYPE document_type AS ENUM ('i9', 'w4', 'w9', 'direct_deposit', 'handbook', 'other');
 CREATE TYPE onboarding_status AS ENUM ('pending', 'in_progress', 'completed');
 CREATE TYPE clock_action AS ENUM ('clock_in', 'clock_out');
+CREATE TYPE leave_status AS ENUM ('pending', 'approved', 'denied');
 
 -- ============================================
 -- Users Table (Auth.users is managed by Supabase)
@@ -178,6 +180,34 @@ CREATE INDEX idx_time_entries_timestamp ON public.time_entries(timestamp DESC);
 CREATE INDEX idx_time_entries_division ON public.time_entries(division);
 
 -- ============================================
+-- Sick Leaves Table
+-- ============================================
+
+CREATE TABLE public.sick_leaves (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  duration_hours NUMERIC(6,2) NOT NULL DEFAULT 0,
+  status leave_status NOT NULL DEFAULT 'pending',
+  reason TEXT,
+  approved_by UUID REFERENCES public.users(id) ON DELETE SET NULL,
+  approved_at TIMESTAMPTZ,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CHECK (end_date >= start_date),
+  CHECK (duration_hours >= 0)
+);
+
+-- Indexes
+CREATE INDEX idx_sick_leaves_user_id ON public.sick_leaves(user_id);
+CREATE INDEX idx_sick_leaves_status ON public.sick_leaves(status);
+CREATE INDEX idx_sick_leaves_start_date ON public.sick_leaves(start_date);
+
+-- ============================================
 -- Events Table
 -- ============================================
 
@@ -313,6 +343,9 @@ CREATE TRIGGER update_events_updated_at BEFORE UPDATE ON public.events
 CREATE TRIGGER update_payouts_updated_at BEFORE UPDATE ON public.payouts
   FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+CREATE TRIGGER update_sick_leaves_updated_at BEFORE UPDATE ON public.sick_leaves
+  FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
 -- ============================================
 -- Document Retention Calculation Function
 -- ============================================
@@ -360,6 +393,7 @@ ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.time_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sick_leaves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_staff ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.payouts ENABLE ROW LEVEL SECURITY;
@@ -375,10 +409,11 @@ COMMENT ON TABLE public.audit_logs IS 'IMMUTABLE audit trail for compliance';
 COMMENT ON TABLE public.time_entries IS 'Employee clock in/out records (FLSA compliant)';
 COMMENT ON TABLE public.events IS 'Events requiring staffing';
 COMMENT ON TABLE public.payouts IS 'Payroll/commission calculations for ADP export';
+COMMENT ON TABLE public.sick_leaves IS 'Tracks sick leave requests submitted by employees';
+COMMENT ON COLUMN public.sick_leaves.duration_hours IS 'Duration in hours (supports partial days)';
+COMMENT ON COLUMN public.sick_leaves.status IS 'Workflow state for the sick leave request';
 
 COMMENT ON COLUMN public.profiles.first_name IS 'ENCRYPTED: Use encryption functions to access';
 COMMENT ON COLUMN public.profiles.last_name IS 'ENCRYPTED: Use encryption functions to access';
 COMMENT ON COLUMN public.profiles.phone IS 'ENCRYPTED: Use encryption functions to access';
 COMMENT ON COLUMN public.profiles.address IS 'ENCRYPTED: Use encryption functions to access';
-
-

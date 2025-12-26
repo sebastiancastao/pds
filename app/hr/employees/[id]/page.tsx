@@ -41,15 +41,51 @@ type PerEvent = {
   event_date: string | null; // YYYY-MM-DD
 };
 
+type SickLeaveStatus = "pending" | "approved" | "denied";
+
+type SickLeaveEntry = {
+  id: string;
+  start_date: string | null;
+  end_date: string | null;
+  duration_hours: number;
+  status: string;
+  reason: string | null;
+  approved_at: string | null;
+  approved_by: string | null;
+  created_at: string | null;
+};
+
+type SickLeaveSummary = {
+  total_hours: number;
+  total_days: number;
+  entries: SickLeaveEntry[];
+  accrued_months: number;
+  accrued_hours: number;
+  accrued_days: number;
+  balance_hours: number;
+  balance_days: number;
+};
+
 type SummaryPayload = {
   employee: Employee;
   summary: {
     total_hours: number;
     total_shifts: number;
+    month_hours: number;
+    last_30d_hours: number;
     per_event: PerEvent[];
+    sick_leave: SickLeaveSummary;
   };
   entries: TimeEntry[];
 };
+
+const sickLeaveStatusStyles: Record<SickLeaveStatus, string> = {
+  approved: "bg-green-100 text-green-700 border-green-200",
+  pending: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  denied: "bg-red-100 text-red-700 border-red-200",
+};
+
+const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200";
 
 type I9Documents = {
   id?: string;
@@ -342,6 +378,17 @@ export default function EmployeeProfilePage() {
     }
     return map;
   }, [summary?.per_event]);
+
+  const sickLeaveSummary = summary?.sick_leave;
+  const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+  const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
+  const sickLeaveTotalDays = sickLeaveSummary?.total_days ?? 0;
+  const sickLeaveAccruedMonths = sickLeaveSummary?.accrued_months ?? 0;
+  const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
+  const sickLeaveAccruedDays = sickLeaveSummary?.accrued_days ?? 0;
+  const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
+  const sickLeaveBalanceDays = sickLeaveSummary?.balance_days ?? 0;
+  const sickLeaveRequestCount = sickLeaveEntries.length;
 
   // Download a single PDF form
   const downloadPDFForm = (form: PDFForm) => {
@@ -726,6 +773,102 @@ export default function EmployeeProfilePage() {
                     })()}
                   </div>
                 </div>
+              </div>
+            </section>
+
+            {/* Sick Leave Summary */}
+            <section className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Sick Leave</h2>
+                <span className="text-sm text-gray-500">
+                  {sickLeaveRequestCount} request{sickLeaveRequestCount === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="apple-card p-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="text-sm font-medium text-pink-700">Hours Used</div>
+                    <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)}</div>
+                    <div className="text-xs text-pink-500 mt-1">Recorded as sick leave</div>
+                  </div>
+                  <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="text-sm font-medium text-indigo-700">Days Used</div>
+                    <div className="text-3xl font-bold text-indigo-900">
+                      {sickLeaveTotalDays.toFixed(2)}
+                    </div>
+                    <div className="text-xs text-indigo-500 mt-1">Calculated from hours taken</div>
+                  </div>
+                  <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="text-sm font-medium text-amber-700 uppercase tracking-wide">Requests</div>
+                    <div className="text-3xl font-bold text-amber-900">{sickLeaveRequestCount}</div>
+                    <div className="text-xs text-amber-500 mt-1">Most recent entries listed below</div>
+                  </div>
+                </div>
+
+                <div className="mt-6 flex flex-wrap gap-6 text-sm text-gray-500">
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-400">Earned</p>
+                    <p className="text-lg font-semibold text-gray-900">
+                      {sickLeaveAccruedDays.toFixed(2)} days ({formatHours(sickLeaveAccruedHours)})
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      {sickLeaveAccruedMonths} completed month{sickLeaveAccruedMonths === 1 ? "" : "s"}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-400">Available balance</p>
+                    <p className="text-lg font-semibold text-gray-900">
+                      {sickLeaveBalanceDays.toFixed(2)} days ({formatHours(sickLeaveBalanceHours)})
+                    </p>
+                    <p className="text-xs text-gray-400">
+                      {sickLeaveBalanceHours > 0 ? "Ready to use" : "No balance available yet"}
+                    </p>
+                  </div>
+                  <p className="text-xs text-gray-400 self-end">
+                    Employees earn 1 sick day per completed month worked.
+                  </p>
+                </div>
+
+                {sickLeaveEntries.length === 0 ? (
+                  <div className="text-center py-8 text-sm text-gray-500">
+                    No sick leave records have been logged for this employee yet.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {sickLeaveEntries.map((entry) => {
+                      const normalizedStatus = (entry.status ?? "pending").toLowerCase() as SickLeaveStatus;
+                      const statusClasses =
+                        sickLeaveStatusStyles[normalizedStatus] ?? fallbackSickLeaveStatusStyle;
+                      return (
+                        <div
+                          key={entry.id}
+                          className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-xs text-gray-500">Dates</p>
+                              <p className="text-sm font-semibold text-gray-900">
+                                {formatDate(entry.start_date)} — {formatDate(entry.end_date)}
+                              </p>
+                            </div>
+                            <span
+                              className={`px-3 py-1 text-xs font-semibold capitalize tracking-wide border rounded-full ${statusClasses}`}
+                            >
+                              {entry.status}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
+                            <span>Hours: {formatHours(entry.duration_hours)}</span>
+                            {entry.reason && <span>Reason: {entry.reason}</span>}
+                            {entry.approved_at && (
+                              <span>Approved: {formatDate(entry.approved_at)}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </section>
 

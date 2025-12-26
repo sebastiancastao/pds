@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
   <head><meta charset="UTF-8"><title>${subject}</title></head>
   <body style="font-family: Arial, sans-serif; color: #111827;">
     <h2 style="margin:0 0 10px 0;">Onboarding Event</h2>
-    <p style="margin:0 0 16px 0;">A user has submitted an onboarding documentation in the CA Payroll Packet form viewer.</p>
+    <p style="margin:0 0 16px 0;">A user has submitted an onboarding documentation in the CA Payroll Packet</p>
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse: collapse;">
       <tr><td style="padding:4px 8px; color:#374151;">Time:</td><td style="padding:4px 8px; font-weight:600;">${new Date().toLocaleString()}</td></tr>
       <tr><td style="padding:4px 8px; color:#374151;">User Email:</td><td style="padding:4px 8px; font-weight:600;">${userEmail || 'Unknown'}</td></tr>

@@ -22,6 +22,7 @@ CREATE TYPE division_type AS ENUM ('vendor', 'trailers', 'both');
 CREATE TYPE document_type AS ENUM ('i9', 'w4', 'w9', 'direct_deposit', 'handbook', 'other');
 CREATE TYPE onboarding_status AS ENUM ('pending', 'in_progress', 'completed');
 CREATE TYPE clock_action AS ENUM ('clock_in', 'clock_out', 'meal_start', 'meal_end');
+CREATE TYPE leave_status AS ENUM ('pending', 'approved', 'denied');
 
 -- =====================================================
 -- Core Authentication & User Management
@@ -388,6 +389,27 @@ CREATE TABLE time_entries (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Sick leave requests
+CREATE TABLE sick_leaves (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    duration_hours NUMERIC(6, 2) NOT NULL DEFAULT 0,
+    status leave_status NOT NULL DEFAULT 'pending',
+    reason TEXT,
+    approved_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    approved_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CHECK (end_date >= start_date),
+    CHECK (duration_hours >= 0)
+);
+
+CREATE INDEX idx_sick_leaves_user_id ON sick_leaves(user_id);
+CREATE INDEX idx_sick_leaves_status ON sick_leaves(status);
+CREATE INDEX idx_sick_leaves_start_date ON sick_leaves(start_date);
+
 -- =====================================================
 -- Events & Staffing
 -- =====================================================
@@ -678,6 +700,7 @@ ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sessions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_entries ENABLE ROW LEVEL SECURITY;
+ALTER TABLE sick_leaves ENABLE ROW LEVEL SECURITY;
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
 ALTER TABLE event_staff ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payouts ENABLE ROW LEVEL SECURITY;
@@ -783,6 +806,9 @@ COMMENT ON TABLE profiles IS 'User profile information with encrypted PII data';
 COMMENT ON TABLE sessions IS 'Active user sessions for authentication';
 COMMENT ON TABLE audit_logs IS 'Immutable audit trail for compliance';
 COMMENT ON TABLE time_entries IS 'Clock in/out records for time tracking';
+COMMENT ON TABLE sick_leaves IS 'Sick leave records for employees with duration and approvals';
+COMMENT ON COLUMN sick_leaves.duration_hours IS 'Length of time booked as sick leave in hours';
+COMMENT ON COLUMN sick_leaves.status IS 'Pending/approved/denied workflow state for each request';
 COMMENT ON TABLE events IS 'Events requiring staffing and management';
 COMMENT ON TABLE event_staff IS 'Staff assignments to events';
 COMMENT ON TABLE payouts IS 'Payroll calculations and commission tracking';

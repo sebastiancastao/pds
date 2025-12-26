@@ -10,6 +10,7 @@ interface NewUser {
   division: 'vendor' | 'trailers' | 'both';
   firstName: string;
   lastName: string;
+  official_name: string;
 }
 
 interface CreateUserResult {
@@ -175,29 +176,45 @@ export async function POST(request: NextRequest) {
 
         // Create profile record
         // Note: State will be collected during onboarding process
-        const { error: profileError } = await (supabase.from('profiles') as any).insert([{
-          user_id: authData.user.id,
-          first_name: user.firstName,
-          last_name: user.lastName,
-          state: 'XX', // XX = Not set yet - will be collected during onboarding
-          password_hash: '',
-          mfa_enabled: false,
-          mfa_secret: null,
-          backup_codes: null,
-          onboarding_status: 'pending',
-          onboarding_completed_at: null,
-        }]);
+        const { data: profileData, error: profileError } = await (supabase.from('profiles') as any)
+          .insert([{
+            user_id: authData.user.id,
+            first_name: user.firstName,
+            last_name: user.lastName,
+            official_name: user.official_name || `${user.firstName} ${user.lastName}`.trim(),
+            state: 'XX', // XX = Not set yet - will be collected during onboarding
+            password_hash: '',
+            mfa_enabled: false,
+            mfa_secret: null,
+            backup_codes: null,
+            onboarding_status: 'pending',
+            onboarding_completed_at: null,
+          }])
+          .select('id')
+          .single();
 
-        if (profileError) {
+        if (profileError || !profileData?.id) {
           await supabase.from('users').delete().eq('id', authData.user.id);
           await supabase.auth.admin.deleteUser(authData.user.id);
           results.push({
             ...user,
             temporaryPassword: '',
             status: 'error',
-            message: `Profile creation failed: ${profileError.message}`,
+            message: `Profile creation failed: ${profileError?.message}`,
           });
           continue;
+        }
+
+        const profileId = profileData.id;
+        const { error: bgCheckError } = await (supabase.from('vendor_background_checks') as any)
+          .upsert({
+            profile_id: profileId,
+            background_check_completed: false,
+            completed_date: null,
+          }, { onConflict: 'profile_id' });
+
+        if (bgCheckError) {
+          console.error('[Signup API] Failed to create vendor_background_checks row:', bgCheckError);
         }
 
         // Note: Email sending is now done separately via the "Send Email" button

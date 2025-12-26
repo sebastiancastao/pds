@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
-import { isValidEmail } from '@/lib/supabase';
+import { isValidEmail, supabase } from '@/lib/supabase';
 import Papa from 'papaparse';
 
 interface NewUser {
@@ -12,6 +12,7 @@ interface NewUser {
   division: 'vendor' | 'trailers' | 'both';
   firstName: string;
   lastName: string;
+  official_name: string;
 }
 
 interface CreatedUser extends NewUser {
@@ -20,6 +21,18 @@ interface CreatedUser extends NewUser {
   message?: string;
   emailSent?: boolean;
   emailSending?: boolean;
+}
+
+interface VendorRecord {
+  firstName: string;
+  lastName: string;
+  addressLine1: string;
+  city: string;
+  state: string;
+  zip: string;
+  cellPhone: string;
+  email: string;
+  newHirePacket: boolean;
 }
 
 export default function SignupPage() {
@@ -31,6 +44,7 @@ export default function SignupPage() {
       division: 'vendor',
       firstName: '',
       lastName: '',
+      official_name: '',
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -39,6 +53,9 @@ export default function SignupPage() {
   const [showResults, setShowResults] = useState(false);
   const [importError, setImportError] = useState('');
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [vendorRoster, setVendorRoster] = useState<VendorRecord[]>([]);
+  const [vendorLoading, setVendorLoading] = useState(false);
+  const [vendorError, setVendorError] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const usersPerPage = 20;
 
@@ -52,6 +69,7 @@ export default function SignupPage() {
         division: 'vendor',
         firstName: '',
         lastName: '',
+        official_name: '',
       },
     ]);
   };
@@ -64,9 +82,20 @@ export default function SignupPage() {
 
   const updateUser = (id: string, field: keyof NewUser, value: string) => {
     setUsers(
-      users.map((u) =>
-        u.id === id ? { ...u, [field]: value } : u
-      )
+      users.map((u) => {
+        if (u.id === id) {
+          const updated = { ...u, [field]: value };
+          // Auto-update official_name when firstName or lastName changes
+          if (field === 'firstName' || field === 'lastName') {
+            const firstName = field === 'firstName' ? value : u.firstName;
+            const lastName = field === 'lastName' ? value : u.lastName;
+            const fullName = `${firstName} ${lastName}`.trim();
+            updated.official_name = fullName;
+          }
+          return updated;
+        }
+        return u;
+      })
     );
   };
 
@@ -139,6 +168,7 @@ export default function SignupPage() {
             division: 'vendor',
             firstName: '',
             lastName: '',
+            official_name: '',
           },
         ]);
       } else {
@@ -151,6 +181,7 @@ export default function SignupPage() {
             division: u.division,
             firstName: u.firstName,
             lastName: u.lastName,
+            official_name: u.official_name,
           }))
         );
       }
@@ -390,13 +421,18 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
               return;
             }
 
+            const firstName = row.firstName.trim();
+            const lastName = row.lastName.trim();
+            const fullName = `${firstName} ${lastName}`.trim();
+
             importedUsers.push({
               id: crypto.randomUUID(),
-              firstName: row.firstName.trim(),
-              lastName: row.lastName.trim(),
+              firstName,
+              lastName,
               email: row.email.trim().toLowerCase(),
               role: row.role.toLowerCase() as 'worker' | 'manager' | 'finance' | 'exec',
               division: row.division.toLowerCase() as 'vendor' | 'trailers' | 'both',
+              official_name: fullName,
             });
           });
 
@@ -441,9 +477,133 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
     }
   };
 
+  useEffect(() => {
+    const fetchVendorRoster = async () => {
+      setVendorLoading(true);
+      setVendorError('');
+      try {
+        console.log('[Vendor Roster Frontend] Starting fetch...');
+        const { data: { session } } = await supabase.auth.getSession();
+        console.log('[Vendor Roster Frontend] Session:', { hasSession: !!session, hasToken: !!session?.access_token });
+
+        const response = await fetch('/api/vendor-roster', {
+          method: 'GET',
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          credentials: 'include',
+        });
+        console.log('[Vendor Roster Frontend] Response status:', response.status);
+
+        const payload = await response.json().catch(() => ({}));
+        console.log('[Vendor Roster Frontend] Response payload:', payload);
+
+        if (!response.ok) {
+          throw new Error(payload.error || 'Failed to load vendor roster');
+        }
+
+        console.log('[Vendor Roster Frontend] Number of vendors:', payload.vendors?.length || 0);
+
+        const normalized = (payload.vendors || []).map((vendor: any) => ({
+          firstName: vendor.first_name || '',
+          lastName: vendor.last_name || '',
+          addressLine1: vendor.address_line1 || '',
+          city: vendor.city || '',
+          state: vendor.state || '',
+          zip: vendor.zip || '',
+          cellPhone: vendor.cell_phone || '',
+          email: vendor.email || '',
+          newHirePacket: Boolean(vendor.new_hire_packet),
+        }));
+
+        console.log('[Vendor Roster Frontend] Normalized vendors:', normalized);
+        setVendorRoster(normalized);
+      } catch (err: any) {
+        console.error('[Vendor Roster Frontend] Error loading vendor roster:', err);
+        setVendorError(err.message || 'Failed to load vendor roster');
+      } finally {
+        setVendorLoading(false);
+      }
+    };
+
+    fetchVendorRoster();
+  }, []);
+
+  const createAllVendorUsers = () => {
+    // Get all vendors with email addresses
+    const vendorsWithEmail = vendorRoster.filter(vendor => vendor.email?.trim());
+
+    if (vendorsWithEmail.length === 0) {
+      alert('No vendors with email addresses found.');
+      return;
+    }
+
+    // Get existing emails in the user creation form (excluding empty users)
+    const existingEmails = new Set(
+      users
+        .filter(u => u.email.trim())
+        .map(u => u.email.toLowerCase().trim())
+    );
+
+    // Filter out vendors already in the form
+    const newVendors = vendorsWithEmail.filter(vendor => {
+      const vendorEmail = vendor.email.toLowerCase().trim();
+      return !existingEmails.has(vendorEmail);
+    });
+
+    if (newVendors.length === 0) {
+      alert('All vendors with email addresses are already in the user creation form.');
+      return;
+    }
+
+    if (!confirm(`Add ${newVendors.length} vendor(s) to the user creation form?`)) {
+      return;
+    }
+
+    // Create user objects for all new vendors
+    const vendorUsers: NewUser[] = newVendors.map(vendor => {
+      const firstName = vendor.firstName || '';
+      const lastName = vendor.lastName || '';
+      const fullName = `${firstName} ${lastName}`.trim();
+
+      return {
+        id: crypto.randomUUID(),
+        email: vendor.email.trim(),
+        role: 'worker' as const,
+        division: 'vendor' as const,
+        firstName,
+        lastName,
+        official_name: fullName,
+      };
+    });
+
+    // Skip placeholders so we only keep rows with actual data before merging
+    const meaningfulUsers = users.filter((user) =>
+      user.email.trim() || user.firstName.trim() || user.lastName.trim()
+    );
+
+    if (meaningfulUsers.length === 0) {
+      setUsers(vendorUsers);
+    } else {
+      setUsers([...meaningfulUsers, ...vendorUsers]);
+    }
+
+    // Show success message
+    const message = document.createElement('div');
+    message.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in';
+    message.textContent = `✓ Added ${vendorUsers.length} vendor(s) to form`;
+    document.body.appendChild(message);
+    setTimeout(() => message.remove(), 3000);
+
+    // Scroll to the form
+    setTimeout(() => {
+      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+    }, 100);
+  };
+
   const isCompactMode = users.length > 3;
   const isPaginated = users.length > 20;
-  
+
   // Pagination calculations
   const totalPages = Math.ceil(users.length / usersPerPage);
   const startIndex = (currentPage - 1) * usersPerPage;
@@ -478,6 +638,149 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
               Create accounts first, then send credentials via email when ready
             </p>
           </div>
+        </div>
+
+        {/* Vendor Roster */}
+        <div className="bg-white rounded-2xl shadow-xl p-8 mb-6 border border-gray-100">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Vendor Roster</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  Provided vendor details with new hire packet status.
+                </p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="inline-flex items-center justify-center px-3 py-1 rounded-full bg-gray-100 text-gray-700 text-sm font-medium">
+                  {vendorLoading ? 'Loading...' : `${vendorRoster.length} vendors`}
+                </span>
+                {!vendorLoading && vendorRoster.length > 0 && (
+                  <button
+                    onClick={createAllVendorUsers}
+                    className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-green-600 to-green-700 rounded-lg hover:from-green-700 hover:to-green-800 shadow-md hover:shadow-lg transition-all duration-200"
+                    title="Add all vendors with email addresses to user creation form"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                    </svg>
+                    <span>Create All Users</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {vendorError && (
+              <div className="mt-4 bg-red-50 border border-red-200 rounded-lg p-4 text-sm text-red-800">
+                {vendorError}
+              </div>
+            )}
+
+          {vendorLoading ? (
+            <div className="mt-4 border border-gray-200 rounded-lg p-6 text-sm text-gray-600">
+              Loading vendor roster...
+            </div>
+          ) : vendorRoster.length === 0 ? (
+            <div className="mt-4 border border-gray-200 rounded-lg p-6 text-sm text-gray-600">
+              No vendor records found.
+            </div>
+          ) : (
+            <div className="mt-4 border border-gray-200 rounded-lg overflow-hidden">
+              <div className="overflow-auto max-h-[520px]">
+                <table className="min-w-full divide-y divide-gray-200 text-sm">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor First Name</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor Last Name</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Address Line 1</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">City</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">State</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Zip</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Cell Phone</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Email</th>
+                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">New Hire Packet</th>
+                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {vendorRoster.map((vendor, index) => (
+                      <tr key={`${vendor.email || vendor.firstName}-${index}`} className="hover:bg-gray-50">
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.firstName}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.lastName}</td>
+                        <td className="px-3 py-2">{vendor.addressLine1 || 'N/A'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.city || 'N/A'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.state || 'N/A'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.zip || 'N/A'}</td>
+                        <td className="px-3 py-2 whitespace-nowrap">{vendor.cellPhone || 'N/A'}</td>
+                        <td className="px-3 py-2">{vendor.email || 'N/A'}</td>
+                        <td className="px-3 py-2 text-center">
+                          {vendor.newHirePacket ? (
+                            <span className="inline-flex items-center justify-center px-2 py-1 text-xs font-semibold text-green-700 bg-green-50 rounded-full">✓</span>
+                          ) : (
+                            <span className="text-gray-400">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            onClick={() => {
+                              // Check if vendor email already exists in the form
+                              const vendorEmail = vendor.email?.toLowerCase().trim();
+                              if (!vendorEmail) {
+                                alert('This vendor has no email address');
+                                return;
+                              }
+
+                              const isDuplicate = users.some(u => u.email.toLowerCase().trim() === vendorEmail);
+                              if (isDuplicate) {
+                                alert(`${vendor.firstName} ${vendor.lastName} is already in the user creation form`);
+                                return;
+                              }
+
+                              // Add vendor to user creation form
+                              const firstName = vendor.firstName || '';
+                              const lastName = vendor.lastName || '';
+                              const fullName = `${firstName} ${lastName}`.trim();
+
+                              setUsers([
+                                ...users,
+                                {
+                                  id: crypto.randomUUID(),
+                                  email: vendorEmail,
+                                  role: 'worker',
+                                  division: 'vendor',
+                                  firstName,
+                                  lastName,
+                                  official_name: fullName,
+                                }
+                              ]);
+
+                              // Show success message
+                              const message = document.createElement('div');
+                              message.className = 'fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg z-50 animate-fade-in';
+                              message.textContent = `✓ Added ${vendor.firstName} ${vendor.lastName} to form`;
+                              document.body.appendChild(message);
+                              setTimeout(() => message.remove(), 3000);
+
+                              // Scroll to the form
+                              setTimeout(() => {
+                                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+                              }, 100);
+                            }}
+                            disabled={!vendor.email}
+                            className="inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg hover:from-blue-700 hover:to-blue-800 shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed disabled:from-gray-400 disabled:to-gray-400 whitespace-nowrap"
+                            title={vendor.email ? "Add to user creation form" : "No email address"}
+                          >
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
+                            </svg>
+                            <span>Create User</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* CSV Import Section */}
@@ -1139,4 +1442,3 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
     </div>
   );
 }
-

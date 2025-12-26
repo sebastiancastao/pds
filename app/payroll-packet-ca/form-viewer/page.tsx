@@ -31,7 +31,6 @@ function FormViewerContent() {
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [signatureMode, setSignatureMode] = useState<'type' | 'draw'>('type');
 
   // --- I-9 selection mode + options ---
   const I9_LIST_A = [
@@ -381,16 +380,6 @@ function FormViewerContent() {
     }
   };
 
-  const handleSignatureChange = (value: string) => {
-    setCurrentSignature(value);
-    // Save typed signature for current form
-    setSignatures(prev => {
-      const newSigs = new Map(prev);
-      newSigs.set(formName, value);
-      return newSigs;
-    });
-  };
-
   const clearSignature = () => {
     const canvas = canvasRef.current;
     if (canvas) {
@@ -530,27 +519,23 @@ function FormViewerContent() {
 
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
-    // Load existing signature for this form if it exists
+    // Load existing drawn signature for this form if it exists
     const savedSignature = signatures.get(formName);
-    if (savedSignature) {
+    if (savedSignature && savedSignature.startsWith('data:image')) {
       setCurrentSignature(savedSignature);
-
-      // If it's a drawn signature, restore it to canvas
-      if (signatureMode === 'draw' && savedSignature.startsWith('data:image')) {
-        const canvas = canvasRef.current;
-        if (canvas) {
-          const ctx = canvas.getContext('2d');
-          const img = new Image();
-          img.onload = () => {
-            if (ctx) {
-              ctx.drawImage(img, 0, 0);
-            }
-          };
-          img.src = savedSignature;
-        }
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.onload = () => {
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+          }
+        };
+        img.src = savedSignature;
       }
     } else {
-      // Clear signature for new form
+      // Clear signature for new form or unsupported saved data
       setCurrentSignature('');
       const canvas = canvasRef.current;
       if (canvas) {
@@ -562,19 +547,7 @@ function FormViewerContent() {
         }
       }
     }
-  }, [formName, signatureMode, signatures]);
-
-  // Initialize canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (canvas && signatureMode === 'draw') {
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.fillStyle = 'white';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    }
-  }, [signatureMode]);
+  }, [formName, signatures]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -662,38 +635,41 @@ function FormViewerContent() {
               Signature Required
             </h2>
 
-            {/* Signature Mode Toggle */}
-            <div style={{ display: 'flex', gap: '12px', marginBottom: '16px' }}>
-              <button
-                onClick={() => setSignatureMode('type')}
+            <div style={{
+              border: '2px solid #ddd',
+              borderRadius: '6px',
+              overflow: 'hidden',
+              backgroundColor: 'white'
+            }}>
+              <canvas
+                ref={canvasRef}
+                width={600}
+                height={200}
+                onMouseDown={startDrawing}
+                onMouseMove={draw}
+                onMouseUp={stopDrawing}
+                onMouseLeave={stopDrawing}
+                onTouchStart={startDrawing}
+                onTouchMove={draw}
+                onTouchEnd={stopDrawing}
                 style={{
-                  padding: '8px 16px',
-                  backgroundColor: signatureMode === 'type' ? '#1976d2' : '#f5f5f5',
-                  color: signatureMode === 'type' ? 'white' : '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: '6px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  fontSize: '14px'
+                  width: '100%',
+                  height: '200px',
+                  cursor: 'crosshair',
+                  touchAction: 'none'
                 }}
-              >
-                Type Signature
-              </button>
-              <button
-                onClick={() => setSignatureMode('draw')}
-                style={{
-                  padding: '8px 16px',
-                  backgroundColor: signatureMode === 'draw' ? '#1976d2' : '#f5f5f5',
-                  color: signatureMode === 'draw' ? 'white' : '#333',
-                  border: '1px solid #ddd',
-                  borderRadius: '6px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  fontSize: '14px'
-                }}
-              >
-                Draw Signature
-              </button>
+              />
+            </div>
+
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: '12px'
+            }}>
+              <p style={{ margin: 0, fontSize: '12px', color: '#666' }}>
+                Draw your signature above using your mouse or touchscreen
+              </p>
               {currentSignature && (
                 <button
                   onClick={clearSignature}
@@ -705,8 +681,7 @@ function FormViewerContent() {
                     borderRadius: '6px',
                     fontWeight: 'bold',
                     cursor: 'pointer',
-                    fontSize: '14px',
-                    marginLeft: 'auto'
+                    fontSize: '14px'
                   }}
                 >
                   Clear Signature
@@ -714,80 +689,6 @@ function FormViewerContent() {
               )}
             </div>
 
-            {/* Type Signature Mode */}
-            {signatureMode === 'type' && (
-              <div>
-                <input
-                  type="text"
-                  value={currentSignature}
-                  onChange={(e) => handleSignatureChange(e.target.value)}
-                  placeholder="Type your full name here"
-                  style={{
-                    width: '100%',
-                    padding: '12px',
-                    fontSize: '18px',
-                    border: '2px solid #ddd',
-                    borderRadius: '6px',
-                    outline: 'none'
-                  }}
-                  onFocus={(e) => (e.target.style.borderColor = '#1976d2')}
-                  onBlur={(e) => (e.target.style.borderColor = '#ddd')}
-                />
-                {currentSignature && !currentSignature.startsWith('data:image') && (
-                  <div style={{
-                    marginTop: '16px',
-                    padding: '20px',
-                    border: '2px solid #ddd',
-                    borderRadius: '6px',
-                    backgroundColor: '#f9f9f9',
-                    textAlign: 'center'
-                  }}>
-                    <div style={{ fontSize: '24px', color: '#1a1a1a', fontWeight: 600 }}>
-                      {currentSignature}
-                    </div>
-                    <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
-                      Preview of your typed signature
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Draw Signature Mode */}
-            {signatureMode === 'draw' && (
-              <div>
-                <div style={{
-                  border: '2px solid #ddd',
-                  borderRadius: '6px',
-                  overflow: 'hidden',
-                  backgroundColor: 'white'
-                }}>
-                  <canvas
-                    ref={canvasRef}
-                    width={600}
-                    height={200}
-                    onMouseDown={startDrawing}
-                    onMouseMove={draw}
-                    onMouseUp={stopDrawing}
-                    onMouseLeave={stopDrawing}
-                    onTouchStart={startDrawing}
-                    onTouchMove={draw}
-                    onTouchEnd={stopDrawing}
-                    style={{
-                      width: '100%',
-                      height: '200px',
-                      cursor: 'crosshair',
-                      touchAction: 'none'
-                    }}
-                  />
-                </div>
-                <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
-                  Draw your signature above using your mouse or touchscreen
-                </p>
-              </div>
-            )}
-
-            {/* Signature Status Indicator */}
             {currentSignature && (
               <div style={{
                 marginTop: '16px',

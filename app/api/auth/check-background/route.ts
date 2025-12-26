@@ -60,23 +60,49 @@ export async function POST(request: NextRequest) {
       notes: string | null;
     };
 
-    const { data: bgCheckData, error: bgCheckError } = await supabase
+    const { data: rawBgCheckData, error: bgCheckError } = await supabase
       .from('vendor_background_checks')
       .select('background_check_completed, completed_date, notes')
       .eq('profile_id', profileData.id)
-      .single<BgCheckData>();
+      .maybeSingle<BgCheckData>();
 
     if (bgCheckError) {
-      console.log('[BG CHECK API] No background check record:', bgCheckError.message);
-      return NextResponse.json({
-        approved: false,
-        message: 'No background check record found'
-      }, { status: 200 });
+      console.log('[BG CHECK API] Error reading vendor_background_checks row:', bgCheckError.message);
+    }
+
+    let bgCheckData = rawBgCheckData;
+
+    if (!bgCheckData) {
+      console.log('[BG CHECK API] vendor_background_checks entry missing; creating fallback record');
+      const { data: insertedBgCheck, error: insertError } = await supabase
+        .from('vendor_background_checks')
+        .upsert({
+          profile_id: profileData.id,
+          background_check_completed: false,
+          completed_date: null,
+          notes: null,
+        }, { onConflict: 'profile_id' })
+        .select('background_check_completed, completed_date, notes')
+        .maybeSingle<BgCheckData>();
+
+      if (insertError) {
+        console.error('[BG CHECK API] Failed to insert fallback vendor_background_checks row:', insertError);
+      } else {
+        bgCheckData = insertedBgCheck;
+      }
+    }
+
+    if (!bgCheckData) {
+      bgCheckData = {
+        background_check_completed: false,
+        completed_date: null,
+        notes: null,
+      };
     }
 
     console.log('[BG CHECK API] Background check data:', bgCheckData);
 
-    const isApproved = bgCheckData?.background_check_completed === true;
+    const isApproved = bgCheckData.background_check_completed === true;
 
     // Check onboarding status
     const onboardingCompleted = !!profileData.onboarding_completed_at;
