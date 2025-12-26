@@ -80,6 +80,8 @@ function HRDashboardContent() {
   const [filterFormState, setFilterFormState] = useState<string>(initialFormState);
   const [filterFormCategory, setFilterFormCategory] = useState<string>('all');
 
+  const [paystubTool, setPaystubTool] = useState<null | "pdf-reader" | "paystub-generator">(null);
+
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('mfa_verified');
@@ -1054,7 +1056,7 @@ function HRDashboardContent() {
                 <div>
                   <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Paystub Tools</h2>
                   <p className="text-sm text-gray-500">
-                    Launch the standalone utilities when you need a larger workspace.
+                    Click a tool to open it here in the dashboard.
                   </p>
                 </div>
                 <span className="text-xs uppercase tracking-wider text-slate-500 px-3 py-1 border border-slate-200 rounded-full">
@@ -1064,22 +1066,64 @@ function HRDashboardContent() {
               <div className="flex flex-wrap gap-3">
                 <a
                   href="/pdf-reader"
-                  target="_blank"
-                  rel="noreferrer noopener"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setPaystubTool("pdf-reader");
+                  }}
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
                 >
                   PDF Reader
                 </a>
                 <a
                   href="/paystub-generator"
-                  target="_blank"
-                  rel="noreferrer noopener"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setPaystubTool("paystub-generator");
+                  }}
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
                 >
                   Paystub Generator
                 </a>
               </div>
             </section>
+
+            {paystubTool && (
+              <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-slate-200">
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold text-slate-900 truncate">
+                      {paystubTool === "pdf-reader" ? "PDF Reader" : "Paystub Generator"}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate">
+                      Showing /{paystubTool} inside the dashboard.
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaystubTool(null)}
+                      className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+                    >
+                      Back to tools
+                    </button>
+                    <a
+                      href={`/${paystubTool}`}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
+                    >
+                      Open full page
+                    </a>
+                  </div>
+                </div>
+                <iframe
+                  key={paystubTool}
+                  title={paystubTool === "pdf-reader" ? "PDF Reader" : "Paystub Generator"}
+                  src={`/${paystubTool}`}
+                  className="w-full h-[80vh] bg-white"
+                />
+              </section>
+            )}
           </div>
         )}
         {hrView === "employees" && (

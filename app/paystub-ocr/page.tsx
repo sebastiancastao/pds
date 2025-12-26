@@ -49,7 +49,7 @@ export default function PaystubOCRPage() {
   const performOCR = async (imageData: ImageData): Promise<string> => {
     setOcrProgress(0);
 
-    const result = await Tesseract.recognize(imageData, 'eng', {
+    const result = await Tesseract.recognize(imageData as any, 'eng', {
       logger: (m) => {
         if (m.status === 'recognizing text') {
           setOcrProgress(Math.round(m.progress * 100));
@@ -171,8 +171,8 @@ export default function PaystubOCRPage() {
 
           if (amounts.length >= 1) {
             const deductionKey = key as keyof typeof data.deductions;
-            data.deductions![deductionKey] = {
-              label: data.deductions![deductionKey].label,
+            (data.deductions as any)[deductionKey] = {
+              label: (data.deductions as any)[deductionKey].label,
               thisPeriod: amounts[0] || null,
               yearToDate: amounts[1] || amounts[0] || null,
               confidence: matchScore,

@@ -81,7 +81,7 @@ export async function POST(request: NextRequest) {
           background_check_completed: false,
           completed_date: null,
           notes: null,
-        }, { onConflict: 'profile_id' })
+        } as any, { onConflict: 'profile_id' })
         .select('background_check_completed, completed_date, notes')
         .maybeSingle<BgCheckData>();
 

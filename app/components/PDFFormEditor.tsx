@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase';
 // Declare PDF.js types on window
 declare global {
   interface Window {
-    pdfjsLib: any;
+    pdfjsLib?: any;
   }
 }
 
