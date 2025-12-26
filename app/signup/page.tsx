@@ -8,7 +8,7 @@ import Papa from 'papaparse';
 interface NewUser {
   id: string;
   email: string;
-  role: 'worker' | 'manager' | 'finance' | 'exec';
+  role: 'worker' | 'manager' | 'finance' | 'exec' | 'hr' | 'backgroundchecker';
   division: 'vendor' | 'trailers' | 'both';
   firstName: string;
   lastName: string;
@@ -363,7 +363,9 @@ export default function SignupPage() {
     const template = `firstName,lastName,email,role,division
 John,Doe,john.doe@example.com,worker,vendor
 Jane,Smith,jane.smith@example.com,manager,trailers
-Bob,Johnson,bob.johnson@example.com,finance,both`;
+Bob,Johnson,bob.johnson@example.com,finance,both
+Helen,Reed,helen.reed@example.com,hr,vendor
+Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
 
     const blob = new Blob([template], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -410,8 +412,8 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
             }
 
             // Validate role
-            if (!['worker', 'manager', 'finance', 'exec'].includes(row.role.toLowerCase())) {
-              errors.push(`Row ${rowNum}: Invalid role (must be: worker, manager, finance, or exec)`);
+            if (!['worker', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'].includes(row.role.toLowerCase())) {
+              errors.push(`Row ${rowNum}: Invalid role (must be: worker, manager, finance, exec, hr, or backgroundchecker)`);
               return;
             }
 
@@ -430,7 +432,7 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
               firstName,
               lastName,
               email: row.email.trim().toLowerCase(),
-              role: row.role.toLowerCase() as 'worker' | 'manager' | 'finance' | 'exec',
+              role: row.role.toLowerCase() as 'worker' | 'manager' | 'finance' | 'exec' | 'hr' | 'backgroundchecker',
               division: row.division.toLowerCase() as 'vendor' | 'trailers' | 'both',
               official_name: fullName,
             });
@@ -854,7 +856,7 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
                 <p className="font-medium mb-2">Required CSV Format:</p>
                 <ul className="list-disc ml-4 space-y-1">
                   <li><strong>Headers:</strong> firstName, lastName, email, role, division</li>
-                  <li><strong>Role values:</strong> worker, manager, finance, or exec</li>
+                  <li><strong>Role values:</strong> worker, manager, finance, exec, hr, or backgroundchecker</li>
                   <li><strong>Division values:</strong> vendor, trailers, or both</li>
                   <li>Download the template above for an example</li>
                 </ul>
@@ -1164,6 +1166,8 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
                               <option value="manager">Manager</option>
                               <option value="finance">Finance</option>
                               <option value="exec">Executive</option>
+                              <option value="hr">HR</option>
+                              <option value="backgroundchecker">Background Checker</option>
                             </select>
                           </td>
                           <td className="px-3 py-2">
@@ -1350,6 +1354,8 @@ Bob,Johnson,bob.johnson@example.com,finance,both`;
                       <option value="manager">Room Manager</option>
                       <option value="finance">Finance</option>
                       <option value="exec">Executive</option>
+                      <option value="hr">HR</option>
+                      <option value="backgroundchecker">Background Checker</option>
                     </select>
                   </div>
 
