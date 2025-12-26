@@ -759,18 +759,7 @@ function HRDashboardContent() {
               Paystub Tools
               {hrView === "paystub" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
-            <button
-              onClick={() => {
-                setHrView("forms");
-                loadOnboardingForms();
-              }}
-              className={`pb-4 px-2 font-semibold transition-colors relative ${
-                hrView === "forms" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Onboarding Forms Update
-              {hrView === "forms" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-            </button>
+            
           </div>
         </div>
 

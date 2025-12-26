@@ -85,6 +85,7 @@ export default function PaystubGenerator() {
   });
 
   const [generating, setGenerating] = useState(false);
+  const [creatingReport, setCreatingReport] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [events, setEvents] = useState<Event[]>([]);
@@ -207,16 +208,28 @@ export default function PaystubGenerator() {
   const totalDeductions = calculateDeductions();
   const netPay = grossPay - totalDeductions + (parseFloat(formData.miscReimbursement) || 0);
 
+  const getFilteredEvents = () => {
+    // Filter events to only include the matched employee's data
+    return matchedUserId
+      ? events
+          .map(event => ({
+            ...event,
+            workers: event.workers?.filter(w => w.user_id === matchedUserId)
+          }))
+          .filter(event => event.workers && event.workers.length > 0)
+      : events;
+  };
+
+  const sanitizeFilePart = (value: string) =>
+    value
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-zA-Z0-9._-]/g, '');
+
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      // Filter events to only include the matched employee's data
-      const filteredEvents = matchedUserId
-        ? events.map(event => ({
-            ...event,
-            workers: event.workers?.filter(w => w.user_id === matchedUserId)
-          })).filter(event => event.workers && event.workers.length > 0)
-        : events;
+      const filteredEvents = getFilteredEvents();
 
       // Prepare payload for PDF generation
       const payload = {
@@ -276,6 +289,115 @@ export default function PaystubGenerator() {
       alert(`Error: ${error.message}`);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const handleCreateReport = async () => {
+    setCreatingReport(true);
+
+    try {
+      const filteredEvents = getFilteredEvents();
+      const generatedAt = new Date().toISOString();
+
+      const summaryRows: Array<[string, string | number]> = [
+        ['Generated At', generatedAt],
+        ['Employee Name', formData.employeeName],
+        ['Employee ID', formData.employeeId],
+        ['SSN', formData.ssn],
+        ['Address', formData.address],
+        ['Matched User ID', matchedUserId ?? ''],
+        ['Pay Period Start', formData.payPeriodStart],
+        ['Pay Period End', formData.payPeriodEnd],
+        ['Pay Date', formData.payDate],
+        ['State', formData.state],
+        ['Gross Pay', Number(grossPay.toFixed(2))],
+        ['Total Deductions', Number(totalDeductions.toFixed(2))],
+        ['Misc Reimbursement', Number((parseFloat(formData.miscReimbursement) || 0).toFixed(2))],
+        ['Net Pay', Number(netPay.toFixed(2))],
+      ];
+
+      const earningsRows = [
+        {
+          regular_hours: parseFloat(formData.regularHours) || 0,
+          regular_rate: parseFloat(formData.regularRate) || 0,
+          overtime_hours: parseFloat(formData.overtimeHours) || 0,
+          overtime_rate: parseFloat(formData.overtimeRate) || 0,
+          doubletime_hours: parseFloat(formData.doubleTimeHours) || 0,
+          doubletime_rate: parseFloat(formData.doubleTimeRate) || 0,
+        },
+      ];
+
+      const deductionsRows = [
+        {
+          federal_income: parseFloat(formData.federalIncome) || 0,
+          social_security: parseFloat(formData.socialSecurity) || 0,
+          medicare: parseFloat(formData.medicare) || 0,
+          state_income: parseFloat(formData.stateIncome) || 0,
+          state_di: parseFloat(formData.stateDI) || 0,
+          misc_deduction: parseFloat(formData.miscDeduction) || 0,
+        },
+      ];
+
+      const eventsRows =
+        filteredEvents?.flatMap(event => {
+          const workers = event.workers && event.workers.length > 0 ? event.workers : [undefined];
+          return workers.map(worker => ({
+            event_id: event.id,
+            event_name: event.name,
+            artist: event.artist ?? '',
+            venue: event.venue,
+            event_type: event.event_type,
+            event_date: event.event_date,
+            city: event.city ?? '',
+            state: event.state ?? '',
+            worker_user_id: worker?.user_id ?? '',
+            worker_name: worker?.user_name ?? '',
+            worker_email: worker?.user_email ?? '',
+            worker_status: worker?.status ?? '',
+            actual_hours: worker?.payment_data?.actual_hours ?? '',
+            regular_hours: worker?.payment_data?.regular_hours ?? '',
+            overtime_hours: worker?.payment_data?.overtime_hours ?? '',
+            doubletime_hours: worker?.payment_data?.doubletime_hours ?? '',
+            regular_pay: worker?.payment_data?.regular_pay ?? '',
+            overtime_pay: worker?.payment_data?.overtime_pay ?? '',
+            doubletime_pay: worker?.payment_data?.doubletime_pay ?? '',
+            commissions: worker?.payment_data?.commissions ?? '',
+            tips: worker?.payment_data?.tips ?? '',
+            total_pay: worker?.payment_data?.total_pay ?? '',
+          }));
+        }) ?? [];
+
+      const sickLeaveRows = sickLeave
+        ? [
+            {
+              total_hours: sickLeave.total_hours,
+              total_days: sickLeave.total_days,
+              accrued_months: sickLeave.accrued_months,
+              accrued_hours: sickLeave.accrued_hours,
+              accrued_days: sickLeave.accrued_days,
+              balance_hours: sickLeave.balance_hours,
+              balance_days: sickLeave.balance_days,
+            },
+          ]
+        : [];
+
+      const wb = XLSX.utils.book_new();
+      const summarySheet = XLSX.utils.aoa_to_sheet([['Field', 'Value'], ...summaryRows.map(([k, v]) => [k, v])]);
+      XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
+
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(earningsRows), 'Earnings');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(deductionsRows), 'Deductions');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(eventsRows), 'Events');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sickLeaveRows), 'SickLeave');
+
+      const safeName = formData.employeeName ? sanitizeFilePart(formData.employeeName) : 'employee';
+      const safePayDate = formData.payDate ? sanitizeFilePart(formData.payDate) : sanitizeFilePart(generatedAt);
+      XLSX.writeFile(wb, `paystub-report-${safeName}-${safePayDate}.xlsx`);
+    } catch (error: any) {
+      console.error('Error creating report:', error);
+      alert(`Error: ${error.message}`);
+    } finally {
+      setCreatingReport(false);
     }
   };
 
@@ -476,7 +598,7 @@ export default function PaystubGenerator() {
             </p>
           </div>
           <Link
-            href="/dashboard"
+            href="/hr-dashboard"
             className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
           >
             <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -993,6 +1115,32 @@ export default function PaystubGenerator() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     Generate Paystub PDF
+                  </>
+                )}
+              </button>
+
+              {/* Create Report Button */}
+              <button
+                onClick={handleCreateReport}
+                disabled={creatingReport || !formData.employeeName}
+                className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-800 rounded-lg text-sm font-semibold shadow-sm hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {creatingReport ? (
+                  <>
+                    <div className="inline-block h-4 w-4 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
+                    Creating report...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M9 17v-6a2 2 0 012-2h2a2 2 0 012 2v6m-8 0h8m-8 0a2 2 0 01-2-2V7a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V15a2 2 0 01-2 2"
+                      />
+                    </svg>
+                    Create report
                   </>
                 )}
               </button>
