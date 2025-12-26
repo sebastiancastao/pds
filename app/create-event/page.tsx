@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -13,7 +13,7 @@ type Venue = {
   longitude: number;
 };
 
-export default function CreateEventPage() {
+function CreateEventPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams?.get("returnTo") || "dashboard";
@@ -410,5 +410,19 @@ export default function CreateEventPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function CreateEventPage() {
+  return (
+    <Suspense
+      fallback={(
+        <div className="min-h-screen flex items-center justify-center bg-slate-50 text-sm text-slate-600">
+          Loading...
+        </div>
+      )}
+    >
+      <CreateEventPageInner />
+    </Suspense>
   );
 }
