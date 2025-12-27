@@ -54,7 +54,6 @@ export default function BackgroundChecksForm() {
   const incompleteRequirements = [
     waiverProgress < 0.4 ? `Waiver ${Math.round(waiverProgress * 100)}% (need to complete)` : null,
     disclosureProgress < 0.4 ? `Disclosure ${Math.round(disclosureProgress * 100)}% (need to complete)` : null,
-    addonProgress < 0.4 ? `Add-on Form ${Math.round(addonProgress * 100)}% (need to complete)` : null,
     !currentSignature ? 'Signature missing' : null,
   ].filter(Boolean) as string[];
   const continueDisabled = saveStatus === 'saving' || incompleteRequirements.length > 0;
@@ -356,15 +355,13 @@ export default function BackgroundChecksForm() {
   const handleContinue = async () => {
     console.log('Continue clicked');
 
-    // Enforce 40% completion on all three forms before submit
+    // Enforce 40% completion on waiver and disclosure forms before submit
     const waiverOk = waiverProgress >= 0.4;
     const disclosureOk = disclosureProgress >= 0.4;
-    const addonOk = addonProgress >= 0.4;
-    if (!waiverOk || !disclosureOk || !addonOk) {
+    if (!waiverOk || !disclosureOk) {
       const waiverPct = Math.round(waiverProgress * 100);
       const disclosurePct = Math.round(disclosureProgress * 100);
-      const addonPct = Math.round(addonProgress * 100);
-      alert(`Please complete all three forms before submitting.\n\nDisclosure: ${disclosurePct}%\nWaiver: ${waiverPct}%\nAdd-on: ${addonPct}%`);
+      alert(`Please complete the required forms before submitting.\n\nDisclosure: ${disclosurePct}%\nWaiver: ${waiverPct}%`);
       return;
     }
 
@@ -865,25 +862,25 @@ export default function BackgroundChecksForm() {
 
             <button
               onClick={handleContinue}
-              disabled={saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature}
+              disabled={saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature}
               title={(saveStatus === 'saving' || incompleteRequirements.length > 0) ? `Complete before continuing: ${incompleteRequirements.join(' • ')}` : 'Continue'}
               style={{
                 padding: '12px 24px',
-                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) ? '#ccc' : '#1976d2',
+                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) ? '#ccc' : '#1976d2',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontWeight: 'bold',
-                cursor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) ? 'not-allowed' : 'pointer',
+                cursor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) ? 'not-allowed' : 'pointer',
                 fontSize: '16px'
               }}
               onMouseOver={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature)) {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1565c0';
                 }
               }}
               onMouseOut={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature)) {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1976d2';
                 }
               }}
@@ -894,7 +891,7 @@ export default function BackgroundChecksForm() {
         </div>
 
         {/* Submit gating hint */}
-        {(waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) && (
+        {(waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) && (
           <div style={{
             marginTop: '12px',
             color: '#d32f2f',
