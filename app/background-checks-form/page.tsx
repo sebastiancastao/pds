@@ -360,11 +360,24 @@ export default function BackgroundChecksForm() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return false;
 
-      const { data, error } = await supabase
+      // First get the profile_id
+      const { data: profileData, error: profileError } = await (supabase
+        .from('profiles')
+        .select('id')
+        .eq('user_id', session.user.id)
+        .single() as unknown as Promise<{ data: { id: string } | null; error: any }>);
+
+      if (profileError || !profileData) {
+        console.error('[APPROVAL CHECK] Profile error:', profileError);
+        return false;
+      }
+
+      // Then check vendor_background_checks using profile_id
+      const { data, error } = await (supabase
         .from('vendor_background_checks')
         .select('background_check_completed')
-        .eq('user_id', session.user.id)
-        .single();
+        .eq('profile_id', profileData.id)
+        .single() as unknown as Promise<{ data: { background_check_completed: boolean } | null; error: any }>);
 
       if (error) {
         console.error('[APPROVAL CHECK] Error:', error);
