@@ -232,7 +232,8 @@ export async function GET(req: NextRequest) {
 
           // Field-specific Y offset adjustments (in pixels)
           // POSITIVE values move text DOWN, NEGATIVE values move text UP
-          const fieldOffsets: Record<string, number> = {
+          // Different offsets for each PDF type
+          const waiverOffsets: Record<string, number> = {
             // Page 1 fields - All waiver fields moved down
             'checkbox': 765,
             'fullName': 765,
@@ -285,6 +286,31 @@ export async function GET(req: NextRequest) {
             'policeAgency3': 760,
             'chargeSentence3': 760,
           };
+
+          const disclosureOffsets: Record<string, number> = {
+            // Disclosure-specific fields - no offset needed
+            'requestCopy': 0,
+            'name': 0,
+            'address': 0,
+            'city': 0,
+            'state': 0,
+            'zip': 0,
+            'cellPhone': 0,
+            'ssn': 0,
+            'dateOfBirth': 0,
+            'driversLicense': 0,
+            'dlState': 0,
+            'signatureDate': 0,
+          };
+
+          const addonOffsets: Record<string, number> = {
+            // Addon-specific fields - no offset needed for now
+          };
+
+          // Select the appropriate offsets based on the PDF type
+          const fieldOffsets = label === 'waiver' ? waiverOffsets :
+                               label === 'disclosure' ? disclosureOffsets :
+                               addonOffsets;
 
           let renderedCount = 0;
           for (const field of fields) {
