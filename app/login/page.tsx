@@ -259,17 +259,25 @@ export default function LoginPage() {
 
       // Step 1: Check if background check is completed (users table)
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
-        // users.background_check_completed = false → User hasn't submitted forms yet
-        // Allow them to fill out background check forms
-        console.log('[LOGIN DEBUG] ❌ users.background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
-        console.log('[LOGIN DEBUG] ✅ Allowing login to fill out background check forms');
-        console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
+        // HR, Exec, and Finance users should NOT be redirected to background-checks-form
+        // They don't need to complete background checks
+        if (userRole === 'hr' || userRole === 'exec' || userRole === 'finance') {
+          console.log('[LOGIN DEBUG] ⚠️ User is HR/Exec/Finance - skipping background check requirement');
+          console.log('[LOGIN DEBUG] Setting backgroundCheckCompleted to true for login flow');
+          // Continue with normal flow as if background check is completed
+        } else {
+          // users.background_check_completed = false → User hasn't submitted forms yet
+          // Allow them to fill out background check forms
+          console.log('[LOGIN DEBUG] ❌ users.background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
+          console.log('[LOGIN DEBUG] ✅ Allowing login to fill out background check forms');
+          console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
 
-        sessionStorage.setItem('mfa_verified', 'true');
-        sessionStorage.setItem('background_check_required', 'true');
+          sessionStorage.setItem('mfa_verified', 'true');
+          sessionStorage.setItem('background_check_required', 'true');
 
-        router.replace('/background-checks-form');
-        return;
+          router.replace('/background-checks-form');
+          return;
+        }
       }
 
       // users.background_check_completed = true → User has submitted forms
