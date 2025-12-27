@@ -18,6 +18,7 @@ type FormKey =
   | 'meal-waiver-6hour'
   | 'meal-waiver-10-12'
   | 'state-tax'
+  | 'temp-employment-agreement'
   | 'handbook';
 
 const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>> = {
@@ -39,6 +40,13 @@ const STATE_SPECIFIC_FILE_MAP: Partial<
   'state-tax': {
     ny: { file: 'NY State 2025 W4 form.pdf', downloadName: 'NY_State_Tax.pdf' },
   },
+  'temp-employment-agreement': {
+    nv: { file: 'NY, AZ, WI, NV, TX TEMPORARY EMPLOYMENT SERVICES AGREEMENT letter FINAL (employees in NYS AZ and TX) -1(2592342.3).docx.pdf', downloadName: 'Temporary_Employment_Agreement.pdf' },
+    ny: { file: 'NY, AZ, WI, NV, TX TEMPORARY EMPLOYMENT SERVICES AGREEMENT letter FINAL (employees in NYS AZ and TX) -1(2592342.3).docx.pdf', downloadName: 'Temporary_Employment_Agreement.pdf' },
+    az: { file: 'NY, AZ, WI, NV, TX TEMPORARY EMPLOYMENT SERVICES AGREEMENT letter FINAL (employees in NYS AZ and TX) -1(2592342.3).docx.pdf', downloadName: 'Temporary_Employment_Agreement.pdf' },
+    wi: { file: 'NY, AZ, WI, NV, TX TEMPORARY EMPLOYMENT SERVICES AGREEMENT letter FINAL (employees in NYS AZ and TX) -1(2592342.3).docx.pdf', downloadName: 'Temporary_Employment_Agreement.pdf' },
+    tx: { file: 'NY, AZ, WI, NV, TX TEMPORARY EMPLOYMENT SERVICES AGREEMENT letter FINAL (employees in NYS AZ and TX) -1(2592342.3).docx.pdf', downloadName: 'Temporary_Employment_Agreement.pdf' },
+  },
 };
 
 const PLACEHOLDER_TITLES: Record<FormKey, string> = {
@@ -53,6 +61,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   'meal-waiver-6hour': '6-Hour Meal Waiver',
   'meal-waiver-10-12': '10/12-Hour Meal Waiver',
   'state-tax': 'State Tax Form',
+  'temp-employment-agreement': 'Temporary Employment Services Agreement',
   handbook: 'Employee Handbook Acknowledgment (Pending)',
 };
 

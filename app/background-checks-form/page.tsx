@@ -19,6 +19,7 @@ export default function BackgroundChecksForm() {
   const pdfBytesRef = useRef<Uint8Array | null>(null);
   const waiverBytesRef = useRef<Uint8Array | null>(null);
   const disclosureBytesRef = useRef<Uint8Array | null>(null);
+  const addonBytesRef = useRef<Uint8Array | null>(null);
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
@@ -27,6 +28,7 @@ export default function BackgroundChecksForm() {
   const [userRole, setUserRole] = useState<string>('');
   const [waiverProgress, setWaiverProgress] = useState(0);
   const [disclosureProgress, setDisclosureProgress] = useState(0);
+  const [addonProgress, setAddonProgress] = useState(0);
 
   const getPostOnboardingRoute = (role?: string) => {
     const normalized = (role ?? '').toString().trim().toLowerCase();
@@ -50,8 +52,9 @@ export default function BackgroundChecksForm() {
 
   // Compute what's missing for submit and whether continue should be disabled
   const incompleteRequirements = [
-    waiverProgress < 0.6 ? `Waiver ${Math.round(waiverProgress * 100)}% (need to complete)` : null,
-    disclosureProgress < 0.6 ? `Disclosure ${Math.round(disclosureProgress * 100)}% (need to complete)` : null,
+    waiverProgress < 0.4 ? `Waiver ${Math.round(waiverProgress * 100)}% (need to complete)` : null,
+    disclosureProgress < 0.4 ? `Disclosure ${Math.round(disclosureProgress * 100)}% (need to complete)` : null,
+    addonProgress < 0.4 ? `Add-on Form ${Math.round(addonProgress * 100)}% (need to complete)` : null,
     !currentSignature ? 'Signature missing' : null,
   ].filter(Boolean) as string[];
   const continueDisabled = saveStatus === 'saving' || incompleteRequirements.length > 0;
@@ -132,12 +135,14 @@ export default function BackgroundChecksForm() {
     void combineAndSave();
   };
 
-  // New: Save handlers per form that also attempt to merge and persist both
-  const handlePDFSaveFor = (formId: 'background-waiver' | 'background-disclosure') => async (pdfBytes: Uint8Array) => {
+  // New: Save handlers per form that also attempt to merge and persist all three
+  const handlePDFSaveFor = (formId: 'background-waiver' | 'background-disclosure' | 'background-addon') => async (pdfBytes: Uint8Array) => {
     if (formId === 'background-waiver') {
       waiverBytesRef.current = pdfBytes;
-    } else {
+    } else if (formId === 'background-disclosure') {
       disclosureBytesRef.current = pdfBytes;
+    } else if (formId === 'background-addon') {
+      addonBytesRef.current = pdfBytes;
     }
     try {
       // Persist per-form progress so it reloads filled state
@@ -186,8 +191,9 @@ export default function BackgroundChecksForm() {
 
       let waiver = (typeof waiverBytesRef !== 'undefined') ? waiverBytesRef.current : null;
       let disclosure = (typeof disclosureBytesRef !== 'undefined') ? disclosureBytesRef.current : null;
+      let addon = (typeof addonBytesRef !== 'undefined') ? addonBytesRef.current : null;
 
-      // If either doc bytes are missing, fetch raw source PDFs as fallback to ensure both columns are saved
+      // If any doc bytes are missing, fetch raw source PDFs as fallback to ensure all columns are saved
       if (!waiver) {
         try {
           const res = await fetch('/api/background-waiver');
@@ -206,8 +212,17 @@ export default function BackgroundChecksForm() {
           }
         } catch {}
       }
+      if (!addon) {
+        try {
+          const res = await fetch('/api/background-addon');
+          if (res.ok) {
+            const buf = new Uint8Array(await res.arrayBuffer());
+            addon = buf;
+          }
+        } catch {}
+      }
 
-      if (!waiver && !disclosure) {
+      if (!waiver && !disclosure && !addon) {
         console.warn('[SAVE] No PDF data to save');
         setSaveStatus('idle');
         return;
@@ -273,6 +288,7 @@ export default function BackgroundChecksForm() {
       // Stamp individual docs; we will store them separately
       const waiverStamped = waiver ? await stampSignatureOnDoc(waiver) : null;
       const disclosureStamped = disclosure ? await stampSignatureOnDoc(disclosure) : null;
+      const addonStamped = addon ? await stampSignatureOnDoc(addon) : null;
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
@@ -286,9 +302,11 @@ export default function BackgroundChecksForm() {
       // Convert Uint8Array to base64 per document (chunked)
       const waiverBase64 = waiverStamped ? uint8ToBase64(waiverStamped) : null;
       const disclosureBase64 = disclosureStamped ? uint8ToBase64(disclosureStamped) : null;
+      const addonBase64 = addonStamped ? uint8ToBase64(addonStamped) : null;
       console.log('[SAVE] Prepared payload sizes:', {
         waiver: waiverBase64?.length || 0,
-        disclosure: disclosureBase64?.length || 0
+        disclosure: disclosureBase64?.length || 0,
+        addon: addonBase64?.length || 0
       });
 
       // Determine signature type (always draw since we removed type option)
@@ -298,7 +316,7 @@ export default function BackgroundChecksForm() {
       console.log(`[SAVE] Saving to background_check_pdfs table`);
       console.log(`[SAVE] Signature type:`, signatureType);
 
-      // Save both PDFs in a single request
+      // Save all three PDFs in a single request
       const response = await fetch('/api/background-waiver/save', {
         method: 'POST',
         headers: {
@@ -309,6 +327,7 @@ export default function BackgroundChecksForm() {
         body: JSON.stringify({
           waiverPdfData: waiverBase64,
           disclosurePdfData: disclosureBase64,
+          addonPdfData: addonBase64,
           signature: currentSignature || null,
           signatureType: signatureType
         }),
@@ -337,13 +356,15 @@ export default function BackgroundChecksForm() {
   const handleContinue = async () => {
     console.log('Continue clicked');
 
-    // Enforce 60% completion on both forms before submit
-    const waiverOk = waiverProgress >= 0.6;
-    const disclosureOk = disclosureProgress >= 0.6;
-    if (!waiverOk || !disclosureOk) {
+    // Enforce 40% completion on all three forms before submit
+    const waiverOk = waiverProgress >= 0.4;
+    const disclosureOk = disclosureProgress >= 0.4;
+    const addonOk = addonProgress >= 0.4;
+    if (!waiverOk || !disclosureOk || !addonOk) {
       const waiverPct = Math.round(waiverProgress * 100);
       const disclosurePct = Math.round(disclosureProgress * 100);
-      alert(`Please complete of both forms before submitting.\n\nWaiver: ${waiverPct}%\nDisclosure: ${disclosurePct}%`);
+      const addonPct = Math.round(addonProgress * 100);
+      alert(`Please complete all three forms before submitting.\n\nDisclosure: ${disclosurePct}%\nWaiver: ${waiverPct}%\nAdd-on: ${addonPct}%`);
       return;
     }
 
@@ -557,10 +578,10 @@ export default function BackgroundChecksForm() {
         <div>
           <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>Background Check Forms</h1>
           <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#666' }}>
-            Please review and sign both background check forms below. Your progress is automatically saved.
+            Please review and sign all three background check forms below. Your progress is automatically saved.
           </p>
           <p style={{ margin: '6px 0 0 0', fontSize: '13px', color: '#555' }}>
-            Note: You must complete both forms and provide your signature to continue.
+            Note: You must complete all three forms and provide your signature to continue.
           </p>
         </div>
 
@@ -596,7 +617,7 @@ export default function BackgroundChecksForm() {
         display: 'flex',
         flexDirection: 'column'
       }}>
-        {/* Form 1: Background Waiver */}
+        {/* Form 1: Background Disclosure */}
         <div style={{ marginBottom: '32px' }}>
           <h2 style={{
             margin: '0 0 16px 0',
@@ -604,33 +625,7 @@ export default function BackgroundChecksForm() {
             fontWeight: 'bold',
             color: '#333'
           }}>
-            1. Background Check Waiver
-          </h2>
-          <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
-            Completed: {Math.round(waiverProgress * 100)}%
-          </div>
-          <div style={{ marginBottom: '20px' }}>
-            <PDFFormEditor
-              key="background-waiver"
-              pdfUrl="/api/background-waiver"
-              formId="background-waiver"
-              onSave={handlePDFSaveFor('background-waiver')}
-              onFieldChange={handleFieldChange}
-              onContinue={handleContinue}
-              onProgress={setWaiverProgress}
-            />
-          </div>
-        </div>
-
-        {/* Form 2: Background Disclosure */}
-        <div style={{ marginBottom: '32px' }}>
-          <h2 style={{
-            margin: '0 0 16px 0',
-            fontSize: '20px',
-            fontWeight: 'bold',
-            color: '#333'
-          }}>
-            2. Background Check Disclosure and Authorization
+            1. Background Check Disclosure and Authorization
           </h2>
           <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
             Completed: {Math.round(disclosureProgress * 100)}%
@@ -671,6 +666,58 @@ export default function BackgroundChecksForm() {
             >
               Reload Page
             </button>
+          </div>
+        </div>
+
+        {/* Form 2: Background Waiver */}
+        <div style={{ marginBottom: '32px' }}>
+          <h2 style={{
+            margin: '0 0 16px 0',
+            fontSize: '20px',
+            fontWeight: 'bold',
+            color: '#333'
+          }}>
+            2. Background Check Waiver
+          </h2>
+          <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
+            Completed: {Math.round(waiverProgress * 100)}%
+          </div>
+          <div style={{ marginBottom: '20px' }}>
+            <PDFFormEditor
+              key="background-waiver"
+              pdfUrl="/api/background-waiver"
+              formId="background-waiver"
+              onSave={handlePDFSaveFor('background-waiver')}
+              onFieldChange={handleFieldChange}
+              onContinue={handleContinue}
+              onProgress={setWaiverProgress}
+            />
+          </div>
+        </div>
+
+        {/* Form 3: Background Add-on */}
+        <div style={{ marginBottom: '32px' }}>
+          <h2 style={{
+            margin: '0 0 16px 0',
+            fontSize: '20px',
+            fontWeight: 'bold',
+            color: '#333'
+          }}>
+            3. Background Check Form #3 Add-On
+          </h2>
+          <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
+            Completed: {Math.round(addonProgress * 100)}%
+          </div>
+          <div style={{ marginBottom: '20px' }}>
+            <PDFFormEditor
+              key="background-addon"
+              pdfUrl="/api/background-addon"
+              formId="background-addon"
+              onSave={handlePDFSaveFor('background-addon')}
+              onFieldChange={handleFieldChange}
+              onContinue={handleContinue}
+              onProgress={setAddonProgress}
+            />
           </div>
         </div>
 
@@ -818,25 +865,25 @@ export default function BackgroundChecksForm() {
 
             <button
               onClick={handleContinue}
-              disabled={saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature}
+              disabled={saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature}
               title={(saveStatus === 'saving' || incompleteRequirements.length > 0) ? `Complete before continuing: ${incompleteRequirements.join(' • ')}` : 'Continue'}
               style={{
                 padding: '12px 24px',
-                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) ? '#ccc' : '#1976d2',
+                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) ? '#ccc' : '#1976d2',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontWeight: 'bold',
-                cursor: (saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) ? 'not-allowed' : 'pointer',
+                cursor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) ? 'not-allowed' : 'pointer',
                 fontSize: '16px'
               }}
               onMouseOver={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature)) {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1565c0';
                 }
               }}
               onMouseOut={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature)) {
+                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature)) {
                   e.currentTarget.style.backgroundColor = '#1976d2';
                 }
               }}
@@ -847,7 +894,7 @@ export default function BackgroundChecksForm() {
         </div>
 
         {/* Submit gating hint */}
-        {(waiverProgress < 0.6 || disclosureProgress < 0.6 || !currentSignature) && (
+        {(waiverProgress < 0.4 || disclosureProgress < 0.4 || addonProgress < 0.4 || !currentSignature) && (
           <div style={{
             marginTop: '12px',
             color: '#d32f2f',

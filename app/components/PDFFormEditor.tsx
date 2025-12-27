@@ -36,9 +36,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   const pdfDocRef = useRef<any>(null);
   const pdfLibDocRef = useRef<any>(null);
   const [numPages, setNumPages] = useState(0);
-  const [currentPage, setCurrentPage] = useState(1);
   const [scale, setScale] = useState(1.5);
-  const [viewport, setViewport] = useState<any>(null);
+  const [pageViewports, setPageViewports] = useState<any[]>([]);
   const [continueButtonRect, setContinueButtonRect] = useState<{x: number, y: number, width: number, height: number} | null>(null);
   const renderTaskRef = useRef<any>(null);
   const isLoadingRef = useRef(false);
@@ -278,13 +277,15 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       console.log('Step 8: Waiting for canvas container to mount...');
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      // Render first page
-      console.log('Step 8b: Rendering first page...');
+      // Render all pages
+      console.log('Step 8b: Rendering all pages...');
       try {
-        await renderPage(1);
-        console.log('Ô£à First page rendered successfully');
+        const totalPages = pdfDocRef.current?.numPages || 0;
+        console.log(`Total pages from ref: ${totalPages}`);
+        await renderAllPages(totalPages);
+        console.log('Ô£à All pages rendered successfully');
       } catch (renderError: any) {
-        console.error('ÔØî Error rendering first page:', renderError);
+        console.error('ÔØî Error rendering pages:', renderError);
         console.error('Stack:', renderError?.stack);
         throw renderError; // Re-throw to see in main error handler
       }
@@ -459,19 +460,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     return fields;
   };
 
-  const renderPage = async (pageNum: number) => {
-    console.log(`[RENDER] Starting render for page ${pageNum}`);
-
-    // Cancel any previous render task
-    if (renderTaskRef.current) {
-      console.log('[RENDER] Canceling previous render task');
-      try {
-        renderTaskRef.current.cancel();
-      } catch (cancelErr) {
-        console.warn('[RENDER] Error canceling previous render:', cancelErr);
-      }
-      renderTaskRef.current = null;
-    }
+  const renderAllPages = async (totalPages: number) => {
+    console.log(`[RENDER] Starting render for all pages (${totalPages} pages)`);
 
     if (!pdfDocRef.current) {
       console.error('[RENDER] ÔØî pdfDocRef.current is null!');
@@ -484,54 +474,58 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     }
 
     try {
-      console.log('[RENDER] Getting page...');
-      const page = await pdfDocRef.current.getPage(pageNum);
-      console.log('[RENDER] Page retrieved, getting viewport...');
-      const pageViewport = page.getViewport({ scale });
-      console.log('[RENDER] Viewport:', pageViewport.width, 'x', pageViewport.height);
+      const viewports: any[] = [];
 
-      let canvas = canvasContainerRef.current.querySelector('canvas') as HTMLCanvasElement;
-      if (!canvas) {
-        console.log('[RENDER] Creating new canvas element');
-        canvas = document.createElement('canvas');
+      // Clear existing canvases
+      while (canvasContainerRef.current.firstChild) {
+        canvasContainerRef.current.removeChild(canvasContainerRef.current.firstChild);
+      }
+
+      console.log('[RENDER] Canvas container cleared, rendering', totalPages, 'pages');
+
+      // Render each page
+      for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+        console.log(`[RENDER] Rendering page ${pageNum}...`);
+        const page = await pdfDocRef.current.getPage(pageNum);
+        const pageViewport = page.getViewport({ scale });
+        viewports.push(pageViewport);
+
+        // Create canvas for this page
+        const canvas = document.createElement('canvas');
+        canvas.style.display = 'block';
+        canvas.style.marginBottom = '20px';
+        canvas.style.backgroundColor = 'white';
+        canvas.setAttribute('data-page-number', String(pageNum));
         canvasContainerRef.current.appendChild(canvas);
-      } else {
-        console.log('[RENDER] Using existing canvas');
+
+        const context = canvas.getContext('2d');
+        if (!context) {
+          console.error(`[RENDER] Failed to get 2d context for page ${pageNum}`);
+          continue;
+        }
+
+        canvas.height = pageViewport.height;
+        canvas.width = pageViewport.width;
+
+        console.log(`[RENDER] Canvas ${pageNum} dimensions:`, canvas.width, 'x', canvas.height);
+
+        const renderContext = {
+          canvasContext: context,
+          viewport: pageViewport
+        };
+
+        const renderTask = page.render(renderContext);
+        await renderTask.promise;
+        console.log(`[RENDER] Page ${pageNum} rendered successfully to canvas`);
+        console.log(`[RENDER] Canvas ${pageNum} is in DOM:`, document.body.contains(canvas));
       }
 
-      const context = canvas.getContext('2d');
-      if (!context) {
-        console.error('[RENDER] ÔØî Failed to get 2d context!');
-        return;
-      }
-
-      canvas.height = pageViewport.height;
-      canvas.width = pageViewport.width;
-      console.log('[RENDER] Canvas configured:', canvas.width, 'x', canvas.height);
-
-      const renderContext = {
-        canvasContext: context,
-        viewport: pageViewport
-      };
-
-      console.log('[RENDER] Starting page.render()...');
-      const renderTask = page.render(renderContext);
-      renderTaskRef.current = renderTask;
-
-      await renderTask.promise;
-      renderTaskRef.current = null;
-      console.log('[RENDER] Ô£à Page rendered successfully!');
-
-      setCurrentPage(pageNum);
-      setViewport(pageViewport);
+      setPageViewports(viewports);
+      console.log('[RENDER] All pages rendered successfully');
     } catch (err: any) {
-      if (err.name === 'RenderingCancelledException') {
-        console.log('[RENDER] Render was cancelled (expected during navigation)');
-        return;
-      }
-      console.error('[RENDER] ÔØî Error rendering page:', err);
+      console.error('[RENDER] Error rendering pages:', err);
       console.error('[RENDER] Stack:', err?.stack);
-      throw err; // Re-throw so it's caught by the caller
+      throw err;
     }
   };
 
@@ -580,12 +574,6 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       }
     } catch (err) {
       console.error('Error updating PDF field:', err);
-    }
-  };
-
-  const goToPage = async (pageNum: number) => {
-    if (pageNum >= 1 && pageNum <= numPages) {
-      await renderPage(pageNum);
     }
   };
 
@@ -641,7 +629,20 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     );
   }
 
-  const currentPageFields = formFields.filter(f => f.page === currentPage);
+  // Calculate cumulative Y offset for each page
+  const calculatePageOffsets = () => {
+    const offsets: number[] = [];
+    let cumulativeY = 0;
+
+    pageViewports.forEach((viewport, index) => {
+      offsets.push(cumulativeY);
+      cumulativeY += viewport.height + 20; // 20px margin between pages
+    });
+
+    return offsets;
+  };
+
+  const pageOffsets = calculatePageOffsets();
 
   return (
     <div style={{
@@ -651,70 +652,38 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       backgroundColor: '#525659',
       overflow: 'auto'
     }}>
-      {/* Page Navigation */}
-      {numPages > 1 && (
-        <div style={{
-          padding: '12px 20px',
-          backgroundColor: '#f5f5f5',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '16px'
-        }}>
-          <button
-            onClick={() => goToPage(currentPage - 1)}
-            disabled={currentPage === 1}
-            style={{
-              padding: '8px 16px',
-              fontSize: '14px',
-              cursor: currentPage === 1 ? 'not-allowed' : 'pointer',
-              backgroundColor: currentPage === 1 ? '#e0e0e0' : '#1976d2',
-              color: currentPage === 1 ? '#999' : 'white',
-              border: 'none',
-              borderRadius: '4px',
-              fontWeight: 'bold'
-            }}
-          >
-            {'\u2190 Previous'}
-          </button>
-
-          <span style={{ fontSize: '14px', fontWeight: '500' }}>
-            Page {currentPage} of {numPages}
-          </span>
-
-          <button
-            onClick={() => goToPage(currentPage + 1)}
-            disabled={currentPage === numPages}
-            style={{
-              padding: '8px 16px',
-              fontSize: '14px',
-              cursor: currentPage === numPages ? 'not-allowed' : 'pointer',
-              backgroundColor: currentPage === numPages ? '#e0e0e0' : '#1976d2',
-              color: currentPage === numPages ? '#999' : 'white',
-              border: 'none',
-              borderRadius: '4px',
-              fontWeight: 'bold'
-            }}
-          >
-            {'Next \u2192'}
-          </button>
-        </div>
-      )}
-
       {/* PDF Canvas with Overlaid Inputs */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '20px', position: 'relative' }}>
-        <div
-          ref={canvasContainerRef}
-          style={{
-            position: 'relative',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.3)'
-          }}
-        >
-          {/* Overlay form fields on canvas */}
-          {viewport && currentPageFields.map((field, index) => {
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '20px', overflow: 'auto' }}>
+        <div style={{
+          position: 'relative',
+          boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+          backgroundColor: 'white',
+          minHeight: '100%',
+          display: 'inline-block'
+        }}>
+          {/* Canvas container - for PDF rendering */}
+          <div
+            ref={canvasContainerRef}
+            style={{
+              position: 'relative',
+              minHeight: '1000px',
+              minWidth: '800px'
+            }}
+          >
+            {/* Canvases are added here via DOM manipulation */}
+          </div>
+
+          {/* Overlay form fields on all pages */}
+          {pageViewports.length > 0 && formFields.map((field, index) => {
+            const pageIndex = field.page - 1;
+            if (pageIndex < 0 || pageIndex >= pageViewports.length) return null;
+
+            const viewport = pageViewports[pageIndex];
+            const pageOffset = pageOffsets[pageIndex];
+
             // Convert PDF coordinates to canvas coordinates
             const x = field.rect[0] * scale;
-            const y = viewport.height - (field.rect[1] + field.rect[3]) * scale;
+            const y = pageOffset + (viewport.height - (field.rect[1] + field.rect[3]) * scale);
             const width = field.rect[2] * scale;
             const height = field.rect[3] * scale;
 
@@ -762,7 +731,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           })}
 
           {/* Overlay Continue button interceptor on last page */}
-          {viewport && currentPage === numPages && continueButtonRect && (
+          {pageViewports.length > 0 && continueButtonRect && (
             <div
               onClick={async (e) => {
                 e.preventDefault();
@@ -786,7 +755,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
               style={{
                 position: 'absolute',
                 left: `${continueButtonRect.x * scale}px`,
-                top: `${viewport.height - (continueButtonRect.y + continueButtonRect.height) * scale}px`,
+                top: `${pageOffsets[pageOffsets.length - 1] + (pageViewports[pageViewports.length - 1].height - (continueButtonRect.y + continueButtonRect.height) * scale)}px`,
                 width: `${continueButtonRect.width * scale}px`,
                 height: `${continueButtonRect.height * scale}px`,
                 cursor: 'pointer',

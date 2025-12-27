@@ -27,7 +27,15 @@
       "Bash(npm run dev:*)",
       "Bash(node scripts/generate-paystub-template.js:*)",
       "Bash(node -e:*)",
-      "Bash(dir /s /b *.xlsx)"
+      "Bash(dir /s /b *.xlsx)",
+      "Bash(node clear-form-progress.js:*)",
+      "Bash(netstat:*)",
+      "Bash(findstr:*)",
+      "Bash(taskkill:*)",
+      "Bash(tasklist:*)",
+      "Bash(timeout /t 5 /nobreak)",
+      "Bash(if exist .next rmdir /s /q .next)",
+      "Bash(rm:*)"
     ],
     "deny": [],
     "ask": []

@@ -44,15 +44,16 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { pdfData, signature, signatureType, waiverPdfData, disclosurePdfData } = body;
+    const { pdfData, signature, signatureType, waiverPdfData, disclosurePdfData, addonPdfData } = body;
     console.log('[BACKGROUND CHECK SAVE] Payload flags:', {
       hasPdfData: typeof pdfData === 'string',
       hasWaiver: typeof waiverPdfData === 'string',
       hasDisclosure: typeof disclosurePdfData === 'string',
+      hasAddon: typeof addonPdfData === 'string',
       sigType: signatureType
     });
 
-    if (!pdfData && !waiverPdfData && !disclosurePdfData) {
+    if (!pdfData && !waiverPdfData && !disclosurePdfData && !addonPdfData) {
       return NextResponse.json(
         { error: 'At least one PDF payload is required' },
         { status: 400 }
@@ -63,7 +64,8 @@ export async function POST(request: NextRequest) {
     const lenPdf = typeof pdfData === 'string' ? pdfData.length : 0;
     const lenWaiver = typeof waiverPdfData === 'string' ? waiverPdfData.length : 0;
     const lenDisclosure = typeof disclosurePdfData === 'string' ? disclosurePdfData.length : 0;
-    console.log('[BACKGROUND CHECK SAVE] PDF sizes:', { pdfData: lenPdf, waiver: lenWaiver, disclosure: lenDisclosure });
+    const lenAddon = typeof addonPdfData === 'string' ? addonPdfData.length : 0;
+    console.log('[BACKGROUND CHECK SAVE] PDF sizes:', { pdfData: lenPdf, waiver: lenWaiver, disclosure: lenDisclosure, addon: lenAddon });
     console.log('[BACKGROUND CHECK SAVE] Has signature:', !!signature);
 
     // Check if user already has a background check PDF
@@ -86,6 +88,7 @@ export async function POST(request: NextRequest) {
       if (pdfData) updatePayload.pdf_data = pdfData;
       if (typeof waiverPdfData === 'string') updatePayload.waiver_pdf_data = waiverPdfData;
       if (typeof disclosurePdfData === 'string') updatePayload.disclosure_pdf_data = disclosurePdfData;
+      if (typeof addonPdfData === 'string') updatePayload.addon_pdf_data = addonPdfData;
 
       const { error: updateError } = await ((supabase
         .from('background_check_pdfs') as any)
@@ -119,6 +122,7 @@ export async function POST(request: NextRequest) {
       if (pdfData) insertPayload.pdf_data = pdfData;
       if (typeof waiverPdfData === 'string') insertPayload.waiver_pdf_data = waiverPdfData;
       if (typeof disclosurePdfData === 'string') insertPayload.disclosure_pdf_data = disclosurePdfData;
+      if (typeof addonPdfData === 'string') insertPayload.addon_pdf_data = addonPdfData;
 
       const { error: insertError } = await ((supabase
         .from('background_check_pdfs') as any)

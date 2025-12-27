@@ -6,7 +6,7 @@ import { join } from 'path';
 export async function GET() {
   try {
     // Load the Background Check Disclosure and Authorization PDF
-    const pdfPath = join(process.cwd(), 'Background Check Disclosure and Authorization (1).pdf');
+    const pdfPath = join(process.cwd(), 'Form 1 Background Check Disclosure and Authorization revised 12.26.25 final approved.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
 
@@ -22,7 +22,7 @@ export async function GET() {
     // Add checkbox for requesting copy of report (Page 1)
     const requestCopyCheckbox = form.createCheckBox('requestCopy');
     requestCopyCheckbox.addToPage(firstPage, {
-      x: 350, y: height - 480, width: 10, height: 10,
+      x: 350, y: height - 590, width: 10, height: 10,
     });
 
     console.log('[BACKGROUND DISCLOSURE] Added checkbox to first page');
@@ -38,82 +38,91 @@ export async function GET() {
       const nameField = form.createTextField('name');
       nameField.setText('');
       nameField.addToPage(secondPage, {
-        x: 50, y: height2 - 155, width: 300, height: 15,
+        x: 50, y: height2 - 165, width: 300, height: 15,
       });
 
       // Address
       const addressField = form.createTextField('address');
       addressField.setText('');
       addressField.addToPage(secondPage, {
-        x: 50, y: height2 - 185, width: 300, height: 15,
+        x: 50, y: height2 - 205, width: 300, height: 15,
       });
 
       // City
       const cityField = form.createTextField('city');
       cityField.setText('');
       cityField.addToPage(secondPage, {
-        x: 50, y: height2 - 210, width: 110, height: 15,
+        x: 50, y: height2 - 250, width: 110, height: 15,
       });
 
       // State
       const stateField = form.createTextField('state');
       stateField.setText('');
       stateField.addToPage(secondPage, {
-        x: 160, y: height2 - 210, width: 60, height: 15,
+        x: 160, y: height2 - 250, width: 60, height: 15,
       });
 
       // Zip
       const zipField = form.createTextField('zip');
       zipField.setText('');
       zipField.addToPage(secondPage, {
-        x: 220, y: height2 - 210, width: 60, height: 15,
+        x: 220, y: height2 - 250, width: 60, height: 15,
       });
 
       // Cell Phone
       const cellPhoneField = form.createTextField('cellPhone');
       cellPhoneField.setText('');
       cellPhoneField.addToPage(secondPage, {
-        x: 50, y: height2 - 260, width: 100, height: 15,
+        x: 50, y: height2 - 310, width: 100, height: 15,
       });
 
       // SSN
       const ssnField = form.createTextField('ssn');
       ssnField.setText('');
       ssnField.addToPage(secondPage, {
-        x: 160, y: height2 - 260, width: 120, height: 15,
+        x: 160, y: height2 - 310, width: 120, height: 15,
       });
 
       // Date of Birth
       const dobField = form.createTextField('dateOfBirth');
       dobField.setText('');
       dobField.addToPage(secondPage, {
-        x: 50, y: height2 - 290, width: 100, height: 15,
+        x: 50, y: height2 - 350, width: 100, height: 15,
       });
 
       // Driver's License Number
       const dlField = form.createTextField('driversLicense');
       dlField.setText('');
       dlField.addToPage(secondPage, {
-        x: 160, y: height2 - 290, width: 100, height: 15,
+        x: 160, y: height2 - 350, width: 100, height: 15,
       });
 
       // DL State
       const dlStateField = form.createTextField('dlState');
       dlStateField.setText('');
       dlStateField.addToPage(secondPage, {
-        x: 260, y: height2 - 290, width: 50, height: 15,
+        x: 260, y: height2 - 350, width: 50, height: 15,
       });
 
-      
+
 
       // Date (signature date)
       const dateField = form.createTextField('signatureDate');
       dateField.setText('');
       dateField.addToPage(secondPage, {
-        x: 350, y: height2 - 350, width: 100, height: 15,
+        x: 350, y: height2 - 430, width: 100, height: 15,
       });
 
       console.log('[BACKGROUND DISCLOSURE] Added 13 editable form fields to second page');
+    }
+
+    // Add form fields to third page if it exists
+    if (pages.length > 2) {
+      const thirdPage = pages[2];
+      const { width: width3, height: height3 } = thirdPage.getSize();
+
+      console.log('[BACKGROUND DISCLOSURE] Third page dimensions:', { width: width3, height: height3 });
+      console.log('[BACKGROUND DISCLOSURE] No form fields added to third page');
     }
 
     // Make all form fields invisible - remove their appearance streams
