@@ -20,7 +20,8 @@ interface PDFFormEditorProps {
 }
 
 interface FormField {
-  name: string;
+  id: string;
+  baseName: string;
   type: string;
   rect: number[];
   page: number;
@@ -45,18 +46,21 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   // Report completion progress to parent whenever fields/values change
   useEffect(() => {
     if (!onProgress) return;
-    const total = formFields.length;
+    const uniqueBaseNames = Array.from(new Set(formFields.map((f) => f.baseName)));
+    const total = uniqueBaseNames.length;
     if (total === 0) {
       onProgress(0);
       return;
     }
     let filled = 0;
-    for (const f of formFields) {
-      const v = fieldValues.get(f.name) || '';
-      if (f.type === 'checkbox') {
-        if (v === 'true') filled += 1;
-      } else {
-        if (String(v).trim().length > 0) filled += 1;
+    for (const baseName of uniqueBaseNames) {
+      const field = formFields.find((f) => f.baseName === baseName);
+      if (!field) continue;
+      const value = fieldValues.get(baseName) || '';
+      if (field.type === 'checkbox') {
+        if (value === 'true') filled += 1;
+      } else if (String(value).trim().length > 0) {
+        filled += 1;
       }
     }
     onProgress(filled / total);
@@ -266,7 +270,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       const initialValues = new Map<string, string>();
       fields.forEach(field => {
-        initialValues.set(field.name, field.value);
+        initialValues.set(field.baseName, field.value);
       });
       setFieldValues(initialValues);
 
@@ -437,7 +441,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             console.log(`    Page index: ${pageIndex}`);
 
             const fieldData = {
-              name: fieldName + (i > 0 ? `_${i}` : ''),
+              id: `${fieldName}::${i}`,
+              baseName: fieldName,
               type: fieldType,
               rect: [rect.x, rect.y, rect.width, rect.height],
               page: pageIndex >= 0 ? pageIndex + 1 : 1,
@@ -549,19 +554,18 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
     try {
       console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
       const form = pdfLibDocRef.current.getForm();
-      const baseFieldName = fieldName.replace(/_\d+$/, '');
-      const field = form.getField(baseFieldName);
+      const field = form.getField(fieldName);
 
       if ('setText' in field) {
         field.setText(value);
-        console.log(`[UPDATE FIELD] Text field updated: "${baseFieldName}" = "${value}"`);
+        console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
       } else if ('check' in field || 'uncheck' in field) {
         if (value === 'true') {
           field.check();
         } else {
           field.uncheck();
         }
-        console.log(`[UPDATE FIELD] Checkbox updated: "${baseFieldName}" = ${value}`);
+        console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
       }
 
       console.log('[UPDATE FIELD] Saving PDF with updated field...');
@@ -689,7 +693,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
             return (
               <div
-                key={`field-${index}`}
+                key={field.id}
                 style={{
                   position: 'absolute',
                   left: `${x}px`,
@@ -702,8 +706,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
                 {field.type === 'checkbox' ? (
                   <input
                     type="checkbox"
-                    checked={fieldValues.get(field.name) === 'true'}
-                    onChange={(e) => handleFieldChange(field.name, e.target.checked ? 'true' : 'false')}
+                    checked={fieldValues.get(field.baseName) === 'true'}
+                    onChange={(e) => handleFieldChange(field.baseName, e.target.checked ? 'true' : 'false')}
                     style={{
                       width: '100%',
                       height: '100%',
@@ -713,8 +717,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
                 ) : (
                   <input
                     type="text"
-                    value={fieldValues.get(field.name) || ''}
-                    onChange={(e) => handleFieldChange(field.name, e.target.value)}
+                    value={fieldValues.get(field.baseName) || ''}
+                    onChange={(e) => handleFieldChange(field.baseName, e.target.value)}
                     style={{
                       width: '100%',
                       height: '100%',

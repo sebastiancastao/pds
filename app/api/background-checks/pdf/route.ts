@@ -70,7 +70,7 @@ export async function GET(req: NextRequest) {
     // Fetch the PDF(s) from background_check_pdfs table
     const { data: pdfData, error: pdfError } = await adminClient
       .from('background_check_pdfs')
-      .select('pdf_data, waiver_pdf_data, disclosure_pdf_data, signature, signature_type, created_at')
+      .select('pdf_data, waiver_pdf_data, disclosure_pdf_data, addon_pdf_data, signature, signature_type, created_at')
       .eq('user_id', userId)
       .single();
 
@@ -125,14 +125,264 @@ export async function GET(req: NextRequest) {
     } catch {}
     const waiverBase64 = pdfData.waiver_pdf_data || null;
     const disclosureBase64 = pdfData.disclosure_pdf_data || null;
+    const addonBase64 = pdfData.addon_pdf_data || null;
     const legacyBase64 = pdfData.pdf_data || null;
 
-    const hasSeparate = !!(waiverBase64 || disclosureBase64);
+    const hasSeparate = !!(waiverBase64 || disclosureBase64 || addonBase64);
 
     // If we have separate PDFs, merge them; otherwise use legacy
     if (hasSeparate) {
-      const { PDFDocument, rgb } = await import('pdf-lib');
+      const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
       const merged = await PDFDocument.create();
+
+      const normalizePdfBase64 = (value: string) => {
+        const trimmed = String(value).trim();
+        if (trimmed.startsWith('data:')) {
+          const comma = trimmed.indexOf(',');
+          return comma >= 0 ? trimmed.slice(comma + 1) : trimmed;
+        }
+        return trimmed;
+      };
+
+      const looksLikePdf = (buf: Buffer) =>
+        buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46; // %PDF
+
+      const forceStaticFormRender = async (doc: any, label: string) => {
+        try {
+          const form = doc.getForm();
+          const pages = doc.getPages();
+
+          const fields = form.getFields();
+          console.log('[PDF DOWNLOAD] Processing', fields.length, 'fields for', label);
+
+          // If no fields, the PDF is already flattened - skip manual rendering to avoid duplicates
+          if (fields.length === 0) {
+            console.log('[PDF DOWNLOAD] No form fields found - PDF already flattened, skipping');
+            return;
+          }
+
+          // Check if fields have appearance dictionaries already
+          // If they do, use standard flattening; otherwise use manual rendering
+          let hasAppearances = false;
+          let checkedFields = 0;
+          let fieldsWithAP = 0;
+          let fieldsWithN = 0;
+
+          for (const field of fields) {
+            const widgets = field?.acroField?.getWidgets?.() ?? [];
+            const fieldName = field?.getName?.() ?? 'unknown';
+
+            for (const widget of widgets) {
+              try {
+                const dict = widget?.dict;
+                const ap = dict?.lookup?.('AP') || dict?.get?.('AP');
+
+                if (ap) {
+                  fieldsWithAP++;
+                  console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has AP dictionary`);
+
+                  if (typeof ap === 'object') {
+                    const n = ap.lookup?.('N') || ap.get?.('N');
+                    if (n) {
+                      fieldsWithN++;
+                      console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has Normal appearance (N)`);
+                      hasAppearances = true;
+                      break;
+                    } else {
+                      console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" AP exists but no N stream`);
+                    }
+                  }
+                } else {
+                  console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has NO AP dictionary`);
+                }
+              } catch (err) {
+                console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" error checking AP:`, err);
+              }
+            }
+            if (hasAppearances) break;
+            checkedFields++;
+            if (checkedFields >= 5) break; // Check first 5 fields only for performance
+          }
+
+          console.log(`[PDF DOWNLOAD] ${label} appearance check: ${fieldsWithAP} fields with AP, ${fieldsWithN} fields with N, checked ${checkedFields} total`);
+
+
+          if (hasAppearances) {
+            // Fields have appearances - use standard flattening
+            console.log('[PDF DOWNLOAD]', label, 'has appearance dictionaries, using standard flattening');
+            try {
+              const font = await doc.embedFont(StandardFonts.Helvetica);
+              form.updateFieldAppearances(font);
+              form.flatten();
+              console.log('[PDF DOWNLOAD]', label, 'flattened successfully');
+              return;
+            } catch (err) {
+              console.log('[PDF DOWNLOAD]', label, 'standard flattening failed, falling back to manual rendering');
+              // Fall through to manual rendering
+            }
+          }
+
+          // No appearances - use manual rendering
+          console.log('[PDF DOWNLOAD]', label, 'lacks appearances, using manual rendering');
+
+          let font: any = null;
+          try {
+            font = await doc.embedFont(StandardFonts.Helvetica);
+          } catch {}
+
+          // Field-specific Y offset adjustments (in pixels)
+          // POSITIVE values move text DOWN, NEGATIVE values move text UP
+          const fieldOffsets: Record<string, number> = {
+            // Page 1 fields - All waiver fields moved down
+            'checkbox': 765,
+            'fullName': 765,
+            'date': 765,
+            'dateOfBirth': 765,
+            'ssn': 765,
+            'driversLicenseName': 765,
+            'otherName': 765,
+            'driversLicense': 765,
+            'state': 765,
+
+            // Page 2 fields - All waiver fields moved down
+            'full name': 765,
+            'adress': 765,
+            'cityStateZip': 765,
+            'phone': 765,
+            'previousEmployer1': 750,
+            'datefrom1': 750,
+            'datefto1': 750,
+            'previousEmployer2': 750,
+            'datefrom2': 750,
+            'datefto2': 750,
+            'previousEmployer3': 750,
+            'datefrom3': 750,
+            'datefto3': 750,
+            'previousPosition1': 750,
+            'pdatefrom1': 750,
+            'pdatefto1': 750,
+            'previousPosition2': 750,
+            'pdatefrom2': 750,
+            'pdatefto2': 750,
+            'previousPosition3': 750,
+            'pdatefrom3': 750,
+            'pdatefto3': 750,
+            'reference1Name': 765,
+            'reference1Phone': 765,
+            'ref1cityStateZip': 765,
+            'yesCrime': 765,
+            'noCrime': 765,
+            'dateCrime1': 760,
+            'locationCrime1': 760,
+            'policeAgency1': 760,
+            'chargeSentence1': 760,
+            'dateCrime2': 760,
+            'locationCrime2': 760,
+            'policeAgency2': 760,
+            'chargeSentence2': 760,
+            'dateCrime3': 760,
+            'locationCrime3': 760,
+            'policeAgency3': 760,
+            'chargeSentence3': 760,
+          };
+
+          let renderedCount = 0;
+          for (const field of fields) {
+            const widgets = field?.acroField?.getWidgets?.() ?? [];
+            const fieldName = field?.getName?.() ?? 'unknown';
+            const isText = 'getText' in field && typeof field.getText === 'function';
+            const isCheckbox = 'isChecked' in field && typeof field.isChecked === 'function';
+            const textValue = isText ? (field.getText?.() ?? '') : '';
+            const checked = isCheckbox ? !!field.isChecked?.() : false;
+
+            if (isText && String(textValue).trim().length > 0) {
+              console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has value:`, String(textValue).substring(0, 50));
+            }
+
+            for (const widget of widgets) {
+              const rect = widget?.getRectangle?.();
+              if (!rect) {
+                console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has no rectangle`);
+                continue;
+              }
+
+              const widgetPage = widget?.P?.();
+              const pageIndex = pages.findIndex((p: any) => p?.ref && widgetPage && p.ref.toString() === widgetPage.toString());
+              const page = pages[pageIndex >= 0 ? pageIndex : 0];
+              const pageHeight = page.getHeight();
+
+              // Transform rectangle coordinates to page coordinates
+              // Widget Y can be negative; we need to convert to page coordinate system
+              const pageY = Math.abs(rect.y) < 1000 ? pageHeight + rect.y - rect.height : rect.y;
+
+              if (isText && String(textValue).trim().length > 0) {
+                const size = Math.max(6, Math.min(12, rect.height - 2));
+                const maxChars = Math.max(1, Math.floor((rect.width - 4) / (size * 0.55)));
+                const clipped = String(textValue).replace(/\s+/g, ' ').slice(0, maxChars);
+
+                // Apply field-specific offset if defined
+                const fieldOffset = fieldOffsets[fieldName] || 0;
+                let finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
+
+                // Handle page overflow - if text goes below page boundary, move to next page
+                let targetPage = page;
+                let targetPageIndex = pageIndex;
+                if (finalY < 0) {
+                  // Text would be clipped at bottom, move to next page maintaining relative position
+                  targetPageIndex = pageIndex + 1;
+                  if (targetPageIndex < pages.length) {
+                    targetPage = pages[targetPageIndex];
+                    const targetPageHeight = targetPage.getHeight();
+                    // Maintain relative position: how far below the page + offset from top
+                    finalY = targetPageHeight + finalY; // finalY is negative, so this subtracts
+                    console.log(`[PDF DOWNLOAD] ${label} Field "${fieldName}" overflowed to page ${targetPageIndex}, new Y: ${finalY}`);
+                  }
+                }
+
+                console.log(`[PDF DOWNLOAD] ${label} Drawing text "${clipped}" at page ${targetPageIndex} coords (${rect.x}, ${finalY}) size ${size} field "${fieldName}" (original Y: ${rect.y}, pageHeight: ${pageHeight}, offset: ${fieldOffset})`);
+
+                targetPage.drawText(clipped, {
+                  x: rect.x + 2,
+                  y: finalY,
+                  size,
+                  font: font ?? undefined,
+                  color: rgb(0, 0, 0),
+                });
+                renderedCount++;
+              } else if (isCheckbox && checked) {
+                const size = Math.max(8, Math.min(14, rect.height));
+
+                // Apply field-specific offset if defined
+                const fieldOffset = fieldOffsets[fieldName] || 0;
+                const finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
+
+                console.log(`[PDF DOWNLOAD] ${label} Drawing checkbox X at page ${pageIndex} coords (${rect.x}, ${finalY}) field "${fieldName}" (original Y: ${rect.y}, pageHeight: ${pageHeight}, offset: ${fieldOffset})`);
+
+                page.drawText('X', {
+                  x: rect.x + Math.max(1, rect.width / 4),
+                  y: finalY,
+                  size,
+                  font: font ?? undefined,
+                  color: rgb(0, 0, 0),
+                });
+                renderedCount++;
+              }
+            }
+          }
+
+          // Remove all form fields to prevent duplicates
+          console.log('[PDF DOWNLOAD] Rendered', renderedCount, 'field values. Removing form fields...');
+          try {
+            // Flatten removes all interactive form fields
+            form.flatten();
+          } catch (flattenErr) {
+            console.warn('[PDF DOWNLOAD] Could not flatten form after manual rendering:', flattenErr);
+          }
+
+        } catch (err) {
+          console.error('[PDF DOWNLOAD] Manual field rendering failed for', label, ':', err);
+        }
+      };
 
       // Helper to stamp signature (and optionally printed name) onto the last page of a single PDF
       const stampSignatureOnDoc = async (doc: any, isWaiver: boolean) => {
@@ -162,18 +412,43 @@ export async function GET(req: NextRequest) {
       };
 
       // Append one doc (optionally stamped) into the merged result
-      const appendStamped = async (b64: string | null, isWaiver: boolean) => {
+      const appendStamped = async (label: 'waiver' | 'disclosure' | 'addon', b64: string | null, isWaiver: boolean) => {
         if (!b64) return;
-        const bytes = Buffer.from(b64, 'base64');
-        let src = await PDFDocument.load(bytes);
-        // Always stamp before merging so both docs show the signature when downloaded
-        src = await stampSignatureOnDoc(src, isWaiver);
-        const pages = await merged.copyPages(src, src.getPageIndices());
-        pages.forEach(p => merged.addPage(p));
+        try {
+          const normalized = normalizePdfBase64(b64);
+          const bytes = Buffer.from(normalized, 'base64');
+          if (!looksLikePdf(bytes)) {
+            throw new Error(`${label} PDF data is not a valid PDF`);
+          }
+
+          let src = await PDFDocument.load(bytes);
+
+          // ALWAYS use manual rendering to ensure compatibility with old PDFs
+          // that were saved without proper field appearances
+          console.log('[PDF DOWNLOAD] Using manual field rendering for', label);
+          await forceStaticFormRender(src, label);
+
+          // CRITICAL: Save and reload the PDF after manual rendering to ensure
+          // the drawn text is "baked in" before copying pages to merged document
+          console.log('[PDF DOWNLOAD] Saving and reloading', label, 'to persist manual rendering');
+          const renderedBytes = await src.save();
+          src = await PDFDocument.load(renderedBytes);
+
+          // Always stamp after rendering so signature appears on top
+          src = await stampSignatureOnDoc(src, isWaiver);
+          const pages = await merged.copyPages(src, src.getPageIndices());
+          pages.forEach(p => merged.addPage(p));
+        } catch (err) {
+          console.error('[PDF DOWNLOAD] Failed to process', label, 'PDF:', err);
+          // Non-fatal for add-on so downloads still work even if addon_pdf_data is corrupt.
+          if (label === 'addon') return;
+          throw err;
+        }
       };
 
-      await appendStamped(waiverBase64, true);
-      await appendStamped(disclosureBase64, false);
+      await appendStamped('waiver', waiverBase64, true);
+      await appendStamped('disclosure', disclosureBase64, false);
+      await appendStamped('addon', addonBase64, false);
 
       const mergedBytes = await merged.save();
       const buf = Buffer.from(mergedBytes);
@@ -194,10 +469,136 @@ export async function GET(req: NextRequest) {
     if (embed && pdfData.signature) {
       try {
         console.log('[PDF DOWNLOAD] Embedding signature into PDF');
-        const { PDFDocument, rgb } = await import('pdf-lib');
+        const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+
+        const forceStaticFormRender = async (doc: any) => {
+          try {
+            const form = doc.getForm();
+            const pages = doc.getPages();
+
+            const fields = form.getFields();
+            console.log('[PDF DOWNLOAD] Processing', fields.length, 'fields for legacy PDF (embed path)');
+
+            // If no fields, the PDF is already flattened - skip manual rendering to avoid duplicates
+            if (fields.length === 0) {
+              console.log('[PDF DOWNLOAD] No form fields found - PDF already flattened, skipping');
+              return;
+            }
+
+            // Check if fields have appearance streams
+            let hasAppearances = false;
+            let fieldsWithAppearances = 0;
+            for (const field of fields) {
+              const widgets = field?.acroField?.getWidgets?.() ?? [];
+              for (const widget of widgets) {
+                try {
+                  const dict = widget?.dict;
+                  if (dict) {
+                    const ap = dict.lookup?.('AP') || dict.get?.('AP');
+                    if (ap && typeof ap === 'object') {
+                      const n = ap.lookup?.('N') || ap.get?.('N');
+                      if (n) {
+                        hasAppearances = true;
+                        fieldsWithAppearances++;
+                        break;
+                      }
+                    }
+                  }
+                } catch {}
+              }
+              if (hasAppearances) break;
+            }
+
+            if (fieldsWithAppearances > 0) {
+              console.log('[PDF DOWNLOAD] Legacy PDF has', fieldsWithAppearances, 'fields with appearances');
+            }
+
+            // If fields already have appearances, just flatten without manual rendering
+            if (hasAppearances) {
+              console.log('[PDF DOWNLOAD] Legacy PDF has appearances, using standard flattening');
+              try {
+                const font = await doc.embedFont(StandardFonts.Helvetica);
+                form.updateFieldAppearances(font);
+              } catch {
+                form.updateFieldAppearances();
+              }
+              form.flatten();
+              return;
+            }
+
+            // No appearances - use manual rendering
+            console.log('[PDF DOWNLOAD] Legacy PDF lacks appearances, using manual rendering');
+
+            let font: any = null;
+            try {
+              font = await doc.embedFont(StandardFonts.Helvetica);
+            } catch {}
+
+            let renderedCount = 0;
+            for (const field of fields) {
+              const widgets = field?.acroField?.getWidgets?.() ?? [];
+              const fieldName = field?.getName?.() ?? 'unknown';
+              const isText = 'getText' in field && typeof field.getText === 'function';
+              const isCheckbox = 'isChecked' in field && typeof field.isChecked === 'function';
+              const textValue = isText ? (field.getText?.() ?? '') : '';
+              const checked = isCheckbox ? !!field.isChecked?.() : false;
+
+              if (isText && String(textValue).trim().length > 0) {
+                console.log(`[PDF DOWNLOAD] Field "${fieldName}" has value:`, String(textValue).substring(0, 50));
+              }
+
+              for (const widget of widgets) {
+                const rect = widget?.getRectangle?.();
+                if (!rect) continue;
+
+                const widgetPage = widget?.P?.();
+                const pageIndex = pages.findIndex((p: any) => p?.ref && widgetPage && p.ref.toString() === widgetPage.toString());
+                const page = pages[pageIndex >= 0 ? pageIndex : 0];
+
+                if (isText && String(textValue).trim().length > 0) {
+                  const size = Math.max(6, Math.min(12, rect.height - 2));
+                  const maxChars = Math.max(1, Math.floor((rect.width - 4) / (size * 0.55)));
+                  const clipped = String(textValue).replace(/\s+/g, ' ').slice(0, maxChars);
+                  page.drawText(clipped, {
+                    x: rect.x + 2,
+                    y: rect.y + Math.max(1, (rect.height - size) / 2),
+                    size,
+                    font: font ?? undefined,
+                    color: rgb(0, 0, 0),
+                  });
+                  renderedCount++;
+                } else if (isCheckbox && checked) {
+                  const size = Math.max(8, Math.min(14, rect.height));
+                  page.drawText('X', {
+                    x: rect.x + Math.max(1, rect.width / 4),
+                    y: rect.y + Math.max(1, (rect.height - size) / 2),
+                    size,
+                    font: font ?? undefined,
+                    color: rgb(0, 0, 0),
+                  });
+                  renderedCount++;
+                }
+              }
+            }
+
+            console.log('[PDF DOWNLOAD] Rendered', renderedCount, 'field values. Removing form fields...');
+            try {
+              form.flatten();
+            } catch (flattenErr) {
+              console.warn('[PDF DOWNLOAD] Could not flatten form after manual rendering:', flattenErr);
+            }
+          } catch (err) {
+            console.error('[PDF DOWNLOAD] Manual field rendering failed for legacy PDF (embed path):', err);
+          }
+        };
 
         // Load the PDF
         const pdfDoc = await PDFDocument.load(pdfBytes);
+
+        // ALWAYS use manual rendering for browser compatibility
+        console.log('[PDF DOWNLOAD] Using manual field rendering for legacy PDF (embed path)');
+        await forceStaticFormRender(pdfDoc);
+
         const pages = pdfDoc.getPages();
 
         if (pages.length > 0) {
@@ -286,17 +687,261 @@ export async function GET(req: NextRequest) {
     }
 
     // Return the PDF without signature if no signature or embedding failed
-    const pdfBuffer = Buffer.from(pdfBytes);
-    return new NextResponse(pdfBuffer, {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `inline; filename="background_check_${userId}.pdf"`,
-        'Content-Length': pdfBuffer.length.toString(),
-      },
-    });
+    // But still flatten the form for browser compatibility
+    try {
+      const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+
+      const forceStaticFormRender = async (doc: any) => {
+        try {
+          const form = doc.getForm();
+          const pages = doc.getPages();
+
+          const fields = form.getFields();
+          console.log('[PDF DOWNLOAD] Processing', fields.length, 'fields for legacy PDF (no-embed path)');
+
+          // If no fields, the PDF is already flattened - skip manual rendering to avoid duplicates
+          if (fields.length === 0) {
+            console.log('[PDF DOWNLOAD] No form fields found - PDF already flattened, skipping');
+            return;
+          }
+
+          // Check if fields have appearance streams
+          let hasAppearances = false;
+          let fieldsWithAppearances = 0;
+          for (const field of fields) {
+            const widgets = field?.acroField?.getWidgets?.() ?? [];
+            for (const widget of widgets) {
+              try {
+                const dict = widget?.dict;
+                if (dict) {
+                  const ap = dict.lookup?.('AP') || dict.get?.('AP');
+                  if (ap && typeof ap === 'object') {
+                    const n = ap.lookup?.('N') || ap.get?.('N');
+                    if (n) {
+                      hasAppearances = true;
+                      fieldsWithAppearances++;
+                      break;
+                    }
+                  }
+                }
+              } catch {}
+            }
+            if (hasAppearances) break;
+          }
+
+          if (fieldsWithAppearances > 0) {
+            console.log('[PDF DOWNLOAD] Legacy PDF (no-embed) has', fieldsWithAppearances, 'fields with appearances');
+          }
+
+          // If fields already have appearances, just flatten without manual rendering
+          if (hasAppearances) {
+            console.log('[PDF DOWNLOAD] Legacy PDF has appearances, using standard flattening');
+            try {
+              const font = await doc.embedFont(StandardFonts.Helvetica);
+              form.updateFieldAppearances(font);
+            } catch {
+              form.updateFieldAppearances();
+            }
+            form.flatten();
+            return;
+          }
+
+          // No appearances - use manual rendering
+          console.log('[PDF DOWNLOAD] Legacy PDF lacks appearances, using manual rendering');
+
+          const label = 'Legacy PDF';
+
+          let font: any = null;
+          try {
+            font = await doc.embedFont(StandardFonts.Helvetica);
+          } catch {}
+
+          // Field-specific Y offset adjustments (in pixels)
+          // POSITIVE values move text DOWN, NEGATIVE values move text UP
+          const fieldOffsets: Record<string, number> = {
+            // Page 1 fields - All waiver fields moved down
+            'checkbox': 565,
+            'fullName': 565,
+            'date': 565,
+            'dateOfBirth': 565,
+            'ssn': 565,
+            'driversLicenseName': 565,
+            'otherName': 565,
+            'driversLicense': 565,
+            'state': 565,
+
+            // Page 2 fields - All waiver fields moved down
+            'full name': 565,
+            'adress': 565,
+            'cityStateZip': 565,
+            'phone': 565,
+            'previousEmployer1': 565,
+            'datefrom1': 565,
+            'datefto1': 565,
+            'previousEmployer2': 565,
+            'datefrom2': 565,
+            'datefto2': 565,
+            'previousEmployer3': 565,
+            'datefrom3': 565,
+            'datefto3': 565,
+            'previousPosition1': 565,
+            'pdatefrom1': 565,
+            'pdatefto1': 565,
+            'previousPosition2': 565,
+            'pdatefrom2': 565,
+            'pdatefto2': 565,
+            'previousPosition3': 565,
+            'pdatefrom3': 565,
+            'pdatefto3': 565,
+            'reference1Name': 565,
+            'reference1Phone': 565,
+            'ref1cityStateZip': 565,
+            'yesCrime': 565,
+            'noCrime': 565,
+            'dateCrime1': 565,
+            'locationCrime1': 565,
+            'policeAgency1': 565,
+            'chargeSentence1': 565,
+            'dateCrime2': 565,
+            'locationCrime2': 565,
+            'policeAgency2': 565,
+            'chargeSentence2': 565,
+            'dateCrime3': 565,
+            'locationCrime3': 565,
+            'policeAgency3': 565,
+            'chargeSentence3': 565,
+          };
+
+          let renderedCount = 0;
+          for (const field of fields) {
+            const widgets = field?.acroField?.getWidgets?.() ?? [];
+            const fieldName = field?.getName?.() ?? 'unknown';
+            const isText = 'getText' in field && typeof field.getText === 'function';
+            const isCheckbox = 'isChecked' in field && typeof field.isChecked === 'function';
+            const textValue = isText ? (field.getText?.() ?? '') : '';
+            const checked = isCheckbox ? !!field.isChecked?.() : false;
+
+            if (isText && String(textValue).trim().length > 0) {
+              console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has value:`, String(textValue).substring(0, 50));
+            }
+
+            for (const widget of widgets) {
+              const rect = widget?.getRectangle?.();
+              if (!rect) {
+                console.log(`[PDF DOWNLOAD] ${label} field "${fieldName}" has no rectangle`);
+                continue;
+              }
+
+              const widgetPage = widget?.P?.();
+              const pageIndex = pages.findIndex((p: any) => p?.ref && widgetPage && p.ref.toString() === widgetPage.toString());
+              const page = pages[pageIndex >= 0 ? pageIndex : 0];
+              const pageHeight = page.getHeight();
+
+              // Transform rectangle coordinates to page coordinates
+              // Widget Y can be negative; we need to convert to page coordinate system
+              const pageY = Math.abs(rect.y) < 1000 ? pageHeight + rect.y - rect.height : rect.y;
+
+              if (isText && String(textValue).trim().length > 0) {
+                const size = Math.max(6, Math.min(12, rect.height - 2));
+                const maxChars = Math.max(1, Math.floor((rect.width - 4) / (size * 0.55)));
+                const clipped = String(textValue).replace(/\s+/g, ' ').slice(0, maxChars);
+
+                // Apply field-specific offset if defined
+                const fieldOffset = fieldOffsets[fieldName] || 0;
+                let finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
+
+                // Handle page overflow - if text goes below page boundary, move to next page
+                let targetPage = page;
+                let targetPageIndex = pageIndex;
+                if (finalY < 0) {
+                  // Text would be clipped at bottom, move to next page maintaining relative position
+                  targetPageIndex = pageIndex + 1;
+                  if (targetPageIndex < pages.length) {
+                    targetPage = pages[targetPageIndex];
+                    const targetPageHeight = targetPage.getHeight();
+                    // Maintain relative position: how far below the page + offset from top
+                    finalY = targetPageHeight + finalY; // finalY is negative, so this subtracts
+                    console.log(`[PDF DOWNLOAD] ${label} Field "${fieldName}" overflowed to page ${targetPageIndex}, new Y: ${finalY}`);
+                  }
+                }
+
+                console.log(`[PDF DOWNLOAD] ${label} Drawing text "${clipped}" at page ${targetPageIndex} coords (${rect.x}, ${finalY}) size ${size} field "${fieldName}" (original Y: ${rect.y}, pageHeight: ${pageHeight}, offset: ${fieldOffset})`);
+
+                targetPage.drawText(clipped, {
+                  x: rect.x + 2,
+                  y: finalY,
+                  size,
+                  font: font ?? undefined,
+                  color: rgb(0, 0, 0),
+                });
+                renderedCount++;
+              } else if (isCheckbox && checked) {
+                const size = Math.max(8, Math.min(14, rect.height));
+
+                // Apply field-specific offset if defined
+                const fieldOffset = fieldOffsets[fieldName] || 0;
+                const finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
+
+                console.log(`[PDF DOWNLOAD] ${label} Drawing checkbox X at page ${pageIndex} coords (${rect.x}, ${finalY}) field "${fieldName}" (original Y: ${rect.y}, pageHeight: ${pageHeight}, offset: ${fieldOffset})`);
+
+                page.drawText('X', {
+                  x: rect.x + Math.max(1, rect.width / 4),
+                  y: finalY,
+                  size,
+                  font: font ?? undefined,
+                  color: rgb(0, 0, 0),
+                });
+                renderedCount++;
+              }
+            }
+          }
+
+          console.log('[PDF DOWNLOAD] Rendered', renderedCount, 'field values. Removing form fields...');
+          try {
+            form.flatten();
+          } catch (flattenErr) {
+            console.warn('[PDF DOWNLOAD] Could not flatten form after manual rendering:', flattenErr);
+          }
+        } catch (err) {
+          console.error('[PDF DOWNLOAD] Manual field rendering failed for legacy PDF (no-embed path):', err);
+        }
+      };
+
+      // ALWAYS use manual rendering for browser compatibility
+      console.log('[PDF DOWNLOAD] Using manual field rendering for legacy PDF (no-embed path)');
+      await forceStaticFormRender(pdfDoc);
+
+      const flattenedBytes = await pdfDoc.save();
+      const pdfBuffer = Buffer.from(flattenedBytes);
+      return new NextResponse(pdfBuffer, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `inline; filename="background_check_${userId}.pdf"`,
+          'Content-Length': pdfBuffer.length.toString(),
+        },
+      });
+    } catch (err) {
+      console.error('[PDF DOWNLOAD] Error flattening PDF:', err);
+      // Fallback: return original PDF if flattening fails
+      const pdfBuffer = Buffer.from(pdfBytes);
+      return new NextResponse(pdfBuffer, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `inline; filename="background_check_${userId}.pdf"`,
+          'Content-Length': pdfBuffer.length.toString(),
+        },
+      });
+    }
   } catch (error) {
     console.error('Unexpected error in background-checks PDF GET:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    const message = (error as any)?.message || 'Internal server error';
+    const isProd = process.env.NODE_ENV === 'production';
+    return NextResponse.json(
+      isProd ? { error: 'Internal server error' } : { error: message },
+      { status: 500 }
+    );
   }
 }

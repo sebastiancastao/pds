@@ -191,6 +191,25 @@ export default function BackgroundChecksPage() {
     }
   };
 
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const nav: any = typeof window !== 'undefined' ? window.navigator : null;
+    if (nav?.msSaveOrOpenBlob) {
+      nav.msSaveOrOpenBlob(blob, filename);
+      return;
+    }
+
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+
+    // Give the browser a tick to start the download before revoking.
+    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+  };
+
   const handleDownloadPDF = async (userId: string, vendorName: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -204,14 +223,7 @@ export default function BackgroundChecksPage() {
         throw new Error(data.error || 'Failed to download PDF');
       }
       const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `background_check_${vendorName.replace(/\s+/g, '_')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      downloadBlob(blob, `background_check_${vendorName.replace(/\s+/g, '_')}.pdf`);
     } catch (err: any) {
       console.error('Error downloading PDF:', err);
       alert(`Failed to download PDF: ${err.message}`);
@@ -222,7 +234,7 @@ export default function BackgroundChecksPage() {
   const handleDownloadWaiver = async (userId: string, vendorName: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/background-waiver/save', {
+      const res = await fetch(`/api/background-waiver/save?user_id=${userId}`, {
         method: 'GET',
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
@@ -239,14 +251,7 @@ export default function BackgroundChecksPage() {
       for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
       const byteArray = new Uint8Array(byteNumbers);
       const blob = new Blob([byteArray], { type: 'application/pdf' });
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Background_Check_Waiver_${vendorName.replace(/\s+/g, '_')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      downloadBlob(blob, `Background_Check_Waiver_${vendorName.replace(/\s+/g, '_')}.pdf`);
     } catch (err: any) {
       console.error('Error downloading Waiver:', err);
       alert(`Failed to download Waiver: ${err.message}`);
@@ -267,14 +272,7 @@ export default function BackgroundChecksPage() {
         throw new Error(data.error || 'Failed to download Disclosure');
       }
       const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `Background_Check_Disclosure_${vendorName.replace(/\s+/g, '_')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.URL.revokeObjectURL(url);
+      downloadBlob(blob, `Background_Check_Disclosure_${vendorName.replace(/\s+/g, '_')}.pdf`);
     } catch (err: any) {
       console.error('Error downloading Disclosure:', err);
       alert(`Failed to download Disclosure: ${err.message}`);

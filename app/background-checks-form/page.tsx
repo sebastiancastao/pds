@@ -483,12 +483,16 @@ export default function BackgroundChecksForm() {
         return;
       }
 
-      console.log('[BACKGROUND CHECK] ✅ Forms submitted, waiting for approval');
+      console.log('[BACKGROUND CHECK] ✅ Forms submitted successfully');
 
-      // Mark as submitted and start checking for approval
-      setIsSubmitted(true);
+      // Clear the new user onboarding flag
+      sessionStorage.removeItem('new_user_onboarding');
+
       setSaveStatus('saved');
-      startApprovalCheck();
+
+      // Show success message and redirect to login
+      alert('Background check forms submitted successfully! Please log in again.');
+      router.push('/login');
 
     } catch (error) {
       console.error('[BACKGROUND CHECK] Error:', error);

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -9,6 +9,9 @@ export async function GET() {
     const pdfPath = join(process.cwd(), 'Form 1 Background Check Disclosure and Authorization revised 12.26.25 final approved.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
+
+    // Embed a standard font for form field rendering
+    const helveticaFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
     // Get form and pages
     const form = pdfDoc.getForm();
@@ -37,6 +40,8 @@ export async function GET() {
       // Name
       const nameField = form.createTextField('name');
       nameField.setText('');
+      nameField.setFontSize(12);
+      nameField.updateAppearances(helveticaFont);
       nameField.addToPage(secondPage, {
         x: 50, y: height2 - 165, width: 300, height: 15,
       });
@@ -44,6 +49,8 @@ export async function GET() {
       // Address
       const addressField = form.createTextField('address');
       addressField.setText('');
+      addressField.setFontSize(12);
+      addressField.updateAppearances(helveticaFont);
       addressField.addToPage(secondPage, {
         x: 50, y: height2 - 205, width: 300, height: 15,
       });
@@ -51,6 +58,8 @@ export async function GET() {
       // City
       const cityField = form.createTextField('city');
       cityField.setText('');
+      cityField.setFontSize(12);
+      cityField.updateAppearances(helveticaFont);
       cityField.addToPage(secondPage, {
         x: 50, y: height2 - 250, width: 110, height: 15,
       });
@@ -58,6 +67,8 @@ export async function GET() {
       // State
       const stateField = form.createTextField('state');
       stateField.setText('');
+      stateField.setFontSize(12);
+      stateField.updateAppearances(helveticaFont);
       stateField.addToPage(secondPage, {
         x: 160, y: height2 - 250, width: 60, height: 15,
       });
@@ -65,6 +76,8 @@ export async function GET() {
       // Zip
       const zipField = form.createTextField('zip');
       zipField.setText('');
+      zipField.setFontSize(12);
+      zipField.updateAppearances(helveticaFont);
       zipField.addToPage(secondPage, {
         x: 220, y: height2 - 250, width: 60, height: 15,
       });
@@ -72,6 +85,8 @@ export async function GET() {
       // Cell Phone
       const cellPhoneField = form.createTextField('cellPhone');
       cellPhoneField.setText('');
+      cellPhoneField.setFontSize(12);
+      cellPhoneField.updateAppearances(helveticaFont);
       cellPhoneField.addToPage(secondPage, {
         x: 50, y: height2 - 310, width: 100, height: 15,
       });
@@ -79,6 +94,8 @@ export async function GET() {
       // SSN
       const ssnField = form.createTextField('ssn');
       ssnField.setText('');
+      ssnField.setFontSize(12);
+      ssnField.updateAppearances(helveticaFont);
       ssnField.addToPage(secondPage, {
         x: 160, y: height2 - 310, width: 120, height: 15,
       });
@@ -86,6 +103,8 @@ export async function GET() {
       // Date of Birth
       const dobField = form.createTextField('dateOfBirth');
       dobField.setText('');
+      dobField.setFontSize(12);
+      dobField.updateAppearances(helveticaFont);
       dobField.addToPage(secondPage, {
         x: 50, y: height2 - 350, width: 100, height: 15,
       });
@@ -93,6 +112,8 @@ export async function GET() {
       // Driver's License Number
       const dlField = form.createTextField('driversLicense');
       dlField.setText('');
+      dlField.setFontSize(12);
+      dlField.updateAppearances(helveticaFont);
       dlField.addToPage(secondPage, {
         x: 160, y: height2 - 350, width: 100, height: 15,
       });
@@ -100,6 +121,8 @@ export async function GET() {
       // DL State
       const dlStateField = form.createTextField('dlState');
       dlStateField.setText('');
+      dlStateField.setFontSize(12);
+      dlStateField.updateAppearances(helveticaFont);
       dlStateField.addToPage(secondPage, {
         x: 260, y: height2 - 350, width: 50, height: 15,
       });
@@ -109,6 +132,8 @@ export async function GET() {
       // Date (signature date)
       const dateField = form.createTextField('signatureDate');
       dateField.setText('');
+      dateField.setFontSize(12);
+      dateField.updateAppearances(helveticaFont);
       dateField.addToPage(secondPage, {
         x: 350, y: height2 - 430, width: 100, height: 15,
       });
@@ -125,34 +150,18 @@ export async function GET() {
       console.log('[BACKGROUND DISCLOSURE] No form fields added to third page');
     }
 
-    // Make all form fields invisible - remove their appearance streams
-    // The HTML overlay will provide the visual interface
+    // Keep form fields visible but update their appearance for proper rendering
+    // This ensures that when flattened, the filled values will show up
     const allFields = form.getFields();
-    console.log('[BACKGROUND DISCLOSURE] Processing', allFields.length, 'fields to make invisible');
+    console.log('[BACKGROUND DISCLOSURE] Processing', allFields.length, 'fields for appearance');
 
-    allFields.forEach((field: any) => {
-      try {
-        if (field.acroField) {
-          const widgets = field.acroField.getWidgets();
-          widgets.forEach((widget: any) => {
-            // Remove the AP (appearance) dictionary entirely
-            widget.dict.delete(pdfDoc.context.obj('AP'));
-
-            // Set the widget to have no border
-            const bs = pdfDoc.context.obj({ W: 0 });
-            widget.dict.set(pdfDoc.context.obj('BS'), bs);
-
-            // Make background fully transparent
-            const mk = pdfDoc.context.obj({});
-            widget.dict.set(pdfDoc.context.obj('MK'), mk);
-          });
-        }
-      } catch (err) {
-        console.warn('[BACKGROUND DISCLOSURE] Could not update field:', field.getName(), err);
-      }
-    });
-
-    console.log('[BACKGROUND DISCLOSURE] Made all form fields invisible');
+    // Update field appearances so they render properly when filled and flattened
+    try {
+      form.updateFieldAppearances();
+      console.log('[BACKGROUND DISCLOSURE] Updated field appearances for proper flattening');
+    } catch (err) {
+      console.warn('[BACKGROUND DISCLOSURE] Could not update appearances:', err);
+    }
     console.log('[BACKGROUND DISCLOSURE] Form setup complete');
 
     // Save and return the PDF with form fields

@@ -37,34 +37,18 @@ export async function GET() {
       console.log('[BACKGROUND ADDON] Third page processed. Dimensions:', { width: width3, height: height3 });
     }
 
-    // Make all form fields invisible - remove their appearance streams
-    // The HTML overlay will provide the visual interface
+    // Keep form fields visible but update their appearance for proper rendering
+    // This ensures that when flattened, the filled values will show up
     const allFields = form.getFields();
-    console.log('[BACKGROUND ADDON] Processing', allFields.length, 'fields to make invisible');
+    console.log('[BACKGROUND ADDON] Processing', allFields.length, 'fields for appearance');
 
-    allFields.forEach((field: any) => {
-      try {
-        if (field.acroField) {
-          const widgets = field.acroField.getWidgets();
-          widgets.forEach((widget: any) => {
-            // Remove the AP (appearance) dictionary entirely
-            widget.dict.delete(pdfDoc.context.obj('AP'));
-
-            // Set the widget to have no border
-            const bs = pdfDoc.context.obj({ W: 0 });
-            widget.dict.set(pdfDoc.context.obj('BS'), bs);
-
-            // Make background fully transparent
-            const mk = pdfDoc.context.obj({});
-            widget.dict.set(pdfDoc.context.obj('MK'), mk);
-          });
-        }
-      } catch (err) {
-        console.warn('[BACKGROUND ADDON] Could not update field:', field.getName(), err);
-      }
-    });
-
-    console.log('[BACKGROUND ADDON] Made all form fields invisible');
+    // Update field appearances so they render properly when filled and flattened
+    try {
+      form.updateFieldAppearances();
+      console.log('[BACKGROUND ADDON] Updated field appearances for proper flattening');
+    } catch (err) {
+      console.warn('[BACKGROUND ADDON] Could not update appearances:', err);
+    }
     console.log('[BACKGROUND ADDON] Form setup complete');
 
     // Save and return the PDF with form fields
