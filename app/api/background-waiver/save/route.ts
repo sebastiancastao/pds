@@ -199,11 +199,11 @@ export async function GET(request: NextRequest) {
     let targetUserId = user.id;
     if (requestedUserId && requestedUserId !== user.id) {
       // Verify the authenticated user has permission to view other users' PDFs
-      const { data: roleData } = await supabase
+      const { data: roleData } = await (supabase
         .from('users')
         .select('role')
         .eq('id', user.id)
-        .single();
+        .single() as any);
 
       const role = (roleData?.role || '').toString().trim().toLowerCase();
       const isAuthorized = role === 'hr' || role === 'exec' || role === 'admin' || role === 'backgroundchecker';
