@@ -171,18 +171,29 @@ export default function LoginPage() {
           }
 
           if (!bgCheckResult.approved) {
-            console.log('[LOGIN DEBUG] ❌ Background check not approved:', bgCheckResult.message);
-            console.log('[LOGIN DEBUG] 🚫 Blocking login - background check must be approved before login');
+            console.log('[LOGIN DEBUG] ❌ vendor_background_checks.background_check_completed = false');
 
-            // Sign out the user
-            await supabase.auth.signOut();
+            // Check users.background_check_completed to see if they submitted forms
+            if (currentUserData?.background_check_completed === true) {
+              // User submitted forms (users.background_check_completed = true)
+              // but vendor hasn't approved yet (vendor_background_checks.background_check_completed = false)
+              // → Block login
+              console.log('[LOGIN DEBUG] 🚫 Blocking login - users.background_check_completed = true but vendor not approved');
 
-            setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
-            setIsLoading(false);
-            return;
+              // Sign out the user
+              await supabase.auth.signOut();
+
+              setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
+              setIsLoading(false);
+              return;
+            }
+
+            // users.background_check_completed = false → User hasn't submitted forms yet
+            // Allow login to fill them out
+            console.log('[LOGIN DEBUG] ✅ users.background_check_completed = false - allowing login to fill forms');
+          } else {
+            console.log('[LOGIN DEBUG] ✅ vendor_background_checks.background_check_completed = true - approved');
           }
-
-          console.log('[LOGIN DEBUG] ✅ Background check approved');
 
           // Check if onboarding is completed - store redirect path but DON'T redirect yet
           // UNIVERSAL RULE: All users with permanent passwords MUST go through MFA first
@@ -246,19 +257,25 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + temp password → /password');
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + permanent password → /verify-mfa');
 
-      // Step 1: Check if background check is completed
-      // Block ALL users with background_check_completed = false (no exceptions)
+      // Step 1: Check if background check is completed (users table)
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
-        console.log('[LOGIN DEBUG] ❌ background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
-        console.log('[LOGIN DEBUG] 🚫 Blocking login - background check must be completed before login');
+        // users.background_check_completed = false → User hasn't submitted forms yet
+        // Allow them to fill out background check forms
+        console.log('[LOGIN DEBUG] ❌ users.background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
+        console.log('[LOGIN DEBUG] ✅ Allowing login to fill out background check forms');
+        console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
 
-        // Sign out the user
-        await supabase.auth.signOut();
+        sessionStorage.setItem('mfa_verified', 'true');
+        sessionStorage.setItem('background_check_required', 'true');
 
-        setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
-        setIsLoading(false);
+        router.replace('/background-checks-form');
         return;
       }
+
+      // users.background_check_completed = true → User has submitted forms
+      // For workers/vendors, we already checked vendor_background_checks earlier
+      // Continue with normal flow
+      console.log('[LOGIN DEBUG] ✅ users.background_check_completed = TRUE - user has submitted forms');
 
       // Step 2: Background check completed, check if user needs to change password
       if (isTemporaryPassword || mustChangePassword) {

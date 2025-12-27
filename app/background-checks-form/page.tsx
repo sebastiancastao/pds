@@ -630,15 +630,6 @@ export default function BackgroundChecksForm() {
         }}>
           {checkingApproval ? (
             <>
-              <div style={{
-                width: '60px',
-                height: '60px',
-                border: '4px solid #f3f3f3',
-                borderTop: '4px solid #1976d2',
-                borderRadius: '50%',
-                animation: 'spin 1s linear infinite',
-                margin: '0 auto 24px'
-              }} />
               <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
                 Waiting for Approval
               </h2>
@@ -646,7 +637,7 @@ export default function BackgroundChecksForm() {
                 Your background check forms have been submitted successfully.
               </p>
               <p style={{ margin: '0', fontSize: '14px', color: '#999' }}>
-                Please wait while HR reviews and approves your submission. This page will automatically update when approved.
+                Please wait while HR reviews and approves your submission.
               </p>
               <p style={{ margin: '16px 0 0 0', fontSize: '12px', color: '#999' }}>
                 You may close this window and check back later.

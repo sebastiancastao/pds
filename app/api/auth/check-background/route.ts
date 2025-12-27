@@ -104,6 +104,16 @@ export async function POST(request: NextRequest) {
 
     const isApproved = bgCheckData.background_check_completed === true;
 
+    // Check if user has submitted background check forms
+    const { data: submittedForms, error: formsError } = await supabase
+      .from('background_check_pdfs')
+      .select('id')
+      .eq('user_id', user.id)
+      .limit(1);
+
+    const hasSubmittedForms = !formsError && submittedForms && submittedForms.length > 0;
+    console.log('[BG CHECK API] Has submitted forms:', hasSubmittedForms);
+
     // Check onboarding status
     const onboardingCompleted = !!profileData.onboarding_completed_at;
 
@@ -128,6 +138,7 @@ export async function POST(request: NextRequest) {
       completedDate: bgCheckData?.completed_date,
       notes: bgCheckData?.notes,
       message: isApproved ? 'Background check approved' : 'Background check pending',
+      hasSubmittedForms,
       onboardingCompleted,
       onboardingRedirect
     }, { status: 200 });
