@@ -102,27 +102,27 @@ export async function GET() {
 
       // Previous Employer 1
       const fullname2p = form.createTextField('full name');
-      fullname2p.setText('full');
+      fullname2p.setText('');
       fullname2p.addToPage(secondPage, {
         x: 250, y: height2 - 915, width: 200, height: 10,
       });
 
       // Previous Posipmtion 1
       const adress = form.createTextField('adress');
-      adress.setText('adress');
+      adress.setText('');
       adress.addToPage(secondPage, {
         x: 230, y: height2 - 945, width: 200, height: 10,
       });
 
       // Previous Dates 1
       const cityStateZip = form.createTextField('cityStateZip');
-      cityStateZip.setText('cityStateZip');
+      cityStateZip.setText('');
       cityStateZip.addToPage(secondPage, {
         x: 200, y: height2 - 975, width: 170, height: 10,
       });
 
       const phone = form.createTextField('phone');
-      phone.setText('phone');
+      phone.setText('');
       phone.addToPage(secondPage, {
         x: 330, y: height2 - 1005, width: 150, height: 10,
       });

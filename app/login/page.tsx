@@ -172,13 +172,14 @@ export default function LoginPage() {
 
           if (!bgCheckResult.approved) {
             console.log('[LOGIN DEBUG] ❌ Background check not approved:', bgCheckResult.message);
-            const isTempPasswordDuringCheck = preLoginData?.isTemporaryPassword ?? currentUserData?.is_temporary_password ?? false;
-            if (!isTempPasswordDuringCheck) {
-              setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nIf you believe this is an error, please contact your supervisor.');
-              setIsLoading(false);
-              return;
-            }
-            console.log('[LOGIN DEBUG] Background check is pending but user has a temporary password; allowing entry to background-check form.');
+            console.log('[LOGIN DEBUG] 🚫 Blocking login - background check must be approved before login');
+
+            // Sign out the user
+            await supabase.auth.signOut();
+
+            setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
+            setIsLoading(false);
+            return;
           }
 
           console.log('[LOGIN DEBUG] ✅ Background check approved');
@@ -245,17 +246,17 @@ export default function LoginPage() {
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + temp password → /password');
       console.log('[LOGIN DEBUG] - If background_check_completed = TRUE + permanent password → /verify-mfa');
 
-      // BackgroundChecker special case: temp password goes directly to MFA setup
       // Step 1: Check if background check is completed
+      // Block ALL users with background_check_completed = false (no exceptions)
       if (backgroundCheckCompleted === false || backgroundCheckCompleted === null || backgroundCheckCompleted === undefined) {
-        // Background check not completed → go to background-checks-form
         console.log('[LOGIN DEBUG] ❌ background_check_completed = FALSE (value:', backgroundCheckCompleted, ')');
-        console.log('[LOGIN DEBUG] 🔄 Redirecting to /background-checks-form');
+        console.log('[LOGIN DEBUG] 🚫 Blocking login - background check must be completed before login');
 
-        sessionStorage.setItem('mfa_verified', 'true');
-        sessionStorage.setItem('background_check_required', 'true');
+        // Sign out the user
+        await supabase.auth.signOut();
 
-        router.replace('/background-checks-form');
+        setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
+        setIsLoading(false);
         return;
       }
 

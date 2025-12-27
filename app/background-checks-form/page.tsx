@@ -29,6 +29,9 @@ export default function BackgroundChecksForm() {
   const [waiverProgress, setWaiverProgress] = useState(0);
   const [disclosureProgress, setDisclosureProgress] = useState(0);
   const [addonProgress, setAddonProgress] = useState(0);
+  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [isApproved, setIsApproved] = useState(false);
+  const [checkingApproval, setCheckingApproval] = useState(false);
 
   const getPostOnboardingRoute = (role?: string) => {
     const normalized = (role ?? '').toString().trim().toLowerCase();
@@ -351,6 +354,61 @@ export default function BackgroundChecksForm() {
     }
   };
 
+  // Check approval status
+  const checkApprovalStatus = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return false;
+
+      const { data, error } = await supabase
+        .from('vendor_background_checks')
+        .select('background_check_completed')
+        .eq('user_id', session.user.id)
+        .single();
+
+      if (error) {
+        console.error('[APPROVAL CHECK] Error:', error);
+        return false;
+      }
+
+      return data?.background_check_completed === true;
+    } catch (error) {
+      console.error('[APPROVAL CHECK] Exception:', error);
+      return false;
+    }
+  };
+
+  // Start polling for approval
+  const startApprovalCheck = async () => {
+    setCheckingApproval(true);
+    const maxAttempts = 600; // Check for up to 1 hour (600 * 6 seconds)
+    let attempts = 0;
+
+    const checkInterval = setInterval(async () => {
+      attempts++;
+      const approved = await checkApprovalStatus();
+
+      if (approved) {
+        clearInterval(checkInterval);
+        setIsApproved(true);
+        setCheckingApproval(false);
+
+        // Clear the new user onboarding flag
+        sessionStorage.removeItem('new_user_onboarding');
+
+        // Navigate to the role-specific landing page
+        const destination = getPostOnboardingRoute(userRole);
+        setTimeout(() => {
+          router.push(destination);
+        }, 2000);
+      } else if (attempts >= maxAttempts) {
+        clearInterval(checkInterval);
+        setCheckingApproval(false);
+        alert('Approval check timed out. Please refresh the page or contact HR.');
+      }
+    }, 6000); // Check every 6 seconds
+  };
+
   // Continue to next step (dashboard or next form)
   const handleContinue = async () => {
     console.log('Continue clicked');
@@ -412,15 +470,12 @@ export default function BackgroundChecksForm() {
         return;
       }
 
-      console.log('[BACKGROUND CHECK] ✅ Marked as completed');
+      console.log('[BACKGROUND CHECK] ✅ Forms submitted, waiting for approval');
 
-      // Clear the new user onboarding flag
-      sessionStorage.removeItem('new_user_onboarding');
-
-      // Navigate to the role-specific landing page
+      // Mark as submitted and start checking for approval
+      setIsSubmitted(true);
       setSaveStatus('saved');
-      const destination = getPostOnboardingRoute(userRole);
-      router.push(destination);
+      startApprovalCheck();
 
     } catch (error) {
       console.error('[BACKGROUND CHECK] Error:', error);
@@ -550,6 +605,77 @@ export default function BackgroundChecksForm() {
             margin: '0 auto 20px'
           }} />
           <p style={{ color: '#666', fontSize: '16px' }}>Checking access...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show approval waiting screen if submitted but not approved
+  if (isSubmitted && !isApproved) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        backgroundColor: '#f5f5f5'
+      }}>
+        <div style={{
+          textAlign: 'center',
+          padding: '40px',
+          backgroundColor: 'white',
+          borderRadius: '12px',
+          boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+          maxWidth: '500px'
+        }}>
+          {checkingApproval ? (
+            <>
+              <div style={{
+                width: '60px',
+                height: '60px',
+                border: '4px solid #f3f3f3',
+                borderTop: '4px solid #1976d2',
+                borderRadius: '50%',
+                animation: 'spin 1s linear infinite',
+                margin: '0 auto 24px'
+              }} />
+              <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
+                Waiting for Approval
+              </h2>
+              <p style={{ margin: '0 0 16px 0', fontSize: '16px', color: '#666' }}>
+                Your background check forms have been submitted successfully.
+              </p>
+              <p style={{ margin: '0', fontSize: '14px', color: '#999' }}>
+                Please wait while HR reviews and approves your submission. This page will automatically update when approved.
+              </p>
+              <p style={{ margin: '16px 0 0 0', fontSize: '12px', color: '#999' }}>
+                You may close this window and check back later.
+              </p>
+            </>
+          ) : (
+            <>
+              <div style={{
+                width: '60px',
+                height: '60px',
+                backgroundColor: '#4caf50',
+                borderRadius: '50%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 24px'
+              }}>
+                <svg style={{ width: '36px', height: '36px', fill: 'white' }} viewBox="0 0 24 24">
+                  <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                </svg>
+              </div>
+              <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
+                Approved!
+              </h2>
+              <p style={{ margin: '0', fontSize: '16px', color: '#666' }}>
+                Your background check has been approved. Redirecting...
+              </p>
+            </>
+          )}
         </div>
       </div>
     );
@@ -700,7 +826,7 @@ export default function BackgroundChecksForm() {
             fontWeight: 'bold',
             color: '#333'
           }}>
-            3. Background Check Form #3 Add-On
+            3. Background Check Form 
           </h2>
           <div style={{ margin: '6px 0 12px 0', fontSize: '13px', color: '#555' }}>
             Completed: {Math.round(addonProgress * 100)}%
