@@ -85,6 +85,8 @@ export async function GET() {
     return NextResponse.json(
       { error: 'Failed to load Background Add-on PDF', details: error.message },
       { status: 500 }
+
+      
     );
   }
 }
