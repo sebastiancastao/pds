@@ -922,7 +922,11 @@ export default function DashboardPage() {
         });
 
         // Pre-select existing team members
-        const existingMemberIds = new Set(data.team.map((member: any) => member.vendor_id));
+        const existingMemberIds = new Set<string>(
+          (data.team as any[])
+            .map((member: any) => String(member?.vendor_id ?? ""))
+            .filter((id) => id.length > 0)
+        );
         console.log('[GLOBAL-CALENDAR-TEAM] ✅ Pre-selecting', existingMemberIds.size, 'existing team members');
         setSelectedTeamMembers(existingMemberIds);
       }
