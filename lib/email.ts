@@ -168,7 +168,7 @@ function generateEmailTemplate(data: {
                       <li>This is a <strong>temporary password</strong> that expires on <strong>${data.expiresFormatted}</strong></li>
                       <li>You must change this password on your first login</li>
                       <li>Do not share this password with anyone</li>
-                      <li>Multi-Factor Authentication (MFA) is required for all users</li>
+                      <li>Multi-Factor Authentication (MFA) is required for all users, Download Google Authenticator before creating account</li>
                     </ul>
                   </td>
                 </tr>
