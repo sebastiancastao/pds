@@ -130,6 +130,7 @@ function generateEmailTemplate(data: {
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
                 Please create your account to begin the onboarding process to the new portal, which includes a background check. Once the background check is complete, you will be notified when you may proceed to the next phase of onboarding, including review of the updated handbook and completion of required documents.
               </p>
+              <strong> We recommend using a laptop or desktop computer to ensure all forms display and submit correctly</strong>
 
               <!-- Login Details Box -->
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f8f9fa; border-radius: 8px; border: 2px solid #667eea; margin: 30px 0;">
@@ -202,7 +203,7 @@ function generateEmailTemplate(data: {
                   <td style="padding: 20px;">
                     <p style="color: #0c5280; margin: 0; font-size: 14px;">
                       <strong>Need help?</strong> Contact our support team at 
-                      <a href="mailto:jenvillar@1pds.net " style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                      <a href="mailto:portal@1pds.net " style="color: #2196F3; text-decoration: none;">support@pds.com</a>
                     </p>
                   </td>
                 </tr>
