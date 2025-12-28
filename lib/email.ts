@@ -45,7 +45,7 @@ export async function sendTemporaryPasswordEmail(
   });
 
   // Email template
-  const emailSubject = 'Welcome to PDS Time Tracking - Your Account Details';
+  const emailSubject = 'PDS Background Check & Onboarding';
   const emailBody = generateEmailTemplate({
     firstName,
     lastName,
@@ -57,7 +57,7 @@ export async function sendTemporaryPasswordEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>', // Using Resend's test domain (change to your verified domain later)
+      from: 'PDS Portal <service@furnituretaxi.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -104,7 +104,7 @@ function generateEmailTemplate(data: {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Welcome to PDS Time Tracking</title>
+  <title>Welcome to the New PDS Portal- Onboarding Process</title>
 </head>
 <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
   <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
@@ -128,7 +128,7 @@ function generateEmailTemplate(data: {
               </p>
               
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                Your account has been created for the PDS Time Tracking System. You can now access the portal to manage your time, view events, and complete your onboarding.
+                Please create your account to begin the onboarding process to the new portal, which includes a background check. Once the background check is complete, you will be notified when you may proceed to the next phase of onboarding, including review of the updated handbook and completion of required documents.
               </p>
 
               <!-- Login Details Box -->
