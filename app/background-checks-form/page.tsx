@@ -1019,7 +1019,7 @@ export default function BackgroundChecksForm() {
                 }
               }}
             >
-              Save →
+              Submit →
             </button>
           </div>
         </div>
