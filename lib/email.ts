@@ -45,7 +45,7 @@ export async function sendTemporaryPasswordEmail(
   });
 
   // Email template
-  const emailSubject = 'PDS Background Check & Onboarding';
+  const emailSubject = 'PDS new Portal Onboarding and Background Check Process';
   const emailBody = generateEmailTemplate({
     firstName,
     lastName,
