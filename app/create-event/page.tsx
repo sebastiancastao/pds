@@ -27,9 +27,11 @@ function CreateEventPageInner() {
     event_date: "",
     start_time: "",
     end_time: "",
+    ends_next_day: false,
     artist_share_percent: "",
     venue_share_percent: "",
     pds_share_percent: "",
+    commission_pool: "",
     is_active: true
   });
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -116,7 +118,8 @@ function CreateEventPageInner() {
         ...form,
         artist_share_percent: form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined,
         venue_share_percent: form.venue_share_percent !== "" ? Number(form.venue_share_percent) / 100 : undefined,
-        pds_share_percent: form.pds_share_percent !== "" ? Number(form.pds_share_percent) / 100 : undefined
+        pds_share_percent: form.pds_share_percent !== "" ? Number(form.pds_share_percent) / 100 : undefined,
+        commission_pool: form.commission_pool !== "" ? Number(form.commission_pool) / 100 : undefined
       };
       console.log('[DEBUG] CreateEvent - Submitting event payload:', payload);
       // Attach Supabase access token so the API can authenticate the user server-side
@@ -141,9 +144,11 @@ function CreateEventPageInner() {
           event_date: "",
           start_time: "",
           end_time: "",
+          ends_next_day: false,
           artist_share_percent: "",
           venue_share_percent: "",
           pds_share_percent: "",
+          commission_pool: "",
           is_active: true
         });
         setTimeout(() => {
@@ -233,47 +238,22 @@ function CreateEventPageInner() {
             {/* Venue Section */}
             <div className="pt-4 border-t border-slate-100">
               <h3 className="text-lg font-semibold text-slate-800 mb-4">Venue Information</h3>
-              <div className="space-y-5">
-                <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Venue <span className="text-red-500">*</span></label>
-                  <select
-                    name="venue"
-                    value={form.venue}
-                    onChange={handleVenueChange}
-                    required
-                    className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white"
-                  >
-                    <option value="">Select a venue...</option>
-                    {venues.map((venue) => (
-                      <option key={venue.id} value={venue.venue_name}>
-                        {venue.venue_name} - {venue.city}, {venue.state}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-3 gap-4">
-                  <div className="col-span-2">
-                    <label className="text-sm font-semibold text-slate-700 block mb-2">City</label>
-                    <input
-                      name="city"
-                      value={form.city}
-                      readOnly
-                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl bg-slate-50 cursor-not-allowed text-slate-600"
-                      placeholder="Auto-filled"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-semibold text-slate-700 block mb-2">State</label>
-                    <input
-                      name="state"
-                      value={form.state}
-                      readOnly
-                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl bg-slate-50 cursor-not-allowed uppercase text-slate-600"
-                      placeholder="ST"
-                    />
-                  </div>
-                </div>
+              <div>
+                <label className="text-sm font-semibold text-slate-700 block mb-2">Venue <span className="text-red-500">*</span></label>
+                <select
+                  name="venue"
+                  value={form.venue}
+                  onChange={handleVenueChange}
+                  required
+                  className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white"
+                >
+                  <option value="">Select a venue...</option>
+                  {venues.map((venue) => (
+                    <option key={venue.id} value={venue.venue_name}>
+                      {venue.venue_name} - {venue.city}, {venue.state}
+                    </option>
+                  ))}
+                </select>
               </div>
             </div>
 
@@ -314,6 +294,20 @@ function CreateEventPageInner() {
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
                   />
                 </div>
+              </div>
+
+              <div className="mt-4 flex items-center gap-3 bg-amber-50 p-4 rounded-xl border border-amber-100">
+                <input
+                  id="ends_next_day"
+                  type="checkbox"
+                  name="ends_next_day"
+                  checked={form.ends_next_day}
+                  onChange={handleChange}
+                  className="h-5 w-5 text-amber-600 focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 border-slate-300 rounded transition-all cursor-pointer"
+                />
+                <label htmlFor="ends_next_day" className="text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                  Event ends on the next day
+                </label>
               </div>
             </div>
 
@@ -368,6 +362,24 @@ function CreateEventPageInner() {
                     />
                     <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
                   </div>
+                </div>
+              </div>
+
+              <div className="mt-4">
+                <label className="text-sm font-semibold text-slate-700 block mb-2">Commission Pool %</label>
+                <div className="relative">
+                  <input
+                    name="commission_pool"
+                    value={form.commission_pool}
+                    onChange={handleChange}
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.01"
+                    className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                    placeholder="0"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
                 </div>
               </div>
             </div>

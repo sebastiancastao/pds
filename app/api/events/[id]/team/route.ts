@@ -95,8 +95,44 @@ export async function POST(
       .eq('user_id', user.id)
       .single();
 
-    // Create team assignments with confirmation tokens
-    const teamMembers = vendorIds.map(vendorId => ({
+    // Get existing team members to avoid duplicates and support incremental team building
+    const { data: existingTeam, error: existingError } = await supabaseAdmin
+      .from('event_teams')
+      .select('vendor_id')
+      .eq('event_id', eventId);
+
+    if (existingError) {
+      console.error('❌ Error fetching existing team:', existingError);
+      return NextResponse.json({
+        error: 'Failed to check existing team members: ' + existingError.message
+      }, { status: 500 });
+    }
+
+    // Get list of vendor IDs already on the team
+    const existingVendorIds = new Set(existingTeam?.map(t => t.vendor_id) || []);
+
+    // Filter out vendors that are already on the team
+    const newVendorIds = vendorIds.filter(vendorId => !existingVendorIds.has(vendorId));
+
+    console.log('🔍 DEBUG - Existing team size:', existingVendorIds.size);
+    console.log('🔍 DEBUG - New vendors to add:', newVendorIds.length);
+    console.log('🔍 DEBUG - Vendors already on team:', vendorIds.filter(id => existingVendorIds.has(id)).length);
+
+    // If no new vendors to add, return success with message
+    if (newVendorIds.length === 0) {
+      return NextResponse.json({
+        success: true,
+        message: `All selected vendors are already on the team. No new invitations sent.`,
+        teamSize: existingVendorIds.size,
+        emailStats: {
+          sent: 0,
+          failed: 0
+        }
+      }, { status: 200 });
+    }
+
+    // Create team assignments only for new vendors with confirmation tokens
+    const teamMembers = newVendorIds.map(vendorId => ({
       event_id: eventId,
       vendor_id: vendorId,
       assigned_by: user.id,
@@ -107,13 +143,7 @@ export async function POST(
 
     console.log('🔍 DEBUG - Team members to insert:', teamMembers);
 
-    // Delete existing team members for this event first
-    await supabaseAdmin
-      .from('event_teams')
-      .delete()
-      .eq('event_id', eventId);
-
-    // Insert new team members
+    // Insert only new team members (incremental team building - no deletion!)
     const { data: insertedTeams, error: insertError } = await supabaseAdmin
       .from('event_teams')
       .insert(teamMembers)
@@ -129,9 +159,10 @@ export async function POST(
       }, { status: 500 });
     }
 
-    // Send confirmation emails to each vendor
+    // Send confirmation emails only to newly added vendors
+    const newVendors = vendors.filter((v: any) => newVendorIds.includes(v.id));
     const emailResults = await Promise.allSettled(
-      vendors.map(async (vendor: any) => {
+      newVendors.map(async (vendor: any) => {
         const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
         if (!teamMember) return null;
 
@@ -195,10 +226,17 @@ export async function POST(
 
     console.log(`📧 Sent ${emailsSent} confirmation emails, ${emailsFailed} failed`);
 
+    const totalTeamSize = existingVendorIds.size + newVendorIds.length;
+    const alreadyOnTeam = vendorIds.filter(id => existingVendorIds.has(id)).length;
+
     return NextResponse.json({
       success: true,
-      message: `Team invitations sent to ${vendorIds.length} vendor${vendorIds.length !== 1 ? 's' : ''}. Awaiting confirmation.`,
-      teamSize: vendorIds.length,
+      message: alreadyOnTeam > 0
+        ? `Added ${newVendorIds.length} new vendor${newVendorIds.length !== 1 ? 's' : ''} to the team (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}. Awaiting confirmation.`
+        : `Team invitations sent to ${newVendorIds.length} vendor${newVendorIds.length !== 1 ? 's' : ''}. Total team size: ${totalTeamSize}. Awaiting confirmation.`,
+      teamSize: totalTeamSize,
+      newMembers: newVendorIds.length,
+      alreadyOnTeam: alreadyOnTeam,
       emailStats: {
         sent: emailsSent,
         failed: emailsFailed

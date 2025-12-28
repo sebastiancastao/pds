@@ -284,9 +284,9 @@ export default function EventDashboardPage() {
           start_time: eventData.start_time || "",
           end_time: eventData.end_time || "",
           ticket_sales: eventData.ticket_sales || null,
-          artist_share_percent: eventData.artist_share_percent || 0,
-          venue_share_percent: eventData.venue_share_percent || 0,
-          pds_share_percent: eventData.pds_share_percent || 0,
+          artist_share_percent: (eventData.artist_share_percent || 0) * 100,
+          venue_share_percent: (eventData.venue_share_percent || 0) * 100,
+          pds_share_percent: (eventData.pds_share_percent || 0) * 100,
           commission_pool: eventData.commission_pool || null,
           required_staff: eventData.required_staff || null,
           confirmed_staff: eventData.confirmed_staff || null,
@@ -524,9 +524,9 @@ export default function EventDashboardPage() {
     try {
       const payload = {
         ...form,
-        artist_share_percent: form.artist_share_percent || 0,
-        venue_share_percent: form.venue_share_percent || 0,
-        pds_share_percent: form.pds_share_percent || 0,
+        artist_share_percent: (form.artist_share_percent || 0) / 100,
+        venue_share_percent: (form.venue_share_percent || 0) / 100,
+        pds_share_percent: (form.pds_share_percent || 0) / 100,
       };
 
       const { data: { session } } = await supabase.auth.getSession();
@@ -1001,9 +1001,9 @@ export default function EventDashboardPage() {
 
   const shares = calculateShares();
   const percentTotal =
-    (event.artist_share_percent || 0) +
+    ((event.artist_share_percent || 0) +
     (event.venue_share_percent || 0) +
-    (event.pds_share_percent || 0);
+    (event.pds_share_percent || 0)) * 100;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
@@ -1051,13 +1051,13 @@ export default function EventDashboardPage() {
           </div>
         )}
 
-        {percentTotal !== 100 && (
+        {Math.abs(percentTotal - 100) > 0.01 && (
           <div className="mb-6 px-6 py-4 rounded-xl bg-gradient-to-r from-amber-50 to-yellow-50 border-2 border-amber-200 text-amber-900 shadow-sm">
             <div className="flex items-center gap-3">
               <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
-              <span className="font-medium">Heads up: your split percentages add up to {percentTotal}% (not 100%).</span>
+              <span className="font-medium">Heads up: your split percentages add up to {percentTotal.toFixed(2)}% (not 100%).</span>
             </div>
           </div>
         )}
@@ -1271,42 +1271,42 @@ export default function EventDashboardPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Artist Share %</label>
                     <input
                       name="artist_share_percent"
-                      value={form.artist_share_percent + '%'}
+                      value={(form.artist_share_percent || 0) + '%'}
                       onChange={(e) => {
                         const val = e.target.value.replace('%', '').trim();
                         handleChange({ target: { name: 'artist_share_percent', value: val } } as any);
                       }}
                       type="text"
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
-                      placeholder="0.00%"
+                      placeholder="50%"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Venue Share %</label>
                     <input
                       name="venue_share_percent"
-                      value={form.venue_share_percent + '%'}
+                      value={(form.venue_share_percent || 0) + '%'}
                       onChange={(e) => {
                         const val = e.target.value.replace('%', '').trim();
                         handleChange({ target: { name: 'venue_share_percent', value: val } } as any);
                       }}
                       type="text"
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
-                      placeholder="0.00%"
+                      placeholder="30%"
                     />
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">PDS Share %</label>
                     <input
                       name="pds_share_percent"
-                      value={form.pds_share_percent + '%'}
+                      value={(form.pds_share_percent || 0) + '%'}
                       onChange={(e) => {
                         const val = e.target.value.replace('%', '').trim();
                         handleChange({ target: { name: 'pds_share_percent', value: val } } as any);
                       }}
                       type="text"
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
-                      placeholder="0.00%"
+                      placeholder="20%"
                     />
                   </div>
                   <div>

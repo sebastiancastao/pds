@@ -48,6 +48,8 @@ export async function POST(req: NextRequest) {
     const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
     const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
     const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
+    const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
+    const ends_next_day = body.ends_next_day === undefined ? false : Boolean(body.ends_next_day);
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
 
     // Debug output for all incoming data
@@ -61,9 +63,11 @@ export async function POST(req: NextRequest) {
       event_date,
       start_time,
       end_time,
+      ends_next_day,
       artist_share_percent,
       venue_share_percent,
       pds_share_percent,
+      commission_pool,
       is_active
     });
 
@@ -83,9 +87,11 @@ export async function POST(req: NextRequest) {
       event_date,
       start_time,
       end_time,
+      ends_next_day,
       artist_share_percent,
       venue_share_percent,
       pds_share_percent,
+      commission_pool,
       is_active
     };
     const { data, error } = await supabaseAdmin.from("events").insert([event]).select();

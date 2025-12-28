@@ -64,9 +64,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (users.length > 50) {
+    if (users.length > 150) {
       return NextResponse.json(
-        { error: 'Maximum 50 users can be created at once' },
+        { error: 'Maximum 150 users can be created at once' },
         { status: 400 }
       );
     }

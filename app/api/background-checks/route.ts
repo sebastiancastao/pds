@@ -3,6 +3,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from 'next/server';
 import { safeDecrypt } from "@/lib/encryption";
+import { sendBackgroundCheckApprovalEmail } from "@/lib/email";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -285,6 +286,58 @@ export async function POST(req: NextRequest) {
     }
 
     console.log('[Background Checks API] Background check updated successfully');
+
+    // Send email notification if background check was just completed
+    if (background_check_completed) {
+      console.log('[Background Checks API] Background check marked as completed, sending approval email');
+
+      // Fetch the user's profile to get their email and name
+      const { data: profileData, error: profileError } = await adminClient
+        .from('profiles')
+        .select(`
+          id,
+          user_id,
+          first_name,
+          last_name,
+          users!inner (
+            id,
+            email
+          )
+        `)
+        .eq('id', profile_id)
+        .single();
+
+      if (profileError) {
+        console.error('[Background Checks API] Error fetching profile for email:', profileError);
+        // Don't fail the request, just log the error
+      } else if (profileData) {
+        const userObj = Array.isArray(profileData.users) ? profileData.users[0] : profileData.users;
+        const email = userObj?.email;
+        const firstName = profileData.first_name ? safeDecrypt(profileData.first_name) : '';
+        const lastName = profileData.last_name ? safeDecrypt(profileData.last_name) : '';
+
+        if (email && firstName && lastName) {
+          console.log('[Background Checks API] Sending approval email to:', email);
+
+          // Send the approval email asynchronously (don't wait for it)
+          sendBackgroundCheckApprovalEmail({
+            email,
+            firstName,
+            lastName
+          }).then(result => {
+            if (result.success) {
+              console.log('[Background Checks API] Approval email sent successfully');
+            } else {
+              console.error('[Background Checks API] Failed to send approval email:', result.error);
+            }
+          }).catch(err => {
+            console.error('[Background Checks API] Error sending approval email:', err);
+          });
+        } else {
+          console.warn('[Background Checks API] Missing email or name, skipping approval email');
+        }
+      }
+    }
 
     return NextResponse.json({ background_check: bgCheck }, { status: 200 });
 

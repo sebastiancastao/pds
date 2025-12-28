@@ -859,14 +859,96 @@ export default function DashboardPage() {
     setSelectedTeamMembers(new Set());
     setTeamMessage("");
     setSelectedTeamRegion("all");
+
+    // Load available vendors
     await loadTeamVendors(event, "all");
+
+    // Load existing team members and merge with available vendors
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${event.id}/team`, {
+        method: "GET",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const data = await res.json();
+      if (res.ok && data.team && data.team.length > 0) {
+        console.log('[DASHBOARD-TEAM] 📋 Loading', data.team.length, 'existing team members');
+
+        // Convert team members to vendor format
+        const existingVendors = data.team.map((member: any) => ({
+          id: member.vendor_id,
+          email: member.users?.email || '',
+          division: member.users?.division || '',
+          profiles: {
+            first_name: member.users?.profiles?.first_name || '',
+            last_name: member.users?.profiles?.last_name || '',
+            phone: member.users?.profiles?.phone || '',
+          },
+          distance: null,
+          status: member.status // Include status to show confirmation state
+        }));
+
+        // Merge existing team members with available vendors (avoid duplicates)
+        setAvailableVendors(prevVendors => {
+          const vendorIds = new Set(prevVendors.map(v => v.id));
+          const newVendors = existingVendors.filter((v: any) => !vendorIds.has(v.id));
+          return [...prevVendors, ...newVendors];
+        });
+
+        // Pre-select existing team members
+        const existingMemberIds = new Set(data.team.map((member: any) => member.vendor_id));
+        console.log('[DASHBOARD-TEAM] ✅ Pre-selecting', existingMemberIds.size, 'existing team members');
+        setSelectedTeamMembers(existingMemberIds);
+      }
+    } catch (err) {
+      console.error('[DASHBOARD-TEAM] ❌ Error loading existing team members:', err);
+      // Continue anyway - user can still create a team
+    }
   };
 
   const handleTeamRegionChange = async (regionId: string) => {
     setSelectedTeamRegion(regionId);
-    setSelectedTeamMembers(new Set());
+
     if (selectedEvent) {
+      // Load vendors for the new region
       await loadTeamVendors(selectedEvent, regionId);
+
+      // Re-load and preserve existing team members
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/events/${selectedEvent.id}/team`, {
+          method: "GET",
+          headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        });
+        const data = await res.json();
+        if (res.ok && data.team && data.team.length > 0) {
+          // Convert team members to vendor format and merge
+          const existingVendors = data.team.map((member: any) => ({
+            id: member.vendor_id,
+            email: member.users?.email || '',
+            division: member.users?.division || '',
+            profiles: {
+              first_name: member.users?.profiles?.first_name || '',
+              last_name: member.users?.profiles?.last_name || '',
+              phone: member.users?.profiles?.phone || '',
+            },
+            distance: null,
+            status: member.status
+          }));
+
+          setAvailableVendors(prevVendors => {
+            const vendorIds = new Set(prevVendors.map(v => v.id));
+            const newVendors = existingVendors.filter((v: any) => !vendorIds.has(v.id));
+            return [...prevVendors, ...newVendors];
+          });
+
+          // Keep existing team members selected
+          const existingMemberIds = new Set(data.team.map((member: any) => member.vendor_id));
+          setSelectedTeamMembers(existingMemberIds);
+        }
+      } catch (err) {
+        console.error('[DASHBOARD-TEAM] ❌ Error preserving existing team members on region change:', err);
+      }
     }
   };
 
@@ -903,7 +985,8 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        setTeamMessage(`Team created successfully with ${selectedTeamMembers.size} member${selectedTeamMembers.size !== 1 ? "s" : ""}!`);
+        // Use the message from the API which includes details about new/existing members
+        setTeamMessage(data.message || `Team updated successfully!`);
         setTimeout(() => closeTeamModal(), 1500);
       } else {
         setTeamMessage(data.error || "Failed to create team");
