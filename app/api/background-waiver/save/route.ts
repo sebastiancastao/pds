@@ -447,9 +447,24 @@ export async function GET(request: NextRequest) {
 
                 // Apply field-specific offset if defined
                 const fieldOffset = fieldOffsets[fieldName] || 0;
-                const finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
+                let finalY = pageY + Math.max(1, (rect.height - size) / 2) - 3 - fieldOffset;
 
-                page.drawText('X', {
+                // Handle page overflow - if checkbox goes below page boundary, move to next page
+                let targetPage = page;
+                let targetPageIndex = pageIndex;
+                if (finalY < 0) {
+                  // Checkbox would be clipped at bottom, move to next page maintaining relative position
+                  targetPageIndex = pageIndex + 1;
+                  if (targetPageIndex < pages.length) {
+                    targetPage = pages[targetPageIndex];
+                    const targetPageHeight = targetPage.getHeight();
+                    // Maintain relative position: how far below the page + offset from top
+                    finalY = targetPageHeight + finalY; // finalY is negative, so this subtracts
+                    console.log(`[BACKGROUND CHECK RETRIEVE] ${label} Checkbox "${fieldName}" overflowed to page ${targetPageIndex}, new Y: ${finalY}`);
+                  }
+                }
+
+                targetPage.drawText('X', {
                   x: rect.x + Math.max(1, rect.width / 4),
                   y: finalY,
                   size,

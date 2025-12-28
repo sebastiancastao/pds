@@ -36,8 +36,6 @@ export default function BackgroundChecksPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
-  const [editingNotes, setEditingNotes] = useState<string | null>(null);
-  const [notesValue, setNotesValue] = useState<string>('');
 
   // NEW: current user's role (from users table)
   const [myRole, setMyRole] = useState<string | null>(null);
@@ -170,27 +168,6 @@ export default function BackgroundChecksPage() {
     }
   };
 
-  const handleViewPDF = async (userId: string, vendorName: string) => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to load PDF');
-      }
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      window.open(url, '_blank');
-    } catch (err: any) {
-      console.error('Error viewing PDF:', err);
-      alert(`Failed to view PDF: ${err.message}`);
-    }
-  };
-
   const downloadBlob = (blob: Blob, filename: string) => {
     const nav: any = typeof window !== 'undefined' ? window.navigator : null;
     if (nav?.msSaveOrOpenBlob) {
@@ -228,111 +205,6 @@ export default function BackgroundChecksPage() {
       console.error('Error downloading PDF:', err);
       alert(`Failed to download PDF: ${err.message}`);
     }
-  };
-
-  // Download the saved Waiver PDF directly from DB JSON endpoint
-  const handleDownloadWaiver = async (userId: string, vendorName: string) => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/background-waiver/save?user_id=${userId}`, {
-        method: 'GET',
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
-      });
-      const json = await res.json();
-      if (!res.ok || !(json?.data?.waiver_pdf_data || json?.data?.pdf_data)) {
-        throw new Error(json?.error || 'Waiver PDF not found');
-      }
-      // Convert base64 to Blob and download
-      const b64 = (json.data.waiver_pdf_data || json.data.pdf_data) as string;
-      const byteChars = atob(b64);
-      const byteNumbers = new Array(byteChars.length);
-      for (let i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'application/pdf' });
-      downloadBlob(blob, `Background_Check_Waiver_${vendorName.replace(/\s+/g, '_')}.pdf`);
-    } catch (err: any) {
-      console.error('Error downloading Waiver:', err);
-      alert(`Failed to download Waiver: ${err.message}`);
-    }
-  };
-
-  // Download Disclosure using rendered PDF endpoint (with signature if present)
-  const handleDownloadDisclosure = async (userId: string, vendorName: string) => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(`/api/background-checks/pdf?user_id=${userId}`, {
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
-      });
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to download Disclosure');
-      }
-      const blob = await response.blob();
-      downloadBlob(blob, `Background_Check_Disclosure_${vendorName.replace(/\s+/g, '_')}.pdf`);
-    } catch (err: any) {
-      console.error('Error downloading Disclosure:', err);
-      alert(`Failed to download Disclosure: ${err.message}`);
-    }
-  };
-
-  const handleDownloadBoth = async (userId: string, vendorName: string) => {
-    // Fire sequentially to avoid popup blockers
-    await handleDownloadWaiver(userId, vendorName);
-    await handleDownloadDisclosure(userId, vendorName);
-  };
-
-  const handleEditNotes = (vendorId: string, currentNotes: string | null) => {
-    setEditingNotes(vendorId);
-    setNotesValue(currentNotes || '');
-  };
-
-  const handleSaveNotes = async (vendorId: string) => {
-    try {
-      setUpdating(vendorId);
-      setError(null);
-
-      const { data: { session } } = await supabase.auth.getSession();
-
-      const vendor = vendors.find(v => v.id === vendorId);
-      if (!vendor) return;
-
-      const response = await fetch('/api/background-checks', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        },
-        body: JSON.stringify({
-          profile_id: vendorId,
-          background_check_completed: vendor.background_check?.background_check_completed || false,
-          notes: notesValue.trim() || null,
-        }),
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Failed to update notes');
-
-      setVendors(prev =>
-        prev.map(v => (v.id === vendorId ? { ...v, background_check: data.background_check } : v))
-      );
-
-      setEditingNotes(null);
-      setNotesValue('');
-    } catch (err: any) {
-      console.error('Error updating notes:', err);
-      setError(err.message || 'Failed to update notes. Please try again.');
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const handleCancelEdit = () => {
-    setEditingNotes(null);
-    setNotesValue('');
   };
 
   const filteredVendors = vendors.filter(vendor => {
@@ -487,19 +359,17 @@ export default function BackgroundChecksPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Phone</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Password Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Background Check</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDF Submitted</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Notes</th>
                   <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredVendors.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
                       {searchTerm || filterStatus !== 'all'
                         ? 'No users found matching your filters.'
                         : 'No users found.'}
@@ -518,9 +388,6 @@ export default function BackgroundChecksPage() {
                         <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800 capitalize">
                           {vendor.role}
                         </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-500">{vendor.phone || 'N/A'}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {vendor.has_temporary_password ? (
@@ -567,50 +434,6 @@ export default function BackgroundChecksPage() {
                           <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
                             No
                           </span>
-                        )}
-                      </td>
-                      <td className="px-6 py-4">
-                        {editingNotes === vendor.id ? (
-                          <div className="flex items-center gap-2">
-                            <textarea
-                              value={notesValue}
-                              onChange={(e) => setNotesValue(e.target.value)}
-                              className="w-full px-2 py-1 text-sm border border-blue-500 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                              rows={2}
-                              placeholder="Add notes..."
-                              disabled={updating === vendor.id}
-                            />
-                            <div className="flex flex-col gap-1">
-                              <button
-                                onClick={() => handleSaveNotes(vendor.id)}
-                                disabled={updating === vendor.id}
-                                className="px-2 py-1 text-xs font-medium text-white bg-green-600 hover:bg-green-700 rounded disabled:bg-gray-400"
-                                title="Save"
-                              >
-                                ✓
-                              </button>
-                              <button
-                                onClick={handleCancelEdit}
-                                disabled={updating === vendor.id}
-                                className="px-2 py-1 text-xs font-medium text-white bg-red-600 hover:bg-red-700 rounded disabled:bg-gray-400"
-                                title="Cancel"
-                              >
-                                ✕
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div
-                            onClick={() => handleEditNotes(vendor.id, vendor.background_check?.notes || null)}
-                            className="cursor-pointer hover:bg-gray-50 p-2 rounded min-h-[40px]"
-                            title="Click to edit notes"
-                          >
-                            {vendor.background_check?.notes ? (
-                              <div className="text-sm text-gray-700">{vendor.background_check.notes}</div>
-                            ) : (
-                              <div className="text-sm text-gray-400 italic">Click to add notes...</div>
-                            )}
-                          </div>
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-center">
