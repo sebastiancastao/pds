@@ -10,6 +10,8 @@ import FullCalendar from "@fullcalendar/react";
 import dayGridPlugin from "@fullcalendar/daygrid";
 import "./dashboard-styles.css";
 
+
+
 type EventItem = {
   id: string;
   created_by: string;

@@ -167,13 +167,13 @@ export default function EmailMFASetupPage() {
       }
 
       // Enable MFA for this user (email-only mode)
-      const { error: updateError } = await supabase
+      const { error: updateError } = await (supabase
         .from('profiles')
         .update({
           mfa_enabled: true,
           updated_at: new Date().toISOString()
         })
-        .eq('user_id', session.user.id);
+        .eq('user_id', session.user.id) as any);
 
       if (updateError) {
         console.error('Failed to enable MFA:', updateError);
