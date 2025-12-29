@@ -103,7 +103,8 @@ export async function GET(req: NextRequest) {
             email,
             role,
             is_temporary_password,
-            must_change_password
+            must_change_password,
+            background_check_completed
           )
         )
       `);
@@ -149,6 +150,7 @@ export async function GET(req: NextRequest) {
         is_temporary_password: userObj?.is_temporary_password || false,
         must_change_password: userObj?.must_change_password || false,
         has_temporary_password: userObj?.is_temporary_password || false,
+        background_check_completed_user_table: userObj?.background_check_completed || false,
         background_check: {
           id: bgCheck.id,
           background_check_completed: bgCheck.background_check_completed,

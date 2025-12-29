@@ -294,8 +294,8 @@ function FormViewerContent() {
         router.push(`/payroll-packet-ca/form-viewer?form=${currentForm.next}`);
       }
     } else {
-      console.log('No next form, going to homepage');
-      router.push('/');
+      console.log('No next form, going to login');
+      router.push('/login');
     }
   };
 

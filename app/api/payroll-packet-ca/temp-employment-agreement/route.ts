@@ -40,9 +40,9 @@ export async function GET() {
     // Employee signature field
     const employeeSignatureField = form.createTextField('employee_signature');
     employeeSignatureField.addToPage(lastPage, {
-      x: 50,
-      y: lastPageSize.height - 100,
-      width: 200,
+      x: 70,
+      y: lastPageSize.height - 80,
+      width: 100,
       height: 20,
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
@@ -51,8 +51,8 @@ export async function GET() {
     // Employee signature date field
     const employeeSignatureDateField = form.createTextField('employee_signature_date');
     employeeSignatureDateField.addToPage(lastPage, {
-      x: 270,
-      y: lastPageSize.height - 100,
+      x: 240,
+      y: lastPageSize.height - 80,
       width: 100,
       height: 20,
       borderColor: rgb(0, 0, 0),
@@ -60,8 +60,8 @@ export async function GET() {
     });
 
     // Add labels for signature fields
-    lastPage.drawText('Employee Signature:', { x: 50, y: lastPageSize.height - 85, size: 10, color: rgb(0, 0, 0), font: helveticaRegular });
-    lastPage.drawText('Date:', { x: 270, y: lastPageSize.height - 85, size: 10, color: rgb(0, 0, 0), font: helveticaRegular });
+    lastPage.drawText('Employee Signature:', { x: 70, y: lastPageSize.height - 65, size: 10, color: rgb(0, 0, 0), font: helveticaRegular });
+    lastPage.drawText('Date:', { x: 240, y: lastPageSize.height - 65, size: 10, color: rgb(0, 0, 0), font: helveticaRegular });
 
     const pdfBytes = await pdfDoc.save();
     return new NextResponse(Buffer.from(pdfBytes), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="CA_Temporary_Employment_Services_Agreement.pdf"', 'Content-Security-Policy': "default-src 'self'", 'X-Content-Type-Options': 'nosniff' } });

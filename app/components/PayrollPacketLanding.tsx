@@ -2,13 +2,13 @@ import Link from 'next/link';
 
 const REQUIRED_FORMS = [
   'ADP Direct Deposit',
-  'Marketplace Notice',
-  'Health Insurance',
+  'Health Insurance Marketplace',
   'Time of Hire Notice',
   'Employee Information',
   'Federal W-4',
   'I-9 Employment Verification',
   'LC 2810.5 Notice to Employee',
+  'Temporary Employment Services Agreement',
   'Meal Waiver (6 Hour)',
   'Meal Waiver (10/12 Hour)',
   'State Tax Form',

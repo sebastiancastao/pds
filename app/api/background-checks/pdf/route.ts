@@ -128,6 +128,13 @@ export async function GET(req: NextRequest) {
     const addonBase64 = pdfData.addon_pdf_data || null;
     const legacyBase64 = pdfData.pdf_data || null;
 
+    console.log('[PDF DOWNLOAD] Data types from DB:',
+      'waiver:', typeof waiverBase64,
+      'disclosure:', typeof disclosureBase64,
+      'addon:', typeof addonBase64,
+      'addon is Buffer:', Buffer.isBuffer(addonBase64),
+      'addon is Array:', Array.isArray(addonBase64));
+
     const hasSeparate = !!(waiverBase64 || disclosureBase64 || addonBase64);
 
     // If we have separate PDFs, merge them; otherwise use legacy
@@ -142,6 +149,52 @@ export async function GET(req: NextRequest) {
           return comma >= 0 ? trimmed.slice(comma + 1) : trimmed;
         }
         return trimmed;
+      };
+
+      const normalizePdfBytea = (value: any): Buffer | null => {
+        if (!value) return null;
+
+        console.log('[PDF DOWNLOAD] normalizePdfBytea - value type:', typeof value);
+        console.log('[PDF DOWNLOAD] normalizePdfBytea - is Buffer:', Buffer.isBuffer(value));
+        console.log('[PDF DOWNLOAD] normalizePdfBytea - first 100 chars:',
+          typeof value === 'string' ? value.substring(0, 100) : 'not string');
+
+        // If it's already a Buffer, return it
+        if (Buffer.isBuffer(value)) return value;
+
+        // If it's an array (Uint8Array from bytea), convert to Buffer
+        if (Array.isArray(value) || value instanceof Uint8Array) {
+          return Buffer.from(value);
+        }
+
+        // If it's a string, handle different encodings
+        if (typeof value === 'string') {
+          const trimmed = value.trim();
+
+          // Check if it's hex-encoded (starts with \x)
+          if (trimmed.startsWith('\\x')) {
+            console.log('[PDF DOWNLOAD] Detected hex-encoded bytea, converting to buffer');
+            // Remove \x prefix and convert hex to buffer
+            const hexString = trimmed.substring(2);
+            const buffer = Buffer.from(hexString, 'hex');
+            console.log('[PDF DOWNLOAD] Hex buffer created, length:', buffer.length);
+            console.log('[PDF DOWNLOAD] First bytes as string:', buffer.toString('utf8', 0, Math.min(20, buffer.length)));
+            // The hex-decoded data is actually base64, so decode it again
+            const base64String = buffer.toString('utf8');
+            const finalBuffer = Buffer.from(normalizePdfBase64(base64String), 'base64');
+            console.log('[PDF DOWNLOAD] Final PDF buffer length:', finalBuffer.length);
+            return finalBuffer;
+          }
+
+          // Otherwise treat as base64
+          try {
+            return Buffer.from(normalizePdfBase64(trimmed), 'base64');
+          } catch {
+            return null;
+          }
+        }
+
+        return null;
       };
 
       const looksLikePdf = (buf: Buffer) =>
@@ -453,11 +506,24 @@ export async function GET(req: NextRequest) {
       };
 
       // Append one doc (optionally stamped) into the merged result
-      const appendStamped = async (label: 'waiver' | 'disclosure' | 'addon', b64: string | null, isWaiver: boolean) => {
+      const appendStamped = async (label: 'waiver' | 'disclosure' | 'addon', b64: string | any | null, isWaiver: boolean) => {
         if (!b64) return;
         try {
-          const normalized = normalizePdfBase64(b64);
-          const bytes = Buffer.from(normalized, 'base64');
+          let bytes: Buffer;
+
+          // Handle addon differently since it's stored as bytea (binary)
+          if (label === 'addon') {
+            const normalized = normalizePdfBytea(b64);
+            if (!normalized) {
+              throw new Error(`${label} PDF data could not be normalized`);
+            }
+            bytes = normalized;
+          } else {
+            // waiver and disclosure are stored as base64 text
+            const normalized = normalizePdfBase64(b64);
+            bytes = Buffer.from(normalized, 'base64');
+          }
+
           if (!looksLikePdf(bytes)) {
             throw new Error(`${label} PDF data is not a valid PDF`);
           }
@@ -481,8 +547,6 @@ export async function GET(req: NextRequest) {
           pages.forEach(p => merged.addPage(p));
         } catch (err) {
           console.error('[PDF DOWNLOAD] Failed to process', label, 'PDF:', err);
-          // Non-fatal for add-on so downloads still work even if addon_pdf_data is corrupt.
-          if (label === 'addon') return;
           throw err;
         }
       };

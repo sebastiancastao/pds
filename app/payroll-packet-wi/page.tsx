@@ -88,17 +88,17 @@ export default function PayrollPacketWIPage() {
             lineHeight: '1.8'
           }}>
             <li>ADP Direct Deposit</li>
-            <li>Marketplace Notice</li>
             <li>Health Insurance Marketplace</li>
             <li>Time of Hire Notice</li>
             <li>Employee Information</li>
             <li>Federal W-4</li>
             <li>I-9 Employment Verification</li>
-            <li>Notice to Employee</li>
+            <li>LC 2810.5 Notice to Employee</li>
+            <li>Temporary Employment Services Agreement</li>
             <li>Meal Waiver (6 Hour)</li>
             <li>Meal Waiver (10/12 Hour)</li>
-            <li>Wisconsin State Tax Form</li>
-            <li>Employee Handbook (pending)</li>
+            <li>State Tax Form</li>
+            <li>Employee Handbook (Pending)</li>
           </ul>
         </div>
       </div>

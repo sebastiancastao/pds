@@ -23,6 +23,7 @@ interface Vendor {
   is_temporary_password: boolean;
   must_change_password: boolean;
   has_temporary_password: boolean;
+  background_check_completed_user_table: boolean;
   background_check: BackgroundCheck | null;
   has_submitted_pdf: boolean;
   pdf_submitted_at: string | null;
@@ -452,8 +453,8 @@ export default function BackgroundChecksPage() {
                             />
                           )}
 
-                          {/* Keep PDF actions visible for any role */}
-                          {vendor.has_submitted_pdf && (
+                          {/* Keep PDF actions visible for any role, but only when background check is completed in users table */}
+                          {vendor.has_submitted_pdf && vendor.background_check_completed_user_table && (
                             <div className="flex gap-1 flex-wrap justify-center">
                               <button
                                 onClick={() => handleDownloadPDF(vendor.user_id, vendor.full_name)}

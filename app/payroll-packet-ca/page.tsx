@@ -20,6 +20,7 @@ const californiaWorkflowForms = [
   'Immigration Rights',
   'Military Rights',
   'LGBTQ Rights',
+  'CA Temporary Employment Services Agreement',
   'Meal Waiver (6 Hour)',
   'Meal Waiver (10/12 Hour)',
 ];
