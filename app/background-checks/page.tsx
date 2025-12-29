@@ -420,7 +420,7 @@ export default function BackgroundChecksPage() {
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        {vendor.has_submitted_pdf ? (
+                        {vendor.has_submitted_pdf && vendor.background_check_completed_user_table ? (
                           <div>
                             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
                               Yes
