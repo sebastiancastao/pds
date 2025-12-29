@@ -105,18 +105,6 @@ export async function POST(request: NextRequest) {
 
       console.log('[BACKGROUND CHECK SAVE] ✅ Updated successfully');
 
-      // Update background_check_completed in users table
-      const { error: userUpdateError } = await ((supabase
-        .from('users') as any)
-        .update({ background_check_completed: true })
-        .eq('id', user.id));
-
-      if (userUpdateError) {
-        console.error('[BACKGROUND CHECK SAVE] Failed to update user table:', userUpdateError);
-      } else {
-        console.log('[BACKGROUND CHECK SAVE] ✅ User table updated - background_check_completed set to true');
-      }
-
       return NextResponse.json({
         success: true,
         message: 'Background check PDF updated successfully'
@@ -149,18 +137,6 @@ export async function POST(request: NextRequest) {
       }
 
       console.log('[BACKGROUND CHECK SAVE] ✅ Saved successfully');
-
-      // Update background_check_completed in users table
-      const { error: userUpdateError } = await ((supabase
-        .from('users') as any)
-        .update({ background_check_completed: true })
-        .eq('id', user.id));
-
-      if (userUpdateError) {
-        console.error('[BACKGROUND CHECK SAVE] Failed to update user table:', userUpdateError);
-      } else {
-        console.log('[BACKGROUND CHECK SAVE] ✅ User table updated - background_check_completed set to true');
-      }
 
       return NextResponse.json({
         success: true,

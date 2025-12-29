@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
+import type { Database } from '@/lib/database.types';
 
 export default function EmailMFASetupPage() {
   const router = useRouter();
@@ -55,11 +56,11 @@ export default function EmailMFASetupPage() {
     setUserEmail(user.email || '');
 
     // Check if user is background checker
-    const { data: userData } = await (supabase
+    const { data: userData } = await supabase
       .from('users')
       .select('role')
       .eq('id', user.id)
-      .single() as any);
+      .single<{ role: string }>();
 
     const userRole = (userData?.role || '').toString().trim().toLowerCase();
 
@@ -70,11 +71,11 @@ export default function EmailMFASetupPage() {
     }
 
     // Check if MFA is already enabled
-    const { data: profileData } = await (supabase
+    const { data: profileData } = await supabase
       .from('profiles')
       .select('mfa_enabled')
       .eq('user_id', user.id)
-      .single() as any);
+      .single<{ mfa_enabled: boolean }>();
 
     if (profileData?.mfa_enabled === true) {
       console.log('[EMAIL MFA SETUP] MFA already enabled, redirecting to background-checks');
@@ -167,13 +168,16 @@ export default function EmailMFASetupPage() {
       }
 
       // Enable MFA for this user (email-only mode)
-      const { error: updateError } = await (supabase
+      type ProfileUpdate = Database['public']['Tables']['profiles']['Update'];
+      const updatePayload: ProfileUpdate = {
+        mfa_enabled: true,
+        updated_at: new Date().toISOString()
+      };
+      const { error: updateError } = await supabase
         .from('profiles')
-        .update({
-          mfa_enabled: true,
-          updated_at: new Date().toISOString()
-        })
-        .eq('user_id', session.user.id) as any);
+        // @ts-expect-error - Supabase type inference issue with Update types
+        .update(updatePayload)
+        .eq('user_id', session.user.id);
 
       if (updateError) {
         console.error('Failed to enable MFA:', updateError);
