@@ -17,6 +17,7 @@ function VerifyMFAContent() {
   const [canResend, setCanResend] = useState(false);
   const [countdown, setCountdown] = useState(60);
   const [mfaMethod, setMfaMethod] = useState<'totp' | 'email' | 'backup'>('totp');
+  const [emailOnly, setEmailOnly] = useState(false);
 
   useEffect(() => {
     checkAuthAndInitialize();
@@ -34,16 +35,25 @@ function VerifyMFAContent() {
 
   const checkAuthAndInitialize = async () => {
     console.log('[DEBUG] Checking authentication status on verify-mfa page...');
-    
+
+    // Check if email-only mode is set (for background checkers)
+    const emailOnlyFlag = sessionStorage.getItem('email_mfa_only');
+    const isEmailOnly = emailOnlyFlag === 'true';
+    if (isEmailOnly) {
+      console.log('[DEBUG] Email-only MFA mode detected for background checker');
+      setEmailOnly(true);
+      setMfaMethod('email');
+    }
+
     // Use getSession() instead of getUser() - more reliable immediately after login
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-    
+
     console.log('[DEBUG] Session check result:', {
       hasSession: !!session,
       userId: session?.user?.id,
       error: sessionError?.message
     });
-    
+
     if (!session) {
       console.log('[DEBUG] No session found on first attempt');
       
@@ -142,10 +152,16 @@ function VerifyMFAContent() {
     // User is authenticated and has no temporary password - ready for MFA
     console.log('[DEBUG] ✅ User authenticated, ready for MFA verification');
     setUserEmail(session.user.email || '');
-    
+
     // Set MFA checkpoint flag - user has reached MFA verification
     sessionStorage.setItem('mfa_checkpoint', 'true');
     console.log('[DEBUG] MFA checkpoint set - user cannot access other pages until verified');
+
+    // If email-only mode, automatically send email code
+    if (isEmailOnly) {
+      console.log('[DEBUG] Auto-sending email code for email-only mode');
+      await sendVerificationEmail(session);
+    }
   };
 
   const sendVerificationEmail = async (session: any = null) => {
@@ -264,6 +280,7 @@ function VerifyMFAContent() {
       console.log('[DEBUG] MFA verified successfully, setting session flag');
       sessionStorage.setItem('mfa_verified', 'true');
       sessionStorage.removeItem('mfa_checkpoint');
+      sessionStorage.removeItem('email_mfa_only');
 
       // Check if user has completed background check and get role (check database column)
       console.log('[VERIFY-MFA DEBUG] Fetching user data for background check status and role...');
@@ -488,71 +505,97 @@ function VerifyMFAContent() {
 
             {/* Method Selection */}
             <div className="mb-6">
-              <div className="flex space-x-2 mb-4">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMfaMethod('totp');
-                    setCode('');
-                    setError('');
-                  }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
-                    mfaMethod === 'totp'
-                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
-                      : 'liquid-card text-gray-900 hover:shadow-liquid'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+              {emailOnly ? (
+                // Email-only mode for background checkers
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+                  <div className="flex items-start gap-2">
+                    <svg className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
                     </svg>
-                    App
+                    <div className="text-sm text-blue-800">
+                      <p className="font-medium">Email Verification Required</p>
+                      <p className="mt-1">Your account uses email-based authentication. Click the button below to receive your verification code.</p>
+                    </div>
                   </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMfaMethod('email');
-                    setCode('');
-                    setError('');
-                    if (!codeSent) {
-                      sendVerificationEmail();
-                    }
-                  }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
-                    mfaMethod === 'email'
-                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
-                      : 'liquid-card text-gray-900 hover:shadow-liquid'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                    Email
-                  </div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setMfaMethod('backup');
-                    setCode('');
-                    setError('');
-                  }}
-                  className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
-                    mfaMethod === 'backup'
-                      ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
-                      : 'liquid-card text-gray-900 hover:shadow-liquid'
-                  }`}
-                >
-                  <div className="flex items-center justify-center gap-2">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
-                    </svg>
-                    Backup
-                  </div>
-                </button>
-              </div>
+                  {!codeSent && (
+                    <button
+                      type="button"
+                      onClick={() => sendVerificationEmail()}
+                      disabled={isLoading}
+                      className="mt-3 w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                    >
+                      {isLoading ? 'Sending...' : 'Send Email Code'}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                // Standard method selection for other users
+                <div className="flex space-x-2 mb-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMfaMethod('totp');
+                      setCode('');
+                      setError('');
+                    }}
+                    className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
+                      mfaMethod === 'totp'
+                        ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                        : 'liquid-card text-gray-900 hover:shadow-liquid'
+                    }`}
+                  >
+                    <div className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+                      </svg>
+                      App
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMfaMethod('email');
+                      setCode('');
+                      setError('');
+                      if (!codeSent) {
+                        sendVerificationEmail();
+                      }
+                    }}
+                    className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
+                      mfaMethod === 'email'
+                        ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                        : 'liquid-card text-gray-900 hover:shadow-liquid'
+                    }`}
+                  >
+                    <div className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      Email
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMfaMethod('backup');
+                      setCode('');
+                      setError('');
+                    }}
+                    className={`flex-1 py-2 px-4 rounded-lg font-medium transition-all ${
+                      mfaMethod === 'backup'
+                        ? 'bg-gradient-to-br from-ios-blue to-ios-indigo text-white shadow-liquid-glow'
+                        : 'liquid-card text-gray-900 hover:shadow-liquid'
+                    }`}
+                  >
+                    <div className="flex items-center justify-center gap-2">
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                      </svg>
+                      Backup
+                    </div>
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Email Display */}
