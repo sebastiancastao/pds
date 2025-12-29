@@ -1683,7 +1683,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
                   <td align="center">
                     <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/dashboard"
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
-                      Go to Dashboard
+                      Go to Login
                     </a>
                   </td>
                 </tr>
