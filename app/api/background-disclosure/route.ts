@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
 export async function GET() {
   try {
+    // Dynamically import pdf-lib to avoid memory issues during build
+    const { PDFDocument, StandardFonts } = await import('pdf-lib');
+
     // Load the Background Check Disclosure and Authorization PDF
     const pdfPath = join(process.cwd(), 'Form 1 Background Check Disclosure and Authorization revised 12.26.25 final approved.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
@@ -40,7 +42,6 @@ export async function GET() {
       // Name
       const nameField = form.createTextField('name');
       nameField.setText('');
-      nameField.setFontSize(12);
       nameField.updateAppearances(helveticaFont);
       nameField.addToPage(secondPage, {
         x: 50, y: height2 - 165, width: 300, height: 15,
@@ -49,7 +50,6 @@ export async function GET() {
       // Address
       const addressField = form.createTextField('address');
       addressField.setText('');
-      addressField.setFontSize(12);
       addressField.updateAppearances(helveticaFont);
       addressField.addToPage(secondPage, {
         x: 50, y: height2 - 205, width: 300, height: 15,
@@ -58,7 +58,6 @@ export async function GET() {
       // City
       const cityField = form.createTextField('city');
       cityField.setText('');
-      cityField.setFontSize(12);
       cityField.updateAppearances(helveticaFont);
       cityField.addToPage(secondPage, {
         x: 50, y: height2 - 250, width: 110, height: 15,
@@ -67,7 +66,6 @@ export async function GET() {
       // State
       const stateField = form.createTextField('state');
       stateField.setText('');
-      stateField.setFontSize(12);
       stateField.updateAppearances(helveticaFont);
       stateField.addToPage(secondPage, {
         x: 160, y: height2 - 250, width: 60, height: 15,
@@ -76,7 +74,6 @@ export async function GET() {
       // Zip
       const zipField = form.createTextField('zip');
       zipField.setText('');
-      zipField.setFontSize(12);
       zipField.updateAppearances(helveticaFont);
       zipField.addToPage(secondPage, {
         x: 220, y: height2 - 250, width: 60, height: 15,
@@ -85,7 +82,6 @@ export async function GET() {
       // Cell Phone
       const cellPhoneField = form.createTextField('cellPhone');
       cellPhoneField.setText('');
-      cellPhoneField.setFontSize(12);
       cellPhoneField.updateAppearances(helveticaFont);
       cellPhoneField.addToPage(secondPage, {
         x: 50, y: height2 - 310, width: 100, height: 15,
@@ -94,7 +90,6 @@ export async function GET() {
       // SSN
       const ssnField = form.createTextField('ssn');
       ssnField.setText('');
-      ssnField.setFontSize(12);
       ssnField.updateAppearances(helveticaFont);
       ssnField.addToPage(secondPage, {
         x: 160, y: height2 - 310, width: 120, height: 15,
@@ -103,7 +98,6 @@ export async function GET() {
       // Date of Birth
       const dobField = form.createTextField('dateOfBirth');
       dobField.setText('');
-      dobField.setFontSize(12);
       dobField.updateAppearances(helveticaFont);
       dobField.addToPage(secondPage, {
         x: 50, y: height2 - 350, width: 100, height: 15,
@@ -112,7 +106,6 @@ export async function GET() {
       // Driver's License Number
       const dlField = form.createTextField('driversLicense');
       dlField.setText('');
-      dlField.setFontSize(12);
       dlField.updateAppearances(helveticaFont);
       dlField.addToPage(secondPage, {
         x: 160, y: height2 - 350, width: 100, height: 15,
@@ -121,7 +114,6 @@ export async function GET() {
       // DL State
       const dlStateField = form.createTextField('dlState');
       dlStateField.setText('');
-      dlStateField.setFontSize(12);
       dlStateField.updateAppearances(helveticaFont);
       dlStateField.addToPage(secondPage, {
         x: 260, y: height2 - 350, width: 50, height: 15,
@@ -132,7 +124,6 @@ export async function GET() {
       // Date (signature date)
       const dateField = form.createTextField('signatureDate');
       dateField.setText('');
-      dateField.setFontSize(12);
       dateField.updateAppearances(helveticaFont);
       dateField.addToPage(secondPage, {
         x: 350, y: height2 - 430, width: 100, height: 15,

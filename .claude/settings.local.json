@@ -35,7 +35,9 @@
       "Bash(tasklist:*)",
       "Bash(timeout /t 5 /nobreak)",
       "Bash(if exist .next rmdir /s /q .next)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(timeout /t 10 /nobreak)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []

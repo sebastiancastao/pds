@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
 export async function GET() {
   try {
+    // Dynamically import pdf-lib to avoid memory issues during build
+    const { PDFDocument } = await import('pdf-lib');
+
     // Load the Background Check Form #3 Add-on PDF
     const pdfPath = join(process.cwd(), 'Background check form #3 12.26.25 add on final approved (1).pdf');
     const existingPdfBytes = readFileSync(pdfPath);

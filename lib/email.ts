@@ -1447,6 +1447,165 @@ export async function sendEmail(data: {
 }
 
 /**
+ * Send background check approval notification to admin
+ */
+export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
+  vendorEmail: string;
+  vendorFirstName: string;
+  vendorLastName: string;
+  approvedAt: string;
+}): Promise<EmailResult> {
+  const { vendorEmail, vendorFirstName, vendorLastName, approvedAt } = data;
+
+  const emailSubject = `Background Check Approved - ${vendorFirstName} ${vendorLastName}`;
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check Approved</h1>
+              <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Admin Notification</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px 30px;">
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                A background check has been marked as approved in the system.
+              </p>
+
+              <!-- Vendor Details Box -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f8f9fa; border-radius: 8px; border: 2px solid #34C759; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 25px;">
+                    <h2 style="color: #34C759; margin: 0 0 20px 0; font-size: 20px;">👤 Vendor Information</h2>
+
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Name:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 16px;">${vendorFirstName} ${vendorLastName}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Email:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${vendorEmail}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Approved:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${approvedAt}</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Status Update -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
+                      <strong>📝 What Happened:</strong> The background check for ${vendorFirstName} ${vendorLastName} has been marked as completed and approved. An approval email has been automatically sent to the vendor at ${vendorEmail}.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Dashboard Button -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks"
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                      View Background Checks
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                This notification was sent by PDS Time Tracking System
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 0;">
+                This message contains confidential information. If you received this in error, please delete it.
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 10px 0 0 0;">
+                © ${new Date().getFullYear()} PDS. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  // Send email via Resend to admin
+  try {
+    const { data, error } = await resend.emails.send({
+      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      to: 'sebastiancastao379@gmail.com',
+      subject: emailSubject,
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (admin background check approval notification):', error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+
+    console.log('✅ Admin background check approval notification sent successfully!');
+    console.log(`   To: sebastiancastao379@gmail.com`);
+    console.log(`   Vendor: ${vendorFirstName} ${vendorLastName} (${vendorEmail})`);
+    console.log(`   Message ID: ${data?.id}`);
+
+    return {
+      success: true,
+      messageId: data?.id,
+    };
+  } catch (error: any) {
+    console.error('❌ Admin background check approval notification failed:', error);
+    return {
+      success: false,
+      error: error.message || 'Failed to send admin notification',
+    };
+  }
+}
+
+/**
  * Send background check approval notification to user
  */
 export async function sendBackgroundCheckApprovalEmail(data: {

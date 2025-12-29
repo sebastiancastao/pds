@@ -856,11 +856,10 @@ export default function DashboardPage() {
   const openTeamModal = async (event: EventItem) => {
     setSelectedEvent(event);
     setShowTeamModal(true);
-    setSelectedTeamMembers(new Set());
     setTeamMessage("");
     setSelectedTeamRegion("all");
 
-    // Load available vendors
+    // Load available vendors first
     await loadTeamVendors(event, "all");
 
     // Load existing team members and merge with available vendors
@@ -874,7 +873,7 @@ export default function DashboardPage() {
       if (res.ok && data.team && data.team.length > 0) {
         console.log('[DASHBOARD-TEAM] 📋 Loading', data.team.length, 'existing team members');
 
-        // Convert team members to vendor format
+        // Convert team members to vendor format (names are already decrypted by API)
         const existingVendors = data.team.map((member: any) => ({
           id: member.vendor_id,
           email: member.users?.email || '',
@@ -883,9 +882,11 @@ export default function DashboardPage() {
             first_name: member.users?.profiles?.first_name || '',
             last_name: member.users?.profiles?.last_name || '',
             phone: member.users?.profiles?.phone || '',
+            profile_photo_url: member.users?.profiles?.profile_photo_url || null,
           },
           distance: null,
-          status: member.status // Include status to show confirmation state
+          status: member.status, // Include status to show confirmation state
+          isExistingMember: true // Flag to show they're already on the team
         }));
 
         // Merge existing team members with available vendors (avoid duplicates)
@@ -895,7 +896,7 @@ export default function DashboardPage() {
           return [...prevVendors, ...newVendors];
         });
 
-        // Pre-select existing team members
+        // Pre-select existing team members AFTER merging
         const existingMemberIds = new Set<string>(
           (data.team as any[])
             .map((member: any) => String(member?.vendor_id ?? ""))
@@ -903,10 +904,14 @@ export default function DashboardPage() {
         );
         console.log('[DASHBOARD-TEAM] ✅ Pre-selecting', existingMemberIds.size, 'existing team members');
         setSelectedTeamMembers(existingMemberIds);
+      } else {
+        // No existing team - start with empty selection
+        setSelectedTeamMembers(new Set());
       }
     } catch (err) {
       console.error('[DASHBOARD-TEAM] ❌ Error loading existing team members:', err);
       // Continue anyway - user can still create a team
+      setSelectedTeamMembers(new Set());
     }
   };
 
@@ -974,8 +979,24 @@ export default function DashboardPage() {
     setSelectedTeamMembers(s);
   };
   const handleSelectAllTeam = () => {
-    if (selectedTeamMembers.size === availableVendors.length) setSelectedTeamMembers(new Set());
-    else setSelectedTeamMembers(new Set(availableVendors.map((v) => v.id)));
+    // Get vendors who are NOT already invited (new vendors only)
+    const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
+    const existingVendors = availableVendors.filter((v) => (v as any).isExistingMember);
+
+    // Get IDs of new vendors and existing vendors
+    const newVendorIds = newVendors.map((v) => v.id);
+    const existingVendorIds = existingVendors.map((v) => v.id);
+
+    // Check if all NEW vendors are selected
+    const allNewSelected = newVendorIds.every(id => selectedTeamMembers.has(id));
+
+    if (allNewSelected) {
+      // Deselect all NEW vendors, but keep existing members selected
+      setSelectedTeamMembers(new Set(existingVendorIds));
+    } else {
+      // Select all NEW vendors + keep existing members selected
+      setSelectedTeamMembers(new Set([...newVendorIds, ...existingVendorIds]));
+    }
   };
   const handleSaveTeam = async () => {
     if (!selectedEvent || selectedTeamMembers.size === 0) return;
@@ -2122,12 +2143,15 @@ export default function DashboardPage() {
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
-                        checked={selectedTeamMembers.size === availableVendors.length && availableVendors.length > 0}
+                        checked={(() => {
+                          const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
+                          return newVendors.length > 0 && newVendors.every(v => selectedTeamMembers.has(v.id));
+                        })()}
                         onChange={handleSelectAllTeam}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({availableVendors.length})
+                        Select All ({availableVendors.filter((v) => !(v as any).isExistingMember).length} new)
                       </span>
                     </label>
                     <button
@@ -2146,13 +2170,17 @@ export default function DashboardPage() {
                       const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
 
                       return (
-                        <div key={v.id} className="apple-vendor-card" onClick={() => toggleTeamMember(v.id)}>
-                          <input
-                            type="checkbox"
-                            checked={selectedTeamMembers.has(v.id)}
-                            onChange={() => toggleTeamMember(v.id)}
-                            className="apple-checkbox"
-                          />
+                        <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && toggleTeamMember(v.id)}>
+                          {!(v as any).isExistingMember ? (
+                            <input
+                              type="checkbox"
+                              checked={selectedTeamMembers.has(v.id)}
+                              onChange={() => toggleTeamMember(v.id)}
+                              className="apple-checkbox"
+                            />
+                          ) : (
+                            <div className="w-5 h-5 flex-shrink-0"></div>
+                          )}
                           {v.profiles.profile_photo_url ? (
                             <img
                               src={v.profiles.profile_photo_url}
@@ -2177,11 +2205,20 @@ export default function DashboardPage() {
                               <div className="font-semibold text-gray-900">
                                 {firstName} {lastName}
                               </div>
-                            {v.distance !== null ? (
-                              <div className="apple-distance-badge">{v.distance} mi</div>
-                            ) : (
-                              <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
-                            )}
+                              <div className="flex items-center gap-2">
+                                {(v as any).isExistingMember && (
+                                  <div className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-md font-medium">
+                                    {(v as any).status === 'confirmed' ? 'Confirmed' :
+                                     (v as any).status === 'declined' ? 'Declined' :
+                                     'Invited'}
+                                  </div>
+                                )}
+                                {v.distance !== null ? (
+                                  <div className="apple-distance-badge">{v.distance} mi</div>
+                                ) : (
+                                  <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
+                                )}
+                              </div>
                           </div>
                           <div className="text-gray-600 text-sm mb-1">
                             {v.email}

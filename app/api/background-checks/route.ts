@@ -3,7 +3,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from 'next/server';
 import { safeDecrypt } from "@/lib/encryption";
-import { sendBackgroundCheckApprovalEmail } from "@/lib/email";
+import { sendBackgroundCheckApprovalEmail, sendBackgroundCheckApprovalNotificationToAdmin } from "@/lib/email";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -319,22 +319,47 @@ export async function POST(req: NextRequest) {
         if (email && firstName && lastName) {
           console.log('[Background Checks API] Sending approval email to:', email);
 
-          // Send the approval email asynchronously (don't wait for it)
+          // Send the approval email to the vendor asynchronously (don't wait for it)
           sendBackgroundCheckApprovalEmail({
             email,
             firstName,
             lastName
           }).then(result => {
             if (result.success) {
-              console.log('[Background Checks API] Approval email sent successfully');
+              console.log('[Background Checks API] Approval email sent successfully to vendor');
             } else {
-              console.error('[Background Checks API] Failed to send approval email:', result.error);
+              console.error('[Background Checks API] Failed to send approval email to vendor:', result.error);
             }
           }).catch(err => {
-            console.error('[Background Checks API] Error sending approval email:', err);
+            console.error('[Background Checks API] Error sending approval email to vendor:', err);
+          });
+
+          // Send notification email to admin (sebastiancastao379@gmail.com) asynchronously
+          const approvedAt = new Date().toLocaleString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: 'numeric',
+            timeZone: 'America/New_York'
+          });
+
+          sendBackgroundCheckApprovalNotificationToAdmin({
+            vendorEmail: email,
+            vendorFirstName: firstName,
+            vendorLastName: lastName,
+            approvedAt
+          }).then(result => {
+            if (result.success) {
+              console.log('[Background Checks API] Admin notification sent successfully');
+            } else {
+              console.error('[Background Checks API] Failed to send admin notification:', result.error);
+            }
+          }).catch(err => {
+            console.error('[Background Checks API] Error sending admin notification:', err);
           });
         } else {
-          console.warn('[Background Checks API] Missing email or name, skipping approval email');
+          console.warn('[Background Checks API] Missing email or name, skipping approval emails');
         }
       }
     }

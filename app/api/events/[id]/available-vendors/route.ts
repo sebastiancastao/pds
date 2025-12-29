@@ -118,6 +118,7 @@ export async function GET(
     }
 
     // Get all vendor invitations that include this event date
+    // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
     const { data: invitations, error: invitationsError } = await supabaseAdmin
       .from('vendor_invitations')
       .select(`
@@ -132,7 +133,6 @@ export async function GET(
     console.log('🔍 DEBUG - Invitations Query:', {
       userId: user.id,
       invitationsCount: invitations?.length || 0,
-      invitations,
       invitationsError
     });
 
@@ -144,6 +144,7 @@ export async function GET(
     }
 
     // Filter vendors who are available on this event date
+    // IMPORTANT: This does NOT check if they're on other event teams
     console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date);
 
     const availableVendorIds = (invitations || [])
@@ -151,8 +152,6 @@ export async function GET(
         console.log(`🔍 DEBUG - Processing Invitation ${index + 1}:`, {
           vendor_id: inv.vendor_id,
           has_availability: !!inv.availability,
-          availability_type: typeof inv.availability,
-          availability_data: inv.availability,
           status: inv.status
         });
 
@@ -182,16 +181,17 @@ export async function GET(
       })
       .filter(id => id !== null);
 
-    console.log('🔍 DEBUG - Available Vendor IDs:', availableVendorIds);
+    console.log('🔍 DEBUG - Available Vendor IDs (NO EVENT_TEAMS FILTERING):', availableVendorIds);
 
     if (availableVendorIds.length === 0) {
-      console.log('❌ No available vendors found, returning empty list');
+      console.log('❌ No available vendors found for this date');
       return NextResponse.json({
         vendors: []
       }, { status: 200 });
     }
 
     // Get vendor details for available vendors
+    // NO filtering by event_teams - vendors can work multiple events!
     const { data: vendors, error: vendorsError } = await supabaseAdmin
       .from('users')
       .select(`
@@ -218,7 +218,6 @@ export async function GET(
     console.log('🔍 DEBUG - Vendor Details Query:', {
       availableVendorIds,
       vendorsCount: vendors?.length || 0,
-      vendors,
       vendorsError
     });
 

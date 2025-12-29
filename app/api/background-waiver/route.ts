@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
 export async function GET() {
   try {
+    // Dynamically import pdf-lib to avoid memory issues during build
+    const { PDFDocument, StandardFonts } = await import('pdf-lib');
+
     // Load the Background Waiver PDF
     const pdfPath = join(process.cwd(), 'Form 2 Background Waiver PDS Brett revised 12.26.25 final approved.docx.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
@@ -34,7 +36,6 @@ export async function GET() {
     // Full Name
     const fullNameField = form.createTextField('fullName');
     fullNameField.setText('');
-    fullNameField.setFontSize(10);
     fullNameField.updateAppearances(helveticaFont);
     fullNameField.addToPage(firstPage, {
       x: 255, y: height - 1155, width: 200, height: 10,
@@ -43,7 +44,6 @@ export async function GET() {
     // Date
     const dateField = form.createTextField('date');
     dateField.setText('');
-    dateField.setFontSize(10);
     dateField.updateAppearances(helveticaFont);
     dateField.addToPage(firstPage, {
       x: 450, y: height - 1130, width: 60, height: 10,
@@ -52,7 +52,6 @@ export async function GET() {
     // Date of Birth
     const dobField = form.createTextField('dateOfBirth');
     dobField.setText('');
-    dobField.setFontSize(10);
     dobField.updateAppearances(helveticaFont);
     dobField.addToPage(firstPage, {
       x: 200, y: height - 1240, width: 60, height: 10,
@@ -62,7 +61,6 @@ export async function GET() {
     // Social Security Number
     const ssnField = form.createTextField('ssn');
     ssnField.setText('');
-    ssnField.setFontSize(10);
     ssnField.updateAppearances(helveticaFont);
     ssnField.addToPage(firstPage, {
       x: 430, y: height - 1240, width: 60, height: 10,
@@ -70,7 +68,6 @@ export async function GET() {
     });
    const dlnField = form.createTextField('driversLicenseName');
     dlnField.setText('');
-    dlnField.setFontSize(10);
     dlnField.updateAppearances(helveticaFont);
     dlnField.addToPage(firstPage, {
       x: 300, y: height - 1170, width: 200, height: 10,
@@ -78,7 +75,6 @@ export async function GET() {
     });
     const otherName = form.createTextField('otherName');
     otherName.setText('');
-    otherName.setFontSize(10);
     otherName.updateAppearances(helveticaFont);
     otherName.addToPage(firstPage, {
       x: 255, y: height - 1185, width: 200, height: 10,
@@ -88,7 +84,6 @@ export async function GET() {
     // Driver's License Number
     const dlField = form.createTextField('driversLicense');
     dlField.setText('');
-    dlField.setFontSize(10);
     dlField.updateAppearances(helveticaFont);
     dlField.addToPage(firstPage, {
       x: 255, y: height - 1210, width: 80, height: 10,
@@ -99,7 +94,6 @@ export async function GET() {
     // State
     const stateField = form.createTextField('state');
     stateField.setText('');
-    stateField.setFontSize(10);
     stateField.updateAppearances(helveticaFont);
     stateField.addToPage(firstPage, {
       x: 450, y: height - 1210, width: 60, height: 10,
@@ -122,7 +116,6 @@ export async function GET() {
       // Previous Employer 1
       const fullname2p = form.createTextField('full name');
       fullname2p.setText('');
-      fullname2p.setFontSize(10);
       fullname2p.updateAppearances(helveticaFont);
       fullname2p.addToPage(secondPage, {
         x: 250, y: height2 - 915, width: 200, height: 10,
@@ -131,7 +124,6 @@ export async function GET() {
       // Previous Posipmtion 1
       const adress = form.createTextField('adress');
       adress.setText('');
-      adress.setFontSize(10);
       adress.updateAppearances(helveticaFont);
       adress.addToPage(secondPage, {
         x: 230, y: height2 - 945, width: 200, height: 10,
@@ -140,7 +132,6 @@ export async function GET() {
       // Previous Dates 1
       const cityStateZip = form.createTextField('cityStateZip');
       cityStateZip.setText('');
-      cityStateZip.setFontSize(10);
       cityStateZip.updateAppearances(helveticaFont);
       cityStateZip.addToPage(secondPage, {
         x: 200, y: height2 - 975, width: 170, height: 10,
@@ -148,7 +139,6 @@ export async function GET() {
 
       const phone = form.createTextField('phone');
       phone.setText('');
-      phone.setFontSize(10);
       phone.updateAppearances(helveticaFont);
       phone.addToPage(secondPage, {
         x: 330, y: height2 - 1005, width: 150, height: 10,
@@ -156,7 +146,6 @@ export async function GET() {
       // Previous Dates 1
       const prevEmployer1 = form.createTextField('previousEmployer1');
       prevEmployer1.setText('');
-      prevEmployer1.setFontSize(10);
       prevEmployer1.updateAppearances(helveticaFont);
       prevEmployer1.addToPage(secondPage, {
         x: 100, y: height2 - 1050, width: 300, height: 20,
@@ -165,7 +154,6 @@ export async function GET() {
       // Previous Dates 1
       const datefrom1 = form.createTextField('datefrom1');
       datefrom1.setText('');
-      datefrom1.setFontSize(10);
       datefrom1.updateAppearances(helveticaFont);
       datefrom1.addToPage(secondPage, {
         x: 400, y: height2 - 1050, width: 80, height: 20,
@@ -174,7 +162,6 @@ export async function GET() {
       // Previous Dates 1
       const datefto1 = form.createTextField('datefto1');
       datefto1.setText('');
-      datefto1.setFontSize(10);
       datefto1.updateAppearances(helveticaFont);
       datefto1.addToPage(secondPage, {
         x: 480, y: height2 - 1050, width: 80, height: 20,
@@ -185,7 +172,6 @@ export async function GET() {
       // Previous Employer 2
       const prevEmployer2 = form.createTextField('previousEmployer2');
       prevEmployer2.setText('');
-      prevEmployer2.setFontSize(10);
       prevEmployer2.updateAppearances(helveticaFont);
       prevEmployer2.addToPage(secondPage, {
         x: 100, y: height2 - 1075, width: 300, height: 20,
@@ -194,7 +180,6 @@ export async function GET() {
       // Previous Dates 1
       const datefrom2 = form.createTextField('datefrom2');
       datefrom2.setText('');
-      datefrom2.setFontSize(10);
       datefrom2.updateAppearances(helveticaFont);
       datefrom2.addToPage(secondPage, {
         x: 400, y: height2 - 1075, width: 80, height: 20,
@@ -203,7 +188,6 @@ export async function GET() {
       // Previous Dates 1
       const datefto2 = form.createTextField('datefto2');
       datefto2.setText('');
-      datefto2.setFontSize(10);
       datefto2.updateAppearances(helveticaFont);
       datefto2.addToPage(secondPage, {
         x: 480, y: height2 - 1075, width: 80, height: 20,
@@ -214,7 +198,6 @@ export async function GET() {
       // Previous Employer 3
       const prevEmployer3 = form.createTextField('previousEmployer3');
       prevEmployer3.setText('');
-      prevEmployer3.setFontSize(10);
       prevEmployer3.updateAppearances(helveticaFont);
       prevEmployer3.addToPage(secondPage, {
         x: 100, y: height2 - 1100, width: 300, height: 20,
@@ -223,7 +206,6 @@ export async function GET() {
       // Previous Dates 1
       const datefrom3 = form.createTextField('datefrom3');
       datefrom3.setText('');
-      datefrom3.setFontSize(10);
       datefrom3.updateAppearances(helveticaFont);
       datefrom3.addToPage(secondPage, {
         x: 400, y: height2 - 1100, width: 80, height: 20,
@@ -232,7 +214,6 @@ export async function GET() {
       // Previous Dates 1
       const datefto3 = form.createTextField('datefto3');
       datefto3.setText('');
-      datefto3.setFontSize(10);
       datefto3.updateAppearances(helveticaFont);
       datefto3.addToPage(secondPage, {
         x: 480, y: height2 - 1100, width: 80, height: 20,
@@ -242,7 +223,6 @@ export async function GET() {
        // Previous Position 2
       const prevPosition1 = form.createTextField('previousPosition1');
       prevPosition1.setText('');
-      prevPosition1.setFontSize(10);
       prevPosition1.updateAppearances(helveticaFont);
       prevPosition1.addToPage(secondPage, {
         x: 100, y: height2 - 1185, width: 300, height: 20,
@@ -251,7 +231,6 @@ export async function GET() {
       // Previous Dates 1
       const pdatefrom1 = form.createTextField('pdatefrom1');
       pdatefrom1.setText('');
-      pdatefrom1.setFontSize(10);
       pdatefrom1.updateAppearances(helveticaFont);
       pdatefrom1.addToPage(secondPage, {
         x: 400, y: height2 - 1185, width: 80, height: 20,
@@ -260,7 +239,6 @@ export async function GET() {
       // Previous Dates 1
       const pdatefto1 = form.createTextField('pdatefto1');
       pdatefto1.setText('');
-      pdatefto1.setFontSize(10);
       pdatefto1.updateAppearances(helveticaFont);
       pdatefto1.addToPage(secondPage, {
         x: 480, y: height2 - 1185, width: 80, height: 20,
@@ -271,7 +249,6 @@ export async function GET() {
       // Previous Position 2
       const prevPosition2 = form.createTextField('previousPosition2');
       prevPosition2.setText('');
-      prevPosition2.setFontSize(10);
       prevPosition2.updateAppearances(helveticaFont);
       prevPosition2.addToPage(secondPage, {
         x: 100, y: height2 - 1210, width: 300, height: 20,
@@ -281,7 +258,6 @@ export async function GET() {
        // Previous Dates 1
       const pdatefrom2 = form.createTextField('pdatefrom2');
       pdatefrom2.setText('');
-      pdatefrom2.setFontSize(10);
       pdatefrom2.updateAppearances(helveticaFont);
       pdatefrom2.addToPage(secondPage, {
         x: 400, y: height2 - 1210, width: 80, height: 20,
@@ -290,7 +266,6 @@ export async function GET() {
       // Previous Dates 1
       const pdatefto2 = form.createTextField('pdatefto2');
       pdatefto2.setText('');
-      pdatefto2.setFontSize(10);
       pdatefto2.updateAppearances(helveticaFont);
       pdatefto2.addToPage(secondPage, {
         x: 480, y: height2 - 1210, width: 80, height: 20,
@@ -299,7 +274,6 @@ export async function GET() {
 
       const prevPosition3 = form.createTextField('previousPosition3');
       prevPosition3.setText('');
-      prevPosition3.setFontSize(10);
       prevPosition3.updateAppearances(helveticaFont);
       prevPosition3.addToPage(secondPage, {
         x: 100, y: height2 - 1235, width: 300, height: 20,
@@ -308,7 +282,6 @@ export async function GET() {
        // Previous Dates 1
       const pdatefrom3 = form.createTextField('pdatefrom3');
       pdatefrom3.setText('');
-      pdatefrom3.setFontSize(10);
       pdatefrom3.updateAppearances(helveticaFont);
       pdatefrom3.addToPage(secondPage, {
         x: 400, y: height2 - 1235, width: 80, height: 20,
@@ -317,7 +290,6 @@ export async function GET() {
       // Previous Dates 1
       const pdatefto3 = form.createTextField('pdatefto3');
       pdatefto3.setText('');
-      pdatefto3.setFontSize(10);
       pdatefto3.updateAppearances(helveticaFont);
       pdatefto3.addToPage(secondPage, {
         x: 480, y: height2 - 1235, width: 80, height: 20,
@@ -329,7 +301,6 @@ export async function GET() {
       // Reference 1 Name
       const ref1Name = form.createTextField('reference1Name');
       ref1Name.setText('');
-      ref1Name.setFontSize(10);
       ref1Name.updateAppearances(helveticaFont);
       ref1Name.addToPage(secondPage, {
         x: 290, y: height2 - 1110, width: 200, height: 10,
@@ -342,7 +313,6 @@ export async function GET() {
       // Reference 2 Phone
       const ref1Phone = form.createTextField('reference1Phone');
       ref1Phone.setText('');
-      ref1Phone.setFontSize(10);
       ref1Phone.updateAppearances(helveticaFont);
       ref1Phone.addToPage(secondPage, {
         x: 180, y: height2 - 1125, width: 150, height: 10,
@@ -350,7 +320,6 @@ export async function GET() {
 
       const ref1cityStateZip = form.createTextField('ref1cityStateZip');
       ref1cityStateZip.setText('');
-      ref1cityStateZip.setFontSize(10);
       ref1cityStateZip.updateAppearances(helveticaFont);
       ref1cityStateZip.addToPage(secondPage, {
         x: 180, y: height2 - 1140, width: 150, height: 10,
