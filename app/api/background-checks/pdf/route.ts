@@ -511,15 +511,22 @@ export async function GET(req: NextRequest) {
         try {
           let bytes: Buffer;
 
-          // Handle addon differently since it's stored as bytea (binary)
-          if (label === 'addon') {
+          // Try to detect the format and handle both base64 and hex-encoded bytea
+          if (typeof b64 === 'string' && b64.trim().startsWith('\\x')) {
+            // It's hex-encoded bytea - use normalizePdfBytea
+            console.log(`[PDF DOWNLOAD] ${label} is hex-encoded bytea`);
             const normalized = normalizePdfBytea(b64);
             if (!normalized) {
               throw new Error(`${label} PDF data could not be normalized`);
             }
             bytes = normalized;
+          } else if (Buffer.isBuffer(b64) || Array.isArray(b64) || b64 instanceof Uint8Array) {
+            // It's already binary data
+            console.log(`[PDF DOWNLOAD] ${label} is binary data`);
+            bytes = Buffer.isBuffer(b64) ? b64 : Buffer.from(b64);
           } else {
-            // waiver and disclosure are stored as base64 text
+            // It's base64 text
+            console.log(`[PDF DOWNLOAD] ${label} is base64 text`);
             const normalized = normalizePdfBase64(b64);
             bytes = Buffer.from(normalized, 'base64');
           }
