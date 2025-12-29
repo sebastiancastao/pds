@@ -532,7 +532,29 @@ export async function GET(req: NextRequest) {
 
           // ALWAYS use manual rendering to ensure compatibility with old PDFs
           // that were saved without proper field appearances
-          console.log('[PDF DOWNLOAD] Using manual field rendering for', label);
+          console.log('[PDF DOWNLOAD] Using manual field rendering for', label, 'user:', userId);
+
+          // Log form fields before rendering
+          try {
+            const form = src.getForm();
+            const fields = form.getFields();
+            console.log(`[PDF DOWNLOAD] ${label} has ${fields.length} form fields`);
+            fields.forEach((field: any) => {
+              const name = field.getName?.() ?? 'unknown';
+              const isText = 'getText' in field;
+              const isCheck = 'isChecked' in field;
+              if (isText) {
+                const value = field.getText?.() ?? '';
+                if (value) console.log(`[PDF DOWNLOAD] ${label} field "${name}" = "${value}"`);
+              } else if (isCheck) {
+                const checked = field.isChecked?.() ?? false;
+                if (checked) console.log(`[PDF DOWNLOAD] ${label} checkbox "${name}" = checked`);
+              }
+            });
+          } catch (e) {
+            console.error('[PDF DOWNLOAD] Error inspecting fields:', e);
+          }
+
           await forceStaticFormRender(src, label);
 
           // CRITICAL: Save and reload the PDF after manual rendering to ensure
