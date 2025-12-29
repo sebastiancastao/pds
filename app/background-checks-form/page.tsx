@@ -491,7 +491,7 @@ export default function BackgroundChecksForm() {
       setSaveStatus('saved');
 
       // Show success message and redirect to login
-      alert('Background check forms submitted successfully! Please log in again.');
+      alert('Background check forms submitted successfully! .');
       router.push('/login');
 
     } catch (error) {
