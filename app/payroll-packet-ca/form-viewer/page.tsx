@@ -89,7 +89,7 @@ function FormViewerContent() {
     'survivors-rights': { display: 'Survivors Rights', api: '/api/payroll-packet-ca/survivors-rights', formId: 'survivors-rights', next: 'transgender-rights' },
     'transgender-rights': { display: 'Transgender Rights', api: '/api/payroll-packet-ca/transgender-rights', formId: 'transgender-rights', next: 'health-insurance' },
     'health-insurance': { display: 'Health Insurance', api: '/api/payroll-packet-ca/health-insurance', formId: 'health-insurance', next: 'time-of-hire' },
-    'time-of-hire': { display: 'Time of Hire Notice', api: '/api/payroll-packet-ca/time-of-hire', formId: 'time-of-hire', next: 'notice-to-employee' },
+    'time-of-hire': { display: 'Time of Hire Notice', api: '/api/payroll-packet-ca/time-of-hire', formId: 'time-of-hire', next: 'notice-to-employee', requiresSignature: true },
     'notice-to-employee': { display: 'LC 2810.5 Notice to Employee', api: '/api/payroll-packet-ca/notice-to-employee', formId: 'notice-to-employee', next: 'discrimination-law' },
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },

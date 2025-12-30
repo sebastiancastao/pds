@@ -203,7 +203,7 @@ function generateEmailTemplate(data: {
                   <td style="padding: 20px;">
                     <p style="color: #0c5280; margin: 0; font-size: 14px;">
                       <strong>Need help?</strong> Contact our support team at 
-                      <a href="mailto:portal@1pds.net " style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                      <a href="mailto:portal@1pds.net " style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
                     </p>
                   </td>
                 </tr>
@@ -351,7 +351,7 @@ export async function sendInviteEmail(data: {
               <!-- Support -->
               <p style="color: #777777; font-size: 14px; margin: 30px 0 0 0; text-align: center;">
                 Questions? Contact us at 
-                <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                <a href="mailto:portal@1pds.net" style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
               </p>
             </td>
           </tr>
@@ -635,7 +635,7 @@ export async function sendVendorEventInvitationEmail(data: {
               <!-- Support -->
               <p style="color: #777777; font-size: 14px; margin: 30px 0 0 0; text-align: center;">
                 Questions about this event? Contact us at
-                <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                <a href="mailto:portal@1pds.net" style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
               </p>
             </td>
           </tr>
@@ -861,7 +861,7 @@ export async function sendVendorBulkInvitationEmail(data: {
               <!-- Support -->
               <p style="color: #6b7280; font-size: 15px; margin: 36px 0 0 0; text-align: center; line-height: 1.6;">
                 Questions about this opportunity?<br>
-                Contact us at <a href="mailto:support@pds.com" style="color: #007AFF; text-decoration: none; font-weight: 500;">support@pds.com</a>
+                Contact us at <a href="mailto:portal@1pds.net" style="color: #007AFF; text-decoration: none; font-weight: 500;">portal@1pds.net</a>
                 ${managerPhone ? ` or call ${managerPhone}` : ''}
               </p>
             </td>
@@ -1075,7 +1075,7 @@ export async function sendTeamConfirmationEmail(data: {
               <!-- Support -->
               <p style="color: #6b7280; font-size: 15px; margin: 36px 0 0 0; text-align: center; line-height: 1.6;">
                 Questions about this event?<br>
-                Contact <strong>${managerName}</strong> at <a href="mailto:support@pds.com" style="color: #007AFF; text-decoration: none; font-weight: 500;">support@pds.com</a>
+                Contact <strong>${managerName}</strong> at <a href="mailto:portal@1pds.net" style="color: #007AFF; text-decoration: none; font-weight: 500;">portal@1pds.net</a>
                 ${managerPhone ? ` or call <a href="tel:${managerPhone}" style="color: #007AFF; text-decoration: none; font-weight: 500;">${managerPhone}</a>` : ''}
               </p>
             </td>
@@ -1635,7 +1635,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
                   <td style="padding: 20px;">
                     <p style="color: #0c5280; margin: 0; font-size: 14px;">
                       <strong>Need help?</strong> If you have any questions about the onboarding process, please contact us at
-                      <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                      <a href="mailto:portal@1pds.net" style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
                     </p>
                   </td>
                 </tr>
