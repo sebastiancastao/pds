@@ -620,6 +620,7 @@ function FormViewerContent() {
             onSave={handlePDFSave}
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
+            skipButtonDetection={!currentForm.requiresSignature}
           />
         </div>
 

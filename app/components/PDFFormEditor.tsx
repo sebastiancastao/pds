@@ -17,6 +17,7 @@ interface PDFFormEditorProps {
   onFieldChange?: () => void;
   onContinue?: () => void;
   onProgress?: (progress: number) => void; // 0.0 - 1.0
+  skipButtonDetection?: boolean; // Skip detecting and overlaying embedded PDF buttons
 }
 
 interface FormField {
@@ -28,7 +29,7 @@ interface FormField {
   value: string;
 }
 
-export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress }: PDFFormEditorProps) {
+export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress, skipButtonDetection }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
@@ -295,54 +296,59 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       }
 
       // Extract Continue button position from last page annotations
-      console.log('Step 9: Extracting Continue button annotations...');
-      try {
-        if (pdfDocRef.current) {
-          const lastPageNum = pdfDocRef.current.numPages;
-          console.log('Getting last page:', lastPageNum);
-          const lastPage = await pdfDocRef.current.getPage(lastPageNum);
-          console.log('Last page retrieved successfully');
+      // Skip button detection for read-only/informational PDFs
+      if (!skipButtonDetection) {
+        console.log('Step 9: Extracting Continue button annotations...');
+        try {
+          if (pdfDocRef.current) {
+            const lastPageNum = pdfDocRef.current.numPages;
+            console.log('Getting last page:', lastPageNum);
+            const lastPage = await pdfDocRef.current.getPage(lastPageNum);
+            console.log('Last page retrieved successfully');
 
-          const annotations = await lastPage.getAnnotations();
-          console.log('Annotations found:', annotations ? annotations.length : 0);
+            const annotations = await lastPage.getAnnotations();
+            console.log('Annotations found:', annotations ? annotations.length : 0);
 
-          if (annotations && Array.isArray(annotations)) {
-            for (let i = 0; i < annotations.length; i++) {
-              const annot = annotations[i];
-              console.log(`Annotation ${i}:`, {
-                subtype: annot?.subtype,
-                hasUrl: !!annot?.url,
-                hasRect: !!annot?.rect,
-                url: annot?.url
-              });
+            if (annotations && Array.isArray(annotations)) {
+              for (let i = 0; i < annotations.length; i++) {
+                const annot = annotations[i];
+                console.log(`Annotation ${i}:`, {
+                  subtype: annot?.subtype,
+                  hasUrl: !!annot?.url,
+                  hasRect: !!annot?.rect,
+                  url: annot?.url
+                });
 
-              if (annot && annot.subtype === 'Link' && annot.url && annot.rect) {
-                const rect = annot.rect;
-                console.log('Link annotation rect:', rect);
-                // Verify rect is an array with at least 4 elements
-                if (Array.isArray(rect) && rect.length >= 4) {
-                  // Store button position for the last page
-                  if (lastPageNum === pdfDocRef.current.numPages) {
-                    const buttonRect = {
-                      x: rect[0],
-                      y: rect[1],
-                      width: rect[2] - rect[0],
-                      height: rect[3] - rect[1]
-                    };
-                    console.log('Continue button found:', buttonRect);
-                    setContinueButtonRect(buttonRect);
-                    break; // Found the button, no need to continue
+                if (annot && annot.subtype === 'Link' && annot.url && annot.rect) {
+                  const rect = annot.rect;
+                  console.log('Link annotation rect:', rect);
+                  // Verify rect is an array with at least 4 elements
+                  if (Array.isArray(rect) && rect.length >= 4) {
+                    // Store button position for the last page
+                    if (lastPageNum === pdfDocRef.current.numPages) {
+                      const buttonRect = {
+                        x: rect[0],
+                        y: rect[1],
+                        width: rect[2] - rect[0],
+                        height: rect[3] - rect[1]
+                      };
+                      console.log('Continue button found:', buttonRect);
+                      setContinueButtonRect(buttonRect);
+                      break; // Found the button, no need to continue
+                    }
                   }
                 }
               }
             }
+            console.log('Annotation extraction completed');
           }
-          console.log('Annotation extraction completed');
+        } catch (annotError: any) {
+          console.warn('Error extracting button annotations:', annotError);
+          console.warn('Stack:', annotError?.stack);
+          // Continue without button interception - user can still use manual navigation
         }
-      } catch (annotError: any) {
-        console.warn('Error extracting button annotations:', annotError);
-        console.warn('Stack:', annotError?.stack);
-        // Continue without button interception - user can still use manual navigation
+      } else {
+        console.log('Step 9: Skipping button detection (skipButtonDetection=true)');
       }
 
       // Provide initial PDF bytes
@@ -657,13 +663,14 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       overflow: 'auto'
     }}>
       {/* PDF Canvas with Overlaid Inputs */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'center', padding: '20px', overflow: 'auto' }}>
+      <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}>
         <div style={{
           position: 'relative',
           boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
           backgroundColor: 'white',
           minHeight: '100%',
-          display: 'inline-block'
+          display: 'inline-block',
+          margin: '0 auto'
         }}>
           {/* Canvas container - for PDF rendering */}
           <div
@@ -735,7 +742,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           })}
 
           {/* Overlay Continue button interceptor on last page */}
-          {pageViewports.length > 0 && continueButtonRect && (
+          {!skipButtonDetection && pageViewports.length > 0 && continueButtonRect && (
             <div
               onClick={async (e) => {
                 e.preventDefault();
