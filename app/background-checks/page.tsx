@@ -219,6 +219,30 @@ export default function BackgroundChecksPage() {
     }
   };
 
+  const handleExportToExcel = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch('/api/background-checks/export', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to export data');
+      }
+
+      const blob = await response.blob();
+      const date = new Date().toISOString().split('T')[0];
+      downloadBlob(blob, `background_checks_report_${date}.xlsx`);
+    } catch (err: any) {
+      console.error('Error exporting to Excel:', err);
+      alert(`Failed to export data: ${err.message}`);
+    }
+  };
+
   const filteredVendors = vendors
     .filter(vendor => {
       const matchesSearch =
@@ -286,17 +310,31 @@ export default function BackgroundChecksPage() {
             <h1 className="text-3xl font-bold text-gray-900">Background Checks</h1>
             <p className="mt-2 text-gray-600">Track and manage background check status for all users</p>
           </div>
-          {(myRole === 'hr' || myRole === 'exec') && (
+          <div className="flex gap-3">
             <button
-              onClick={() => router.push('/hr-dashboard')}
-              className="apple-button apple-button-secondary flex items-center gap-2"
+              onClick={handleExportToExcel}
+              className="apple-button apple-button-primary flex items-center gap-2"
+              title="Export to Excel"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 18l-6-6 6-6" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              Back to Dashboard
+              Export to Excel
             </button>
-          )}
+            {(myRole === 'hr' || myRole === 'exec') && (
+              <button
+                onClick={() => router.push('/hr-dashboard')}
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+                Back to Dashboard
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Stats */}

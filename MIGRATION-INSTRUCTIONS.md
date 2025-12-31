@@ -56,11 +56,32 @@ After running the migration, verify that the table was created:
 - ✅ Persists across page refreshes
 - ✅ RLS policies ensure only admin/HR/exec can track downloads
 - ✅ Download tracking doesn't break if migration fails
+- ✅ **Excel Export**: Export all background check data to Excel with submission status
+
+## Excel Export Feature:
+The Background Checks page now includes an "Export to Excel" button that generates a comprehensive report with:
+- Full Name
+- Email
+- Role
+- Phone
+- Password Status (Temporary/Permanent)
+- Background Check Status (Completed/Pending)
+- Background Check Completed Date
+- PDF Submitted (Yes/No)
+- PDF Submission Date
+- PDF Downloaded (Yes/No)
+- PDF Download Date
+- Notes
+
+The Excel file is automatically named with the current date: `background_checks_report_YYYY-MM-DD.xlsx`
 
 ## Testing:
 1. Run the migration
 2. Navigate to the Background Checks page
-3. Find a vendor with a submitted PDF
-4. Click "Download Documents" (green button)
-5. Button should turn purple and show "Downloaded ✓"
-6. Refresh the page - button should still be purple
+3. Click "Export to Excel" button - an Excel file should download
+4. Open the Excel file and verify all data is present
+5. Find a vendor with a submitted PDF
+6. Click "Download Documents" (green button)
+7. Button should turn purple and show "Downloaded ✓"
+8. Refresh the page - button should still be purple
+9. Export again and verify the "PDF Downloaded" column shows "Yes" for that vendor
