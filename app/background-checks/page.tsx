@@ -27,6 +27,8 @@ interface Vendor {
   background_check: BackgroundCheck | null;
   has_submitted_pdf: boolean;
   pdf_submitted_at: string | null;
+  pdf_downloaded: boolean;
+  pdf_downloaded_at: string | null;
 }
 
 export default function BackgroundChecksPage() {
@@ -202,33 +204,59 @@ export default function BackgroundChecksPage() {
       }
       const blob = await response.blob();
       downloadBlob(blob, `background_check_${vendorName.replace(/\s+/g, '_')}.pdf`);
+
+      // Update the vendor's download status in local state
+      setVendors(prev =>
+        prev.map(v =>
+          v.user_id === userId
+            ? { ...v, pdf_downloaded: true, pdf_downloaded_at: new Date().toISOString() }
+            : v
+        )
+      );
     } catch (err: any) {
       console.error('Error downloading PDF:', err);
       alert(`Failed to download PDF: ${err.message}`);
     }
   };
 
-  const filteredVendors = vendors.filter(vendor => {
-    const matchesSearch =
-      vendor.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
+  const filteredVendors = vendors
+    .filter(vendor => {
+      const matchesSearch =
+        vendor.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        vendor.email.toLowerCase().includes(searchTerm.toLowerCase());
 
-    if (!matchesSearch) return false;
+      if (!matchesSearch) return false;
 
-    if (filterStatus === 'completed') {
-      if (!vendor.background_check?.background_check_completed) return false;
-    } else if (filterStatus === 'pending') {
-      if (vendor.background_check?.background_check_completed) return false;
-    }
+      if (filterStatus === 'completed') {
+        if (!vendor.background_check?.background_check_completed) return false;
+      } else if (filterStatus === 'pending') {
+        if (vendor.background_check?.background_check_completed) return false;
+      }
 
-    if (filterPassword === 'temporary') {
-      if (!vendor.has_temporary_password) return false;
-    } else if (filterPassword === 'permanent') {
-      if (vendor.has_temporary_password) return false;
-    }
+      if (filterPassword === 'temporary') {
+        if (!vendor.has_temporary_password) return false;
+      } else if (filterPassword === 'permanent') {
+        if (vendor.has_temporary_password) return false;
+      }
 
-    return true;
-  });
+      return true;
+    })
+    .sort((a, b) => {
+      const aHasSubmitted = a.has_submitted_pdf && a.background_check_completed_user_table && a.pdf_submitted_at;
+      const bHasSubmitted = b.has_submitted_pdf && b.background_check_completed_user_table && b.pdf_submitted_at;
+
+      // Vendors who have submitted come first
+      if (aHasSubmitted && !bHasSubmitted) return -1;
+      if (!aHasSubmitted && bHasSubmitted) return 1;
+
+      // Among vendors who have submitted, sort by date: newest first
+      if (aHasSubmitted && bHasSubmitted) {
+        return new Date(b.pdf_submitted_at!).getTime() - new Date(a.pdf_submitted_at!).getTime();
+      }
+
+      // For vendors who haven't submitted, maintain original order
+      return 0;
+    });
 
   const completedCount = vendors.filter(v => v.background_check?.background_check_completed).length;
   const pendingCount = vendors.length - completedCount;
@@ -362,7 +390,6 @@ export default function BackgroundChecksPage() {
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Password Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Background Check</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Completed Date</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDF Submitted</th>
                   <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
@@ -370,7 +397,7 @@ export default function BackgroundChecksPage() {
               <tbody className="bg-white divide-y divide-gray-200">
                 {filteredVendors.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-6 py-12 text-center text-gray-500">
+                    <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
                       {searchTerm || filterStatus !== 'all'
                         ? 'No users found matching your filters.'
                         : 'No users found.'}
@@ -413,13 +440,6 @@ export default function BackgroundChecksPage() {
                         )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <div className="text-sm text-gray-500">
-                          {vendor.background_check?.completed_date
-                            ? new Date(vendor.background_check.completed_date).toLocaleDateString()
-                            : 'N/A'}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
                         {vendor.has_submitted_pdf && vendor.background_check_completed_user_table ? (
                           <div>
                             <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-blue-100 text-blue-800">
@@ -458,10 +478,14 @@ export default function BackgroundChecksPage() {
                             <div className="flex gap-1 flex-wrap justify-center">
                               <button
                                 onClick={() => handleDownloadPDF(vendor.user_id, vendor.full_name)}
-                                className="px-2 py-1 text-xs font-medium text-green-600 hover:text-green-800 hover:bg-green-50 rounded border border-green-300"
-                                title="Download Documents"
+                                className={`px-2 py-1 text-xs font-medium rounded border ${
+                                  vendor.pdf_downloaded
+                                    ? 'text-purple-600 hover:text-purple-800 hover:bg-purple-50 border-purple-300 bg-purple-50'
+                                    : 'text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300'
+                                }`}
+                                title={vendor.pdf_downloaded ? 'Downloaded - Click to download again' : 'Download Documents'}
                               >
-                                Download Documents
+                                {vendor.pdf_downloaded ? 'Downloaded ✓' : 'Download Documents'}
                               </button>
                             </div>
                           )}

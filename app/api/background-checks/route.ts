@@ -126,6 +126,15 @@ export async function GET(req: NextRequest) {
       console.error('Error fetching PDF data:', pdfError);
     }
 
+    // Fetch download information
+    const { data: downloadData, error: downloadError } = await adminClient
+      .from('background_check_pdf_downloads')
+      .select('user_id, downloaded_at');
+
+    if (downloadError) {
+      console.error('Error fetching download data:', downloadError);
+    }
+
     // Transform the data - only include vendors with background check records
     const vendors = (backgroundChecks || []).map((bgCheck: any) => {
       const profile = Array.isArray(bgCheck.profiles) ? bgCheck.profiles[0] : bgCheck.profiles;
@@ -133,6 +142,9 @@ export async function GET(req: NextRequest) {
 
       // Find PDF submission for this user
       const pdfSubmission = (pdfData || []).find((pdf: any) => pdf.user_id === profile?.user_id);
+
+      // Find download record for this user
+      const downloadRecord = (downloadData || []).find((dl: any) => dl.user_id === profile?.user_id);
 
       // Safely decrypt names
       const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
@@ -160,6 +172,8 @@ export async function GET(req: NextRequest) {
         },
         has_submitted_pdf: !!pdfSubmission,
         pdf_submitted_at: pdfSubmission?.created_at || null,
+        pdf_downloaded: !!downloadRecord,
+        pdf_downloaded_at: downloadRecord?.downloaded_at || null,
       };
     });
 

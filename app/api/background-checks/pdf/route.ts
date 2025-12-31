@@ -67,6 +67,23 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'user_id parameter is required' }, { status: 400 });
     }
 
+    // Track the download
+    try {
+      await adminClient
+        .from('background_check_pdf_downloads')
+        .upsert({
+          user_id: userId,
+          downloaded_by: user.id,
+          downloaded_at: new Date().toISOString()
+        }, {
+          onConflict: 'user_id,downloaded_by'
+        });
+      console.log('[PDF DOWNLOAD] Download tracked for user:', userId, 'by:', user.id);
+    } catch (trackError) {
+      console.error('[PDF DOWNLOAD] Error tracking download:', trackError);
+      // Don't fail the download if tracking fails
+    }
+
     // Fetch the PDF(s) from background_check_pdfs table
     const { data: pdfData, error: pdfError } = await adminClient
       .from('background_check_pdfs')
