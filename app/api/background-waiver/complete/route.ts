@@ -67,7 +67,7 @@ function userReceiptHtml(first: string) {
                       <td style="padding: 20px;">
                         <p style="color: #0c5280; margin: 0; font-size: 14px;">
                           <strong>Questions?</strong> If you have any questions about your background check status, please contact us at
-                          <a href="mailto:support@pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
+                          <a href="mailto:portal@1pds.com" style="color: #2196F3; text-decoration: none;">support@pds.com</a>
                         </p>
                       </td>
                     </tr>
@@ -79,6 +79,8 @@ function userReceiptHtml(first: string) {
                   </p>
                 </td>
               </tr>
+
+              
 
               <!-- Footer -->
               <tr>
