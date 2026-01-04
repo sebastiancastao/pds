@@ -13,7 +13,8 @@ type MealWaiverFormProps = {
   description: string;
   allowedTypes: WaiverType[];
   backHref: string;
-  nextHref: string;
+  nextHref: string | null;
+  isLastForm?: boolean;
 };
 
 const getDefaultDate = () => new Date().toISOString().split('T')[0];
@@ -26,6 +27,7 @@ export default function MealWaiverForm({
   allowedTypes,
   backHref,
   nextHref,
+  isLastForm = false,
 }: MealWaiverFormProps) {
   const router = useRouter();
   const [selectedType, setSelectedType] = useState<WaiverType>(allowedTypes[0]);
@@ -252,7 +254,40 @@ export default function MealWaiverForm({
   const handleContinue = async () => {
     const saved = await handleSave();
     if (saved) {
-      router.push(nextHref);
+      if (isLastForm || !nextHref) {
+        // Last form completed - mark onboarding as completed and redirect to login
+        console.log('[MEAL WAIVER] Last form completed, completing onboarding workflow');
+        try {
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+
+          const response = await fetch('/api/onboarding-notification', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+            body: JSON.stringify({
+              form: 'meal-waiver',
+              trigger: 'save-finish',
+            }),
+          });
+
+          if (!response.ok) {
+            console.error('[MEAL WAIVER] Failed to send onboarding notification');
+          } else {
+            console.log('[MEAL WAIVER] Onboarding notification sent successfully');
+          }
+        } catch (error) {
+          console.error('[MEAL WAIVER] Error sending onboarding notification:', error);
+        }
+
+        // Redirect to login regardless of notification success
+        router.push('/login');
+      } else {
+        router.push(nextHref);
+      }
     }
   };
 
@@ -583,7 +618,7 @@ export default function MealWaiverForm({
                 if (!saving) e.currentTarget.style.backgroundColor = '#1976d2';
               }}
             >
-              Save & Continue
+              {isLastForm || !nextHref ? 'Save & Finish' : 'Save & Continue'}
             </button>
           </div>
         </div>

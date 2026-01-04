@@ -917,11 +917,31 @@ export default function DashboardPage() {
           isExistingMember: true // Flag to show they're already on the team
         }));
 
-        // Merge existing team members with available vendors (avoid duplicates)
-        setAvailableVendors(prevVendors => {
-          const vendorIds = new Set(prevVendors.map(v => v.id));
+        // Merge existing team members with available vendors:
+        // - Flag vendors already on the team (disable checkbox + show status chip)
+        // - Add any team members that are not in the available list
+        const existingById = new Map<string, any>(existingVendors.map((v: any) => [v.id, v]));
+        setAvailableVendors((prevVendors) => {
+          const updatedVendors = prevVendors.map((v: any) => {
+            const existing = existingById.get(v.id);
+            if (!existing) return v;
+            return {
+              ...v,
+              status: existing.status,
+              isExistingMember: true,
+              profiles: {
+                ...v.profiles,
+                profile_photo_url:
+                  existing.profiles?.profile_photo_url ??
+                  (v.profiles as any)?.profile_photo_url ??
+                  null,
+              },
+            };
+          });
+
+          const vendorIds = new Set(updatedVendors.map((v: any) => v.id));
           const newVendors = existingVendors.filter((v: any) => !vendorIds.has(v.id));
-          return [...prevVendors, ...newVendors];
+          return [...updatedVendors, ...newVendors];
         });
 
         // Pre-select existing team members AFTER merging
@@ -1063,6 +1083,10 @@ export default function DashboardPage() {
   if (!isAuthorized) {
     return null;
   }
+
+  const allAvailableVendorsInvited =
+    availableVendors.length > 0 &&
+    availableVendors.every((v) => (v as any).isExistingMember);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -2272,10 +2296,10 @@ export default function DashboardPage() {
                     </label>
                     <button
                       onClick={handleSaveTeam}
-                      disabled={selectedTeamMembers.size === 0 || savingTeam}
-                      className={`apple-button ${selectedTeamMembers.size === 0 || savingTeam ? "apple-button-disabled" : "apple-button-primary"}`}
+                      disabled={selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited}
+                      className={`apple-button ${selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited ? "apple-button-disabled" : "apple-button-primary"}`}
                     >
-                      {savingTeam ? "Creating..." : `Create Team (${selectedTeamMembers.size})`}
+                      {savingTeam ? "Creating..." : allAvailableVendorsInvited ? "All Invited" : `Create Team (${selectedTeamMembers.size})`}
                     </button>
                   </div>
 

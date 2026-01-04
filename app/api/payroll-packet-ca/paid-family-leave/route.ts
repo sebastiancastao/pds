@@ -13,11 +13,12 @@ export async function GET() {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="Paid_Family_Leave.pdf"',
         'Content-Security-Policy': "default-src 'self'",
-        'X-Content-Type-Options': 'nosniff'
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
       }
     });
   } catch (error: any) {
     console.error('Paid Family Leave PDF error:', error);
-    return NextResponse.json({ error: 'Failed to generate Paid Family Leave PDF', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to serve Paid Family Leave PDF', details: error.message }, { status: 500 });
   }
 }

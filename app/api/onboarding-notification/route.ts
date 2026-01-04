@@ -49,9 +49,9 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // If this is the final form completion (lgbtq-rights + save-finish), mark onboarding as complete
-    if (form === 'lgbtq-rights' && trigger === 'save-finish' && userId) {
-      console.log('[ONBOARDING-NOTIFICATION] Final form completed, setting onboarding_completed_at');
+    // Mark onboarding as submitted when the workflow finishes (used to determine "has submitted PDF")
+    if (trigger === 'save-finish' && userId) {
+      console.log('[ONBOARDING-NOTIFICATION] Workflow finished, setting onboarding_completed_at', { form });
       const { error: updateErr } = await (supabase
         .from('profiles') as any)
         .update({
@@ -67,6 +67,20 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Detect state from form parameter
+    let stateName = 'CA';
+    if (form.includes('-ca-') || form.includes('payroll-packet-ca')) {
+      stateName = 'CA';
+    } else if (form.includes('-az-') || form.includes('payroll-packet-az')) {
+      stateName = 'AZ';
+    } else if (form.includes('-nv-') || form.includes('payroll-packet-nv')) {
+      stateName = 'NV';
+    } else if (form.includes('-ny-') || form.includes('payroll-packet-ny')) {
+      stateName = 'NY';
+    } else if (form.includes('-wi-') || form.includes('payroll-packet-wi')) {
+      stateName = 'WI';
+    }
+
     const subject = 'Onboarding Packet Notification — New Onboarding Submitted';
     const html = `
 <!DOCTYPE html>
@@ -74,7 +88,7 @@ export async function POST(request: NextRequest) {
   <head><meta charset="UTF-8"><title>${subject}</title></head>
   <body style="font-family: Arial, sans-serif; color: #111827;">
     <h2 style="margin:0 0 10px 0;">Onboarding Event</h2>
-    <p style="margin:0 0 16px 0;">A user has submitted an onboarding documentation in the CA Payroll Packet</p>
+    <p style="margin:0 0 16px 0;">A user has submitted an onboarding documentation in the ${stateName} Payroll Packet</p>
     <table cellpadding="0" cellspacing="0" border="0" style="border-collapse: collapse;">
       <tr><td style="padding:4px 8px; color:#374151;">Time:</td><td style="padding:4px 8px; font-weight:600;">${new Date().toLocaleString()}</td></tr>
       <tr><td style="padding:4px 8px; color:#374151;">User Email:</td><td style="padding:4px 8px; font-weight:600;">${userEmail || 'Unknown'}</td></tr>
@@ -83,6 +97,7 @@ export async function POST(request: NextRequest) {
   </body>
 </html>`.trim();
 
+    // Send notification to admin
     const result = await sendEmail({
       to: 'sebastiancastao379@gmail.com',
       cc: 'jenvillar625@gmail.com',
@@ -91,11 +106,42 @@ export async function POST(request: NextRequest) {
     });
 
     if (!result.success) {
-      console.error('[ONBOARDING-NOTIFICATION] Email send failed:', result.error);
+      console.error('[ONBOARDING-NOTIFICATION] Admin email send failed:', result.error);
       return NextResponse.json({ error: result.error || 'Failed to send email' }, { status: 500 });
     }
 
-    console.log('[ONBOARDING-NOTIFICATION] Email sent. MessageId:', result.messageId);
+    console.log('[ONBOARDING-NOTIFICATION] Admin email sent. MessageId:', result.messageId);
+
+    // Send confirmation email to user
+    if (userEmail) {
+      const userSubject = 'Onboarding Packet Received';
+      const userHtml = `
+<!DOCTYPE html>
+<html>
+  <head><meta charset="UTF-8"><title>${userSubject}</title></head>
+  <body style="font-family: Arial, sans-serif; color: #111827;">
+    <h2 style="margin:0 0 10px 0;">Thank You for Submitting Your Onboarding Packet</h2>
+    <p style="margin:0 0 16px 0;">Hi ${firstName || 'there'},</p>
+    <p style="margin:0 0 16px 0;">We have successfully received your ${stateName} Payroll Packet onboarding documentation.</p>
+    <p style="margin:0 0 16px 0;">Our HR team will review your submission and reach out if any additional information is needed.</p>
+    <p style="margin:0 0 16px 0;">If you have any questions, please don't hesitate to contact us.</p>
+    <p style="margin:16px 0 0 0;">Best regards,<br/>HR Team</p>
+  </body>
+</html>`.trim();
+
+      const userResult = await sendEmail({
+        to: userEmail,
+        subject: userSubject,
+        html: userHtml,
+      });
+
+      if (!userResult.success) {
+        console.error('[ONBOARDING-NOTIFICATION] User confirmation email send failed:', userResult.error);
+      } else {
+        console.log('[ONBOARDING-NOTIFICATION] User confirmation email sent. MessageId:', userResult.messageId);
+      }
+    }
+
     return NextResponse.json({ success: true, messageId: result.messageId });
   } catch (error: any) {
     console.error('[ONBOARDING-NOTIFICATION] Exception:', error);

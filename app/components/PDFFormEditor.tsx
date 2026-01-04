@@ -164,6 +164,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       console.log('Saved data:', savedData);
 
       let pdfBytes: ArrayBuffer;
+      let savedPdfBytes: Uint8Array | null = null;
 
       if (savedData.found && savedData.formData) {
         console.log('Step 2: Attempting to load saved PDF from database');
@@ -179,6 +180,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
           }
+          savedPdfBytes = bytes;
           pdfBytes = bytes.buffer;
 
           // Verify it's a valid PDF (should start with %PDF = [37, 80, 68, 70])
@@ -192,7 +194,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         } catch (loadErr: any) {
           console.error('ÔØî Error loading saved PDF:', loadErr.message);
           console.log('­ƒôÑ Fetching fresh PDF from URL:', pdfUrl);
-          const response = await fetch(pdfUrl);
+          savedPdfBytes = null;
+          const response = await fetch(pdfUrl, { cache: 'no-store' });
           console.log('PDF fetch response status:', response.status);
           if (!response.ok) {
             throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
@@ -202,13 +205,31 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         }
       } else {
         console.log('Step 2: Fetching fresh PDF from URL:', pdfUrl);
-        const response = await fetch(pdfUrl);
+        const response = await fetch(pdfUrl, { cache: 'no-store' });
         console.log('PDF fetch response status:', response.status);
         if (!response.ok) {
           throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
         }
         pdfBytes = await response.arrayBuffer();
         console.log('Fresh PDF loaded, size:', pdfBytes.byteLength, 'bytes');
+      }
+
+      // Prefer the latest template PDF bytes whenever possible (to avoid stale embedded artifacts in saved PDFs).
+      // Keep `savedPdfBytes` so we can copy its field values onto the fresh template after pdf-lib loads.
+      if (savedPdfBytes) {
+        try {
+          console.log('Step 2b: Fetching fresh PDF template to replace saved PDF bytes...');
+          const templateResponse = await fetch(pdfUrl, { cache: 'no-store' });
+          console.log('Template fetch response status:', templateResponse.status);
+          if (templateResponse.ok) {
+            pdfBytes = await templateResponse.arrayBuffer();
+            console.log('Fresh PDF template loaded, size:', pdfBytes.byteLength, 'bytes');
+          } else {
+            console.warn(`[LOAD] Template fetch failed (${templateResponse.status}). Continuing with saved PDF bytes.`);
+          }
+        } catch (templateErr: any) {
+          console.warn('[LOAD] Template fetch exception. Continuing with saved PDF bytes.', templateErr?.message);
+        }
       }
 
       // Load with PDF.js for rendering - use UNPKG CDN
@@ -262,6 +283,64 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       const pdfLibDoc = await PDFDocument.load(pdfBytes);
       console.log('pdf-lib document loaded successfully');
       pdfLibDocRef.current = pdfLibDoc;
+
+      // If we loaded saved PDF bytes, prefer the latest template for rendering but preserve the user's progress by
+      // copying field values from the saved PDF onto the fresh template doc.
+      if (savedPdfBytes) {
+        console.log('Step 6b: Re-applying saved form field values onto fresh template...');
+        try {
+          const savedDoc = await PDFDocument.load(savedPdfBytes);
+          const savedForm = savedDoc.getForm();
+          const targetForm = pdfLibDoc.getForm();
+
+          const targetFieldsByName = new Map<string, any>();
+          for (const targetField of targetForm.getFields()) {
+            try {
+              targetFieldsByName.set(targetField.getName(), targetField);
+            } catch {
+              // Ignore malformed fields
+            }
+          }
+
+          let copiedCount = 0;
+          for (const savedField of savedForm.getFields()) {
+            let fieldName = '';
+            try {
+              fieldName = savedField.getName();
+            } catch {
+              continue;
+            }
+
+            const targetField = targetFieldsByName.get(fieldName);
+            if (!targetField) continue;
+
+            try {
+              if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
+                (targetField as any).setText((savedField as any).getText() || '');
+                copiedCount++;
+              } else if (typeof (savedField as any).isChecked === 'function') {
+                const checked = (savedField as any).isChecked();
+                if (checked && typeof (targetField as any).check === 'function') (targetField as any).check();
+                if (!checked && typeof (targetField as any).uncheck === 'function') (targetField as any).uncheck();
+                copiedCount++;
+              } else if (typeof (savedField as any).getSelected === 'function' && typeof (targetField as any).select === 'function') {
+                const selected = (savedField as any).getSelected();
+                const value = Array.isArray(selected) ? selected[0] : selected;
+                if (value) {
+                  (targetField as any).select(value);
+                  copiedCount++;
+                }
+              }
+            } catch (copyErr: any) {
+              console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
+            }
+          }
+
+          console.log(`Step 6b: Copied ${copiedCount} saved field values`);
+        } catch (mergeErr: any) {
+          console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
+        }
+      }
 
       // Extract form fields
       console.log('Step 7: Extracting form fields...');

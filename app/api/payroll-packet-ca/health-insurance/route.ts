@@ -13,11 +13,12 @@ export async function GET() {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="Health_Insurance_Marketplace.pdf"',
         'Content-Security-Policy': "default-src 'self'",
-        'X-Content-Type-Options': 'nosniff'
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
       }
     });
   } catch (error: any) {
     console.error('Health Insurance PDF error:', error);
-    return NextResponse.json({ error: 'Failed to generate Health Insurance PDF', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to serve Health Insurance PDF', details: error.message }, { status: 500 });
   }
 }

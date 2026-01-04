@@ -13,11 +13,12 @@ export async function GET() {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="LGBTQ_Fact_Sheet.pdf"',
         'Content-Security-Policy': "default-src 'self'",
-        'X-Content-Type-Options': 'nosniff'
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
       }
     });
   } catch (error: any) {
     console.error('LGBTQ Rights PDF error:', error);
-    return NextResponse.json({ error: 'Failed to generate LGBTQ Rights PDF', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to serve LGBTQ Rights PDF', details: error.message }, { status: 500 });
   }
 }

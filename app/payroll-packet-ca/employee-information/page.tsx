@@ -170,7 +170,7 @@ export default function EmployeeInformationPage() {
     await new Promise(resolve => setTimeout(resolve, 600));
     setSaving(false);
     alert('Employee information captured. HR will follow up if anything else is required.');
-    router.push('/');
+    router.push('/login');
   };
 
   return (

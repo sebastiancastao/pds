@@ -31,6 +31,11 @@ export default function LoginPage() {
 
     setIsLoading(true);
 
+    // Clear any previous session storage redirects
+    sessionStorage.removeItem('pending_onboarding_redirect');
+    sessionStorage.removeItem('background_check_required');
+    sessionStorage.removeItem('requires_password_change');
+
     try {
       // Step 1: Pre-login check
       console.log('DEBUG Step 1: Pre-login check for', email.toLowerCase().trim());
@@ -212,18 +217,77 @@ export default function LoginPage() {
             console.log('[LOGIN DEBUG] ✅ vendor_background_checks.background_check_completed = true - approved');
           }
 
-          // Check if onboarding is completed - store redirect path but DON'T redirect yet
-          // UNIVERSAL RULE: All users with permanent passwords MUST go through MFA first
-          if (!bgCheckResult.onboardingCompleted && bgCheckResult.onboardingRedirect) {
-            console.log('[LOGIN DEBUG] ⚠️ Onboarding not completed');
-            console.log('[LOGIN DEBUG] Storing onboarding redirect:', bgCheckResult.onboardingRedirect);
-            console.log('[LOGIN DEBUG] User will complete MFA first, then be redirected to onboarding');
+          // Check onboarding completion from vendor_onboarding_status table
+          console.log('[LOGIN DEBUG] 🔍 Checking onboarding completion...');
 
-            // Store the onboarding redirect path for after MFA
-            sessionStorage.setItem('pending_onboarding_redirect', bgCheckResult.onboardingRedirect);
-          } else {
-            console.log('[LOGIN DEBUG] ✅ Onboarding completed');
+          // Check both onboarding_completed_at AND vendor_onboarding_status table (server-side to bypass RLS)
+          let hasSubmittedOnboardingPDF = false;
+          let onboardingApproved = false;
+          let pdfSubmittedAt = null;
+
+          try {
+            const onboardingResponse = await fetch('/api/auth/check-onboarding', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${currentSession?.access_token}`
+              },
+            });
+
+            if (onboardingResponse.ok) {
+              const onboardingResult = await onboardingResponse.json();
+              hasSubmittedOnboardingPDF = onboardingResult.hasSubmittedPDF || false;
+              onboardingApproved = onboardingResult.approved || false;
+              pdfSubmittedAt = onboardingResult.pdfSubmittedAt || null;
+
+              console.log('[LOGIN DEBUG] API Response - hasSubmittedPDF:', hasSubmittedOnboardingPDF);
+              console.log('[LOGIN DEBUG] API Response - pdfSubmittedAt:', pdfSubmittedAt);
+              console.log('[LOGIN DEBUG] API Response - onboardingApproved:', onboardingApproved);
+            } else {
+              console.log('[LOGIN DEBUG] ⚠️ Onboarding status API returned non-OK, assuming not submitted/approved');
+            }
+          } catch (err) {
+            console.error('[LOGIN DEBUG] ❌ Error checking onboarding status:', err);
           }
+
+          // Determine onboarding redirect
+          let onboardingRedirectPath = null;
+
+          console.log('[LOGIN DEBUG] 🔍 Onboarding redirect decision:');
+          console.log('[LOGIN DEBUG] - hasSubmittedOnboardingPDF:', hasSubmittedOnboardingPDF);
+          console.log('[LOGIN DEBUG] - onboardingApproved:', onboardingApproved);
+
+          if (!hasSubmittedOnboardingPDF) {
+            // User hasn't submitted onboarding PDFs yet
+            console.log('[LOGIN DEBUG] ⚠️ SCENARIO A: User has NOT submitted onboarding PDFs');
+            onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
+            console.log('[LOGIN DEBUG] Will redirect to:', onboardingRedirectPath);
+          } else if (hasSubmittedOnboardingPDF && onboardingApproved) {
+            // Both PDF submitted AND approved
+            console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding PDFs submitted AND approved');
+            console.log('[LOGIN DEBUG] No redirect - user will go to /time-tracking after MFA');
+            // No redirect needed - proceed to time tracking after MFA
+          } else if (hasSubmittedOnboardingPDF && !onboardingApproved) {
+            // User submitted PDFs but not approved yet - redirect to pending page
+            console.log('[LOGIN DEBUG] ⚠️ SCENARIO C: User submitted PDFs but onboarding NOT approved by admin');
+            console.log('[LOGIN DEBUG] Redirecting to onboarding pending page');
+            onboardingRedirectPath = '/onboarding-pending';
+          }
+
+          // Store redirect if needed
+          if (onboardingRedirectPath) {
+            console.log('[LOGIN DEBUG] 📝 Storing pending_onboarding_redirect:', onboardingRedirectPath);
+            sessionStorage.setItem('pending_onboarding_redirect', onboardingRedirectPath);
+            console.log('[LOGIN DEBUG] ✅ Stored in sessionStorage');
+          } else {
+            console.log('[LOGIN DEBUG] 🗑️ Removing pending_onboarding_redirect from sessionStorage');
+            sessionStorage.removeItem('pending_onboarding_redirect');
+            console.log('[LOGIN DEBUG] ✅ Removed from sessionStorage');
+          }
+
+          // Verify what's in sessionStorage
+          const storedRedirect = sessionStorage.getItem('pending_onboarding_redirect');
+          console.log('[LOGIN DEBUG] 🔍 Final sessionStorage check - pending_onboarding_redirect:', storedRedirect);
 
           console.log('[LOGIN DEBUG] Worker will now proceed through standard login flow (password check → MFA)');
         } catch (apiError) {

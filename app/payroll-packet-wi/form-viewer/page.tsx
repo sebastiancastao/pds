@@ -9,16 +9,14 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 const WI_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
-  { id: 'time-of-hire', display: 'Time of Hire Notice' },
+  { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
-  { id: 'temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
-  { id: 'handbook', display: 'Employee Handbook (Pending)' },
 ];
 
 export default function PayrollPacketWIFormViewer() {

@@ -113,6 +113,7 @@ export default function StatePayrollFormViewer({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -179,6 +180,38 @@ export default function StatePayrollFormViewer({
 
     loadI9Documents();
   }, [selectedForm]);
+
+  // Load signature for current form and reset canvas when form changes
+  useEffect(() => {
+    // Load existing drawn signature for this form if it exists
+    const savedSignature = signatures.get(selectedForm);
+    if (savedSignature && savedSignature.startsWith('data:image')) {
+      setCurrentSignature(savedSignature);
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        const img = new Image();
+        img.onload = () => {
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+          }
+        };
+        img.src = savedSignature;
+      }
+    } else {
+      // Clear signature for new form or unsupported saved data
+      setCurrentSignature('');
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = 'white';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      }
+    }
+  }, [selectedForm, signatures]);
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     pdfBytesRef.current = pdfBytes;
@@ -343,7 +376,36 @@ export default function StatePayrollFormViewer({
     if (currentForm?.next) {
       router.push(`${basePath}/form-viewer?form=${currentForm.next}`);
     } else {
-      router.push(basePath);
+      // Last form completed - mark onboarding as completed and redirect to login
+      console.log('[FORM VIEWER] No next form, completing onboarding workflow');
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const response = await fetch('/api/onboarding-notification', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            form: `payroll-packet-${stateCode}`,
+            trigger: 'save-finish',
+          }),
+        });
+
+        if (!response.ok) {
+          console.error('[FORM VIEWER] Failed to send onboarding notification');
+        } else {
+          console.log('[FORM VIEWER] Onboarding notification sent successfully');
+        }
+      } catch (error) {
+        console.error('[FORM VIEWER] Error sending onboarding notification:', error);
+      }
+
+      // Redirect to login regardless of notification success
+      router.push('/login');
     }
   };
 
@@ -406,6 +468,12 @@ export default function StatePayrollFormViewer({
     if (canvas) {
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
+      // Save signature for current form
+      setSignatures(prev => {
+        const newSigs = new Map(prev);
+        newSigs.set(selectedForm, dataUrl);
+        return newSigs;
+      });
     }
   };
 
@@ -420,6 +488,12 @@ export default function StatePayrollFormViewer({
       }
     }
     setCurrentSignature('');
+    // Remove signature for current form
+    setSignatures(prev => {
+      const newSigs = new Map(prev);
+      newSigs.delete(selectedForm);
+      return newSigs;
+    });
   };
 
   if (!currentForm) {

@@ -1,6 +1,7 @@
 // app/api/pdf-form-progress/user/[userId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { PDFDocument } from 'pdf-lib';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -95,13 +96,13 @@ export async function GET(
     }
 
     // Verify permissions: HR/Exec/Admin OR the employee themselves
-    const { data: userData } = await supabaseAdmin
+    const { data: authUserData } = await supabaseAdmin
       .from('users')
       .select('role')
       .eq('id', user.id)
       .maybeSingle();
 
-    const role = (userData?.role || '').toString().trim().toLowerCase();
+    const role = (authUserData?.role || '').toString().trim().toLowerCase();
     const isPrivileged = role === 'exec' || role === 'admin' || role === 'hr';
     const isSelf = user.id === userId;
 
@@ -129,20 +130,118 @@ export async function GET(
       );
     }
 
-    // Transform the data to include display names
-    const transformedForms = (forms || []).map((form) => ({
-      form_name: form.form_name,
-      display_name: displayNameForForm(form.form_name),
-      form_data: toBase64(form.form_data),
-      updated_at: form.updated_at,
-      created_at: form.updated_at, // Use updated_at as fallback for created_at
-    }));
+    if (!forms || forms.length === 0) {
+      return NextResponse.json(
+        { error: 'No forms found for this user' },
+        { status: 404 }
+      );
+    }
 
-    console.log('[PDF_FORMS] Retrieved', transformedForms.length, 'forms');
+    // Get user's signature from background_check_pdfs table
+    const { data: signatureData } = await supabaseAdmin
+      .from('background_check_pdfs')
+      .select('signature, signature_type')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    return NextResponse.json({
-      success: true,
-      forms: transformedForms,
+    console.log('[PDF_FORMS] Retrieved', forms.length, 'forms');
+
+    // Create a new merged PDF document
+    const mergedPdf = await PDFDocument.create();
+
+    // Process each form and add to merged PDF
+    for (const form of forms) {
+      try {
+        const base64Data = toBase64(form.form_data);
+        if (!base64Data) {
+          console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
+          continue;
+        }
+
+        // Convert base64 to buffer
+        const pdfBytes = Buffer.from(base64Data, 'base64');
+
+        // Load the PDF
+        const formPdf = await PDFDocument.load(pdfBytes);
+
+        // If signature exists, embed it on the last page
+        if (signatureData?.signature) {
+          const pages = formPdf.getPages();
+          const lastPage = pages[pages.length - 1];
+          const { width, height } = lastPage.getSize();
+
+          try {
+            let signatureImage;
+
+            // Check if signature is a data URL or just base64
+            let imageData = signatureData.signature;
+            if (imageData.startsWith('data:image/png;base64,')) {
+              imageData = imageData.replace('data:image/png;base64,', '');
+            }
+
+            // Embed the signature image
+            signatureImage = await formPdf.embedPng(Buffer.from(imageData, 'base64'));
+
+            // Position signature - lower for I-9 form, standard for others
+            const signatureWidth = 150;
+            const signatureHeight = 50;
+            const x = width - signatureWidth - 50;
+
+            // I-9 form needs signature positioned lower (higher up on the page)
+            const isI9Form = form.form_name === 'i9';
+            const y = isI9Form ? 100 : 50;
+
+            lastPage.drawImage(signatureImage, {
+              x,
+              y,
+              width: signatureWidth,
+              height: signatureHeight,
+            });
+
+            // Add "Digitally Signed" text above signature
+            lastPage.drawText('Digitally Signed:', {
+              x,
+              y: y + signatureHeight + 5,
+              size: 8,
+            });
+          } catch (imgError) {
+            console.error('[PDF_FORMS] Error embedding signature on form:', form.form_name, imgError);
+          }
+        }
+
+        // Copy all pages from this form to the merged PDF
+        const copiedPages = await mergedPdf.copyPages(formPdf, formPdf.getPageIndices());
+        copiedPages.forEach((page) => {
+          mergedPdf.addPage(page);
+        });
+
+      } catch (formError) {
+        console.error('[PDF_FORMS] Error processing form:', form.form_name, formError);
+      }
+    }
+
+    // Save the merged PDF
+    const mergedPdfBytes = await mergedPdf.save();
+    const mergedPdfBase64 = Buffer.from(mergedPdfBytes).toString('base64');
+
+    // Get user name for filename
+    const { data: targetUserData } = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const userName = targetUserData?.full_name || 'User';
+    const fileName = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
+
+    // Return the merged PDF as a downloadable file
+    return new NextResponse(Buffer.from(mergedPdfBase64, 'base64'), {
+      headers: {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="${fileName}"`,
+      },
     });
   } catch (error: any) {
     console.error('[PDF_FORMS] Error:', error);

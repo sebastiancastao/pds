@@ -13,11 +13,12 @@ export async function GET() {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="Sexual_Harassment_Poster.pdf"',
         'Content-Security-Policy': "default-src 'self'",
-        'X-Content-Type-Options': 'nosniff'
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
       }
     });
   } catch (error: any) {
     console.error('Sexual Harassment PDF error:', error);
-    return NextResponse.json({ error: 'Failed to generate Sexual Harassment PDF', details: error.message }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to serve Sexual Harassment PDF', details: error.message }, { status: 500 });
   }
 }

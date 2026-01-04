@@ -9,7 +9,7 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 const AZ_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
-  { id: 'time-of-hire', formId: 'time-of-hire', display: 'Time of Hire Notice' },
+  { id: 'time-of-hire', formId: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
@@ -17,7 +17,6 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'meal-waiver-6hour', formId: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', formId: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', formId: 'state-tax', display: 'State Tax Form', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fillable' },
-  { id: 'handbook', formId: 'handbook', display: 'Employee Handbook (Pending)' },
 ];
 
 export default function PayrollPacketAZFormViewer() {

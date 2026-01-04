@@ -63,44 +63,6 @@ export default function PayrollPacketAZPage() {
         >
           Start Forms
         </button>
-
-        <div style={{
-          marginTop: '24px',
-          padding: '16px',
-          backgroundColor: '#f9f9f9',
-          borderRadius: '4px',
-          textAlign: 'left'
-        }}>
-          <p style={{
-            fontSize: '14px',
-            color: '#666',
-            margin: 0,
-            fontWeight: 'bold',
-            marginBottom: '8px'
-          }}>
-            Forms included:
-          </p>
-          <ul style={{
-            fontSize: '14px',
-            color: '#666',
-            margin: 0,
-            paddingLeft: '20px',
-            lineHeight: '1.8'
-          }}>
-            <li>ADP Direct Deposit</li>
-            <li>Marketplace Notice</li>
-            <li>Health Insurance Marketplace</li>
-            <li>Time of Hire Notice</li>
-            <li>Employee Information</li>
-            <li>Federal W-4</li>
-            <li>I-9 Employment Verification</li>
-            <li>Notice to Employee</li>
-            <li>Meal Waiver (6 Hour)</li>
-            <li>Meal Waiver (10/12 Hour)</li>
-            <li>Arizona State Tax Form</li>
-            <li>Employee Handbook (pending)</li>
-          </ul>
-        </div>
       </div>
     </div>
   );

@@ -70,6 +70,7 @@ function FormViewerContent() {
     listC?: { url: string; filename: string };
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
+  const [hasReadForm, setHasReadForm] = useState(false);
 
   // (Email notification moved to explicit Save click per request)
 
@@ -90,12 +91,11 @@ function FormViewerContent() {
     'transgender-rights': { display: 'Transgender Rights', api: '/api/payroll-packet-ca/transgender-rights', formId: 'transgender-rights', next: 'health-insurance' },
     'health-insurance': { display: 'Health Insurance', api: '/api/payroll-packet-ca/health-insurance', formId: 'health-insurance', next: 'time-of-hire' },
     'time-of-hire': { display: 'Time of Hire Notice', api: '/api/payroll-packet-ca/time-of-hire', formId: 'time-of-hire', next: 'notice-to-employee', requiresSignature: true },
-    'notice-to-employee': { display: 'LC 2810.5 Notice to Employee', api: '/api/payroll-packet-ca/notice-to-employee', formId: 'notice-to-employee', next: 'discrimination-law' },
+    'notice-to-employee': { display: 'LC 2810.5 Notice to Employee', api: '/api/payroll-packet-ca/notice-to-employee', formId: 'notice-to-employee', next: 'discrimination-law', requiresSignature: true },
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'temp-employment-agreement' },
-    'temp-employment-agreement': { display: 'CA Temporary Employment Services Agreement', api: '/api/payroll-packet-ca/temp-employment-agreement', formId: 'temp-employment-agreement', next: 'meal-waiver-6hour', requiresSignature: true },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'meal-waiver-6hour' },
   };
 
   const currentForm = formConfig[formName];
@@ -242,6 +242,12 @@ function FormViewerContent() {
     // Check if signature is required but not provided
     if (currentForm.requiresSignature && !currentSignature) {
       alert('Please provide your signature before continuing to the next form.');
+      return;
+    }
+
+    // Check if form doesn't require signature but user hasn't confirmed reading it
+    if (!currentForm.requiresSignature && !hasReadForm) {
+      alert('Please confirm that you have read and understood this document.');
       return;
     }
 
@@ -520,6 +526,9 @@ function FormViewerContent() {
 
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
+    // Reset read confirmation when form changes
+    setHasReadForm(false);
+
     // Load existing drawn signature for this form if it exists
     const savedSignature = signatures.get(formName);
     if (savedSignature && savedSignature.startsWith('data:image')) {
@@ -623,6 +632,61 @@ function FormViewerContent() {
             skipButtonDetection={!currentForm.requiresSignature}
           />
         </div>
+
+        {/* Read Confirmation Section - Only show if form doesn't require signature */}
+        {!currentForm.requiresSignature && (
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '24px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            marginBottom: '20px'
+          }}>
+            <label style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              cursor: 'pointer',
+              fontSize: '16px'
+            }}>
+              <input
+                type="checkbox"
+                checked={hasReadForm}
+                onChange={(e) => setHasReadForm(e.target.checked)}
+                style={{
+                  width: '20px',
+                  height: '20px',
+                  cursor: 'pointer',
+                  accentColor: '#1976d2'
+                }}
+              />
+              <span style={{ color: '#333' }}>
+                I confirm that I have read and understood this document
+                <span style={{ color: '#d32f2f', marginLeft: '4px' }}>*</span>
+              </span>
+            </label>
+
+            {hasReadForm && (
+              <div style={{
+                marginTop: '16px',
+                padding: '12px',
+                backgroundColor: '#e8f5e9',
+                border: '1px solid #4caf50',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <svg style={{ width: '20px', height: '20px', fill: '#4caf50' }} viewBox="0 0 24 24">
+                  <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                </svg>
+                <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>
+                  Acknowledgment confirmed
+                </span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Signature Section - Only show if form requires signature */}
         {currentForm.requiresSignature && (
