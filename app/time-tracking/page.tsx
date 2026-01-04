@@ -33,9 +33,65 @@ export default function TimeTrackingPage() {
 
   const [message, setMessage] = useState<string>("");
   const [userRole, setUserRole] = useState<string>("");
+  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [pendingClockOut, setPendingClockOut] = useState<boolean>(false);
 
   const tickRef = useRef<number | null>(null);
   const [now, setNow] = useState<number>(Date.now());
+  const retryQueueRef = useRef<Array<() => Promise<void>>>([]);
+
+  // Network status monitoring
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setMessage("Connection restored");
+      setTimeout(() => setMessage(""), 3000);
+      // Process retry queue
+      if (retryQueueRef.current.length > 0) {
+        const queue = [...retryQueueRef.current];
+        retryQueueRef.current = [];
+        queue.forEach(fn => fn().catch(console.error));
+      }
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setMessage("You're offline - changes will sync when connection is restored");
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    setIsOnline(navigator.onLine);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Persist state to localStorage
+  useEffect(() => {
+    if (openEntry) {
+      localStorage.setItem('time_tracking_open_entry', JSON.stringify(openEntry));
+      localStorage.setItem('time_tracking_notes', notes);
+    } else {
+      localStorage.removeItem('time_tracking_open_entry');
+      localStorage.removeItem('time_tracking_notes');
+    }
+  }, [openEntry, notes]);
+
+  // Restore state from localStorage on mount
+  useEffect(() => {
+    const savedEntry = localStorage.getItem('time_tracking_open_entry');
+    const savedNotes = localStorage.getItem('time_tracking_notes');
+    if (savedEntry) {
+      try {
+        setOpenEntry(JSON.parse(savedEntry));
+      } catch {}
+    }
+    if (savedNotes) {
+      setNotes(savedNotes);
+    }
+  }, []);
 
   useEffect(() => {
     supabase.auth.getUser().then(async ({ data: { user } }) => {
@@ -92,40 +148,26 @@ export default function TimeTrackingPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed, isWorker, loading]);
 
-  async function clockOutKeepAlive() {
-    try {
-      // @ts-ignore keepalive is supported in fetch init in modern browsers
-      await fetch("/api/time-entries", {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-        },
-        body: JSON.stringify({ notes }),
-        keepalive: true,
-      });
-    } catch {}
-  }
-
+  // Check for cross-day entries and handle them
   useEffect(() => {
-    if (!isWorker) return;
-    const onPageHide = () => {
-      if (openEntry) {
-        clockOutKeepAlive();
+    if (!openEntry) return;
+
+    const checkCrossDay = () => {
+      const startDate = new Date(openEntry.started_at).toISOString().slice(0, 10);
+      const currentDate = new Date().toISOString().slice(0, 10);
+
+      if (startDate !== currentDate) {
+        // Entry started on a different day - notify user
+        setMessage(`Note: Time tracking started on ${startDate} and is now ${currentDate}`);
       }
     };
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden' && openEntry) {
-        clockOutKeepAlive();
-      }
-    };
-    window.addEventListener('pagehide', onPageHide);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.removeEventListener('pagehide', onPageHide);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [isWorker, openEntry]);
+
+    // Check immediately and then every minute
+    checkCrossDay();
+    const interval = setInterval(checkCrossDay, 60000);
+
+    return () => clearInterval(interval);
+  }, [openEntry]);
 
   useEffect(() => {
     if (openEntry || openMeal) {
@@ -190,6 +232,12 @@ export default function TimeTrackingPage() {
 
   async function handleClockIn() {
     setMessage("");
+
+    if (!isOnline) {
+      setMessage("Cannot clock in while offline. Please check your connection.");
+      return;
+    }
+
     try {
       const res = await fetch("/api/time-entries", {
         method: "POST",
@@ -205,12 +253,23 @@ export default function TimeTrackingPage() {
       setNotes(body.entry?.notes ?? "");
       await Promise.all([refreshToday(), refreshMealOpen()]);
     } catch (e: any) {
-      setMessage(e.message || "Clock-in failed");
+      if (!navigator.onLine) {
+        setMessage("Lost connection. Clock-in will be retried when online.");
+        retryQueueRef.current.push(handleClockIn);
+      } else {
+        setMessage(e.message || "Clock-in failed");
+      }
     }
   }
 
   async function handleClockOut() {
     setMessage("");
+
+    if (!isOnline) {
+      setMessage("Cannot clock out while offline. Your time is still being tracked locally.");
+      return;
+    }
+
     try {
       const res = await fetch("/api/time-entries", {
         method: "PATCH",
@@ -225,7 +284,12 @@ export default function TimeTrackingPage() {
       setOpenEntry(null);
       await Promise.all([refreshToday(), refreshMealOpen()]);
     } catch (e: any) {
-      setMessage(e.message || "Clock-out failed");
+      if (!navigator.onLine) {
+        setMessage("Lost connection. Please try again when online to clock out.");
+        retryQueueRef.current.push(handleClockOut);
+      } else {
+        setMessage(e.message || "Clock-out failed");
+      }
     }
   }
 
@@ -267,11 +331,46 @@ export default function TimeTrackingPage() {
     }
   }
 
-  // Logout helper
+  // Logout helper - explicitly clock out before logging out
   async function handleLogout() {
+    setPendingClockOut(true);
     try {
+      // If user has an open time entry, clock them out first
+      if (openEntry) {
+        await fetch("/api/time-entries", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({ notes }),
+        });
+      }
+
+      // If user has an open meal break, end it
+      if (openMeal) {
+        await fetch("/api/time-entries/meal", {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+          },
+          body: JSON.stringify({ notes }),
+        });
+      }
+
+      // Clear local storage
+      localStorage.removeItem('time_tracking_open_entry');
+      localStorage.removeItem('time_tracking_notes');
+
       await supabase.auth.signOut();
+    } catch (error) {
+      console.error("Error during logout:", error);
+      setMessage("Error clocking out. Please try again.");
+      setPendingClockOut(false);
+      return;
     } finally {
+      setPendingClockOut(false);
       window.location.href = "/login";
     }
   }
@@ -310,14 +409,27 @@ export default function TimeTrackingPage() {
           </div>
         </div>
 
+        {/* Online status indicator */}
+        <div className="absolute top-4 left-4 z-20">
+          <div className={`inline-flex items-center gap-2 px-3 py-2 rounded-full text-sm font-medium ${
+            isOnline
+              ? 'bg-green-100 text-green-800 border border-green-300'
+              : 'bg-red-100 text-red-800 border border-red-300'
+          }`}>
+            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+            {isOnline ? 'Online' : 'Offline'}
+          </div>
+        </div>
+
         <button
           onClick={handleLogout}
-          className="absolute top-4 right-4 inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500 z-20"
+          disabled={pendingClockOut}
+          className="absolute top-4 right-4 inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500 z-20 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
-          Logout
+          {pendingClockOut ? 'Clocking out...' : 'Logout'}
         </button>
         <div className="relative w-80 h-80 z-10">
           {/* Outermost expanding ring */}
@@ -348,6 +460,25 @@ export default function TimeTrackingPage() {
             </div>
           </div>
         </div>
+
+        {/* Cross-day notification for worker view */}
+        {openEntry && new Date(openEntry.started_at).toISOString().slice(0, 10) !== new Date().toISOString().slice(0, 10) && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 max-w-md">
+            <div className="bg-amber-100 border-2 border-amber-300 rounded-lg p-4 shadow-lg">
+              <div className="flex items-start gap-3">
+                <svg className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="text-sm font-semibold text-amber-900">Multi-day shift</p>
+                  <p className="text-xs text-amber-800 mt-1">
+                    Started: {new Date(openEntry.started_at).toISOString().slice(0, 10)}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -357,15 +488,26 @@ export default function TimeTrackingPage() {
     <div className="relative min-h-screen bg-gradient-to-br from-primary-50 to-primary-100">
       <div className="container mx-auto max-w-3xl p-6 space-y-6 relative z-10">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-primary-900">Time Tracking</h1>
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold text-primary-900">Time Tracking</h1>
+          <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${
+            isOnline
+              ? 'bg-green-100 text-green-800 border border-green-300'
+              : 'bg-red-100 text-red-800 border border-red-300'
+          }`}>
+            <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-500' : 'bg-red-500'}`} />
+            {isOnline ? 'Online' : 'Offline'}
+          </div>
+        </div>
         <button
           onClick={handleLogout}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500"
+          disabled={pendingClockOut}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r from-red-500 to-rose-600 text-white shadow-lg hover:shadow-xl hover:-translate-y-0.5 transition-transform transition-shadow focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-rose-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
-          Logout
+          {pendingClockOut ? 'Clocking out...' : 'Logout'}
         </button>
       </div>
 

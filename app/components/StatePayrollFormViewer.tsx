@@ -125,6 +125,7 @@ export default function StatePayrollFormViewer({
     listC?: { url: string; filename: string };
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
+  const [healthInsuranceAcknowledged, setHealthInsuranceAcknowledged] = useState(false);
 
   const basePath = `/payroll-packet-${stateCode}`;
 
@@ -211,6 +212,9 @@ export default function StatePayrollFormViewer({
         }
       }
     }
+
+    // Reset health insurance acknowledgment when form changes
+    setHealthInsuranceAcknowledged(false);
   }, [selectedForm, signatures]);
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
@@ -340,6 +344,11 @@ export default function StatePayrollFormViewer({
   const handleContinue = async () => {
     if (currentForm?.requiresSignature && !currentSignature) {
       alert('Please provide your signature before continuing.');
+      return;
+    }
+
+    if (selectedForm === 'health-insurance' && !healthInsuranceAcknowledged) {
+      alert('Please acknowledge that you have read the Health Insurance Marketplace notice before continuing.');
       return;
     }
 
@@ -756,6 +765,70 @@ export default function StatePayrollFormViewer({
                 />
               )}
             </div>
+          </div>
+        )}
+
+        {selectedForm === 'health-insurance' && (
+          <div
+            style={{
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              padding: '24px',
+              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+              marginBottom: '20px',
+            }}
+          >
+            <h2 style={{ margin: '0 0 16px 0', fontSize: '18px', fontWeight: 'bold' }}>
+              Acknowledgment Required
+            </h2>
+            <label
+              style={{
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '12px',
+                cursor: 'pointer',
+                padding: '16px',
+                backgroundColor: healthInsuranceAcknowledged ? '#e8f5e9' : '#f9f9f9',
+                border: healthInsuranceAcknowledged ? '2px solid #4caf50' : '2px solid #ddd',
+                borderRadius: '6px',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={healthInsuranceAcknowledged}
+                onChange={(e) => setHealthInsuranceAcknowledged(e.target.checked)}
+                style={{
+                  width: '20px',
+                  height: '20px',
+                  cursor: 'pointer',
+                  marginTop: '2px',
+                  flexShrink: 0,
+                }}
+              />
+              <span style={{ fontSize: '15px', lineHeight: '1.5', color: '#333' }}>
+                I acknowledge that I have read and understand the Health Insurance Marketplace notice.{' '}
+                <span style={{ color: '#d32f2f' }}>*</span>
+              </span>
+            </label>
+            {healthInsuranceAcknowledged && (
+              <div
+                style={{
+                  marginTop: '12px',
+                  padding: '12px',
+                  backgroundColor: '#e8f5e9',
+                  border: '1px solid #4caf50',
+                  borderRadius: '6px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px',
+                }}
+              >
+                <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>
+                  ✓ Acknowledgment received
+                </span>
+              </div>
+            )}
           </div>
         )}
 

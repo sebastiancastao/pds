@@ -1217,6 +1217,16 @@ export default function EventDashboardPage() {
                   </svg>
                   Event Timing
                 </h3>
+                {form.start_time && form.end_time && form.end_time < form.start_time && (
+                  <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start gap-2">
+                    <svg className="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className="text-sm text-amber-800">
+                      This event continues into the next day (ends at {form.end_time} on the following day)
+                    </p>
+                  </div>
+                )}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Start Time *</label>
