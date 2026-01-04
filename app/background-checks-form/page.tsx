@@ -523,6 +523,8 @@ export default function BackgroundChecksForm() {
     return { x, y };
   };
 
+
+
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     setIsDrawing(true);
