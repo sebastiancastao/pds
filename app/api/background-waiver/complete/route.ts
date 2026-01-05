@@ -187,12 +187,12 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (existingCheck) {
-      // Update existing record - set background_check_completed to true
-      console.log('[BACKGROUND CHECK COMPLETE] Updating existing vendor_background_checks record');
+      // Update existing record - mark as submitted but NOT completed (needs approval)
+      console.log('[BACKGROUND CHECK COMPLETE] Updating existing vendor_background_checks record (submitted, not approved)');
       const { error: updateCheckError } = await (supabase
         .from('vendor_background_checks') as any)
         .update({
-          background_check_completed: true,
+          background_check_completed: false,
           completed_date: new Date().toISOString(),
           updated_at: new Date().toISOString()
         })
@@ -206,13 +206,13 @@ export async function POST(request: NextRequest) {
         );
       }
     } else {
-      // Insert new record with background_check_completed = TRUE
-      console.log('[BACKGROUND CHECK COMPLETE] Creating new vendor_background_checks record (completed = TRUE)');
+      // Insert new record with background_check_completed = FALSE (submitted but not approved)
+      console.log('[BACKGROUND CHECK COMPLETE] Creating new vendor_background_checks record (submitted, not approved)');
       const { error: insertCheckError } = await (supabase
         .from('vendor_background_checks') as any)
         .insert({
           profile_id: profileData.id,
-          background_check_completed: true,
+          background_check_completed: false,
           completed_date: new Date().toISOString()
         });
 
@@ -225,7 +225,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log('[BACKGROUND CHECK COMPLETE] ✅ Vendor background check record created/updated (marked as completed)');
+    console.log('[BACKGROUND CHECK COMPLETE] ✅ Vendor background check record created/updated (submitted, pending approval)');
 
     // Get user profile information (for names)
     const { data: profileInfo, error: profileInfoError } = await (supabase
