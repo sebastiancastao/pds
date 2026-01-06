@@ -44,6 +44,8 @@ type User = {
   has_download_records: boolean;
 };
 
+type UserRoleRow = Pick<User, "role">;
+
 export default function UserManagementPage() {
   const router = useRouter();
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -66,13 +68,15 @@ export default function UserManagementPage() {
           return;
         }
 
-        const { data: userData, error: userError } = await supabase
+        const { data: userData, error: userError } = await (supabase
           .from('users')
           .select('role')
           .eq('id', session.user.id)
-          .single();
+          .single() as { data: UserRoleRow | null; error: unknown });
 
-        if (userError || !userData || !['exec', 'admin'].includes(userData.role)) {
+        const userRole = userData?.role ?? "";
+
+        if (userError || !userRole || !['exec', 'admin'].includes(userRole)) {
           alert('Unauthorized: Admin/Exec access required');
           router.push('/dashboard');
           return;
