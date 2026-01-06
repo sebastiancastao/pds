@@ -26,6 +26,7 @@ type Employee = {
   customer_satisfaction?: number | null;
 };
 
+
 type TimeEntry = {
   id: string;
   event_id: string | null;

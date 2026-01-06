@@ -19,26 +19,27 @@ export async function DELETE(
     // Initialize Supabase with service role
     const supabase = createServerClient();
 
-    // Verify user is authenticated and has HR role
+    // Verify user is authenticated and has HR/Exec role
     if (token) {
       const { data: { user }, error: userError } = await supabase.auth.getUser(token);
       if (userError || !user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
       }
 
-      // Check if user has HR role
-      const { data: profile, error: profileError } = await supabase
-        .from('profiles')
+      // Check requester role (authoritative source is `users.role`)
+      const { data: requester, error: requesterError } = await supabase
+        .from('users')
         .select('role')
-        .eq('user_id', user.id)
+        .eq('id', user.id)
         .single<{ role: string }>();
 
-      if (profileError || !profile) {
+      if (requesterError || !requester) {
         return NextResponse.json({ error: 'Failed to verify user role' }, { status: 500 });
       }
 
-      if (profile.role !== 'hr') {
-        return NextResponse.json({ error: 'Forbidden - HR access required' }, { status: 403 });
+      const role = (requester.role ?? '').trim().toLowerCase();
+      if (role !== 'hr' && role !== 'exec') {
+        return NextResponse.json({ error: 'Forbidden - HR/Exec access required' }, { status: 403 });
       }
     } else {
       return NextResponse.json({ error: 'No authorization token' }, { status: 401 });
@@ -129,7 +130,34 @@ export async function DELETE(
       // Continue anyway - profile might not exist
     }
 
-    // 8. Delete auth user (must be done last)
+    // 8. Remove user row from users table
+    console.log('[DELETE USER] Deleting user row...');
+
+    // If audit logs have a FK to public.users, detach them so the user row can be deleted.
+    const { error: auditLogsError } = await (supabase
+      .from('audit_logs') as any)
+      .update({ user_id: null })
+      .eq('user_id', employeeId);
+
+    if (auditLogsError) {
+      console.error('[DELETE USER] Error updating audit logs:', auditLogsError);
+      // Continue: some environments may not have this table/constraint
+    }
+
+    const { error: usersError } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', employeeId);
+
+    if (usersError) {
+      console.error('[DELETE USER] Error deleting user row:', usersError);
+      return NextResponse.json({
+        error: 'Failed to delete user from users table',
+        details: usersError.message
+      }, { status: 500 });
+    }
+
+    // 9. Delete auth user (must be done last)
     console.log('[DELETE USER] Deleting auth user...');
     const { error: authError } = await supabase.auth.admin.deleteUser(employeeId);
 
