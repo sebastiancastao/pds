@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Suspense, useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
@@ -51,6 +51,7 @@ function HRDashboardContent() {
   const [hrView, setHrView] = useState<"overview" | "employees" | "payments" | "forms" | "paystub">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [employeeSearch, setEmployeeSearch] = useState<string>("");
   const [backgroundChecks, setBackgroundChecks] = useState<BackgroundCheck[]>([]);
   const [selectedState, setSelectedState] = useState<string>("all");
   const [selectedEmployeeRegion, setSelectedEmployeeRegion] = useState<string>("all");
@@ -666,6 +667,34 @@ function HRDashboardContent() {
     return acc;
   }, {});
 
+  const employeeCards = useMemo(() => {
+    return employees.map((employee) => {
+      const firstName = employee.first_name ? safeDecrypt(employee.first_name) : "";
+      const lastName = employee.last_name ? safeDecrypt(employee.last_name) : "";
+      const fullName = `${firstName} ${lastName}`.trim();
+      const searchText = [
+        fullName,
+        employee.email,
+        employee.position,
+        employee.department,
+        employee.city,
+        employee.state,
+        employee.status,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return { employee, firstName, lastName, fullName, searchText };
+    });
+  }, [employees]);
+
+  const filteredEmployeeCards = useMemo(() => {
+    const q = employeeSearch.trim().toLowerCase();
+    if (!q) return employeeCards;
+    return employeeCards.filter((card) => card.searchText.includes(q));
+  }, [employeeCards, employeeSearch]);
+
   if (authChecking) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center">
@@ -1135,7 +1164,50 @@ function HRDashboardContent() {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Employees</h2>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center justify-end gap-3">
+                <div className="relative">
+                  <label className="sr-only" htmlFor="employee-search">Search employees</label>
+                  <svg
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.35-5.65a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <input
+                    id="employee-search"
+                    type="search"
+                    value={employeeSearch}
+                    onChange={(e) => setEmployeeSearch(e.target.value)}
+                    className="w-[18rem] md:w-[22rem] rounded-xl border border-gray-300 bg-white px-10 py-3 text-sm text-gray-900 shadow-sm transition placeholder:text-gray-400 focus:border-[#007AFF] focus:outline-none focus:ring-4 focus:ring-[#007AFF]/10"
+                    placeholder="Search by name, email, city..."
+                  />
+                  {employeeSearch.trim().length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setEmployeeSearch('')}
+                      disabled={loadingEmployees}
+                      className="absolute right-2 top-1/2 inline-flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-gray-400 transition hover:bg-gray-100 hover:text-gray-600 disabled:opacity-50"
+                      aria-label="Clear search"
+                      title="Clear search"
+                    >
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M18 6L6 18M6 6l12 12" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
+
                 <label className="apple-label" htmlFor="state-filter">State</label>
                 <select
                   id="state-filter"
@@ -1190,10 +1262,7 @@ function HRDashboardContent() {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {employees.map((e) => {
-                const firstName = e.first_name ? safeDecrypt(e.first_name) : '';
-                const lastName = e.last_name ? safeDecrypt(e.last_name) : '';
-                return (
+              {filteredEmployeeCards.map(({ employee: e, firstName, lastName }) => (
                   <Link key={e.id} href={`/hr/employees/${e.id}`} className="block group">
                     <div className="apple-card p-6 hover:shadow-lg transition-shadow group-hover:translate-y-[-1px]">
                       <div className="flex items-start gap-4">
@@ -1217,8 +1286,15 @@ function HRDashboardContent() {
                       </div>
                     </div>
                   </Link>
-                );
-              })}
+                ))}
+              {filteredEmployeeCards.length === 0 && (
+                <div className="apple-card p-12 text-center md:col-span-2 lg:col-span-3">
+                  <p className="text-gray-600 font-medium">No employees found.</p>
+                  {employeeSearch.trim().length > 0 && (
+                    <p className="text-sm text-gray-500 mt-1">Try a different search term.</p>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         )}
