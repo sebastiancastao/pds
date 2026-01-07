@@ -68,11 +68,11 @@ export default function UserManagementPage() {
           return;
         }
 
-        const { data: userData, error: userError } = await (supabase
+        const { data: userData, error: userError } = await supabase
           .from('users')
           .select('role')
           .eq('id', session.user.id)
-          .single() as { data: UserRoleRow | null; error: unknown });
+          .single<UserRoleRow>();
 
         const userRole = userData?.role ?? "";
 

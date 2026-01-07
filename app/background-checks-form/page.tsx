@@ -16,6 +16,7 @@ export default function BackgroundChecksForm() {
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const autoSavePendingRef = useRef(false);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
   const waiverBytesRef = useRef<Uint8Array | null>(null);
   const disclosureBytesRef = useRef<Uint8Array | null>(null);
@@ -60,6 +61,22 @@ export default function BackgroundChecksForm() {
     !currentSignature ? 'Signature missing' : null,
   ].filter(Boolean) as string[];
   const continueDisabled = saveStatus === 'saving' || incompleteRequirements.length > 0;
+
+  const scheduleAutoSave = () => {
+    autoSavePendingRef.current = true;
+    if (autoSaveTimerRef.current) {
+      return;
+    }
+
+    autoSaveTimerRef.current = setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      if (!autoSavePendingRef.current) {
+        return;
+      }
+      autoSavePendingRef.current = false;
+      void handleManualSave();
+    }, 30000);
+  };
 
   // Safe Uint8Array -> base64 converter (avoids call-stack overflow on large arrays)
   const uint8ToBase64 = (bytes: Uint8Array): string => {
@@ -134,7 +151,7 @@ export default function BackgroundChecksForm() {
     console.log(`[BACKGROUND CHECK FORM] onSave called with ${pdfBytes.length} bytes`);
     pdfBytesRef.current = pdfBytes;
     console.log('[BACKGROUND CHECK FORM] pdfBytesRef.current updated');
-    void combineAndSave();
+    scheduleAutoSave();
   };
 
   // New: Save handlers per form that also attempt to merge and persist all three
@@ -147,43 +164,63 @@ export default function BackgroundChecksForm() {
       addonBytesRef.current = pdfBytes;
     }
     try {
-      // Persist per-form progress so it reloads filled state
-      try {
-        const base64 = uint8ToBase64(pdfBytes);
-        const { data: { session } } = await supabase.auth.getSession();
-        await fetch('/api/pdf-form-progress/save', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-          },
-          credentials: 'same-origin',
-          body: JSON.stringify({ formName: formId, formData: base64 })
-        });
-      } catch (pErr) {
-        console.warn('[BACKGROUND CHECK FORM] Progress save failed (non-fatal):', pErr);
-      }
-
-      await combineAndSave();
+      scheduleAutoSave();
     } catch (e) {
       console.error('[BACKGROUND CHECK FORM] Merge/save error:', e);
       setSaveStatus('error');
     }
   };
 
-  // Handle field change - trigger auto-save after debounce
+  // Handle field change - schedule auto-save every 30 seconds while editing
   const handleFieldChange = () => {
-    if (autoSaveTimerRef.current) {
-      clearTimeout(autoSaveTimerRef.current);
-    }
+    scheduleAutoSave();
+  };
 
-    autoSaveTimerRef.current = setTimeout(() => {
-      handleManualSave();
-    }, 3000); // Auto-save 3 seconds after user stops typing
+  const saveFormProgress = async (
+    formId: 'background-waiver' | 'background-disclosure' | 'background-addon',
+    pdfBytes: Uint8Array | null,
+    accessToken?: string
+  ) => {
+    if (!pdfBytes) return;
+
+    try {
+      const base64 = uint8ToBase64(pdfBytes);
+      await fetch('/api/pdf-form-progress/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({ formName: formId, formData: base64 })
+      });
+    } catch (pErr) {
+      console.warn('[BACKGROUND CHECK FORM] Progress save failed (non-fatal):', pErr);
+    }
   };
 
   // Manual save function - saves to background_check_pdfs table
   const handleManualSave = async () => { 
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    autoSavePendingRef.current = false;
+
+    let accessToken: string | undefined;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      accessToken = session?.access_token;
+    } catch (pErr) {
+      console.warn('[BACKGROUND CHECK FORM] Progress save session failed (non-fatal):', pErr);
+    }
+
+    await Promise.all([
+      saveFormProgress('background-waiver', waiverBytesRef.current, accessToken),
+      saveFormProgress('background-disclosure', disclosureBytesRef.current, accessToken),
+      saveFormProgress('background-addon', addonBytesRef.current, accessToken),
+    ]);
+
     return combineAndSave();
   };
 
