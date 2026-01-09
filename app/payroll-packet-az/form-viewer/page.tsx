@@ -14,6 +14,7 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
   { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'temp-employment-agreement', formId: 'az-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-az/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', formId: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', formId: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', formId: 'state-tax', display: 'State Tax Form', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fillable' },

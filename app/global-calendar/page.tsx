@@ -122,6 +122,7 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [selectedVenue, setSelectedVenue] = useState<string>("all");
 
   // Vendors / Regions (Calendar Availability Request)
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -615,9 +616,9 @@ export default function DashboardPage() {
           return;
         }
 
-        // Only allow admin and exec users
+        // Only allow admin, exec, and manager users
         const role = userData.role as string;
-        if (role !== 'admin' && role !== 'exec') {
+        if (role !== 'admin' && role !== 'exec' && role !== 'manager') {
           console.error('[GLOBAL-CALENDAR] Access denied - user role:', role);
           router.replace('/dashboard');
           return;
@@ -689,15 +690,26 @@ export default function DashboardPage() {
     }
   }, [events, loadPrediction]);
 
+  const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
+  const filteredEvents =
+    selectedVenue === "all" ? events : events.filter((e) => e.venue === selectedVenue);
+
+  useEffect(() => {
+    if (selectedVenue === "all") return;
+    if (!events.some((e) => e.venue === selectedVenue)) {
+      setSelectedVenue("all");
+    }
+  }, [events, selectedVenue]);
+
   // Derived stats
   const eventStats = {
-    totalEvents: events.length,
-    activeEvents: events.filter((e) => e.is_active).length,
-    upcomingEvents: events.filter((e) => new Date(e.event_date) >= new Date()).length,
-    totalTicketSales: events.reduce((sum, e) => sum + (e.ticket_sales || 0), 0),
-    totalCommissionPool: events.reduce((sum, e) => sum + (e.commission_pool || 0), 0),
-    totalRequiredStaff: events.reduce((sum, e) => sum + (e.required_staff || 0), 0),
-    totalConfirmedStaff: events.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
+    totalEvents: filteredEvents.length,
+    activeEvents: filteredEvents.filter((e) => e.is_active).length,
+    upcomingEvents: filteredEvents.filter((e) => new Date(e.event_date) >= new Date()).length,
+    totalTicketSales: filteredEvents.reduce((sum, e) => sum + (e.ticket_sales || 0), 0),
+    totalCommissionPool: filteredEvents.reduce((sum, e) => sum + (e.commission_pool || 0), 0),
+    totalRequiredStaff: filteredEvents.reduce((sum, e) => sum + (e.required_staff || 0), 0),
+    totalConfirmedStaff: filteredEvents.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
   };
 
   // Calculate role distribution from actual employee data
@@ -1092,9 +1104,9 @@ export default function DashboardPage() {
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
       <div className="container mx-auto max-w-6xl py-12 px-6">
         {/* Header */}
-        <div className="mb-12">
-          <div className="flex items-start justify-between">
-            <div className="flex-1">
+        <div className="mb-6">
+          <div className={`flex ${userRole === "exec" || userRole === "hr" ? "flex-col gap-6" : "items-start justify-between"}`}>
+            <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none mt-6" : "flex-1"}`}>
               <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">Global Calendar</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
@@ -1106,11 +1118,11 @@ export default function DashboardPage() {
                   <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
                   </svg>
-                  Admin & Executive Access
+                  Admin, Executive & Manager Access
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            <div className={`flex items-center gap-3 ${userRole === "exec" || userRole === "hr" ? "order-1 self-end" : ""}`}>
               {userRole === 'exec' && (
                 <>
                   <Link
@@ -1155,6 +1167,15 @@ export default function DashboardPage() {
                   User Management
                 </Link>
               )}
+              <Link
+                href="/dashboard"
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l9-9 9 9M4.5 10.5V20a1 1 0 001 1H9v-6h6v6h3.5a1 1 0 001-1v-9.5" />
+                </svg>
+                Dashboard
+              </Link>
               <button
                 onClick={handleLogout}
                 className="apple-button apple-button-secondary flex items-center gap-2"
@@ -1187,28 +1208,30 @@ export default function DashboardPage() {
         {activeTab === "events" && (
           <>
             {/* Actions */}
-            <div className="flex flex-wrap gap-3 mb-10">
-              <Link href="/create-event?returnTo=global-calendar">
-                <button className="apple-button apple-button-primary">
+            {userRole !== "manager" && (
+              <div className="flex flex-wrap gap-3 mb-10">
+                <Link href="/create-event?returnTo=global-calendar">
+                  <button className="apple-button apple-button-primary">
+                    <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Create Event
+                  </button>
+                </Link>
+                <button
+                  onClick={openVendorModal}
+                  disabled={loading || events.length === 0}
+                  className={`apple-button ${
+                    loading || events.length === 0 ? "apple-button-disabled" : "apple-button-secondary"
+                  }`}
+                >
                   <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                   </svg>
-                  Create Event
+                  Calendar Availability Request
                 </button>
-              </Link>
-              <button
-                onClick={openVendorModal}
-                disabled={loading || events.length === 0}
-                className={`apple-button ${
-                  loading || events.length === 0 ? "apple-button-disabled" : "apple-button-secondary"
-                }`}
-              >
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-                Calendar Availability Request
-              </button>
-            </div>
+              </div>
+            )}
 
             {/* Overview */}
             {!loading && !error && events.length > 0 && (
@@ -1293,6 +1316,44 @@ export default function DashboardPage() {
               </section>
             )}
 
+            {!loading && !error && events.length > 0 && (
+              <div className="mb-10">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Filter by Venue
+                  {venueOptions.length > 0 && (
+                    <span className="ml-2 text-xs font-normal text-gray-500">({venueOptions.length} venues)</span>
+                  )}
+                </label>
+                <select
+                  value={selectedVenue}
+                  onChange={(e) => setSelectedVenue(e.target.value)}
+                  className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                >
+                  <option value="all">All Venues</option>
+                  {venueOptions.map((venue) => (
+                    <option key={venue} value={venue}>
+                      {venue}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center justify-between mt-1.5">
+                  <p className="text-xs text-gray-500">
+                    {selectedVenue === "all"
+                      ? `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} across all venues`
+                      : `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} at ${selectedVenue}`}
+                  </p>
+                  {selectedVenue !== "all" && (
+                    <button
+                      onClick={() => setSelectedVenue("all")}
+                      className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                    >
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Calendar */}
             <section className="mb-10">
               <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Calendar</h2>
@@ -1311,7 +1372,7 @@ export default function DashboardPage() {
                     plugins={[dayGridPlugin]}
                     initialView="dayGridMonth"
                     height="auto"
-                    events={events.map((ev) => {
+                    events={filteredEvents.map((ev) => {
                       const startIso = toIsoDateTime(ev.event_date, ev.start_time);
                       let endIso = toIsoDateTime(ev.event_date, ev.end_time);
                       if (!endIso && startIso) endIso = addHours(startIso, 1);
@@ -1343,9 +1404,18 @@ export default function DashboardPage() {
                   <p className="text-gray-400 text-sm mt-2">Get started by creating your first event</p>
                 </div>
               )}
-              {!loading && !error && events.length > 0 && (
+              {!loading && !error && events.length > 0 && filteredEvents.length === 0 && (
+                <div className="apple-card text-center py-16">
+                  <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-gray-500 text-lg">No events match this venue</p>
+                  <p className="text-gray-400 text-sm mt-2">Try another venue or clear the filter</p>
+                </div>
+              )}
+              {!loading && !error && filteredEvents.length > 0 && (
                 <div className="space-y-4">
-                  {events.map((ev) => (
+                  {filteredEvents.map((ev) => (
                     <div key={ev.id} className="apple-event-card group">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">
@@ -1409,21 +1479,23 @@ export default function DashboardPage() {
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
-                            <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                            </svg>
-                            Create Team
-                          </button>
-                          <Link href={`/event-dashboard/${ev.id}`}>
-                            <button className="apple-icon-button">
-                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        {userRole !== "manager" && (
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
+                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
                               </svg>
+                              Create Team
                             </button>
-                          </Link>
-                        </div>
+                            <Link href={`/event-dashboard/${ev.id}`}>
+                              <button className="apple-icon-button">
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                              </button>
+                            </Link>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))}

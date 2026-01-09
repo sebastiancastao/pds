@@ -113,6 +113,7 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [selectedVenue, setSelectedVenue] = useState<string>("all");
 
   // Vendors / Regions (Calendar Availability Request)
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -636,15 +637,26 @@ export default function DashboardPage() {
     }
   }, [events, loadPrediction]);
 
+  const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
+  const filteredEvents =
+    selectedVenue === "all" ? events : events.filter((e) => e.venue === selectedVenue);
+
+  useEffect(() => {
+    if (selectedVenue === "all") return;
+    if (!events.some((e) => e.venue === selectedVenue)) {
+      setSelectedVenue("all");
+    }
+  }, [events, selectedVenue]);
+
   // Derived stats
   const eventStats = {
-    totalEvents: events.length,
-    activeEvents: events.filter((e) => e.is_active).length,
-    upcomingEvents: events.filter((e) => new Date(e.event_date) >= new Date()).length,
-    totalTicketSales: events.reduce((sum, e) => sum + (e.ticket_sales || 0), 0),
-    totalCommissionPool: events.reduce((sum, e) => sum + (e.commission_pool || 0), 0),
-    totalRequiredStaff: events.reduce((sum, e) => sum + (e.required_staff || 0), 0),
-    totalConfirmedStaff: events.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
+    totalEvents: filteredEvents.length,
+    activeEvents: filteredEvents.filter((e) => e.is_active).length,
+    upcomingEvents: filteredEvents.filter((e) => new Date(e.event_date) >= new Date()).length,
+    totalTicketSales: filteredEvents.reduce((sum, e) => sum + (e.ticket_sales || 0), 0),
+    totalCommissionPool: filteredEvents.reduce((sum, e) => sum + (e.commission_pool || 0), 0),
+    totalRequiredStaff: filteredEvents.reduce((sum, e) => sum + (e.required_staff || 0), 0),
+    totalConfirmedStaff: filteredEvents.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
   };
 
   const hrStats = {
@@ -1159,15 +1171,26 @@ export default function DashboardPage() {
                 </span>
               </div>
             </div>
-            <button
-              onClick={handleLogout}
-              className="apple-button apple-button-secondary flex items-center gap-2"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-              Logout
-            </button>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/global-calendar"
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Global Calendar
+              </Link>
+              <button
+                onClick={handleLogout}
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                Logout
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1259,6 +1282,44 @@ export default function DashboardPage() {
               </section>
             )}
 
+            {!loading && !error && events.length > 0 && (
+              <div className="mb-10">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Filter by Venue
+                  {venueOptions.length > 0 && (
+                    <span className="ml-2 text-xs font-normal text-gray-500">({venueOptions.length} venues)</span>
+                  )}
+                </label>
+                <select
+                  value={selectedVenue}
+                  onChange={(e) => setSelectedVenue(e.target.value)}
+                  className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                >
+                  <option value="all">All Venues</option>
+                  {venueOptions.map((venue) => (
+                    <option key={venue} value={venue}>
+                      {venue}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center justify-between mt-1.5">
+                  <p className="text-xs text-gray-500">
+                    {selectedVenue === "all"
+                      ? `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} across all venues`
+                      : `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} at ${selectedVenue}`}
+                  </p>
+                  {selectedVenue !== "all" && (
+                    <button
+                      onClick={() => setSelectedVenue("all")}
+                      className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                    >
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Calendar */}
             <section className="mb-10">
               <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Calendar</h2>
@@ -1277,7 +1338,7 @@ export default function DashboardPage() {
                     plugins={[dayGridPlugin]}
                     initialView="dayGridMonth"
                     height="auto"
-                    events={events.map((ev) => {
+                    events={filteredEvents.map((ev) => {
                       const startIso = toIsoDateTime(ev.event_date, ev.start_time);
                       let endIso = toIsoDateTime(ev.event_date, ev.end_time);
                       if (!endIso && startIso) endIso = addHours(startIso, 1);
@@ -1309,9 +1370,18 @@ export default function DashboardPage() {
                   <p className="text-gray-400 text-sm mt-2">Get started by creating your first event</p>
                 </div>
               )}
-              {!loading && !error && events.length > 0 && (
+              {!loading && !error && events.length > 0 && filteredEvents.length === 0 && (
+                <div className="apple-card text-center py-16">
+                  <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  <p className="text-gray-500 text-lg">No events match this venue</p>
+                  <p className="text-gray-400 text-sm mt-2">Try another venue or clear the filter</p>
+                </div>
+              )}
+              {!loading && !error && filteredEvents.length > 0 && (
                 <div className="space-y-4">
-                  {events.map((ev) => (
+                  {filteredEvents.map((ev) => (
                     <div key={ev.id} className="apple-event-card group">
                       <div className="flex items-start justify-between">
                         <div className="flex-1">

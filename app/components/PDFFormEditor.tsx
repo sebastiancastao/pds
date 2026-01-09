@@ -195,7 +195,10 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           console.error('ÔØî Error loading saved PDF:', loadErr.message);
           console.log('­ƒôÑ Fetching fresh PDF from URL:', pdfUrl);
           savedPdfBytes = null;
-          const response = await fetch(pdfUrl, { cache: 'no-store' });
+          const response = await fetch(pdfUrl, {
+            cache: 'no-store',
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+          });
           console.log('PDF fetch response status:', response.status);
           if (!response.ok) {
             throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
@@ -205,7 +208,10 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         }
       } else {
         console.log('Step 2: Fetching fresh PDF from URL:', pdfUrl);
-        const response = await fetch(pdfUrl, { cache: 'no-store' });
+        const response = await fetch(pdfUrl, {
+          cache: 'no-store',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+        });
         console.log('PDF fetch response status:', response.status);
         if (!response.ok) {
           throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
@@ -219,7 +225,10 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       if (savedPdfBytes) {
         try {
           console.log('Step 2b: Fetching fresh PDF template to replace saved PDF bytes...');
-          const templateResponse = await fetch(pdfUrl, { cache: 'no-store' });
+          const templateResponse = await fetch(pdfUrl, {
+            cache: 'no-store',
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+          });
           console.log('Template fetch response status:', templateResponse.status);
           if (templateResponse.ok) {
             pdfBytes = await templateResponse.arrayBuffer();
