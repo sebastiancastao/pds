@@ -8,6 +8,8 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 
 const WI_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'wi-state-supplements', formId: 'wi-state-supplements', display: 'WI State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/wi-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },

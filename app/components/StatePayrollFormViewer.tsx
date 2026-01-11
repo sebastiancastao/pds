@@ -126,6 +126,9 @@ export default function StatePayrollFormViewer({
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [healthInsuranceAcknowledged, setHealthInsuranceAcknowledged] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   const basePath = `/payroll-packet-${stateCode}`;
 
@@ -141,6 +144,41 @@ export default function StatePayrollFormViewer({
         clearTimeout(autoSaveTimerRef.current);
       }
     };
+  }, []);
+
+  // Load saved signatures from database on mount
+  useEffect(() => {
+    const loadSavedSignatures = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+
+        const response = await fetch('/api/form-signatures/save', {
+          method: 'GET',
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          }
+        });
+
+        if (response.ok) {
+          const result = await response.json();
+          if (result.signatures) {
+            // Convert signatures object to Map
+            const sigMap = new Map<string, string>();
+            Object.entries(result.signatures).forEach(([formId, sigData]: [string, any]) => {
+              if (sigData?.signature_data) {
+                sigMap.set(formId, sigData.signature_data);
+              }
+            });
+            setSignatures(sigMap);
+            console.log('[SIGNATURE] ✅ Loaded signatures from database:', sigMap.size);
+          }
+        }
+      } catch (error) {
+        console.error('[SIGNATURE] ❌ Error loading signatures:', error);
+      }
+    };
+
+    loadSavedSignatures();
   }, []);
 
   useEffect(() => {
@@ -184,10 +222,16 @@ export default function StatePayrollFormViewer({
 
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
+    // Reset last saved signature reference when form changes
+    lastSavedSignatureRef.current = null;
+
     // Load existing drawn signature for this form if it exists
     const savedSignature = signatures.get(selectedForm);
     if (savedSignature && savedSignature.startsWith('data:image')) {
       setCurrentSignature(savedSignature);
+      if (currentForm?.formId) {
+        lastSavedSignatureRef.current = `${currentForm.formId}_${savedSignature}`;
+      }
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
@@ -218,7 +262,9 @@ export default function StatePayrollFormViewer({
   }, [selectedForm, signatures]);
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
+    console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes`);
     pdfBytesRef.current = pdfBytes;
+    console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
   const handleFieldChange = () => {
@@ -227,73 +273,66 @@ export default function StatePayrollFormViewer({
     }
     autoSaveTimerRef.current = setTimeout(() => {
       handleManualSave();
-    }, 3000);
+    }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
   const handleManualSave = async () => {
-    if (!pdfBytesRef.current || !currentForm) return;
+    if (!pdfBytesRef.current) {
+      console.warn('[SAVE] No PDF data to save');
+      return;
+    }
 
     try {
+      console.log(`[SAVE] Starting save process, PDF size: ${pdfBytesRef.current.length} bytes`);
       setSaveStatus('saving');
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+
+      // Get session for authentication
+      const { data: { session } } = await supabase.auth.getSession();
+
+      // Convert Uint8Array to base64
       const base64 = btoa(
         Array.from(pdfBytesRef.current)
-          .map((byte) => String.fromCharCode(byte))
-          .join(''),
+          .map(byte => String.fromCharCode(byte))
+          .join('')
       );
+      console.log(`[SAVE] Converted to base64, length: ${base64.length} characters`);
+      console.log(`[SAVE] Base64 preview: ${base64.substring(0, 50)}...`);
 
-      // Fallback: if not authenticated, store locally to avoid 401s
-      if (!session?.access_token) {
-        try {
-          const localKey = `pdf-progress-${currentForm.formId}`;
-          localStorage.setItem(localKey, base64);
-          setSaveStatus('saved');
-          setLastSaved(new Date());
-          setTimeout(() => setSaveStatus('idle'), 2000);
-          return;
-        } catch (err) {
-          console.warn('[SAVE] Local fallback failed', err);
-        }
+      // Save to database (+ optionally persist i9 mode/selections)
+      console.log(`[SAVE] Sending to API for form: ${currentForm.formId}`);
+      const payload: any = {
+        formName: currentForm.formId,
+        formData: base64,
+      };
+      if (selectedForm === 'i9') {
+        payload.i9Mode = i9Mode;
+        payload.i9Selections = i9Selections;
       }
 
       const response = await fetch('/api/pdf-form-progress/save', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         },
-        body: JSON.stringify({
-          formName: currentForm.formId,
-          formData: base64,
-        }),
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
       });
 
       if (response.ok) {
+        const result = await response.json();
+        console.log('[SAVE] ✅ Save successful:', result);
         setSaveStatus('saved');
         setLastSaved(new Date());
         setTimeout(() => setSaveStatus('idle'), 2000);
-      } else if (response.status === 401) {
-        // Save locally on auth failures so progress is not lost
-        try {
-          const localKey = `pdf-progress-${currentForm.formId}`;
-          localStorage.setItem(localKey, base64);
-          setSaveStatus('saved');
-          setLastSaved(new Date());
-          setTimeout(() => setSaveStatus('idle'), 2000);
-          return;
-        } catch (err) {
-          console.warn('[SAVE] Local fallback failed after 401', err);
-        }
-        setSaveStatus('error');
-        setTimeout(() => setSaveStatus('idle'), 3000);
       } else {
+        const error = await response.json();
+        console.error('[SAVE] ❌ Save failed:', error);
         setSaveStatus('error');
         setTimeout(() => setSaveStatus('idle'), 3000);
       }
     } catch (error) {
-      console.error('Error saving PDF form:', error);
+      console.error('[SAVE] ❌ Save exception:', error);
       setSaveStatus('error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     }
@@ -342,14 +381,109 @@ export default function StatePayrollFormViewer({
   };
 
   const handleContinue = async () => {
+    console.log('[VALIDATION] handleContinue called, selectedForm:', selectedForm);
+    console.log('[VALIDATION] currentForm:', currentForm);
+    console.log('[VALIDATION] currentSignature:', currentSignature);
+
+    // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
-      alert('Please provide your signature before continuing.');
+      console.log('[VALIDATION] Signature required but missing');
+      setValidationError('Please provide your signature in the signature box below before continuing.');
+      setEmptyFieldPage(null);
+
+      // Scroll to the signature section
+      setTimeout(() => {
+        const signatureSection = document.querySelector('h2');
+        if (signatureSection && signatureSection.textContent === 'Signature Required') {
+          signatureSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }
+      }, 100);
+
       return;
     }
 
     if (selectedForm === 'health-insurance' && !healthInsuranceAcknowledged) {
       alert('Please acknowledge that you have read the Health Insurance Marketplace notice before continuing.');
       return;
+    }
+
+    // Validate required fields for employee handbook
+    if (selectedForm === 'employee-handbook' && pdfBytesRef.current) {
+      console.log('[VALIDATION] Employee handbook validation starting...');
+      console.log('[VALIDATION] pdfBytesRef.current exists:', !!pdfBytesRef.current);
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+        console.log('[VALIDATION] PDF form loaded successfully');
+
+        // List of required fields in order from top to bottom with their page numbers
+        const requiredFields = [
+          { name: 'employee_name1', page: 77, friendly: 'Employee Name (Top of last page)' },
+          { name: 'employee_initialsprev', page: 77, friendly: 'Initials (Section 1)' },
+          { name: 'employee_initials2prev', page: 77, friendly: 'Initials (Section 2)' },
+          { name: 'employee_initials3prev', page: 77, friendly: 'Initials (Section 3)' },
+          { name: 'acknowledgment_date1', page: 77, friendly: 'Date (Section 1)' },
+          { name: 'printedName1', page: 77, friendly: 'Printed Name (Section 1)' },
+          { name: 'signName1', page: 77, friendly: 'Signature (Section 1)' },
+          { name: 'employee_name', page: 77, friendly: 'Employee Name (Middle section)' },
+          { name: 'employee_initials', page: 77, friendly: 'Initials (Section 4)' },
+          { name: 'employee_initials2', page: 77, friendly: 'Initials (Section 5)' },
+          { name: 'employee_initials3', page: 77, friendly: 'Initials (Section 6)' },
+          { name: 'acknowledgment_date', page: 77, friendly: 'Date (Section 2)' },
+          { name: 'printedName', page: 77, friendly: 'Printed Name (Section 2)' },
+          { name: 'signName', page: 77, friendly: 'Signature (Section 2)' },
+          { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
+          { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
+          { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
+          { name: 'date5', page: 77, friendly: 'Date (Section 5)' },
+          { name: 'printedName4', page: 77, friendly: 'Printed Name (Section 4)' },
+          { name: 'date6', page: 77, friendly: 'Date (Section 6)' }
+        ];
+
+        // Check each required field
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            console.log(`[VALIDATION] Checking field ${fieldInfo.name}:`, value);
+
+            if (!value || value.trim() === '') {
+              // Found empty required field
+              console.log(`[VALIDATION] Empty field found: ${fieldInfo.name}`);
+              const errorMessage = `Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`;
+              console.log('[VALIDATION] Setting validation error:', errorMessage);
+              setValidationError(errorMessage);
+              setEmptyFieldPage(fieldInfo.page);
+              console.log('[VALIDATION] State updated, should show banner now');
+
+              // Scroll to the specific page in the PDF viewer
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  // Fallback to scroll to top if canvas not found
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              // Prevent continuing
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        // Clear any previous validation errors if all fields are filled
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating PDF fields:', err);
+      }
     }
 
     if (selectedForm === 'i9') {
@@ -380,6 +514,10 @@ export default function StatePayrollFormViewer({
 
     if (pdfBytesRef.current) {
       await handleManualSave();
+    }
+
+    if (currentForm?.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
     }
 
     if (currentForm?.next) {
@@ -483,6 +621,54 @@ export default function StatePayrollFormViewer({
         newSigs.set(selectedForm, dataUrl);
         return newSigs;
       });
+
+    }
+  };
+
+  // Function to save signature to database
+  const saveSignatureToDatabase = async (signatureData: string) => {
+    // Check if this exact signature was already saved for this form
+    const signatureKey = `${currentForm.formId}_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      console.log('[SIGNATURE] ⏭️ Signature already saved, skipping');
+      return;
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      console.log('[SIGNATURE] 💾 Saving signature for form:', currentForm.formId);
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: currentForm.formId,
+          formType: currentForm.display,
+          signatureData: signatureData,
+          formData: pdfBytesRef.current ? btoa(
+            Array.from(pdfBytesRef.current)
+              .map(byte => String.fromCharCode(byte))
+              .join('')
+          ) : undefined
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[SIGNATURE] ✅ Signature saved to database:', result);
+        // Mark this signature as saved
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[SIGNATURE] ❌ Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[SIGNATURE] ❌ Exception saving signature:', error);
     }
   };
 
@@ -546,14 +732,69 @@ export default function StatePayrollFormViewer({
           <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 'bold' }}>{currentForm.display}</h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '14px' }}>
-          {saveStatus === 'saving' && <span style={{ color: '#1976d2' }}>Saving...</span>}
-          {saveStatus === 'saved' && <span style={{ color: '#2e7d32' }}>Saved</span>}
-          {saveStatus === 'error' && <span style={{ color: '#d32f2f' }}>Save failed</span>}
+          {saveStatus === 'saving' && <span style={{ color: '#1976d2' }}>💾 Saving...</span>}
+          {saveStatus === 'saved' && <span style={{ color: '#2e7d32' }}>✓ Saved</span>}
+          {saveStatus === 'error' && <span style={{ color: '#d32f2f' }}>⚠ Save failed</span>}
           {lastSaved && <span style={{ color: '#666', fontSize: '12px' }}>Last saved: {lastSaved.toLocaleTimeString()}</span>}
         </div>
       </div>
 
       <div style={{ flex: 1, padding: '24px', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+        {/* Validation Error Banner */}
+        {validationError && (
+          <div style={{
+            backgroundColor: '#ffebee',
+            border: '3px solid #d32f2f',
+            borderRadius: '12px',
+            padding: '20px 28px',
+            marginBottom: '20px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '16px',
+            boxShadow: '0 4px 12px rgba(211, 47, 47, 0.3)',
+            animation: 'slideDown 0.3s ease-out'
+          }}>
+            <svg style={{ width: '32px', height: '32px', fill: '#d32f2f', flexShrink: 0 }} viewBox="0 0 24 24">
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+            </svg>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 'bold', color: '#d32f2f', marginBottom: '8px', fontSize: '18px' }}>
+                ⚠ Required Field Missing
+              </div>
+              <div style={{ color: '#c62828', fontSize: '15px', fontWeight: '500', marginBottom: '6px' }}>
+                {validationError}
+              </div>
+              {emptyFieldPage && (
+                <div style={{ color: '#c62828', fontSize: '13px', backgroundColor: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffcdd2' }}>
+                  📄 Please scroll down to <strong>page {emptyFieldPage}</strong> in the PDF below and fill in the required field before continuing.
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                setValidationError(null);
+                setEmptyFieldPage(null);
+              }}
+              style={{
+                padding: '10px 20px',
+                backgroundColor: '#d32f2f',
+                color: 'white',
+                border: 'none',
+                borderRadius: '8px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontSize: '14px',
+                flexShrink: 0,
+                transition: 'background-color 0.2s'
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#b71c1c')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#d32f2f')}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
             key={`${currentForm.formId}-${selectedForm}-${currentForm.api}`}
@@ -874,8 +1115,18 @@ export default function StatePayrollFormViewer({
                 cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
                 fontSize: '16px',
               }}
+              onMouseOver={(e) => {
+                if (saveStatus !== 'saving') {
+                  e.currentTarget.style.backgroundColor = '#555';
+                }
+              }}
+              onMouseOut={(e) => {
+                if (saveStatus !== 'saving') {
+                  e.currentTarget.style.backgroundColor = '#666';
+                }
+              }}
             >
-              {saveStatus === 'saving' ? 'Saving...' : 'Save'}
+              {saveStatus === 'saving' ? '💾 Saving...' : '💾 Save'}
             </button>
 
             <button
@@ -890,6 +1141,16 @@ export default function StatePayrollFormViewer({
                 fontWeight: 'bold',
                 cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
                 fontSize: '16px',
+              }}
+              onMouseOver={(e) => {
+                if (saveStatus !== 'saving') {
+                  e.currentTarget.style.backgroundColor = '#1565c0';
+                }
+              }}
+              onMouseOut={(e) => {
+                if (saveStatus !== 'saving') {
+                  e.currentTarget.style.backgroundColor = '#1976d2';
+                }
               }}
             >
               {currentForm.next ? 'Save & Continue →' : 'Save & Finish'}

@@ -8,6 +8,8 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 
 const NV_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'nv-state-supplements', formId: 'nv-state-supplements', display: 'NV State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/nv-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },

@@ -37,6 +37,14 @@ const formDisplayNames: Record<string, string> = {
   'az-state-tax': 'AZ State Tax Form',
 };
 
+type SignatureEntry = {
+  signature_data: string;
+  signature_type?: string | null;
+};
+
+const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
+const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9']);
+
 function toBase64(data: any): string {
   if (!data) return '';
   if (typeof data === 'string') return data;
@@ -55,6 +63,26 @@ function toBase64(data: any): string {
     binary += String.fromCharCode(uint[i]);
   }
   return Buffer.from(binary, 'binary').toString('base64');
+}
+
+function normalizeFormKey(formName: string) {
+  const lower = formName.toLowerCase();
+  const parts = lower.split('-');
+  if (parts.length > 1 && STATE_CODE_PREFIXES.has(parts[0])) {
+    return parts.slice(1).join('-');
+  }
+  return lower;
+}
+
+function normalizeSignatureImage(signatureData: string) {
+  const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,/i);
+  if (!match) {
+    return { format: 'png', base64: signatureData };
+  }
+  return {
+    format: match[1].toLowerCase(),
+    base64: signatureData.slice(match[0].length),
+  };
 }
 
 function displayNameForForm(formName: string) {
@@ -137,14 +165,59 @@ export async function GET(
       );
     }
 
-    // Get user's signature from background_check_pdfs table
-    const { data: signatureData } = await supabaseAdmin
-      .from('background_check_pdfs')
-      .select('signature, signature_type')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase();
+    const useFormSignatures = signatureSource === 'form_signatures';
+    const signatureByForm = new Map<string, SignatureEntry>();
+    let legacySignature: SignatureEntry | null = null;
+
+    if (useFormSignatures) {
+      const formIds = Array.from(new Set(forms.map((form) => form.form_name).filter(Boolean)));
+      if (formIds.length > 0) {
+        const { data: signatures, error: signatureError } = await supabaseAdmin
+          .from('form_signatures')
+          .select('form_id, signature_data, signature_type, signed_at')
+          .eq('user_id', userId)
+          .eq('signature_role', 'employee')
+          .in('form_id', formIds)
+          .order('signed_at', { ascending: false });
+
+        if (signatureError) {
+          console.error('[PDF_FORMS] Error fetching form signatures:', signatureError);
+        } else if (signatures) {
+          signatures.forEach((signature) => {
+            const formId = signature?.form_id;
+            if (!formId || signatureByForm.has(formId)) return;
+            signatureByForm.set(formId, {
+              signature_data: signature.signature_data,
+              signature_type: signature.signature_type,
+            });
+            const normalizedFormId = normalizeFormKey(formId);
+            if (normalizedFormId !== formId && !signatureByForm.has(normalizedFormId)) {
+              signatureByForm.set(normalizedFormId, {
+                signature_data: signature.signature_data,
+                signature_type: signature.signature_type,
+              });
+            }
+          });
+        }
+      }
+    } else {
+      // Legacy fallback: use the latest background check signature for all forms
+      const { data: signatureData } = await supabaseAdmin
+        .from('background_check_pdfs')
+        .select('signature, signature_type')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (signatureData?.signature) {
+        legacySignature = {
+          signature_data: signatureData.signature,
+          signature_type: signatureData.signature_type,
+        };
+      }
+    }
 
     console.log('[PDF_FORMS] Retrieved', forms.length, 'forms');
 
@@ -166,42 +239,59 @@ export async function GET(
         // Load the PDF
         const formPdf = await PDFDocument.load(pdfBytes);
 
-        // If signature exists, embed it on the last page
-        if (signatureData?.signature) {
+        const normalizedFormName = normalizeFormKey(form.form_name || '');
+        const signatureForForm = useFormSignatures
+          ? signatureByForm.get(form.form_name) || signatureByForm.get(normalizedFormName)
+          : legacySignature;
+
+        // If signature exists, embed it on the target page
+        if (signatureForForm?.signature_data) {
           const pages = formPdf.getPages();
-          const lastPage = pages[pages.length - 1];
-          const { width, height } = lastPage.getSize();
+          const pageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedFormName)
+            ? 0
+            : Math.max(pages.length - 1, 0);
+          const targetPage = pages[pageIndex];
+          const { width, height } = targetPage.getSize();
 
           try {
             let signatureImage;
 
-            // Check if signature is a data URL or just base64
-            let imageData = signatureData.signature;
-            if (imageData.startsWith('data:image/png;base64,')) {
-              imageData = imageData.replace('data:image/png;base64,', '');
-            }
-
-            // Embed the signature image
-            signatureImage = await formPdf.embedPng(Buffer.from(imageData, 'base64'));
+            const signatureValue = signatureForForm.signature_data;
+            const signatureKind = (signatureForForm.signature_type || '').toString().toLowerCase();
+            const isTyped = signatureKind === 'typed' || signatureKind === 'type';
+            const isDataUrl = signatureValue.startsWith('data:image/');
 
             // Position signature - lower for I-9 form, standard for others
             const signatureWidth = 150;
             const signatureHeight = 50;
             const x = width - signatureWidth - 50;
-
-            // I-9 form needs signature positioned lower (higher up on the page)
-            const isI9Form = form.form_name === 'i9';
+            const isI9Form = normalizedFormName === 'i9';
             const y = isI9Form ? 100 : 50;
 
-            lastPage.drawImage(signatureImage, {
-              x,
-              y,
-              width: signatureWidth,
-              height: signatureHeight,
-            });
+            if (isTyped && !isDataUrl) {
+              targetPage.drawText(signatureValue, {
+                x,
+                y: y + signatureHeight / 2,
+                size: 10,
+              });
+            } else {
+              const { format, base64 } = normalizeSignatureImage(signatureValue);
+              const imageBytes = Buffer.from(base64, 'base64');
+              signatureImage =
+                format === 'jpg' || format === 'jpeg'
+                  ? await formPdf.embedJpg(imageBytes)
+                  : await formPdf.embedPng(imageBytes);
+
+              targetPage.drawImage(signatureImage, {
+                x,
+                y,
+                width: signatureWidth,
+                height: signatureHeight,
+              });
+            }
 
             // Add "Digitally Signed" text above signature
-            lastPage.drawText('Digitally Signed:', {
+            targetPage.drawText('Digitally Signed:', {
               x,
               y: y + signatureHeight + 5,
               size: 8,

@@ -71,6 +71,9 @@ function FormViewerContent() {
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [hasReadForm, setHasReadForm] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   // (Email notification moved to explicit Save click per request)
 
@@ -82,7 +85,8 @@ function FormViewerContent() {
     fillable: { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
     fw4: { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
     i9: { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
-    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'ui-guide', requiresSignature: true },
+    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'employee-handbook', requiresSignature: true },
+    'employee-handbook': { display: 'PDS Employee Handbook 2026', api: '/api/payroll-packet-ca/employee-handbook', formId: 'employee-handbook', next: 'ui-guide', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
@@ -242,7 +246,19 @@ function FormViewerContent() {
 
     // Check if signature is required but not provided
     if (currentForm.requiresSignature && !currentSignature) {
-      alert('Please provide your signature before continuing to the next form.');
+      setValidationError('Please provide your signature in the signature box below before continuing.');
+      setEmptyFieldPage(null);
+
+      // Scroll to the signature section
+      setTimeout(() => {
+        const signatureSection = document.querySelector('h2');
+        if (signatureSection && signatureSection.textContent === 'Signature Required') {
+          signatureSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }
+      }, 100);
+
       return;
     }
 
@@ -250,6 +266,79 @@ function FormViewerContent() {
     if (!currentForm.requiresSignature && !hasReadForm) {
       alert('Please confirm that you have read and understood this document.');
       return;
+    }
+
+    // Validate required fields for employee handbook
+    if (formName === 'employee-handbook' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        // List of required fields in order from top to bottom with their page numbers
+        const requiredFields = [
+          { name: 'employee_name1', page: 77, friendly: 'Employee Name (Top of last page)' },
+          { name: 'employee_initialsprev', page: 77, friendly: 'Initials (Section 1)' },
+          { name: 'employee_initials2prev', page: 77, friendly: 'Initials (Section 2)' },
+          { name: 'employee_initials3prev', page: 77, friendly: 'Initials (Section 3)' },
+          { name: 'acknowledgment_date1', page: 77, friendly: 'Date (Section 1)' },
+          { name: 'printedName1', page: 77, friendly: 'Printed Name (Section 1)' },
+          { name: 'signName1', page: 77, friendly: 'Signature (Section 1)' },
+          { name: 'employee_name', page: 77, friendly: 'Employee Name (Middle section)' },
+          { name: 'employee_initials', page: 77, friendly: 'Initials (Section 4)' },
+          { name: 'employee_initials2', page: 77, friendly: 'Initials (Section 5)' },
+          { name: 'employee_initials3', page: 77, friendly: 'Initials (Section 6)' },
+          { name: 'acknowledgment_date', page: 77, friendly: 'Date (Section 2)' },
+          { name: 'printedName', page: 77, friendly: 'Printed Name (Section 2)' },
+          { name: 'signName', page: 77, friendly: 'Signature (Section 2)' },
+          { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
+          { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
+          { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
+          { name: 'employerprintname', page: 77, friendly: 'Employer Name' },
+          { name: 'employertitle', page: 77, friendly: 'Employer Title' },
+          { name: 'date5', page: 77, friendly: 'Date (Section 5)' },
+          { name: 'printedName4', page: 77, friendly: 'Printed Name (Section 4)' },
+          { name: 'date6', page: 77, friendly: 'Date (Section 6)' },
+          { name: 'printedNameEmployer', page: 77, friendly: 'Employer Name (Section 2)' },
+          { name: 'employertitle2', page: 77, friendly: 'Employer Title (Section 2)' }
+        ];
+
+        // Check each required field
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              // Found empty required field
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+
+              // Scroll to the specific page in the PDF viewer
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  // Fallback to scroll to top if canvas not found
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              // Prevent continuing
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        // Clear any previous validation errors if all fields are filled
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating PDF fields:', err);
+      }
     }
 
     // I-9 validations (mode + selections + files)
@@ -290,6 +379,10 @@ function FormViewerContent() {
       console.log('Save completed');
     } else {
       console.log('No PDF data to save, continuing anyway');
+    }
+
+    if (currentForm.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
     }
 
     // Navigate to next form
@@ -385,6 +478,54 @@ function FormViewerContent() {
         newSigs.set(formName, dataUrl);
         return newSigs;
       });
+
+    }
+  };
+
+  // Function to save signature to database
+  const saveSignatureToDatabase = async (signatureData: string) => {
+    // Check if this exact signature was already saved for this form
+    const signatureKey = `${currentForm.formId}_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      console.log('[SIGNATURE] ⏭️ Signature already saved, skipping');
+      return;
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      console.log('[SIGNATURE] 💾 Saving signature for form:', currentForm.formId);
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: currentForm.formId,
+          formType: currentForm.display,
+          signatureData: signatureData,
+          formData: pdfBytesRef.current ? btoa(
+            Array.from(pdfBytesRef.current)
+              .map(byte => String.fromCharCode(byte))
+              .join('')
+          ) : undefined
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[SIGNATURE] ✅ Signature saved to database:', result);
+        // Mark this signature as saved
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[SIGNATURE] ❌ Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[SIGNATURE] ❌ Exception saving signature:', error);
     }
   };
 
@@ -518,6 +659,37 @@ function FormViewerContent() {
     }
   };
 
+  // Load saved signatures from database
+  const loadSavedSignatures = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.signatures) {
+          // Convert signatures object to Map
+          const sigMap = new Map<string, string>();
+          Object.entries(result.signatures).forEach(([formId, sigData]: [string, any]) => {
+            if (sigData?.signature_data) {
+              sigMap.set(formId, sigData.signature_data);
+            }
+          });
+          setSignatures(sigMap);
+          console.log('[SIGNATURE] ✅ Loaded signatures from database:', sigMap.size);
+        }
+      }
+    } catch (error) {
+      console.error('[SIGNATURE] ❌ Error loading signatures:', error);
+    }
+  };
+
   // Load I-9 documents when on I-9 form
   useEffect(() => {
     if (formName === 'i9') {
@@ -525,15 +697,26 @@ function FormViewerContent() {
     }
   }, [formName]);
 
+  // Load signatures from database on mount
+  useEffect(() => {
+    loadSavedSignatures();
+  }, []);
+
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
     // Reset read confirmation when form changes
     setHasReadForm(false);
 
+    // Reset last saved signature reference when form changes
+    lastSavedSignatureRef.current = null;
+
     // Load existing drawn signature for this form if it exists
     const savedSignature = signatures.get(formName);
     if (savedSignature && savedSignature.startsWith('data:image')) {
       setCurrentSignature(savedSignature);
+      if (currentForm?.formId) {
+        lastSavedSignatureRef.current = `${currentForm.formId}_${savedSignature}`;
+      }
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
@@ -614,6 +797,60 @@ function FormViewerContent() {
         </div>
       </div>
 
+      {/* Validation Error Banner */}
+      {validationError && (
+        <div style={{
+          backgroundColor: '#ffebee',
+          border: '3px solid #d32f2f',
+          borderRadius: '12px',
+          padding: '20px 28px',
+          margin: '0 24px 0 24px',
+          marginTop: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px',
+          boxShadow: '0 4px 12px rgba(211, 47, 47, 0.3)',
+          animation: 'slideDown 0.3s ease-out'
+        }}>
+          <svg style={{ width: '32px', height: '32px', fill: '#d32f2f', flexShrink: 0 }} viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 'bold', color: '#d32f2f', marginBottom: '8px', fontSize: '18px' }}>
+              ⚠ Required Field Missing
+            </div>
+            <div style={{ color: '#c62828', fontSize: '15px', fontWeight: '500', marginBottom: '6px' }}>
+              {validationError}
+            </div>
+            <div style={{ color: '#c62828', fontSize: '13px', backgroundColor: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffcdd2' }}>
+              📄 Please scroll down to <strong>page {emptyFieldPage}</strong> in the PDF below and fill in the required field before continuing.
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setValidationError(null);
+              setEmptyFieldPage(null);
+            }}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: '#d32f2f',
+              color: 'white',
+              border: 'none',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: 'bold',
+              fontSize: '14px',
+              flexShrink: 0,
+              transition: 'background-color 0.2s'
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#b71c1c'}
+            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#d32f2f'}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       {/* PDF Editor */}
       <div style={{
         flex: 1,
@@ -624,7 +861,7 @@ function FormViewerContent() {
       }}>
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
-            key={`${currentForm.formId}-${formName}`}
+            key={`${currentForm.formId}-${formName}-${validationError ? 'error' : 'normal'}`}
             pdfUrl={currentForm.api}
             formId={currentForm.formId}
             onSave={handlePDFSave}
@@ -771,7 +1008,7 @@ function FormViewerContent() {
                   <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
                 </svg>
                 <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>
-                  Signature saved for this document
+                  Signature captured
                 </span>
               </div>
             )}
