@@ -57,7 +57,7 @@ export async function sendTemporaryPasswordEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Portal <service@furnituretaxi.site>', // Using Resend's test domain (change to your verified domain later)
+      from: 'PDS Portal <service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -379,7 +379,7 @@ export async function sendInviteEmail(data: {
   // Send invite email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>', // Using Resend's test domain (change to your verified domain later)
+      from: 'PDS Time Tracking <service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -475,7 +475,7 @@ export async function sendMFAVerificationEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      from: 'PDS Time Tracking <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -663,7 +663,7 @@ export async function sendVendorEventInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
+      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -890,7 +890,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
+      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -1104,7 +1104,7 @@ export async function sendTeamConfirmationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@furnituretaxi.site>', // Update this to your domain after verification
+      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
       to: email,
       subject: emailSubject,
       cc:"jenvillar625@gmail.com",
@@ -1279,7 +1279,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
   // Send email via Resend to admin
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      from: 'PDS Time Tracking <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com', // Admin email
       
       subject: emailSubject,
@@ -1326,7 +1326,7 @@ export async function sendEmail(data: {
 
   try {
     const { data: resendData, error } = await resend.emails.send({
-      from: from || 'PDS Time Tracking <service@furnituretaxi.site>',
+      from: from || 'PDS Time Tracking <service@pdsportal.site>',
       to,
       cc,
       subject,
@@ -1486,7 +1486,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
   // Send email via Resend to admin
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      from: 'PDS Time Tracking <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com',
       subject: emailSubject,
       html: emailBody,
@@ -1669,7 +1669,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
   // Send email via Resend to user
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time Tracking <service@furnituretaxi.site>',
+      from: 'PDS Time Tracking <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
       html: emailBody,

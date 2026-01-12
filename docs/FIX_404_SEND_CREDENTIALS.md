@@ -178,7 +178,7 @@ curl https://api.resend.com/emails \
   -H "Authorization: Bearer re_your_api_key" \
   -H "Content-Type: application/json" \
   -d '{
-    "from": "service@furnituretaxi.site",
+    "from": "service@pdsportal.site",
     "to": "your-email@example.com",
     "subject": "Test Email",
     "html": "<p>Test from PDS</p>"
