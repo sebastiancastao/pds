@@ -282,7 +282,7 @@ export async function POST(request: NextRequest) {
     // --- User receipt via Resend (NEW) ---
     let emailSentToUser = false;
     const toEmail = (user.email || '').trim();
-    const fromEmail = (process.env.RESEND_FROM || 'service@furnituretaxi.site').trim();
+    const fromEmail = (process.env.RESEND_FROM || 'service@pdsportal.site').trim();
 
     if (!process.env.RESEND_API_KEY) {
       console.warn('[BACKGROUND CHECK COMPLETE] RESEND_API_KEY not set; skipping user receipt email.');

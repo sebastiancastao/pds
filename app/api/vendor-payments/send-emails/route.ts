@@ -194,7 +194,7 @@ export async function POST(req: NextRequest) {
 
       try {
         const { error } = await resend.emails.send({
-          from: 'PDS Payments <service@furnituretaxi.site>',
+          from: 'PDS Payments <service@pdsportal.site>',
           to: email,
           subject,
           html,

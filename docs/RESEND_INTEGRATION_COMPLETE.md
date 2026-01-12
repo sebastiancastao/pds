@@ -73,7 +73,7 @@ You should see:
 
 Look for an email from:
 ```
-From: PDS Time Tracking <service@furnituretaxi.site>
+From: PDS Time Tracking <service@pdsportal.site>
 Subject: Welcome to PDS Time Tracking - Your Account Details
 ```
 
