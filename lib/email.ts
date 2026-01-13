@@ -185,6 +185,14 @@ function generateEmailTemplate(data: {
                     </a>
                   </td>
                 </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="https://pds-murex.vercel.app/login" style="color: #667eea; text-decoration: none; word-break: break-all;">https://pds-murex.vercel.app/login</a>
+                    </p>
+                  </td>
+                </tr>
               </table>
 
               <!-- Next Steps -->
@@ -305,10 +313,18 @@ export async function sendInviteEmail(data: {
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
                 <tr>
                   <td align="center">
-                    <a href="${inviteUrl}" 
+                    <a href="${inviteUrl}"
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 18px 50px; border-radius: 6px; font-size: 18px; font-weight: bold; box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3);">
                       Accept Invitation & Create Account
                     </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${inviteUrl}" style="color: #667eea; text-decoration: none; word-break: break-all;">${inviteUrl}</a>
+                    </p>
                   </td>
                 </tr>
               </table>
@@ -603,6 +619,14 @@ export async function sendVendorEventInvitationEmail(data: {
                     </a>
                   </td>
                 </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${invitationUrl}" style="color: #667eea; text-decoration: none; word-break: break-all;">${invitationUrl}</a>
+                    </p>
+                  </td>
+                </tr>
               </table>
 
               <!-- Instructions -->
@@ -812,6 +836,14 @@ export async function sendVendorBulkInvitationEmail(data: {
                        style="display: inline-block; background: linear-gradient(180deg, #007AFF 0%, #0051D5 100%); color: #ffffff; text-decoration: none; padding: 16px 48px; border-radius: 12px; font-size: 17px; font-weight: 600; box-shadow: 0 4px 12px rgba(0, 122, 255, 0.4); letter-spacing: -0.3px;">
                       Confirm Your Availability
                     </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${invitationUrl}" style="color: #007AFF; text-decoration: none; word-break: break-all;">${invitationUrl}</a>
+                    </p>
                   </td>
                 </tr>
               </table>
@@ -1031,6 +1063,14 @@ export async function sendTeamConfirmationEmail(data: {
                     </a>
                   </td>
                 </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${confirmationUrl}" style="color: #34C759; text-decoration: none; word-break: break-all;">${confirmationUrl}</a>
+                    </p>
+                  </td>
+                </tr>
               </table>
 
               <!-- Important Note -->
@@ -1236,6 +1276,14 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
                       Review Background Checks
                     </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks" style="color: #667eea; text-decoration: none; word-break: break-all;">${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks</a>
+                    </p>
                   </td>
                 </tr>
               </table>
@@ -1456,6 +1504,14 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
                     </a>
                   </td>
                 </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks" style="color: #667eea; text-decoration: none; word-break: break-all;">${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/background-checks</a>
+                    </p>
+                  </td>
+                </tr>
               </table>
             </td>
           </tr>
@@ -1598,6 +1654,14 @@ export async function sendBackgroundCheckApprovalEmail(data: {
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
                       Go to Login
                     </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/dashboard" style="color: #667eea; text-decoration: none; word-break: break-all;">${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/dashboard</a>
+                    </p>
                   </td>
                 </tr>
               </table>

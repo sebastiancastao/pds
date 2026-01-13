@@ -504,9 +504,8 @@ export default function ChangePasswordPage() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Need help?{' '}
-              <a href="#" className="text-primary-600 hover:text-primary-700 font-medium">
-                Contact Support
-              </a>
+                Contact Support at portal@1pds.com
+              
             </p>
           </div>
         </div>

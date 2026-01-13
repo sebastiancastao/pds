@@ -250,6 +250,11 @@ export default function LoginPage() {
             console.error('[LOGIN DEBUG] ❌ Error checking onboarding status:', err);
           }
 
+          // Clear any stale onboarding redirect from previous sessions
+          console.log('[LOGIN DEBUG] 🗑️ Clearing any stale sessionStorage data from previous sessions');
+          sessionStorage.removeItem('pending_onboarding_redirect');
+          console.log('[LOGIN DEBUG] ✅ Cleared stale data');
+
           // Determine onboarding redirect
           let onboardingRedirectPath = null;
 
@@ -258,10 +263,44 @@ export default function LoginPage() {
           console.log('[LOGIN DEBUG] - onboardingApproved:', onboardingApproved);
 
           if (!hasSubmittedOnboardingPDF) {
-            // User hasn't submitted onboarding PDFs yet
+            // User hasn't submitted onboarding PDFs yet - determine their current stage
             console.log('[LOGIN DEBUG] ⚠️ SCENARIO A: User has NOT submitted onboarding PDFs');
-            onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
-            console.log('[LOGIN DEBUG] Will redirect to:', onboardingRedirectPath);
+            console.log('[LOGIN DEBUG] 🔍 Calling /api/auth/check-onboarding-stage to detect current stage...');
+
+            // Call the onboarding stage detection API
+            try {
+              const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${currentSession?.access_token}`
+                },
+              });
+
+              console.log('[LOGIN DEBUG] Stage API response status:', stageResponse.status, stageResponse.ok ? 'OK' : 'ERROR');
+
+              if (stageResponse.ok) {
+                const stageResult = await stageResponse.json();
+                onboardingRedirectPath = stageResult.nextStage;
+                console.log('[LOGIN DEBUG] ✅ Stage API returned success');
+                console.log('[LOGIN DEBUG] Full stage API response:', JSON.stringify(stageResult, null, 2));
+                console.log('[LOGIN DEBUG] ⭐ Next stage detected:', onboardingRedirectPath);
+                console.log('[LOGIN DEBUG] Progress:', `${stageResult.completedCount}/${stageResult.totalCount} forms (${stageResult.percentComplete}%)`);
+                console.log('[LOGIN DEBUG] Approved status:', stageResult.approved);
+              } else {
+                // Fallback to default
+                const errorData = await stageResponse.json();
+                console.error('[LOGIN DEBUG] ❌ Stage API returned error:', errorData);
+                onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
+                console.log('[LOGIN DEBUG] Using fallback redirect:', onboardingRedirectPath);
+              }
+            } catch (stageError) {
+              console.error('[LOGIN DEBUG] ❌ Exception calling stage detection API:', stageError);
+              onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
+              console.log('[LOGIN DEBUG] Using fallback redirect after error:', onboardingRedirectPath);
+            }
+
+            console.log('[LOGIN DEBUG] 🎯 FINAL onboarding redirect path will be:', onboardingRedirectPath);
           } else if (hasSubmittedOnboardingPDF && onboardingApproved) {
             // Both PDF submitted AND approved
             console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding PDFs submitted AND approved');
@@ -276,18 +315,30 @@ export default function LoginPage() {
 
           // Store redirect if needed
           if (onboardingRedirectPath) {
-            console.log('[LOGIN DEBUG] 📝 Storing pending_onboarding_redirect:', onboardingRedirectPath);
+            console.log('[LOGIN DEBUG] 📝 STORING pending_onboarding_redirect in sessionStorage');
+            console.log('[LOGIN DEBUG] Value to store:', onboardingRedirectPath);
             sessionStorage.setItem('pending_onboarding_redirect', onboardingRedirectPath);
-            console.log('[LOGIN DEBUG] ✅ Stored in sessionStorage');
+            console.log('[LOGIN DEBUG] ✅ Successfully called sessionStorage.setItem()');
+
+            // Immediately verify it was stored
+            const immediateCheck = sessionStorage.getItem('pending_onboarding_redirect');
+            console.log('[LOGIN DEBUG] 🔍 Immediate verification - value in storage:', immediateCheck);
+            if (immediateCheck !== onboardingRedirectPath) {
+              console.error('[LOGIN DEBUG] ❌❌❌ CRITICAL ERROR: sessionStorage value does not match!');
+              console.error('[LOGIN DEBUG] Expected:', onboardingRedirectPath);
+              console.error('[LOGIN DEBUG] Actual:', immediateCheck);
+            }
           } else {
-            console.log('[LOGIN DEBUG] 🗑️ Removing pending_onboarding_redirect from sessionStorage');
+            console.log('[LOGIN DEBUG] 🗑️ No redirect needed - Removing pending_onboarding_redirect from sessionStorage');
             sessionStorage.removeItem('pending_onboarding_redirect');
             console.log('[LOGIN DEBUG] ✅ Removed from sessionStorage');
           }
 
           // Verify what's in sessionStorage
           const storedRedirect = sessionStorage.getItem('pending_onboarding_redirect');
-          console.log('[LOGIN DEBUG] 🔍 Final sessionStorage check - pending_onboarding_redirect:', storedRedirect);
+          console.log('[LOGIN DEBUG] 🔍 ===== FINAL sessionStorage check =====');
+          console.log('[LOGIN DEBUG] pending_onboarding_redirect:', storedRedirect);
+          console.log('[LOGIN DEBUG] ========================================');
 
           console.log('[LOGIN DEBUG] Worker will now proceed through standard login flow (password check → MFA)');
         } catch (apiError) {

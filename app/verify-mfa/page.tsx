@@ -319,16 +319,70 @@ function VerifyMFAContent() {
         sessionStorage.removeItem('new_user_onboarding'); // Clean up flag
 
         // Check if worker has pending onboarding redirect (from login)
-        const pendingOnboardingRedirect = sessionStorage.getItem('pending_onboarding_redirect');
+        console.log('[VERIFY-MFA DEBUG] ===== CHECKING ONBOARDING REDIRECT =====');
+        console.log('[VERIFY-MFA DEBUG] User role:', userRole);
+
+        let pendingOnboardingRedirect = null;
+
+        // For workers, ALWAYS check the database for current onboarding stage
+        // Do NOT trust sessionStorage as it may be stale from previous login
+        if (userRole === 'worker') {
+          console.log('[VERIFY-MFA DEBUG] 🔍 Worker detected - checking CURRENT onboarding stage from database...');
+          console.log('[VERIFY-MFA DEBUG] ⚠️ Ignoring sessionStorage (may contain stale data from previous session)');
+
+          try {
+            const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+            });
+
+            console.log('[VERIFY-MFA DEBUG] Stage API response status:', stageResponse.status, stageResponse.ok ? 'OK' : 'ERROR');
+
+            if (stageResponse.ok) {
+              const stageResult = await stageResponse.json();
+              console.log('[VERIFY-MFA DEBUG] ✅ Stage API returned success');
+              console.log('[VERIFY-MFA DEBUG] Full stage API response:', JSON.stringify(stageResult, null, 2));
+
+              if (stageResult.nextStage) {
+                pendingOnboardingRedirect = stageResult.nextStage;
+                console.log('[VERIFY-MFA DEBUG] ⭐ Next stage detected from DATABASE:', pendingOnboardingRedirect);
+                console.log('[VERIFY-MFA DEBUG] Progress:', `${stageResult.completedCount}/${stageResult.totalCount} forms (${stageResult.percentComplete}%)`);
+              } else if (stageResult.approved === false) {
+                // Forms completed but not approved
+                pendingOnboardingRedirect = '/onboarding-pending';
+                console.log('[VERIFY-MFA DEBUG] ⚠️ All forms completed but pending approval');
+              } else {
+                console.log('[VERIFY-MFA DEBUG] ✅ All forms completed AND approved - no redirect needed');
+              }
+            } else {
+              const errorData = await stageResponse.json();
+              console.error('[VERIFY-MFA DEBUG] ❌ Stage API returned error:', errorData);
+            }
+          } catch (stageError) {
+            console.error('[VERIFY-MFA DEBUG] ❌ Exception calling stage detection API:', stageError);
+          }
+        } else {
+          console.log('[VERIFY-MFA DEBUG] ℹ️ User is not a worker, skipping onboarding check');
+        }
+
+        // Clean up sessionStorage regardless of redirect (may contain stale data)
+        console.log('[VERIFY-MFA DEBUG] 🗑️ Cleaning up sessionStorage');
+        sessionStorage.removeItem('pending_onboarding_redirect');
+
         if (pendingOnboardingRedirect) {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Worker has pending onboarding, redirecting to:', pendingOnboardingRedirect);
-          sessionStorage.removeItem('pending_onboarding_redirect'); // Clean up
+          console.log('[VERIFY-MFA DEBUG] ========================================');
+          console.log('[VERIFY-MFA DEBUG] 🎯 REDIRECTING TO:', pendingOnboardingRedirect);
+          console.log('[VERIFY-MFA DEBUG] ========================================');
           router.push(pendingOnboardingRedirect);
           return;
         }
 
+        console.log('[VERIFY-MFA DEBUG] No onboarding redirect needed - proceeding to role-based routing');
+
         // Role-based routing
-        const userRole = userData?.role;
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
         if (userRole === 'manager') {

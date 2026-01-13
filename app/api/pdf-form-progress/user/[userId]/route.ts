@@ -184,9 +184,11 @@ export async function GET(
         if (signatureError) {
           console.error('[PDF_FORMS] Error fetching form signatures:', signatureError);
         } else if (signatures) {
+          console.log('[PDF_FORMS] Found', signatures.length, 'signatures for user', userId);
           signatures.forEach((signature) => {
             const formId = signature?.form_id;
             if (!formId || signatureByForm.has(formId)) return;
+            console.log('[PDF_FORMS] Mapping signature for form:', formId);
             signatureByForm.set(formId, {
               signature_data: signature.signature_data,
               signature_type: signature.signature_type,
@@ -199,6 +201,7 @@ export async function GET(
               });
             }
           });
+          console.log('[PDF_FORMS] Signature map keys:', Array.from(signatureByForm.keys()));
         }
       }
     } else {
@@ -244,8 +247,11 @@ export async function GET(
           ? signatureByForm.get(form.form_name) || signatureByForm.get(normalizedFormName)
           : legacySignature;
 
+        console.log('[PDF_FORMS] Processing form:', form.form_name, 'normalized:', normalizedFormName, 'hasSignature:', !!signatureForForm);
+
         // If signature exists, embed it on the target page
         if (signatureForForm?.signature_data) {
+          console.log('[PDF_FORMS] ✅ Embedding signature on form:', form.form_name);
           const pages = formPdf.getPages();
           const pageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedFormName)
             ? 0
@@ -297,8 +303,10 @@ export async function GET(
               size: 8,
             });
           } catch (imgError) {
-            console.error('[PDF_FORMS] Error embedding signature on form:', form.form_name, imgError);
+            console.error('[PDF_FORMS] ❌ Error embedding signature on form:', form.form_name, imgError);
           }
+        } else {
+          console.log('[PDF_FORMS] ⚠️ No signature found for form:', form.form_name);
         }
 
         // Copy all pages from this form to the merged PDF
