@@ -382,7 +382,14 @@ function FormViewerContent() {
     }
 
     if (currentForm.requiresSignature && currentSignature) {
+      console.log('[CONTINUE] Saving signature for form:', currentForm.formId);
       await saveSignatureToDatabase(currentSignature);
+    } else {
+      console.log('[CONTINUE] No signature save needed:', {
+        requiresSignature: currentForm.requiresSignature,
+        hasSignature: !!currentSignature,
+        formId: currentForm.formId
+      });
     }
 
     // Navigate to next form
@@ -472,10 +479,13 @@ function FormViewerContent() {
     if (canvas) {
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
-      // Save signature for current form
+      // Save signature for current form using form_id (not formName)
+      // This ensures each form has its own signature in the database
+      console.log('[SIGNATURE DRAW] Saving signature to Map with key:', currentForm.formId);
       setSignatures(prev => {
         const newSigs = new Map(prev);
-        newSigs.set(formName, dataUrl);
+        newSigs.set(currentForm.formId, dataUrl);
+        console.log('[SIGNATURE DRAW] Map now contains keys:', Array.from(newSigs.keys()));
         return newSigs;
       });
 
@@ -541,12 +551,14 @@ function FormViewerContent() {
       }
     }
     setCurrentSignature('');
-    // Remove signature for current form
+    // Remove signature for current form using form_id
     setSignatures(prev => {
       const newSigs = new Map(prev);
-      newSigs.delete(formName);
+      newSigs.delete(currentForm.formId);
       return newSigs;
     });
+    // Reset last saved signature reference
+    lastSavedSignatureRef.current = null;
   };
 
   // I-9 Document Upload Functions (A/B/C slots)
@@ -574,6 +586,7 @@ function FormViewerContent() {
 
       if (!response.ok) {
         const error = await response.json();
+        console.error('[I9_UPLOAD] Server error:', error);
         throw new Error(error.error || 'Upload failed');
       }
 
@@ -704,15 +717,26 @@ function FormViewerContent() {
 
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
+    console.log('[SIGNATURE LOAD] Form changed:', {
+      formName,
+      formId: currentForm.formId,
+      availableSignatures: Array.from(signatures.keys()),
+      hasSignatureForThisForm: signatures.has(currentForm.formId)
+    });
+
     // Reset read confirmation when form changes
     setHasReadForm(false);
 
     // Reset last saved signature reference when form changes
     lastSavedSignatureRef.current = null;
 
-    // Load existing drawn signature for this form if it exists
-    const savedSignature = signatures.get(formName);
+    // IMPORTANT: Only load signature from database, not from the local signatures Map
+    // This ensures each form has its own independent signature
+    const savedSignature = signatures.get(currentForm.formId);
+    console.log('[SIGNATURE LOAD] Looking for signature with key:', currentForm.formId, 'Found:', !!savedSignature);
+
     if (savedSignature && savedSignature.startsWith('data:image')) {
+      console.log('[SIGNATURE LOAD] Loading saved signature for', currentForm.formId);
       setCurrentSignature(savedSignature);
       if (currentForm?.formId) {
         lastSavedSignatureRef.current = `${currentForm.formId}_${savedSignature}`;
@@ -723,25 +747,32 @@ function FormViewerContent() {
         const img = new Image();
         img.onload = () => {
           if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0);
           }
         };
         img.src = savedSignature;
       }
     } else {
-      // Clear signature for new form or unsupported saved data
+      // Clear signature for new form or when no signature exists for this specific form
+      console.log('[SIGNATURE LOAD] No signature found, clearing canvas for', currentForm.formId);
       setCurrentSignature('');
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          // Aggressively clear the canvas
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.fillStyle = 'white';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
+          // Force a reset of the canvas state
+          ctx.beginPath();
         }
       }
     }
-  }, [formName, signatures]);
+  }, [formName, currentForm.formId, signatures]);
 
   // Cleanup timer on unmount
   useEffect(() => {

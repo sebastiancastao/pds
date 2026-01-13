@@ -1153,7 +1153,7 @@ export default function StatePayrollFormViewer({
                 }
               }}
             >
-              {currentForm.next ? 'Save & Continue →' : 'Save & Finish'}
+              {currentForm.next ? 'Save & Continue →' : 'Save & Continue'}
             </button>
           </div>
         </div>

@@ -66,7 +66,10 @@ export async function POST(request: NextRequest) {
     const documentType = String(formData.get('documentType') || '');
     const file = formData.get('file') as unknown as File | null;
 
+    console.log('[I9_UPLOAD] Received:', { documentType, hasFile: !!file, fileType: file?.type, fileSize: file?.size });
+
     if (!documentType || !file) {
+      console.error('[I9_UPLOAD] Missing data:', { documentType, hasFile: !!file });
       return NextResponse.json(
         { error: 'Missing documentType or file' },
         { status: 400 }
@@ -75,22 +78,25 @@ export async function POST(request: NextRequest) {
 
     const mapped = TYPE_MAP[documentType];
     if (!mapped) {
+      console.error('[I9_UPLOAD] Invalid document type:', documentType, 'Available:', Object.keys(TYPE_MAP));
       return NextResponse.json(
-        { error: 'Invalid document type' },
+        { error: `Invalid document type: ${documentType}` },
         { status: 400 }
       );
     }
 
     if (!ALLOWED_MIME.includes(file.type)) {
+      console.error('[I9_UPLOAD] Invalid file type:', file.type, 'Allowed:', ALLOWED_MIME);
       return NextResponse.json(
-        { error: 'Invalid file type. Only JPG, PNG, WEBP, and PDF are allowed.' },
+        { error: `Invalid file type: ${file.type}. Only JPG, PNG, WEBP, and PDF are allowed.` },
         { status: 400 }
       );
     }
 
     if (file.size > MAX_BYTES) {
+      console.error('[I9_UPLOAD] File too large:', file.size, 'Max:', MAX_BYTES);
       return NextResponse.json(
-        { error: 'File too large. Maximum size is 10MB.' },
+        { error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 10MB.` },
         { status: 400 }
       );
     }

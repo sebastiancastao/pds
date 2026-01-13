@@ -438,7 +438,7 @@ export default function EmployeeInformationPage() {
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
           <button
-            onClick={() => router.push('/')}
+            onClick={() => router.back()}
             style={{
               padding: '14px 24px',
               backgroundColor: '#f5f5f5',
@@ -448,7 +448,7 @@ export default function EmployeeInformationPage() {
               cursor: 'pointer',
             }}
           >
-            Cancel
+            Back
           </button>
           <button
             onClick={handleSubmit}
