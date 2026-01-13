@@ -36,7 +36,7 @@ export default function OnboardingPendingPage() {
         .from('profiles')
         .select('first_name, last_name')
         .eq('user_id', user.id)
-        .single();
+        .single() as { data: { first_name: string | null; last_name: string | null } | null };
 
       if (userProfile) {
         setUserFirstName(userProfile.first_name || '');
