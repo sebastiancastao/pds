@@ -31,11 +31,11 @@ export default function OnboardingPendingPage() {
       setUserEmail(user.email || '');
       setUserId(user.id || '');
 
-      // Fetch user profile data
+      // Fetch user profile data from profiles table
       const { data: userProfile } = await supabase
-        .from('users')
+        .from('profiles')
         .select('first_name, last_name')
-        .eq('id', user.id)
+        .eq('user_id', user.id)
         .single();
 
       if (userProfile) {

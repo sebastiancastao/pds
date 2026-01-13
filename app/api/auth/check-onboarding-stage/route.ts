@@ -291,12 +291,21 @@ export async function POST(req: NextRequest) {
 
     // Normalize the most recent form name (remove state prefix)
     const recentFormName = mostRecentForm.form_name.toLowerCase().replace(/^(ca|ny|wi|az|nv)-/, '');
-    const nextStage = `/payroll-packet-${statePrefix}/${recentFormName}`;
+
+    // Build the correct URL based on state
+    // California uses form-viewer with query param, other states use direct routes
+    let nextStage: string;
+    if (statePrefix === 'ca') {
+      nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
+    } else {
+      nextStage = `/payroll-packet-${statePrefix}/${recentFormName}`;
+    }
 
     console.log('[Check Onboarding Stage API] ========================================');
     console.log('[Check Onboarding Stage API] ⭐ MOST RECENTLY UPDATED FORM');
     console.log('[Check Onboarding Stage API] Form:', mostRecentForm.form_name);
     console.log('[Check Onboarding Stage API] Last updated:', mostRecentForm.updated_at);
+    console.log('[Check Onboarding Stage API] State prefix:', statePrefix);
     console.log('[Check Onboarding Stage API] Next stage:', nextStage);
     console.log('[Check Onboarding Stage API] Progress:', `${completedFormNames.size}/${formSequence.length} (${Math.round((completedFormNames.size / formSequence.length) * 100)}%)`);
     console.log('[Check Onboarding Stage API] ========================================');
