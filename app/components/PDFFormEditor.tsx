@@ -177,6 +177,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       let pdfBytes: ArrayBuffer;
       let savedPdfBytes: Uint8Array | null = null;
+      let pdfLibDoc: any;
+      let usedSavedBytesForLoad = false;
 
       if (savedData.found && savedData.formData) {
         console.log('Step 2: Attempting to load saved PDF from database');
@@ -232,26 +234,131 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         console.log('Fresh PDF loaded, size:', pdfBytes.byteLength, 'bytes');
       }
 
-      // Prefer the latest template PDF bytes whenever possible (to avoid stale embedded artifacts in saved PDFs).
-      // Keep `savedPdfBytes` so we can copy its field values onto the fresh template after pdf-lib loads.
-      if (savedPdfBytes) {
+      // Load pdf-lib early so we can decide whether to use saved bytes or a fresh template.
+      console.log('Step 2b: Loading pdf-lib library...');
+      const { PDFDocument, PDFName } = await import('pdf-lib');
+      console.log('pdf-lib loaded successfully');
+
+      const detectXfaForm = (doc: any) => {
         try {
-          console.log('Step 2b: Fetching fresh PDF template to replace saved PDF bytes...');
-          const templateResponse = await fetch(pdfUrl, {
-            cache: 'no-store',
-            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
-          });
-          console.log('Template fetch response status:', templateResponse.status);
-          if (templateResponse.ok) {
-            pdfBytes = await templateResponse.arrayBuffer();
-            console.log('Fresh PDF template loaded, size:', pdfBytes.byteLength, 'bytes');
-          } else {
-            console.warn(`[LOAD] Template fetch failed (${templateResponse.status}). Continuing with saved PDF bytes.`);
+          const catalog =
+            (doc as any).catalog ||
+            (doc?.context?.trailerInfo?.Root
+              ? doc.context.lookup(doc.context.trailerInfo.Root)
+              : undefined);
+          const acroFormRef = catalog?.get?.(PDFName.of('AcroForm'));
+          if (acroFormRef) {
+            const acroForm = doc.context.lookup(acroFormRef);
+            const xfa = acroForm?.get?.(PDFName.of('XFA'));
+            return !!xfa;
           }
-        } catch (templateErr: any) {
-          console.warn('[LOAD] Template fetch exception. Continuing with saved PDF bytes.', templateErr?.message);
+        } catch (xfaErr) {
+          console.warn('[LOAD] Failed to detect XFA form', xfaErr);
+        }
+        return false;
+      };
+
+      if (savedPdfBytes) {
+        console.log('Step 2c: Parsing saved PDF with pdf-lib...');
+        const savedDoc = await PDFDocument.load(savedPdfBytes);
+        const isXfaForm = detectXfaForm(savedDoc);
+
+        if (!isXfaForm) {
+          let useSavedBytes = false;
+          try {
+            console.log('Step 2d: Fetching fresh PDF template to replace saved PDF bytes...');
+            const templateResponse = await fetch(pdfUrl, {
+              cache: 'no-store',
+              headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+            });
+            console.log('Template fetch response status:', templateResponse.status);
+            if (templateResponse.ok) {
+              pdfBytes = await templateResponse.arrayBuffer();
+              console.log('Fresh PDF template loaded, size:', pdfBytes.byteLength, 'bytes');
+            } else {
+              console.warn(`[LOAD] Template fetch failed (${templateResponse.status}). Continuing with saved PDF bytes.`);
+              useSavedBytes = true;
+            }
+          } catch (templateErr: any) {
+            console.warn('[LOAD] Template fetch exception. Continuing with saved PDF bytes.', templateErr?.message);
+            useSavedBytes = true;
+          }
+
+          if (useSavedBytes) {
+            pdfBytes = savedPdfBytes.buffer;
+            pdfLibDoc = savedDoc;
+            usedSavedBytesForLoad = true;
+          } else {
+            console.log('Step 2e: Parsing PDF template with pdf-lib...');
+            pdfLibDoc = await PDFDocument.load(pdfBytes);
+            console.log('pdf-lib template loaded successfully');
+
+            console.log('Step 2f: Re-applying saved form field values onto fresh template (non-XFA)...');
+            try {
+              const savedForm = savedDoc.getForm();
+              const targetForm = pdfLibDoc.getForm();
+
+              const targetFieldsByName = new Map<string, any>();
+              for (const targetField of targetForm.getFields()) {
+                try {
+                  targetFieldsByName.set(targetField.getName(), targetField);
+                } catch {
+                  // Ignore malformed fields
+                }
+              }
+
+              let copiedCount = 0;
+              for (const savedField of savedForm.getFields()) {
+                let fieldName = '';
+                try {
+                  fieldName = savedField.getName();
+                } catch {
+                  continue;
+                }
+
+                const targetField = targetFieldsByName.get(fieldName);
+                if (!targetField) continue;
+
+                try {
+                  if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
+                    (targetField as any).setText((savedField as any).getText() || '');
+                    copiedCount++;
+                  } else if (typeof (savedField as any).isChecked === 'function') {
+                    const checked = (savedField as any).isChecked();
+                    if (checked && typeof (targetField as any).check === 'function') (targetField as any).check();
+                    if (!checked && typeof (targetField as any).uncheck === 'function') (targetField as any).uncheck();
+                    copiedCount++;
+                  } else if (typeof (savedField as any).getSelected === 'function' && typeof (targetField as any).select === 'function') {
+                    const selected = (savedField as any).getSelected();
+                    const value = Array.isArray(selected) ? selected[0] : selected;
+                    if (value) {
+                      (targetField as any).select(value);
+                      copiedCount++;
+                    }
+                  }
+                } catch (copyErr: any) {
+                  console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
+                }
+              }
+
+              console.log(`Step 2f: Copied ${copiedCount} saved field values`);
+            } catch (mergeErr: any) {
+              console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
+            }
+          }
+        } else {
+          pdfBytes = savedPdfBytes.buffer;
+          pdfLibDoc = savedDoc;
+          usedSavedBytesForLoad = true;
         }
       }
+
+      if (!pdfLibDoc) {
+        console.log('Step 2c: Parsing PDF with pdf-lib...');
+        pdfLibDoc = await PDFDocument.load(pdfBytes);
+        console.log('pdf-lib document loaded successfully');
+      }
+      pdfLibDocRef.current = pdfLibDoc;
 
       // Load with PDF.js for rendering - use UNPKG CDN
       console.log('Step 3: Loading PDF.js from UNPKG...');
@@ -294,89 +401,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         throw new Error(`PDF.js document loading failed: ${pdfLoadErr.message}`);
       }
 
-      // Load with pdf-lib for form manipulation
-      console.log('Step 5: Loading pdf-lib library...');
-      const { PDFDocument, PDFName } = await import('pdf-lib');
-      console.log('pdf-lib loaded successfully');
-
-      console.log('Step 6: Parsing PDF with pdf-lib...');
-      // Use the original pdfBytes for pdf-lib
-      const pdfLibDoc = await PDFDocument.load(pdfBytes);
-      console.log('pdf-lib document loaded successfully');
-      pdfLibDocRef.current = pdfLibDoc;
-
-      let isXfaForm = false;
-      try {
-        const catalog =
-          (pdfLibDoc as any).catalog ||
-          pdfLibDoc.context.lookup(pdfLibDoc.context.trailer.get(PDFName.of('Root')));
-        const acroFormRef = catalog?.get?.(PDFName.of('AcroForm'));
-        if (acroFormRef) {
-          const acroForm = pdfLibDoc.context.lookup(acroFormRef);
-          const xfa = acroForm?.get?.(PDFName.of('XFA'));
-          isXfaForm = !!xfa;
-        }
-      } catch (xfaErr) {
-        console.warn('[LOAD] Failed to detect XFA form', xfaErr);
-      }
-
-      // If we loaded saved PDF bytes for non-XFA forms, copy field values from saved PDF onto fresh template.
-      // For XFA forms (like W4), we already use the saved PDF directly so no copying is needed.
-      if (savedPdfBytes && !isXfaForm) {
-        console.log('Step 6b: Re-applying saved form field values onto fresh template (non-XFA)...');
-        try {
-          const savedDoc = await PDFDocument.load(savedPdfBytes);
-          const savedForm = savedDoc.getForm();
-          const targetForm = pdfLibDoc.getForm();
-
-          const targetFieldsByName = new Map<string, any>();
-          for (const targetField of targetForm.getFields()) {
-            try {
-              targetFieldsByName.set(targetField.getName(), targetField);
-            } catch {
-              // Ignore malformed fields
-            }
-          }
-
-          let copiedCount = 0;
-          for (const savedField of savedForm.getFields()) {
-            let fieldName = '';
-            try {
-              fieldName = savedField.getName();
-            } catch {
-              continue;
-            }
-
-            const targetField = targetFieldsByName.get(fieldName);
-            if (!targetField) continue;
-
-            try {
-              if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
-                (targetField as any).setText((savedField as any).getText() || '');
-                copiedCount++;
-              } else if (typeof (savedField as any).isChecked === 'function') {
-                const checked = (savedField as any).isChecked();
-                if (checked && typeof (targetField as any).check === 'function') (targetField as any).check();
-                if (!checked && typeof (targetField as any).uncheck === 'function') (targetField as any).uncheck();
-                copiedCount++;
-              } else if (typeof (savedField as any).getSelected === 'function' && typeof (targetField as any).select === 'function') {
-                const selected = (savedField as any).getSelected();
-                const value = Array.isArray(selected) ? selected[0] : selected;
-                if (value) {
-                  (targetField as any).select(value);
-                  copiedCount++;
-                }
-              }
-            } catch (copyErr: any) {
-              console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
-            }
-          }
-
-          console.log(`Step 6b: Copied ${copiedCount} saved field values`);
-        } catch (mergeErr: any) {
-          console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
-        }
-      }
+      // pdf-lib is loaded earlier to keep saved form data intact on revisits.
 
       // Extract form fields
       console.log('Step 7: Extracting form fields...');
@@ -468,7 +493,9 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       // Provide initial PDF bytes
       console.log('Step 10: Saving initial PDF bytes...');
-      const initialPdfBytes = await pdfLibDoc.save();
+      const initialPdfBytes = usedSavedBytesForLoad && savedPdfBytes
+        ? savedPdfBytes
+        : await pdfLibDoc.save();
       console.log('Initial PDF bytes saved, size:', initialPdfBytes.length);
       if (onSave) {
         onSave(initialPdfBytes);
