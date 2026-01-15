@@ -810,15 +810,20 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   const pageOffsets = calculatePageOffsets();
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      backgroundColor: '#525659',
-      overflow: 'auto'
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        backgroundColor: '#525659',
+        overflow: 'auto'
+      }}
+    >
       {/* PDF Canvas with Overlaid Inputs */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}>
+      <div
+        data-pdf-scroll-container="true"
+        style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}
+      >
         <div style={{
           position: 'relative',
           boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
@@ -856,6 +861,9 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             return (
               <div
                 key={field.id}
+                data-field-name={field.baseName}
+                data-field-id={field.id}
+                data-field-page={field.page}
                 style={{
                   position: 'absolute',
                   left: `${x}px`,

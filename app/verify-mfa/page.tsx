@@ -771,9 +771,8 @@ function VerifyMFAContent() {
             <div className="mt-6 pt-6 border-t border-gray-200">
               <p className="text-center text-sm text-gray-600">
                 Having trouble?{' '}
-                <a href="#" className="text-primary-600 hover:text-primary-700 font-medium">
-                  Contact Support
-                </a>
+                  Contact Support at portal@1pds.com
+              
               </p>
             </div>
           </div>

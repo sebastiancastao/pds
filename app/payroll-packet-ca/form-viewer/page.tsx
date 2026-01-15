@@ -703,6 +703,71 @@ function FormViewerContent() {
           { name: 'date6', page: 77, friendly: 'Date (Section 6)' },
         ];
 
+        const resolveFieldScrollTarget = (fieldName: string) => {
+          const selectorName =
+            typeof CSS !== 'undefined' && typeof (CSS as any).escape === 'function'
+              ? (CSS as any).escape(fieldName)
+              : fieldName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const fieldElements = Array.from(
+            document.querySelectorAll(`[data-field-name="${selectorName}"]`)
+          ) as HTMLElement[];
+
+          if (fieldElements.length === 0) {
+            return { fieldElement: null as HTMLElement | null, scrollContainer: null as HTMLElement | null, fieldTop: null as number | null, pageNumber: null as number | null };
+          }
+
+          const findScrollableAncestor = (element: HTMLElement | null) => {
+            let current = element?.parentElement || null;
+            while (current) {
+              const style = window.getComputedStyle(current);
+              const overflowY = style.overflowY;
+              const isScrollable =
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                current.scrollHeight > current.clientHeight;
+              if (isScrollable) return current;
+              current = current.parentElement;
+            }
+            return null;
+          };
+
+          const fieldElement = fieldElements.reduce((best, current) => {
+            const bestRect = best.getBoundingClientRect();
+            const currentRect = current.getBoundingClientRect();
+            return currentRect.top < bestRect.top ? current : best;
+          }, fieldElements[0]);
+
+          const scrollContainer =
+            findScrollableAncestor(fieldElement) ||
+            (fieldElement.closest('[data-pdf-scroll-container="true"]') as HTMLElement | null);
+          const containerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : null;
+          const fieldRect = fieldElement.getBoundingClientRect();
+          const fieldTop = scrollContainer && containerRect
+            ? fieldRect.top - containerRect.top + scrollContainer.scrollTop
+            : window.scrollY + fieldRect.top;
+
+          let pageNumber: number | null = null;
+          const canvases = Array.from(document.querySelectorAll('canvas[data-page-number]')) as HTMLCanvasElement[];
+          if (canvases.length) {
+            for (const canvas of canvases) {
+              const canvasRect = canvas.getBoundingClientRect();
+              const canvasTop = scrollContainer && containerRect
+                ? canvasRect.top - containerRect.top + scrollContainer.scrollTop
+                : window.scrollY + canvasRect.top;
+              const canvasBottom = canvasTop + canvasRect.height;
+
+              if (fieldTop >= canvasTop && fieldTop <= canvasBottom) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+                break;
+              }
+              if (fieldTop >= canvasTop) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+              }
+            }
+          }
+
+          return { fieldElement, scrollContainer, fieldTop, pageNumber };
+        };
+
         // Check each required field
         for (const fieldInfo of requiredFields) {
           try {
@@ -711,15 +776,37 @@ function FormViewerContent() {
 
             if (!value || value.trim() === '') {
               // Found empty required field
-              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
-              setEmptyFieldPage(fieldInfo.page);
+              const scrollTarget = resolveFieldScrollTarget(fieldInfo.name);
+              const displayPage = scrollTarget.pageNumber ?? fieldInfo.page;
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${displayPage} of the PDF`);
+              setEmptyFieldPage(displayPage);
               void handleManualSave();
 
               // Scroll to the specific page in the PDF viewer
               setTimeout(() => {
-                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (scrollTarget.fieldElement) {
+                  scrollTarget.fieldElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  if (scrollTarget.scrollContainer && typeof scrollTarget.fieldTop === 'number') {
+                    scrollTarget.scrollContainer.scrollTo({ top: Math.max(scrollTarget.fieldTop - 160, 0), behavior: 'smooth' });
+                  }
+                  const input = scrollTarget.fieldElement.querySelector('input') as HTMLInputElement | null;
+                  if (input) {
+                    input.focus({ preventScroll: true });
+                  }
+                  return;
+                }
+
+                const canvas = document.querySelector(`canvas[data-page-number="${displayPage}"]`);
                 if (canvas) {
-                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  const scrollContainer = document.querySelector('[data-pdf-scroll-container="true"]') as HTMLElement | null;
+                  if (scrollContainer) {
+                    const canvasRect = canvas.getBoundingClientRect();
+                    const containerRect = scrollContainer.getBoundingClientRect();
+                    const targetTop = canvasRect.top - containerRect.top + scrollContainer.scrollTop;
+                    scrollContainer.scrollTo({ top: Math.max(targetTop -160, 0), behavior: 'smooth' });
+                  } else {
+                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
                 } else {
                   // Fallback to scroll to top if canvas not found
                   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -2055,6 +2142,4 @@ export default function FormViewer() {
     </Suspense>
   );
 }
-
-
 
