@@ -106,6 +106,7 @@ export async function GET(request: Request) {
 
     // Employee signature date field
     const employeeSignatureDateField = form.createTextField('employee_signature_date');
+    employeeSignatureDateField.enableRequired();
     employeeSignatureDateField.addToPage(lastPage, {
       x: 250,
       y: 420,

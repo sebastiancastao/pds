@@ -324,14 +324,12 @@ function VerifyMFAContent() {
 
         let pendingOnboardingRedirect = null;
 
-        // For workers, ALWAYS check the database for current onboarding stage
-        // Do NOT trust sessionStorage as it may be stale from previous login
+        // For workers, check vendor_onboarding_status first
         if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] 🔍 Worker detected - checking CURRENT onboarding stage from database...');
-          console.log('[VERIFY-MFA DEBUG] ⚠️ Ignoring sessionStorage (may contain stale data from previous session)');
+          console.log('[VERIFY-MFA DEBUG] 🔍 Worker detected - checking onboarding status...');
 
           try {
-            const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+            const onboardingResponse = await fetch('/api/auth/check-onboarding', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -339,30 +337,41 @@ function VerifyMFAContent() {
               },
             });
 
-            console.log('[VERIFY-MFA DEBUG] Stage API response status:', stageResponse.status, stageResponse.ok ? 'OK' : 'ERROR');
+            if (onboardingResponse.ok) {
+              const onboardingResult = await onboardingResponse.json();
+              console.log('[VERIFY-MFA DEBUG] Onboarding API response:', JSON.stringify(onboardingResult, null, 2));
 
-            if (stageResponse.ok) {
-              const stageResult = await stageResponse.json();
-              console.log('[VERIFY-MFA DEBUG] ✅ Stage API returned success');
-              console.log('[VERIFY-MFA DEBUG] Full stage API response:', JSON.stringify(stageResult, null, 2));
-
-              if (stageResult.nextStage) {
-                pendingOnboardingRedirect = stageResult.nextStage;
-                console.log('[VERIFY-MFA DEBUG] ⭐ Next stage detected from DATABASE:', pendingOnboardingRedirect);
-                console.log('[VERIFY-MFA DEBUG] Progress:', `${stageResult.completedCount}/${stageResult.totalCount} forms (${stageResult.percentComplete}%)`);
-              } else if (stageResult.approved === false) {
-                // Forms completed but not approved
+              // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
+              if (onboardingResult.hasOnboardingRecord && !onboardingResult.approved) {
                 pendingOnboardingRedirect = '/onboarding-pending';
-                console.log('[VERIFY-MFA DEBUG] ⚠️ All forms completed but pending approval');
-              } else {
-                console.log('[VERIFY-MFA DEBUG] ✅ All forms completed AND approved - no redirect needed');
+                console.log('[VERIFY-MFA DEBUG] ⚠️ Onboarding record exists but not approved - redirecting to pending page');
+              } else if (onboardingResult.approved) {
+                console.log('[VERIFY-MFA DEBUG] ✅ Onboarding approved - no redirect needed');
+              } else if (!onboardingResult.hasOnboardingRecord) {
+                // No record means user hasn't completed onboarding yet - check their current stage
+                console.log('[VERIFY-MFA DEBUG] ℹ️ No onboarding record found - checking onboarding stage...');
+                try {
+                  const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${session.access_token}`
+                    },
+                  });
+                  if (stageResponse.ok) {
+                    const stageResult = await stageResponse.json();
+                    if (stageResult.nextStage) {
+                      pendingOnboardingRedirect = stageResult.nextStage;
+                      console.log('[VERIFY-MFA DEBUG] 📋 Onboarding stage detected:', stageResult.nextStage);
+                    }
+                  }
+                } catch (stageError) {
+                  console.error('[VERIFY-MFA DEBUG] ❌ Error checking onboarding stage:', stageError);
+                }
               }
-            } else {
-              const errorData = await stageResponse.json();
-              console.error('[VERIFY-MFA DEBUG] ❌ Stage API returned error:', errorData);
             }
-          } catch (stageError) {
-            console.error('[VERIFY-MFA DEBUG] ❌ Exception calling stage detection API:', stageError);
+          } catch (onboardingError) {
+            console.error('[VERIFY-MFA DEBUG] ❌ Exception calling onboarding API:', onboardingError);
           }
         } else {
           console.log('[VERIFY-MFA DEBUG] ℹ️ User is not a worker, skipping onboarding check');

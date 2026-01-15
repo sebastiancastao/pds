@@ -41,7 +41,8 @@
       "Bash(powershell -Command \"\\(Get-Content ''app/login/page.tsx''\\) -replace ''if \\\\\\(!profileData\\\\?\\\\.mfa_enabled\\\\\\) \\\\{[^}]*email-mfa-setup[^}]*return;[^}]*\\\\}'', ''if \\(!profileData?.mfa_enabled\\) { console.log\\(''''[LOGIN DEBUG] Background Checker - Auto-enabling email MFA''''\\); await supabase.from\\(''''profiles''''\\).update\\({ mfa_enabled: true, updated_at: new Date\\(\\).toISOString\\(\\) }\\).eq\\(''''user_id'''', authData.user.id\\); }'' | Set-Content ''app/login/page.tsx''\")",
       "Bash(dir:*)",
       "Bash(git cherry-pick:*)",
-      "Bash(npx supabase:*)"
+      "Bash(npx supabase:*)",
+      "Bash(git config:*)"
     ],
     "deny": [],
     "ask": []

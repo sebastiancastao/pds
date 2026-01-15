@@ -29,6 +29,18 @@ interface FormField {
   value: string;
 }
 
+const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
+  'employee-handbook': {
+    date5: 'date6',
+    date6: 'date5',
+    date3: 'date4',
+    date4: 'date3',
+  },
+};
+
+const getMirroredFieldName = (formId: string, fieldName: string) =>
+  MIRRORED_FIELDS[formId]?.[fieldName];
+
 export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress, skipButtonDetection }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -284,7 +296,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       // Load with pdf-lib for form manipulation
       console.log('Step 5: Loading pdf-lib library...');
-      const { PDFDocument } = await import('pdf-lib');
+      const { PDFDocument, PDFName } = await import('pdf-lib');
       console.log('pdf-lib loaded successfully');
 
       console.log('Step 6: Parsing PDF with pdf-lib...');
@@ -293,10 +305,25 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
       console.log('pdf-lib document loaded successfully');
       pdfLibDocRef.current = pdfLibDoc;
 
-      // If we loaded saved PDF bytes, prefer the latest template for rendering but preserve the user's progress by
-      // copying field values from the saved PDF onto the fresh template doc.
-      if (savedPdfBytes) {
-        console.log('Step 6b: Re-applying saved form field values onto fresh template...');
+      let isXfaForm = false;
+      try {
+        const catalog =
+          (pdfLibDoc as any).catalog ||
+          pdfLibDoc.context.lookup(pdfLibDoc.context.trailer.get(PDFName.of('Root')));
+        const acroFormRef = catalog?.get?.(PDFName.of('AcroForm'));
+        if (acroFormRef) {
+          const acroForm = pdfLibDoc.context.lookup(acroFormRef);
+          const xfa = acroForm?.get?.(PDFName.of('XFA'));
+          isXfaForm = !!xfa;
+        }
+      } catch (xfaErr) {
+        console.warn('[LOAD] Failed to detect XFA form', xfaErr);
+      }
+
+      // If we loaded saved PDF bytes for non-XFA forms, copy field values from saved PDF onto fresh template.
+      // For XFA forms (like W4), we already use the saved PDF directly so no copying is needed.
+      if (savedPdfBytes && !isXfaForm) {
+        console.log('Step 6b: Re-applying saved form field values onto fresh template (non-XFA)...');
         try {
           const savedDoc = await PDFDocument.load(savedPdfBytes);
           const savedForm = savedDoc.getForm();
@@ -629,37 +656,48 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   };
 
   const handleFieldChange = useCallback((fieldName: string, value: string) => {
+    const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+
     setFieldValues(prev => {
       const newValues = new Map(prev);
       newValues.set(fieldName, value);
+      if (mirrorFieldName) {
+        newValues.set(mirrorFieldName, value);
+      }
       return newValues;
     });
 
-    updatePDFField(fieldName, value);
+    const updates: Record<string, string> = { [fieldName]: value };
+    if (mirrorFieldName) {
+      updates[mirrorFieldName] = value;
+    }
+    updatePDFFields(updates);
 
     if (onFieldChange) {
       onFieldChange();
     }
-  }, [onFieldChange]);
+  }, [formId, onFieldChange]);
 
-  const updatePDFField = async (fieldName: string, value: string) => {
+  const updatePDFFields = async (updates: Record<string, string>) => {
     if (!pdfLibDocRef.current) return;
 
     try {
-      console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
       const form = pdfLibDocRef.current.getForm();
-      const field = form.getField(fieldName);
+      for (const [fieldName, value] of Object.entries(updates)) {
+        console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
+        const field = form.getField(fieldName);
 
-      if ('setText' in field) {
-        field.setText(value);
-        console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
-      } else if ('check' in field || 'uncheck' in field) {
-        if (value === 'true') {
-          field.check();
-        } else {
-          field.uncheck();
+        if ('setText' in field) {
+          field.setText(value);
+          console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
+        } else if ('check' in field || 'uncheck' in field) {
+          if (value === 'true') {
+            field.check();
+          } else {
+            field.uncheck();
+          }
+          console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
         }
-        console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
       }
 
       console.log('[UPDATE FIELD] Saving PDF with updated field...');

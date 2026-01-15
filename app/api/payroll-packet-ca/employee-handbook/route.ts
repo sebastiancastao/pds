@@ -276,31 +276,54 @@ export async function GET(request: NextRequest) {
       backgroundColor: rgb(1, 1, 1),
     });
 
-    // y: 2735 - Employer Print Name
-    const employerprintname = form.createTextField('employerprintname');
-    employerprintname.setText('');
-    employerprintname.addToPage(lastPage, {
-      x: 250,
-      y: 2735,
-      width: 180,
-      height: 10,
-      borderWidth: 1,
-      borderColor: rgb(0, 0, 0),
-      backgroundColor: rgb(1, 1, 1),
-    });
+    const employerRepName = 'Dawn M. Kaplan Lister';
+    const employerRepTitle = 'Human Resource Director';
+    const nextEmployerPage = pages.length > 3 ? pages[pages.length - 4] : null;
 
-    // y: 2665 - Employer Title
-    const employertitle = form.createTextField('employertitle');
-    employertitle.setText('');
-    employertitle.addToPage(lastPage, {
-      x: 250,
-      y: 2665,
-      width: 180,
-      height: 10,
-      borderWidth: 1,
-      borderColor: rgb(0, 0, 0),
-      backgroundColor: rgb(1, 1, 1),
-    });
+    const drawEmployerInfo = (
+      page: any,
+      options?: { upperTitleY?: number; lowerTitleY?: number }
+    ) => {
+      const upperTitleY = options?.upperTitleY ?? 2677;
+      const lowerTitleY = options?.lowerTitleY ?? 237;
+      // Employer print name
+      page.drawText(employerRepName, {
+        x: 250,
+        y: 2737,
+        size: 10,
+        font: font,
+        color: rgb(0, 0, 0),
+      });
+      // Employer title
+      page.drawText(employerRepTitle, {
+        x: 250,
+        y: upperTitleY,
+        size: 10,
+        font: font,
+        color: rgb(0, 0, 0),
+      });
+      // Printed Name Employer (lower section)
+      page.drawText(employerRepName, {
+        x: 250,
+        y: 317,
+        size: 10,
+        font: font,
+        color: rgb(0, 0, 0),
+      });
+      // Employer Title 2 (lower section)
+      page.drawText(employerRepTitle, {
+        x: 250,
+        y: lowerTitleY,
+        size: 10,
+        font: font,
+        color: rgb(0, 0, 0),
+      });
+    };
+
+    drawEmployerInfo(lastPage, { lowerTitleY: 220 });
+    if (nextEmployerPage) {
+      drawEmployerInfo(nextEmployerPage);
+    }
 
     // y: 390 - Date 5
     const date5 = form.createTextField('date5');
@@ -335,25 +358,31 @@ export async function GET(request: NextRequest) {
       height: 10,
     });
 
-    // y: 305 - Printed Name Employer
-    const printedNameEmployer = form.createTextField('printedNameEmployer');
-    printedNameEmployer.setText('');
-    printedNameEmployer.addToPage(lastPage, {
-      x: 250,
-      y: 305,
-      width: 150,
-      height: 10,
-    });
+    // Employer Representative Signature (static image)
+    try {
+      const signatureBytes = readFileSync(join(process.cwd(), 'image001.png'));
+      const signatureImage = await pdfDoc.embedPng(signatureBytes);
+      const signatureWidth = 140;
+      const scale = signatureWidth / signatureImage.width;
+      const signatureHeight = signatureImage.height * scale;
 
-    // y: 225 - Employer Title 2
-    const employertitle2 = form.createTextField('employertitle2');
-    employertitle2.setText('');
-    employertitle2.addToPage(lastPage, {
-      x: 250,
-      y: 225,
-      width: 180,
-      height: 10,
-    });
+      const drawEmployerSignature = (page: any, options?: { y?: number }) => {
+        const y = options?.y ?? 250;
+        page.drawImage(signatureImage, {
+          x: 250,
+          y,
+          width: signatureWidth,
+          height: signatureHeight,
+        });
+      };
+
+      drawEmployerSignature(lastPage);
+      if (nextEmployerPage) {
+        drawEmployerSignature(nextEmployerPage, { y: 265 });
+      }
+    } catch (error) {
+      console.warn('[EMPLOYEE-HANDBOOK] Failed to embed employer signature image', error);
+    }
 
 
     

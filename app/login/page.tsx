@@ -224,6 +224,7 @@ export default function LoginPage() {
           let hasSubmittedOnboardingPDF = false;
           let onboardingApproved = false;
           let pdfSubmittedAt = null;
+          let hasOnboardingRecord = false;
 
           try {
             const onboardingResponse = await fetch('/api/auth/check-onboarding', {
@@ -239,10 +240,12 @@ export default function LoginPage() {
               hasSubmittedOnboardingPDF = onboardingResult.hasSubmittedPDF || false;
               onboardingApproved = onboardingResult.approved || false;
               pdfSubmittedAt = onboardingResult.pdfSubmittedAt || null;
+              hasOnboardingRecord = onboardingResult.hasOnboardingRecord || false;
 
               console.log('[LOGIN DEBUG] API Response - hasSubmittedPDF:', hasSubmittedOnboardingPDF);
               console.log('[LOGIN DEBUG] API Response - pdfSubmittedAt:', pdfSubmittedAt);
               console.log('[LOGIN DEBUG] API Response - onboardingApproved:', onboardingApproved);
+              console.log('[LOGIN DEBUG] API Response - hasOnboardingRecord:', hasOnboardingRecord);
             } else {
               console.log('[LOGIN DEBUG] ⚠️ Onboarding status API returned non-OK, assuming not submitted/approved');
             }
@@ -261,8 +264,15 @@ export default function LoginPage() {
           console.log('[LOGIN DEBUG] 🔍 Onboarding redirect decision:');
           console.log('[LOGIN DEBUG] - hasSubmittedOnboardingPDF:', hasSubmittedOnboardingPDF);
           console.log('[LOGIN DEBUG] - onboardingApproved:', onboardingApproved);
+          console.log('[LOGIN DEBUG] - hasOnboardingRecord:', hasOnboardingRecord);
 
-          if (!hasSubmittedOnboardingPDF) {
+          // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
+          if (hasOnboardingRecord && !onboardingApproved) {
+            // User has a record but onboarding_completed is false - redirect to pending page
+            console.log('[LOGIN DEBUG] ⚠️ SCENARIO: User has vendor_onboarding_status record with onboarding_completed = false');
+            console.log('[LOGIN DEBUG] Redirecting to onboarding pending page');
+            onboardingRedirectPath = '/onboarding-pending';
+          } else if (!hasOnboardingRecord && !onboardingApproved) {
             // User hasn't submitted onboarding PDFs yet - determine their current stage
             console.log('[LOGIN DEBUG] ⚠️ SCENARIO A: User has NOT submitted onboarding PDFs');
             console.log('[LOGIN DEBUG] 🔍 Calling /api/auth/check-onboarding-stage to detect current stage...');
@@ -301,16 +311,11 @@ export default function LoginPage() {
             }
 
             console.log('[LOGIN DEBUG] 🎯 FINAL onboarding redirect path will be:', onboardingRedirectPath);
-          } else if (hasSubmittedOnboardingPDF && onboardingApproved) {
-            // Both PDF submitted AND approved
-            console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding PDFs submitted AND approved');
+          } else if (onboardingApproved) {
+            // Onboarding approved
+            console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding approved');
             console.log('[LOGIN DEBUG] No redirect - user will go to /time-tracking after MFA');
             // No redirect needed - proceed to time tracking after MFA
-          } else if (hasSubmittedOnboardingPDF && !onboardingApproved) {
-            // User submitted PDFs but not approved yet - redirect to pending page
-            console.log('[LOGIN DEBUG] ⚠️ SCENARIO C: User submitted PDFs but onboarding NOT approved by admin');
-            console.log('[LOGIN DEBUG] Redirecting to onboarding pending page');
-            onboardingRedirectPath = '/onboarding-pending';
           }
 
           // Store redirect if needed

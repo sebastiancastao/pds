@@ -37,13 +37,15 @@ export async function POST(request: NextRequest) {
     // Fetch optional profile data for nicer email
     let firstName = '';
     let lastName = '';
+    let profileId: string | null = null;
     if (userId) {
       const { data: profile, error: pErr } = await (supabase
         .from('profiles') as any)
-        .select('first_name, last_name')
+        .select('id, first_name, last_name')
         .eq('user_id', userId)
         .single();
       if (!pErr && profile) {
+        profileId = profile.id || null;
         try { firstName = profile.first_name ? decrypt(profile.first_name) : ''; } catch { firstName = profile.first_name || ''; }
         try { lastName = profile.last_name ? decrypt(profile.last_name) : ''; } catch { lastName = profile.last_name || ''; }
       }
@@ -64,6 +66,27 @@ export async function POST(request: NextRequest) {
         console.error('[ONBOARDING-NOTIFICATION] Failed to update onboarding_completed_at:', updateErr);
       } else {
         console.log('[ONBOARDING-NOTIFICATION] Successfully set onboarding_completed_at');
+      }
+
+      if (profileId) {
+        const { error: statusError } = await (supabase
+          .from('vendor_onboarding_status') as any)
+          .upsert(
+            {
+              profile_id: profileId,
+              onboarding_completed: false,
+            },
+            {
+              onConflict: 'profile_id',
+              ignoreDuplicates: true,
+            }
+          );
+
+        if (statusError) {
+          console.error('[ONBOARDING-NOTIFICATION] Failed to upsert vendor_onboarding_status:', statusError);
+        } else {
+          console.log('[ONBOARDING-NOTIFICATION] vendor_onboarding_status row ensured');
+        }
       }
     }
 

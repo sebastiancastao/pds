@@ -5,17 +5,21 @@ export async function POST(req: NextRequest) {
   try {
     const { userEmail, userFirstName, userLastName, userId } = await req.json();
 
-    if (!userEmail || !userFirstName || !userLastName || !userId) {
+    if (!userEmail || !userFirstName || !userId) {
       return NextResponse.json(
         { success: false, error: 'Missing required fields' },
         { status: 400 }
       );
     }
 
-    // Build the approval URL
-    const approvalUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/onboarding?userId=${userId}&action=edit`;
+    // Default lastName to empty string if not provided
+    const lastName = userLastName || '';
 
-    const emailSubject = `Edit Permission Request - ${userFirstName} ${userLastName}`;
+    // Build the approval URL - redirect to user-management page
+    // Always use production URL for email links
+    const approvalUrl = 'https://pds-murex.vercel.app/user-management';
+
+    const emailSubject = `Edit Permission Request - ${userFirstName} ${lastName}`.trim();
     const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -56,7 +60,7 @@ export async function POST(req: NextRequest) {
                           <strong style="color: #555555;">Name:</strong>
                         </td>
                         <td style="padding: 8px 0; text-align: right;">
-                          <span style="color: #333333; font-size: 16px;">${userFirstName} ${userLastName}</span>
+                          <span style="color: #333333; font-size: 16px;">${userFirstName} ${lastName}</span>
                         </td>
                       </tr>
                       <tr>
@@ -100,7 +104,7 @@ export async function POST(req: NextRequest) {
                   <td align="center">
                     <a href="${approvalUrl}"
                        style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 18px 50px; border-radius: 6px; font-size: 18px; font-weight: bold; box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3);">
-                      Grant Edit Permission
+                      Go to User Management
                     </a>
                   </td>
                 </tr>
@@ -165,9 +169,11 @@ export async function POST(req: NextRequest) {
 </html>
 `.trim();
 
-    // Send email to admin
+    // Send email to both admin addresses
+    const recipients = ['portal@1pds.com', 'sebastiancastao379@gmail.com'];
+
     const result = await sendEmail({
-      to: 'portal@1pds.com',
+      to: recipients,
       subject: emailSubject,
       html: emailBody,
     });

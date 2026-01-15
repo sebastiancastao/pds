@@ -233,6 +233,10 @@ function FormViewerContent() {
       setSaveStatus('error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     }
+
+    if (currentForm.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
+    }
   };
 
   // Save button click
@@ -248,6 +252,7 @@ function FormViewerContent() {
     if (currentForm.requiresSignature && !currentSignature) {
       setValidationError('Please provide your signature in the signature box below before continuing.');
       setEmptyFieldPage(null);
+      void handleManualSave();
 
       // Scroll to the signature section
       setTimeout(() => {
@@ -268,6 +273,296 @@ function FormViewerContent() {
       return;
     }
 
+    // Validate required fields for CA DE-4
+    if (formName === 'fillable' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Name 1', page: 1, friendly: 'Name' },
+          { name: 'Social Security Number 1', page: 1, friendly: 'Social Security Number' },
+          { name: 'Address 1', page: 1, friendly: 'Address' },
+          { name: 'City', page: 1, friendly: 'City' },
+          { name: 'State', page: 1, friendly: 'State' },
+          { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
+          { name: '1a', page: 1, friendly: '1a' },
+          { name: '1b', page: 1, friendly: '1b' },
+          { name: '1c', page: 1, friendly: '1c' },
+          { name: 'Date Employee Signed', page: 1, friendly: 'Date Employee Signed' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const filingStatusFields = [
+          'Filing Status 1',
+          'Filing Status 2',
+          'Filing Status 3'
+        ];
+
+        let hasFilingStatus = false;
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasFilingStatus) {
+          setValidationError('Please select a Filing Status on page 1 of the PDF');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        const worksheetAFields = [
+          'WKsheetA_A',
+          'WKsheetA_B',
+          'WKsheetA_C',
+          'WKsheetA_D',
+          'WKsheetA_E',
+          'WKsheetA_F'
+        ];
+
+        let hasWorksheetAValue = false;
+        for (const fieldName of worksheetAFields) {
+          try {
+            const field = form.getTextField(fieldName);
+            const value = field.getText();
+            if (value && value.trim() !== '') {
+              hasWorksheetAValue = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasWorksheetAValue) {
+          setValidationError('Please fill in at least one Worksheet A field on page 3 of the PDF');
+          setEmptyFieldPage(3);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="3"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating CA DE-4 fields:', err);
+      }
+    }
+    // Validate required fields for Federal W-4
+    if (formName === 'fw4' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_01[0]', page: 1, friendly: 'First name and middle initial' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_02[0]', page: 1, friendly: 'Last name' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', page: 1, friendly: 'Address' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', page: 1, friendly: 'City, state, and ZIP code' },
+          { name: 'topmostSubform[0].Page1[0].f1_05[0]', page: 1, friendly: 'Social Security number' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', page: 1, friendly: 'Step 3: Qualifying children (under 17) amount' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', page: 1, friendly: 'Step 3: Other dependents amount' },
+          { name: 'topmostSubform[0].Page1[0].f1_09[0]', page: 1, friendly: 'Step 3: Total dependents amount' },
+          { name: 'Employee Date', page: 1, friendly: 'Employee date' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const filingStatusFields = [
+          'topmostSubform[0].Page1[0].c1_1[0]',
+          'topmostSubform[0].Page1[0].c1_1[1]',
+          'topmostSubform[0].Page1[0].c1_1[2]',
+          'topmostSubform[0].Page1[0].c1_2[0]'
+        ];
+
+        let hasFilingStatus = false;
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasFilingStatus) {
+          setValidationError('Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household / Exempt');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating W-4 fields:', err);
+      }
+    }
+    // Validate required fields for ADP Direct Deposit
+    if (formName === 'adp-deposit' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Employee Name', page: 1, friendly: 'Employee Name' },
+          { name: 'Date', page: 1, friendly: 'Date' },
+          { name: 'Bank NameCityState', page: 1, friendly: 'Bank Name / City / State' },
+          { name: 'Account Number', page: 1, friendly: 'Account Number' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const ssnFields = ['SSN1', 'SSN2', 'SSN3'];
+        const ssnValues = ssnFields.map((fieldName) => {
+          try {
+            const field = form.getTextField(fieldName);
+            return (field.getText() || '').trim();
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+            return '';
+          }
+        });
+
+        if (ssnValues.some((value) => value === '')) {
+          setValidationError('Please fill in the required field: "Social Security # (XXX-XX-XXXX)" on page 1 of the PDF');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating ADP Direct Deposit fields:', err);
+      }
+    }
     // Validate required fields for employee handbook
     if (formName === 'employee-handbook' && pdfBytesRef.current) {
       try {
@@ -294,13 +589,9 @@ function FormViewerContent() {
           { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
           { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
           { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
-          { name: 'employerprintname', page: 77, friendly: 'Employer Name' },
-          { name: 'employertitle', page: 77, friendly: 'Employer Title' },
           { name: 'date5', page: 77, friendly: 'Date (Section 5)' },
           { name: 'printedName4', page: 77, friendly: 'Printed Name (Section 4)' },
           { name: 'date6', page: 77, friendly: 'Date (Section 6)' },
-          { name: 'printedNameEmployer', page: 77, friendly: 'Employer Name (Section 2)' },
-          { name: 'employertitle2', page: 77, friendly: 'Employer Title (Section 2)' }
         ];
 
         // Check each required field
@@ -313,6 +604,7 @@ function FormViewerContent() {
               // Found empty required field
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
 
               // Scroll to the specific page in the PDF viewer
               setTimeout(() => {
@@ -338,6 +630,143 @@ function FormViewerContent() {
         setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating PDF fields:', err);
+      }
+    }
+
+    // Validate required fields for Temporary Employment Commission Agreement
+    if (formName === 'temp-employment-agreement' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+        const lastPageNumber = pdfDoc.getPages().length;
+
+        try {
+          const field = form.getTextField('employee_signature_date');
+          const value = field.getText();
+
+          if (!value || value.trim() === '') {
+            setValidationError(`Please fill in the required field: "Date" on page ${lastPageNumber} of the PDF`);
+            setEmptyFieldPage(lastPageNumber);
+            void handleManualSave();
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${lastPageNumber}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+        } catch (err) {
+          console.warn('Field employee_signature_date not found or error checking:', err);
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating Temp Employment Agreement fields:', err);
+      }
+    }
+
+    // Validate required fields for I-9
+    if (formName === 'i9' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Last Name (Family Name)', page: 1, friendly: 'Last Name (Family Name)' },
+          { name: 'First Name Given Name', page: 1, friendly: 'First Name (Given Name)' },
+          { name: 'Address Street Number and Name', page: 1, friendly: 'Address (Street Number and Name)' },
+          { name: 'City or Town', page: 1, friendly: 'City or Town' },
+          { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
+          { name: 'Date of Birth mmddyyyy', page: 1, friendly: 'Date of Birth (mm/dd/yyyy)' },
+          { name: "Today's Date mmddyyy", page: 1, friendly: "Today's Date (mm/dd/yyyy)" },
+          { name: 'US Social Security Number', page: 1, friendly: 'U.S. Social Security Number' },
+          { name: 'Employees E-mail Address', page: 1, friendly: "Employee's Email Address" },
+          { name: 'Telephone Number', page: 1, friendly: "Employee's Telephone Number" }
+        ];
+
+        const getFieldValue = (fieldName: string) => {
+          const field = form.getField(fieldName) as any;
+          if (field && typeof field.getText === 'function') {
+            return field.getText() || '';
+          }
+          if (field && typeof field.getSelected === 'function') {
+            const selected = field.getSelected();
+            if (Array.isArray(selected)) {
+              return selected.filter(Boolean).join(', ');
+            }
+            return selected || '';
+          }
+          return '';
+        };
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const value = getFieldValue(fieldInfo.name);
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const citizenshipFields = ['CB_1', 'CB_2', 'CB_3', 'CB_4'];
+        let hasCitizenshipSelection = false;
+        for (const fieldName of citizenshipFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasCitizenshipSelection = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasCitizenshipSelection) {
+          setValidationError('Please select your citizenship/immigration status on page 1 of the PDF: Filing Status: 1) U.S. citizen 2) Noncitizen national 3) Lawful permanent resident 4) Alien authorized to work');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating I-9 fields:', err);
       }
     }
 
@@ -406,7 +835,15 @@ function FormViewerContent() {
     }
   };
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    if (pdfBytesRef.current) {
+      await handleManualSave();
+    }
+
+    if (currentForm.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
+    }
+
     // Find the previous form
     const formNames = Object.keys(formConfig);
     const currentIndex = formNames.indexOf(formName);
@@ -857,28 +1294,6 @@ function FormViewerContent() {
               📄 Please scroll down to <strong>page {emptyFieldPage}</strong> in the PDF below and fill in the required field before continuing.
             </div>
           </div>
-          <button
-            onClick={() => {
-              setValidationError(null);
-              setEmptyFieldPage(null);
-            }}
-            style={{
-              padding: '10px 20px',
-              backgroundColor: '#d32f2f',
-              color: 'white',
-              border: 'none',
-              borderRadius: '8px',
-              cursor: 'pointer',
-              fontWeight: 'bold',
-              fontSize: '14px',
-              flexShrink: 0,
-              transition: 'background-color 0.2s'
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#b71c1c'}
-            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#d32f2f'}
-          >
-            Dismiss
-          </button>
         </div>
       )}
 
@@ -892,7 +1307,7 @@ function FormViewerContent() {
       }}>
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
-            key={`${currentForm.formId}-${formName}-${validationError ? 'error' : 'normal'}`}
+            key={`${currentForm.formId}-${formName}`}
             pdfUrl={currentForm.api}
             formId={currentForm.formId}
             onSave={handlePDFSave}
@@ -964,7 +1379,8 @@ function FormViewerContent() {
             borderRadius: '8px',
             padding: '24px',
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            order: formName === 'i9' ? 2 : 0
           }}>
             <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: 'bold' }}>
               Signature Required
@@ -1053,7 +1469,8 @@ function FormViewerContent() {
             borderRadius: '8px',
             padding: '24px',
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            order: 1
           }}>
             <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>
               Identity & Employment Verification (Form I-9)
@@ -1346,7 +1763,8 @@ function FormViewerContent() {
           backgroundColor: 'white',
           borderRadius: '8px',
           boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-          marginTop: 'auto'
+          marginTop: 'auto',
+          order: formName === 'i9' ? 3 : 0
         }}>
           <button
             onClick={handleBack}
@@ -1434,3 +1852,6 @@ export default function FormViewer() {
     </Suspense>
   );
 }
+
+
+

@@ -76,30 +76,35 @@ export async function POST(req: NextRequest) {
     console.log('[Check Onboarding API] hasSubmittedPDF:', hasSubmittedPDF);
 
     // Check vendor_onboarding_status table
+    console.log('[Check Onboarding API] Querying vendor_onboarding_status with profile_id:', profile.id);
     const { data: onboardingStatus, error: onboardingError } = await adminClient
       .from('vendor_onboarding_status')
       .select('onboarding_completed, completed_date')
       .eq('profile_id', profile.id)
       .single();
 
+    console.log('[Check Onboarding API] vendor_onboarding_status query result:', { onboardingStatus, onboardingError });
+
     if (onboardingError) {
       // No record found means onboarding not started/approved
-      console.log('[Check Onboarding API] No onboarding record found (not approved)');
+      console.log('[Check Onboarding API] No onboarding record found or error:', onboardingError.message);
       return NextResponse.json({
         approved: false,
         hasSubmittedPDF: hasSubmittedPDF,
         pdfSubmittedAt: profileWithOnboarding?.onboarding_completed_at || null,
+        hasOnboardingRecord: false,
         message: 'Onboarding not completed'
       }, { status: 200 });
     }
 
     const isApproved = onboardingStatus?.onboarding_completed || false;
-    console.log('[Check Onboarding API] Onboarding completed:', isApproved);
+    console.log('[Check Onboarding API] Onboarding record found! onboarding_completed:', isApproved);
 
     return NextResponse.json({
       approved: isApproved,
       hasSubmittedPDF: hasSubmittedPDF,
       pdfSubmittedAt: profileWithOnboarding?.onboarding_completed_at || null,
+      hasOnboardingRecord: true,
       completedDate: onboardingStatus?.completed_date || null
     }, { status: 200 });
 

@@ -296,7 +296,12 @@ export async function POST(req: NextRequest) {
     // California uses form-viewer with query param, other states use direct routes
     let nextStage: string;
     if (statePrefix === 'ca') {
-      nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
+      // de4 is the first form; background-disclosure is not part of form-viewer.
+      if (recentFormName === 'de4' || recentFormName === 'background-disclosure') {
+        nextStage = `/payroll-packet-ca/form-viewer`;
+      } else {
+        nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
+      }
     } else {
       nextStage = `/payroll-packet-${statePrefix}/${recentFormName}`;
     }

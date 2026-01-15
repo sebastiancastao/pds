@@ -42,6 +42,8 @@ type User = {
   profile_updated_at: string;
   // Computed fields
   has_download_records: boolean;
+  has_vendor_onboarding_record: boolean;
+  vendor_onboarding_completed: boolean | null;
 };
 
 type UserRoleRow = Pick<User, "role">;
@@ -57,6 +59,7 @@ export default function UserManagementPage() {
   const [error, setError] = useState("");
   const [updatingUser, setUpdatingUser] = useState<string | null>(null);
   const [resettingDownloads, setResettingDownloads] = useState<string | null>(null);
+  const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
 
   // Check authorization
   useEffect(() => {
@@ -227,6 +230,50 @@ export default function UserManagementPage() {
       alert(err.message || 'Failed to reset download records');
     } finally {
       setResettingDownloads(null);
+    }
+  };
+
+  const resetOnboarding = async (userId: string) => {
+    if (!confirm('Are you sure you want to open onboarding for this user? This will delete their onboarding submission record and allow them to re-edit their forms.')) {
+      return;
+    }
+
+    setResettingOnboarding(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) {
+        throw new Error('No session found');
+      }
+
+      const res = await fetch('/api/users/reset-onboarding', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userId }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to reset onboarding');
+      }
+
+      alert('Successfully opened onboarding for editing!');
+
+      // Update local state to remove the onboarding record flag
+      setUsers(prevUsers =>
+        prevUsers.map(user =>
+          user.id === userId
+            ? { ...user, has_vendor_onboarding_record: false, vendor_onboarding_completed: null }
+            : user
+        )
+      );
+    } catch (err: any) {
+      console.error('[USER-MANAGEMENT] Error resetting onboarding:', err);
+      alert(err.message || 'Failed to reset onboarding');
+    } finally {
+      setResettingOnboarding(null);
     }
   };
 
@@ -458,6 +505,9 @@ export default function UserManagementPage() {
                   Background Check Status
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                  Onboarding Status
+                </th>
+                <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
                   Actions
                 </th>
               </tr>
@@ -465,7 +515,7 @@ export default function UserManagementPage() {
             <tbody>
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                  <td colSpan={6} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
                     {searchTerm ? 'No users found matching your search' : 'No users found'}
                   </td>
                 </tr>
@@ -501,6 +551,31 @@ export default function UserManagementPage() {
                       }}>
                         {user.background_check_completed ? 'Completed' : 'Pending'}
                       </span>
+                    </td>
+                    <td style={{ padding: '0.75rem' }}>
+                      {user.has_vendor_onboarding_record ? (
+                        <span style={{
+                          padding: '0.25rem 0.5rem',
+                          backgroundColor: user.vendor_onboarding_completed ? '#dcfce7' : '#fef3c7',
+                          color: user.vendor_onboarding_completed ? '#15803d' : '#92400e',
+                          borderRadius: '0.25rem',
+                          fontSize: '0.875rem',
+                          fontWeight: '500'
+                        }}>
+                          {user.vendor_onboarding_completed ? 'Approved' : 'Pending Approval'}
+                        </span>
+                      ) : (
+                        <span style={{
+                          padding: '0.25rem 0.5rem',
+                          backgroundColor: '#f3f4f6',
+                          color: '#6b7280',
+                          borderRadius: '0.25rem',
+                          fontSize: '0.875rem',
+                          fontWeight: '500'
+                        }}>
+                          Not Submitted
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -542,6 +617,25 @@ export default function UserManagementPage() {
                             }}
                           >
                             {resettingDownloads === user.id ? 'Resetting...' : 'Reset Downloaded'}
+                          </button>
+                        )}
+                        {user.has_vendor_onboarding_record && (
+                          <button
+                            onClick={() => resetOnboarding(user.id)}
+                            disabled={resettingOnboarding === user.id}
+                            style={{
+                              padding: '0.5rem 1rem',
+                              backgroundColor: '#8b5cf6',
+                              color: 'white',
+                              border: 'none',
+                              borderRadius: '0.375rem',
+                              cursor: resettingOnboarding === user.id ? 'not-allowed' : 'pointer',
+                              fontWeight: '500',
+                              fontSize: '0.875rem',
+                              opacity: resettingOnboarding === user.id ? 0.5 : 1
+                            }}
+                          >
+                            {resettingOnboarding === user.id ? 'Opening...' : 'Open Onboarding'}
                           </button>
                         )}
                       </div>

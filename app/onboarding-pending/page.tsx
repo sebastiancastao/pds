@@ -32,15 +32,23 @@ export default function OnboardingPendingPage() {
       setUserId(user.id || '');
 
       // Fetch user profile data from profiles table
-      const { data: userProfile } = await supabase
+      const { data: userProfile, error: profileError } = await supabase
         .from('profiles')
         .select('first_name, last_name')
         .eq('user_id', user.id)
-        .single() as { data: { first_name: string | null; last_name: string | null } | null };
+        .single() as { data: { first_name: string | null; last_name: string | null } | null; error: any };
 
-      if (userProfile) {
-        setUserFirstName(userProfile.first_name || '');
+      console.log('[Onboarding Pending] Profile fetch result:', { userProfile, profileError });
+
+      if (userProfile && userProfile.first_name) {
+        setUserFirstName(userProfile.first_name);
         setUserLastName(userProfile.last_name || '');
+      } else {
+        // Fallback: use email prefix as name if profile not accessible or first_name is empty
+        const emailPrefix = user.email?.split('@')[0] || 'User';
+        setUserFirstName(emailPrefix);
+        setUserLastName('');
+        console.log('[Onboarding Pending] Using email prefix as fallback name:', emailPrefix);
       }
 
       // Check onboarding status via API (bypasses RLS)
@@ -95,7 +103,9 @@ export default function OnboardingPendingPage() {
   };
 
   const handleRequestEditPermission = async () => {
-    if (!userEmail || !userFirstName || !userLastName || !userId) {
+    console.log('[Onboarding Pending] Request edit permission clicked:', { userEmail, userFirstName, userLastName, userId });
+
+    if (!userEmail || !userFirstName || !userId) {
       alert('Missing user information. Please refresh the page and try again.');
       return;
     }

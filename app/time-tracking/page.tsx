@@ -100,14 +100,40 @@ export default function TimeTrackingPage() {
       } else {
         const { data } = await supabase.auth.getSession();
         setAccessToken(data.session?.access_token || null);
+        let role = '';
         try {
           const { data: roleRow } = await supabase
             .from('users')
             .select('role')
             .eq('id', user.id)
             .single<{ role: string }>();
-          setUserRole((roleRow?.role || '').toString().trim().toLowerCase());
+          role = (roleRow?.role || '').toString().trim().toLowerCase();
+          setUserRole(role);
         } catch {}
+
+        // Check onboarding status for workers
+        if (role === 'worker' || role === 'vendor') {
+          try {
+            const onboardingResponse = await fetch('/api/auth/check-onboarding', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${data.session?.access_token}`
+              },
+            });
+            if (onboardingResponse.ok) {
+              const onboardingResult = await onboardingResponse.json();
+              // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
+              if (onboardingResult.hasOnboardingRecord && !onboardingResult.approved) {
+                window.location.href = '/onboarding-pending';
+                return;
+              }
+            }
+          } catch (e) {
+            console.error('Error checking onboarding status:', e);
+          }
+        }
+
         setIsAuthed(true);
       }
     });
