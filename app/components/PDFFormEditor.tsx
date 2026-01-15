@@ -258,12 +258,14 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         return false;
       };
 
+      const shouldUseSavedPdf = formId === 'adp-deposit';
+
       if (savedPdfBytes) {
         console.log('Step 2c: Parsing saved PDF with pdf-lib...');
         const savedDoc = await PDFDocument.load(savedPdfBytes);
         const isXfaForm = detectXfaForm(savedDoc);
 
-        if (!isXfaForm) {
+        if (!isXfaForm && !shouldUseSavedPdf) {
           let useSavedBytes = false;
           try {
             console.log('Step 2d: Fetching fresh PDF template to replace saved PDF bytes...');

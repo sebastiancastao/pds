@@ -1,12 +1,14 @@
 // app/api/pdf-form-progress/user/[userId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const I9_DOCUMENTS_BUCKET = 'i9-documents';
 
 const formDisplayNames: Record<string, string> = {
   // California
@@ -91,6 +93,174 @@ function displayNameForForm(formName: string) {
   return formName
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Fetch I-9 documents for a user and add them to the merged PDF
+async function addI9DocumentsToMergedPdf(
+  mergedPdf: PDFDocument,
+  userId: string
+): Promise<void> {
+  try {
+    // Fetch I-9 documents from database
+    const { data: i9Docs, error: i9Error } = await supabaseAdmin
+      .from('i9_documents')
+      .select('*')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (i9Error || !i9Docs) {
+      console.log('[PDF_FORMS] No I-9 documents found for user:', userId);
+      return;
+    }
+
+    console.log('[PDF_FORMS] Found I-9 documents:', {
+      hasListA: !!i9Docs.additional_doc_url,
+      hasListB: !!i9Docs.drivers_license_url,
+      hasListC: !!i9Docs.ssn_document_url,
+    });
+
+    // Define the documents to process
+    const documentsToProcess = [
+      {
+        url: i9Docs.additional_doc_url,
+        filename: i9Docs.additional_doc_filename,
+        label: 'I-9 List A Document',
+      },
+      {
+        url: i9Docs.drivers_license_url,
+        filename: i9Docs.drivers_license_filename,
+        label: 'I-9 List B Document',
+      },
+      {
+        url: i9Docs.ssn_document_url,
+        filename: i9Docs.ssn_document_filename,
+        label: 'I-9 List C Document',
+      },
+    ].filter((doc) => doc.url);
+
+    for (const doc of documentsToProcess) {
+      try {
+        console.log('[PDF_FORMS] Processing I-9 document:', doc.label, doc.filename);
+
+        // Fetch the document from the URL
+        const response = await fetch(doc.url);
+        if (!response.ok) {
+          console.error('[PDF_FORMS] Failed to fetch I-9 document:', doc.url, response.status);
+          continue;
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        const docBytes = await response.arrayBuffer();
+
+        if (contentType.includes('pdf')) {
+          // If it's a PDF, copy its pages to the merged PDF
+          try {
+            const docPdf = await PDFDocument.load(docBytes);
+            const copiedPages = await mergedPdf.copyPages(docPdf, docPdf.getPageIndices());
+
+            // Add a header page before the document
+            const headerPage = mergedPdf.addPage([612, 792]); // Letter size
+            headerPage.drawText(doc.label, {
+              x: 50,
+              y: 700,
+              size: 24,
+              color: rgb(0, 0, 0),
+            });
+            if (doc.filename) {
+              headerPage.drawText(`Filename: ${doc.filename}`, {
+                x: 50,
+                y: 660,
+                size: 14,
+                color: rgb(0.3, 0.3, 0.3),
+              });
+            }
+
+            copiedPages.forEach((page) => {
+              mergedPdf.addPage(page);
+            });
+            console.log('[PDF_FORMS] ✅ Added I-9 PDF document:', doc.label);
+          } catch (pdfError) {
+            console.error('[PDF_FORMS] Error processing I-9 PDF:', pdfError);
+          }
+        } else if (contentType.includes('image')) {
+          // If it's an image, embed it on a new page
+          try {
+            const imageBytes = Buffer.from(docBytes);
+            let image;
+
+            if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+              image = await mergedPdf.embedJpg(imageBytes);
+            } else if (contentType.includes('png')) {
+              image = await mergedPdf.embedPng(imageBytes);
+            } else {
+              // Try PNG as fallback
+              try {
+                image = await mergedPdf.embedPng(imageBytes);
+              } catch {
+                image = await mergedPdf.embedJpg(imageBytes);
+              }
+            }
+
+            // Create a new page for the image
+            const page = mergedPdf.addPage([612, 792]); // Letter size
+
+            // Add header
+            page.drawText(doc.label, {
+              x: 50,
+              y: 750,
+              size: 18,
+              color: rgb(0, 0, 0),
+            });
+            if (doc.filename) {
+              page.drawText(`Filename: ${doc.filename}`, {
+                x: 50,
+                y: 725,
+                size: 12,
+                color: rgb(0.3, 0.3, 0.3),
+              });
+            }
+
+            // Calculate image dimensions to fit on page
+            const maxWidth = 512; // Leave margins
+            const maxHeight = 650; // Leave space for header
+            const imgWidth = image.width;
+            const imgHeight = image.height;
+
+            let drawWidth = imgWidth;
+            let drawHeight = imgHeight;
+
+            // Scale down if necessary
+            if (imgWidth > maxWidth || imgHeight > maxHeight) {
+              const widthRatio = maxWidth / imgWidth;
+              const heightRatio = maxHeight / imgHeight;
+              const scale = Math.min(widthRatio, heightRatio);
+              drawWidth = imgWidth * scale;
+              drawHeight = imgHeight * scale;
+            }
+
+            // Center the image horizontally
+            const x = (612 - drawWidth) / 2;
+            const y = 700 - drawHeight; // Position below the header
+
+            page.drawImage(image, {
+              x,
+              y,
+              width: drawWidth,
+              height: drawHeight,
+            });
+
+            console.log('[PDF_FORMS] ✅ Added I-9 image document:', doc.label);
+          } catch (imgError) {
+            console.error('[PDF_FORMS] Error embedding I-9 image:', imgError);
+          }
+        }
+      } catch (docError) {
+        console.error('[PDF_FORMS] Error processing I-9 document:', doc.label, docError);
+      }
+    }
+  } catch (error) {
+    console.error('[PDF_FORMS] Error fetching I-9 documents:', error);
+  }
 }
 
 export async function GET(
@@ -319,6 +489,10 @@ export async function GET(
         console.error('[PDF_FORMS] Error processing form:', form.form_name, formError);
       }
     }
+
+    // Add I-9 supporting documents (List A, B, C) to the merged PDF
+    console.log('[PDF_FORMS] Adding I-9 supporting documents for user:', userId);
+    await addI9DocumentsToMergedPdf(mergedPdf, userId);
 
     // Save the merged PDF
     const mergedPdfBytes = await mergedPdf.save();

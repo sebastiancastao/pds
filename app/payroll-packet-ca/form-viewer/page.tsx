@@ -27,6 +27,8 @@ function FormViewerContent() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  const pdfBytesByFormRef = useRef<Map<string, Uint8Array>>(new Map());
+  const embeddedSignatureByFormRef = useRef<Map<string, string>>(new Map());
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
@@ -155,10 +157,84 @@ function FormViewerContent() {
     );
   }
 
+  useEffect(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+  }, [formName]);
+
+  const getPdfBytesForForm = (formIdOverride?: string) => {
+    const formId = formIdOverride || currentForm?.formId;
+    if (!formId) return pdfBytesRef.current;
+    return pdfBytesByFormRef.current.get(formId) || pdfBytesRef.current;
+  };
+
+  const embedAdpSignature = async (pdfBytes: Uint8Array, signatureData: string) => {
+    const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) return pdfBytes;
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const form = pdfDoc.getForm();
+      let field: any;
+
+      try {
+        field = form.getField('Employee Signature') as any;
+      } catch (error) {
+        console.warn('[SAVE] Employee Signature field not found in ADP PDF', error);
+        return pdfBytes;
+      }
+
+      const widgets = field?.acroField?.getWidgets?.() || [];
+      if (!widgets.length) return pdfBytes;
+
+      const widget = widgets[0];
+      const rect = widget.getRectangle();
+      const pageRef = widget.P?.();
+      let page = pageRef ? pdfDoc.getPages().find((p) => p.ref === pageRef) : undefined;
+
+      if (!page && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+        const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+        if (widgetRef) {
+          page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+        }
+      }
+
+      if (!page) {
+        page = pdfDoc.getPages()[0];
+      }
+
+      const base64 = match[2];
+      const imageBytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const format = match[1].toLowerCase();
+      const image = format === 'jpg' || format === 'jpeg'
+        ? await pdfDoc.embedJpg(imageBytes)
+        : await pdfDoc.embedPng(imageBytes);
+
+      const scale = Math.min(rect.width / image.width, rect.height / image.height, 1);
+      const drawWidth = image.width * scale;
+      const drawHeight = image.height * scale;
+      const x = rect.x + (rect.width - drawWidth) / 2;
+      const y = rect.y + (rect.height - drawHeight) / 2;
+
+      page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
+      const updatedBytes = await pdfDoc.save();
+      return new Uint8Array(updatedBytes);
+    } catch (error) {
+      console.warn('[SAVE] Failed to embed ADP signature', error);
+      return pdfBytes;
+    }
+  };
+
   // Handle PDF save from editor
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes`);
     pdfBytesRef.current = pdfBytes;
+    if (currentForm?.formId) {
+      pdfBytesByFormRef.current.set(currentForm.formId, pdfBytes);
+    }
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
@@ -167,28 +243,54 @@ function FormViewerContent() {
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
+    const formId = currentForm?.formId;
     autoSaveTimerRef.current = setTimeout(() => {
-      handleManualSave();
+      handleManualSave(formId);
     }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
   // Manual save function
-  const handleManualSave = async () => {
-    if (!pdfBytesRef.current) {
+  const handleManualSave = async (formIdOverride?: string) => {
+    const formId = formIdOverride || currentForm?.formId;
+    if (!formId) {
+      console.warn('[SAVE] No form id available for save');
+      return;
+    }
+
+    const pdfBytes = getPdfBytesForForm(formId);
+    if (!pdfBytes) {
       console.warn('[SAVE] No PDF data to save');
       return;
     }
 
+    const isCurrentForm = formId === currentForm.formId;
+
     try {
-      console.log(`[SAVE] Starting save process, PDF size: ${pdfBytesRef.current.length} bytes`);
-      setSaveStatus('saving');
+      console.log(`[SAVE] Starting save process for ${formId}, PDF size: ${pdfBytes.length} bytes`);
+      if (isCurrentForm) {
+        setSaveStatus('saving');
+      }
+
+      let pdfBytesToSave = pdfBytes;
+      if (isCurrentForm && formId === 'adp-deposit' && currentSignature) {
+        const lastEmbedded = embeddedSignatureByFormRef.current.get(formId);
+        if (lastEmbedded !== currentSignature) {
+          const updatedBytes = await embedAdpSignature(pdfBytes, currentSignature);
+          if (updatedBytes !== pdfBytes) {
+            pdfBytesToSave = updatedBytes;
+            pdfBytesRef.current = updatedBytes;
+            pdfBytesByFormRef.current.set(formId, updatedBytes);
+          }
+          embeddedSignatureByFormRef.current.set(formId, currentSignature);
+        }
+      }
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
 
       // Convert Uint8Array to base64
       const base64 = btoa(
-        Array.from(pdfBytesRef.current)
+        Array.from(pdfBytesToSave)
           .map(byte => String.fromCharCode(byte))
           .join('')
       );
@@ -196,12 +298,12 @@ function FormViewerContent() {
       console.log(`[SAVE] Base64 preview: ${base64.substring(0, 50)}...`);
 
       // Save to database (+ optionally persist i9 mode/selections)
-      console.log(`[SAVE] Sending to API for form: ${currentForm.formId}`);
+      console.log(`[SAVE] Sending to API for form: ${formId}`);
       const payload: any = {
-        formName: currentForm.formId,
+        formName: formId,
         formData: base64,
       };
-      if (formName === 'i9') {
+      if (formId === 'i9') {
         payload.i9Mode = i9Mode;
         payload.i9Selections = i9Selections;
       }
@@ -219,22 +321,28 @@ function FormViewerContent() {
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
-        setSaveStatus('saved');
-        setLastSaved(new Date());
-        setTimeout(() => setSaveStatus('idle'), 2000);
+        if (isCurrentForm) {
+          setSaveStatus('saved');
+          setLastSaved(new Date());
+          setTimeout(() => setSaveStatus('idle'), 2000);
+        }
       } else {
         const error = await response.json();
         console.error('[SAVE] ❌ Save failed:', error);
-        setSaveStatus('error');
-        setTimeout(() => setSaveStatus('idle'), 3000);
+        if (isCurrentForm) {
+          setSaveStatus('error');
+          setTimeout(() => setSaveStatus('idle'), 3000);
+        }
       }
     } catch (error) {
       console.error('[SAVE] ❌ Save exception:', error);
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
+      if (isCurrentForm) {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      }
     }
 
-    if (currentForm.requiresSignature && currentSignature) {
+    if (isCurrentForm && currentForm.requiresSignature && currentSignature) {
       await saveSignatureToDatabase(currentSignature);
     }
   };
@@ -246,7 +354,8 @@ function FormViewerContent() {
 
   // Continue to next form
   const handleContinue = async () => {
-    console.log('Continue clicked, pdfBytesRef:', pdfBytesRef.current ? 'has data' : 'null');
+    const currentPdfBytes = getPdfBytesForForm();
+    console.log('Continue clicked, pdfBytesRef:', currentPdfBytes ? 'has data' : 'null');
 
     // Check if signature is required but not provided
     if (currentForm.requiresSignature && !currentSignature) {
@@ -274,10 +383,10 @@ function FormViewerContent() {
     }
 
     // Validate required fields for CA DE-4
-    if (formName === 'fillable' && pdfBytesRef.current) {
+    if (formName === 'fillable' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
 
         const requiredFields = [
@@ -402,10 +511,10 @@ function FormViewerContent() {
       }
     }
     // Validate required fields for Federal W-4
-    if (formName === 'fw4' && pdfBytesRef.current) {
+    if (formName === 'fw4' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
 
         const requiredFields = [
@@ -490,10 +599,10 @@ function FormViewerContent() {
       }
     }
     // Validate required fields for ADP Direct Deposit
-    if (formName === 'adp-deposit' && pdfBytesRef.current) {
+    if (formName === 'adp-deposit' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
 
         const requiredFields = [
@@ -564,10 +673,10 @@ function FormViewerContent() {
       }
     }
     // Validate required fields for employee handbook
-    if (formName === 'employee-handbook' && pdfBytesRef.current) {
+    if (formName === 'employee-handbook' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
 
         // List of required fields in order from top to bottom with their page numbers
@@ -633,11 +742,56 @@ function FormViewerContent() {
       }
     }
 
-    // Validate required fields for Temporary Employment Commission Agreement
-    if (formName === 'temp-employment-agreement' && pdfBytesRef.current) {
+    // Validate required fields for Time of Hire Notice
+    if (formName === 'time-of-hire' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Address', page: 3, friendly: 'Address' },
+          { name: 'Phone', page: 3, friendly: 'Phone' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating Time of Hire Notice fields:', err);
+      }
+    }
+
+    // Validate required fields for Temporary Employment Commission Agreement
+    if (formName === 'temp-employment-agreement' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
         const lastPageNumber = pdfDoc.getPages().length;
 
@@ -672,11 +826,58 @@ function FormViewerContent() {
       }
     }
 
-    // Validate required fields for I-9
-    if (formName === 'i9' && pdfBytesRef.current) {
+    // Validate required fields for Notice to Employee
+    if (formName === 'notice-to-employee' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Employee Name', page: 1, friendly: 'Employee Name' },
+          { name: 'Start Date', page: 1, friendly: 'Start Date' },
+          { name: 'PRINT NAME of Employee', page: 2, friendly: 'Printed Name (Employee)' },
+          { name: 'Date_2', page: 2, friendly: 'Date (Employee)' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating Notice to Employee fields:', err);
+      }
+    }
+
+    // Validate required fields for I-9
+    if (formName === 'i9' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
         const form = pdfDoc.getForm();
 
         const requiredFields = [
@@ -802,9 +1003,9 @@ function FormViewerContent() {
     }
 
     // Save before continuing if we have data
-    if (pdfBytesRef.current) {
+    if (currentPdfBytes) {
       console.log('Saving before continue...');
-      await handleManualSave();
+      await handleManualSave(currentForm.formId);
       console.log('Save completed');
     } else {
       console.log('No PDF data to save, continuing anyway');
@@ -836,8 +1037,9 @@ function FormViewerContent() {
   };
 
   const handleBack = async () => {
-    if (pdfBytesRef.current) {
-      await handleManualSave();
+    const currentPdfBytes = getPdfBytesForForm();
+    if (currentPdfBytes) {
+      await handleManualSave(currentForm.formId);
     }
 
     if (currentForm.requiresSignature && currentSignature) {
@@ -940,6 +1142,7 @@ function FormViewerContent() {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
+      const currentPdfBytes = getPdfBytesForForm(currentForm.formId);
 
       console.log('[SIGNATURE] 💾 Saving signature for form:', currentForm.formId);
 
@@ -954,8 +1157,8 @@ function FormViewerContent() {
           formId: currentForm.formId,
           formType: currentForm.display,
           signatureData: signatureData,
-          formData: pdfBytesRef.current ? btoa(
-            Array.from(pdfBytesRef.current)
+          formData: currentPdfBytes ? btoa(
+            Array.from(currentPdfBytes)
               .map(byte => String.fromCharCode(byte))
               .join('')
           ) : undefined
