@@ -285,7 +285,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           }
 
           if (useSavedBytes) {
-            pdfBytes = savedPdfBytes.buffer;
+            pdfBytes = new Uint8Array(savedPdfBytes).buffer;
             pdfLibDoc = savedDoc;
             usedSavedBytesForLoad = true;
           } else {
@@ -347,7 +347,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             }
           }
         } else {
-          pdfBytes = savedPdfBytes.buffer;
+          pdfBytes = new Uint8Array(savedPdfBytes).buffer;
           pdfLibDoc = savedDoc;
           usedSavedBytesForLoad = true;
         }
