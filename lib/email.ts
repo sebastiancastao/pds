@@ -1668,6 +1668,26 @@ export async function sendBackgroundCheckApprovalEmail(data: {
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0 0 0;">
                 <strong>PDS Onboarding Team</strong>
               </p>
+
+              <!-- Portal Login Button -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="https://pds-murex.vercel.app/login"
+                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                      Access Portal
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top: 15px;">
+                    <p style="color: #666666; font-size: 13px; margin: 0;">
+                      Or copy and paste this link in your browser:<br>
+                      <a href="https://pds-murex.vercel.app/login" style="color: #667eea; text-decoration: none; word-break: break-all;">https://pds-murex.vercel.app/login</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
             </td>
           </tr>
 

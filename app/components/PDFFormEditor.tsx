@@ -80,6 +80,12 @@ const HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
   'PRINT NAME of Employer representative',
 ]);
 
+const HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
+  'Rates of Pay',
+  'Overtime Rates of Pay',
+  'Other provide specifics',
+]);
+
 const isAdpDepositForm = (formId: string) =>
   formId === 'adp-deposit' || formId.endsWith('-adp-deposit');
 
@@ -89,13 +95,17 @@ const isI9Form = (formId: string) =>
 const isNoticeToEmployeeForm = (formId: string) =>
   formId === 'notice-to-employee' || formId.endsWith('-notice-to-employee');
 
+const isWiNoticeToEmployeeForm = (formId: string) =>
+  formId === 'wi-notice-to-employee';
+
 const shouldMaskField = (formId: string, fieldName: string) =>
   isI9Form(formId) && MASKED_I9_FIELDS.has(fieldName);
 
 const shouldHideField = (formId: string, fieldName: string) =>
   (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
   (isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName)) ||
-  (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName));
+  (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
+  (isWiNoticeToEmployeeForm(formId) && HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName));
 
 const ADP_NET_AMOUNT_SLOTS = [
   { name: 'adp_entire_net_amount_1', referenceField: 'Checking1', fallbackY: 241.745 },
