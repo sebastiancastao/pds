@@ -217,7 +217,7 @@ export default function OnboardingPage() {
   const handleDownloadPDF = async (userId: string, userName: string) => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(`/api/pdf-form-progress/user/${userId}`, {
+      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=form_signatures`, {
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
         }

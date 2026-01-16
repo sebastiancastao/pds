@@ -8,12 +8,15 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 
 const NY_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'ny-state-supplements', formId: 'ny-state-supplements', display: 'NY State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/ny-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'temp-employment-agreement', formId: 'ny-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },

@@ -319,16 +319,79 @@ function VerifyMFAContent() {
         sessionStorage.removeItem('new_user_onboarding'); // Clean up flag
 
         // Check if worker has pending onboarding redirect (from login)
-        const pendingOnboardingRedirect = sessionStorage.getItem('pending_onboarding_redirect');
+        console.log('[VERIFY-MFA DEBUG] ===== CHECKING ONBOARDING REDIRECT =====');
+        console.log('[VERIFY-MFA DEBUG] User role:', userRole);
+
+        let pendingOnboardingRedirect = null;
+
+        // For workers, check vendor_onboarding_status first
+        if (userRole === 'worker') {
+          console.log('[VERIFY-MFA DEBUG] 🔍 Worker detected - checking onboarding status...');
+
+          try {
+            const onboardingResponse = await fetch('/api/auth/check-onboarding', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`
+              },
+            });
+
+            if (onboardingResponse.ok) {
+              const onboardingResult = await onboardingResponse.json();
+              console.log('[VERIFY-MFA DEBUG] Onboarding API response:', JSON.stringify(onboardingResult, null, 2));
+
+              // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
+              if (onboardingResult.hasOnboardingRecord && !onboardingResult.approved) {
+                pendingOnboardingRedirect = '/onboarding-pending';
+                console.log('[VERIFY-MFA DEBUG] ⚠️ Onboarding record exists but not approved - redirecting to pending page');
+              } else if (onboardingResult.approved) {
+                console.log('[VERIFY-MFA DEBUG] ✅ Onboarding approved - no redirect needed');
+              } else if (!onboardingResult.hasOnboardingRecord) {
+                // No record means user hasn't completed onboarding yet - check their current stage
+                console.log('[VERIFY-MFA DEBUG] ℹ️ No onboarding record found - checking onboarding stage...');
+                try {
+                  const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${session.access_token}`
+                    },
+                  });
+                  if (stageResponse.ok) {
+                    const stageResult = await stageResponse.json();
+                    if (stageResult.nextStage) {
+                      pendingOnboardingRedirect = stageResult.nextStage;
+                      console.log('[VERIFY-MFA DEBUG] 📋 Onboarding stage detected:', stageResult.nextStage);
+                    }
+                  }
+                } catch (stageError) {
+                  console.error('[VERIFY-MFA DEBUG] ❌ Error checking onboarding stage:', stageError);
+                }
+              }
+            }
+          } catch (onboardingError) {
+            console.error('[VERIFY-MFA DEBUG] ❌ Exception calling onboarding API:', onboardingError);
+          }
+        } else {
+          console.log('[VERIFY-MFA DEBUG] ℹ️ User is not a worker, skipping onboarding check');
+        }
+
+        // Clean up sessionStorage regardless of redirect (may contain stale data)
+        console.log('[VERIFY-MFA DEBUG] 🗑️ Cleaning up sessionStorage');
+        sessionStorage.removeItem('pending_onboarding_redirect');
+
         if (pendingOnboardingRedirect) {
-          console.log('[VERIFY-MFA DEBUG] 🔄 Worker has pending onboarding, redirecting to:', pendingOnboardingRedirect);
-          sessionStorage.removeItem('pending_onboarding_redirect'); // Clean up
+          console.log('[VERIFY-MFA DEBUG] ========================================');
+          console.log('[VERIFY-MFA DEBUG] 🎯 REDIRECTING TO:', pendingOnboardingRedirect);
+          console.log('[VERIFY-MFA DEBUG] ========================================');
           router.push(pendingOnboardingRedirect);
           return;
         }
 
+        console.log('[VERIFY-MFA DEBUG] No onboarding redirect needed - proceeding to role-based routing');
+
         // Role-based routing
-        const userRole = userData?.role;
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
         if (userRole === 'manager') {
@@ -708,9 +771,8 @@ function VerifyMFAContent() {
             <div className="mt-6 pt-6 border-t border-gray-200">
               <p className="text-center text-sm text-gray-600">
                 Having trouble?{' '}
-                <a href="#" className="text-primary-600 hover:text-primary-700 font-medium">
-                  Contact Support
-                </a>
+                  Contact Support at portal@1pds.net
+              
               </p>
             </div>
           </div>

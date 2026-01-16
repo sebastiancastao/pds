@@ -3,13 +3,17 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
-import Link from 'next/link';
 
 export default function OnboardingPendingPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [userEmail, setUserEmail] = useState<string>('');
   const [submissionDate, setSubmissionDate] = useState<string | null>(null);
+  const [userFirstName, setUserFirstName] = useState<string>('');
+  const [userLastName, setUserLastName] = useState<string>('');
+  const [userId, setUserId] = useState<string>('');
+  const [requestingEdit, setRequestingEdit] = useState(false);
+  const [editRequestSent, setEditRequestSent] = useState(false);
 
   useEffect(() => {
     checkOnboardingStatus();
@@ -25,6 +29,27 @@ export default function OnboardingPendingPage() {
       }
 
       setUserEmail(user.email || '');
+      setUserId(user.id || '');
+
+      // Fetch user profile data from profiles table
+      const { data: userProfile, error: profileError } = await supabase
+        .from('profiles')
+        .select('first_name, last_name')
+        .eq('user_id', user.id)
+        .single() as { data: { first_name: string | null; last_name: string | null } | null; error: any };
+
+      console.log('[Onboarding Pending] Profile fetch result:', { userProfile, profileError });
+
+      if (userProfile && userProfile.first_name) {
+        setUserFirstName(userProfile.first_name);
+        setUserLastName(userProfile.last_name || '');
+      } else {
+        // Fallback: use email prefix as name if profile not accessible or first_name is empty
+        const emailPrefix = user.email?.split('@')[0] || 'User';
+        setUserFirstName(emailPrefix);
+        setUserLastName('');
+        console.log('[Onboarding Pending] Using email prefix as fallback name:', emailPrefix);
+      }
 
       // Check onboarding status via API (bypasses RLS)
       const { data: { session } } = await supabase.auth.getSession();
@@ -75,6 +100,46 @@ export default function OnboardingPendingPage() {
   const handleCheckAgain = () => {
     setLoading(true);
     checkOnboardingStatus();
+  };
+
+  const handleRequestEditPermission = async () => {
+    console.log('[Onboarding Pending] Request edit permission clicked:', { userEmail, userFirstName, userLastName, userId });
+
+    if (!userEmail || !userFirstName || !userId) {
+      alert('Missing user information. Please refresh the page and try again.');
+      return;
+    }
+
+    setRequestingEdit(true);
+
+    try {
+      const response = await fetch('/api/onboarding/request-edit-permission', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userEmail,
+          userFirstName,
+          userLastName,
+          userId,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        setEditRequestSent(true);
+        alert('Your edit request has been sent successfully! The admin will review your request and grant you permission to edit your submission.');
+      } else {
+        alert(`Failed to send edit request: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('Error requesting edit permission:', error);
+      alert('An error occurred while sending your request. Please try again.');
+    } finally {
+      setRequestingEdit(false);
+    }
   };
 
   if (loading) {
@@ -173,6 +238,51 @@ export default function OnboardingPendingPage() {
             </ul>
           </div>
 
+          {/* Edit Request Section */}
+          {editRequestSent ? (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
+              <div className="flex items-center">
+                <svg className="w-6 h-6 text-green-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                </svg>
+                <div>
+                  <h3 className="text-sm font-semibold text-green-900">Edit Request Sent</h3>
+                  <p className="text-sm text-green-700 mt-1">
+                    Your request has been sent to the admin. You will be notified when permission is granted.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="bg-purple-50 border border-purple-200 rounded-lg p-6 mb-6">
+              <h3 className="text-sm font-semibold text-purple-900 mb-2">
+                Need to make changes?
+              </h3>
+              <p className="text-sm text-purple-700 mb-4">
+                If you need to edit your submission, you can request permission from the admin.
+              </p>
+              <button
+                onClick={handleRequestEditPermission}
+                disabled={requestingEdit}
+                className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
+              >
+                {requestingEdit ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Sending Request...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                    Request Editing Permission
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+
           {/* Actions */}
           <div className="flex flex-col sm:flex-row gap-3">
             <button
@@ -200,8 +310,8 @@ export default function OnboardingPendingPage() {
           <div className="mt-8 pt-6 border-t border-gray-200 text-center">
             <p className="text-sm text-gray-600">
               Questions? Contact HR at{' '}
-              <a href="mailto:hr@pds.com" className="text-blue-600 hover:text-blue-700 font-medium">
-                portal@1pds.com
+              <a href="mailto:portal@1pds.net" className="text-blue-600 hover:text-blue-700 font-medium">
+                portal@1pds.net
               </a>
             </p>
           </div>

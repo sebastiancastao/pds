@@ -5,6 +5,30 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
 export const dynamic = 'force-dynamic';
 
+function normalizeBase64(value: any): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') {
+    if (value.startsWith('\\x')) {
+      const hex = value.slice(2);
+      return Buffer.from(hex, 'hex').toString('base64');
+    }
+    return value;
+  }
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value).toString('base64');
+  }
+  if (Array.isArray(value)) {
+    return Buffer.from(Uint8Array.from(value)).toString('base64');
+  }
+  if (value?.type === 'Buffer' && Array.isArray(value.data)) {
+    return Buffer.from(value.data).toString('base64');
+  }
+  if (Array.isArray(value?.data)) {
+    return Buffer.from(value.data).toString('base64');
+  }
+  return null;
+}
+
 export async function GET(request: NextRequest) {
   try {
     console.log('[RETRIEVE] Starting authentication check...');
@@ -98,11 +122,15 @@ export async function GET(request: NextRequest) {
       formName,
       dataType: typeof data.form_data,
       dataLength: data.form_data?.length,
-      dataPreview: data.form_data?.substring(0, 50)
+      dataPreview: typeof data.form_data === 'string' ? data.form_data.substring(0, 50) : undefined
     });
 
     // Data is already base64 string, just return it
-    const base64Data = data.form_data;
+    const base64Data = normalizeBase64(data.form_data);
+    if (!base64Data) {
+      console.warn('[RETRIEVE] Unable to normalize form_data to base64 for:', formName);
+      return NextResponse.json({ found: false }, { status: 200 });
+    }
     console.log('[RETRIEVE] Returning base64 data:', {
       base64Length: base64Data.length,
       base64Preview: base64Data.substring(0, 50)

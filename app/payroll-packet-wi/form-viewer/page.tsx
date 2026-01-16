@@ -8,12 +8,15 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 
 const WI_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'wi-state-supplements', formId: 'wi-state-supplements', display: 'WI State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/wi-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
-  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
-  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/i9' },
+  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/notice-to-employee' },
+  { id: 'temp-employment-agreement', formId: 'wi-temp-employment-agreement', display: 'Temporary Employment Commission Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
@@ -65,6 +68,7 @@ type EmployeeInfoState = {
 };
 
 const EMPLOYEE_INFO_STORAGE_KEY = 'wi-employee-information';
+const getToday = () => new Date().toISOString().split('T')[0];
 
 function EmployeeInformationWIForm() {
   const router = useRouter();
@@ -79,7 +83,7 @@ function EmployeeInformationWIForm() {
     phone: '',
     email: '',
     position: '',
-    startDate: '',
+    startDate: getToday(),
     dob: '',
     ssnLast4: '',
     emergencyName: '',
@@ -90,9 +94,12 @@ function EmployeeInformationWIForm() {
   useEffect(() => {
     try {
       const cached = localStorage.getItem(EMPLOYEE_INFO_STORAGE_KEY);
+      const today = getToday();
       if (cached) {
         const parsed = JSON.parse(cached);
-        setForm((prev) => ({ ...prev, ...parsed }));
+        setForm((prev) => ({ ...prev, ...parsed, startDate: today }));
+      } else {
+        setForm((prev) => ({ ...prev, startDate: today }));
       }
     } catch (e) {
       console.warn('Could not load saved employee info', e);
@@ -119,7 +126,9 @@ function EmployeeInformationWIForm() {
 
     setSaving(true);
     try {
-      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
+      const nextForm = { ...form, startDate: getToday() };
+      setForm(nextForm);
+      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(nextForm));
       setTimeout(() => setSaving(false), 300);
       alert('Employee information saved.');
       return true;
@@ -343,10 +352,17 @@ function EmployeeInformationWIForm() {
                 Start Date
               </label>
               <input
-                style={inputStyle}
                 type="date"
                 value={form.startDate}
                 onChange={(e) => updateField('startDate', e.target.value)}
+                disabled
+                style={{
+                  ...inputStyle,
+                  backgroundColor: '#f3f4f6',
+                  color: '#6b7280',
+                  cursor: 'not-allowed',
+                  borderColor: '#d1d5db',
+                }}
               />
             </div>
           </div>

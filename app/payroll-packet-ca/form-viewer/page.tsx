@@ -27,6 +27,8 @@ function FormViewerContent() {
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  const pdfBytesByFormRef = useRef<Map<string, Uint8Array>>(new Map());
+  const embeddedSignatureByFormRef = useRef<Map<string, string>>(new Map());
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
@@ -71,6 +73,10 @@ function FormViewerContent() {
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [hasReadForm, setHasReadForm] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   // (Email notification moved to explicit Save click per request)
 
@@ -82,7 +88,8 @@ function FormViewerContent() {
     fillable: { display: 'CA DE-4 State Tax Form', api: '/api/payroll-packet-ca/fillable', formId: 'ca-de4', next: 'fw4', requiresSignature: true },
     fw4: { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
     i9: { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
-    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'ui-guide', requiresSignature: true },
+    'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'employee-handbook', requiresSignature: true },
+    'employee-handbook': { display: 'PDS Employee Handbook 2026', api: '/api/payroll-packet-ca/employee-handbook', formId: 'employee-handbook', next: 'ui-guide', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
@@ -95,11 +102,17 @@ function FormViewerContent() {
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'meal-waiver-6hour' },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'temp-employment-agreement' },
+    'temp-employment-agreement': { display: 'Temporary Employment Commission Agreement', api: '/api/payroll-packet-ca/temp-employment-agreement', formId: 'temp-employment-agreement', next: 'meal-waiver-6hour', requiresSignature: true },
   };
 
   const currentForm = formConfig[formName];
   const mealWaiverRoute = MEAL_WAIVER_ROUTE_MAP[formName];
+  const continueUrl = currentForm?.next
+    ? currentForm.next === 'meal-waiver-6hour'
+      ? '/payroll-packet-ca/meal-waiver-6hour'
+      : `/payroll-packet-ca/form-viewer?form=${currentForm.next}`
+    : undefined;
 
   useEffect(() => {
     if (!currentForm && mealWaiverRoute) {
@@ -150,10 +163,85 @@ function FormViewerContent() {
     );
   }
 
+  useEffect(() => {
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    setMissingRequiredFields([]);
+  }, [formName]);
+
+  const getPdfBytesForForm = (formIdOverride?: string) => {
+    const formId = formIdOverride || currentForm?.formId;
+    if (!formId) return pdfBytesRef.current;
+    return pdfBytesByFormRef.current.get(formId) || pdfBytesRef.current;
+  };
+
+  const embedAdpSignature = async (pdfBytes: Uint8Array, signatureData: string) => {
+    const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+    if (!match) return pdfBytes;
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const form = pdfDoc.getForm();
+      let field: any;
+
+      try {
+        field = form.getField('Employee Signature') as any;
+      } catch (error) {
+        console.warn('[SAVE] Employee Signature field not found in ADP PDF', error);
+        return pdfBytes;
+      }
+
+      const widgets = field?.acroField?.getWidgets?.() || [];
+      if (!widgets.length) return pdfBytes;
+
+      const widget = widgets[0];
+      const rect = widget.getRectangle();
+      const pageRef = widget.P?.();
+      let page = pageRef ? pdfDoc.getPages().find((p) => p.ref === pageRef) : undefined;
+
+      if (!page && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+        const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+        if (widgetRef) {
+          page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+        }
+      }
+
+      if (!page) {
+        page = pdfDoc.getPages()[0];
+      }
+
+      const base64 = match[2];
+      const imageBytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+      const format = match[1].toLowerCase();
+      const image = format === 'jpg' || format === 'jpeg'
+        ? await pdfDoc.embedJpg(imageBytes)
+        : await pdfDoc.embedPng(imageBytes);
+
+      const scale = Math.min(rect.width / image.width, rect.height / image.height, 1);
+      const drawWidth = image.width * scale;
+      const drawHeight = image.height * scale;
+      const x = rect.x + (rect.width - drawWidth) / 2;
+      const y = rect.y + (rect.height - drawHeight) / 2;
+
+      page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
+      const updatedBytes = await pdfDoc.save();
+      return new Uint8Array(updatedBytes);
+    } catch (error) {
+      console.warn('[SAVE] Failed to embed ADP signature', error);
+      return pdfBytes;
+    }
+  };
+
   // Handle PDF save from editor
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes`);
     pdfBytesRef.current = pdfBytes;
+    if (currentForm?.formId) {
+      pdfBytesByFormRef.current.set(currentForm.formId, pdfBytes);
+    }
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
@@ -162,28 +250,54 @@ function FormViewerContent() {
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
+    const formId = currentForm?.formId;
     autoSaveTimerRef.current = setTimeout(() => {
-      handleManualSave();
-    }, 3000); // Auto-save 3 seconds after user stops typing
+      handleManualSave(formId);
+    }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
   // Manual save function
-  const handleManualSave = async () => {
-    if (!pdfBytesRef.current) {
+  const handleManualSave = async (formIdOverride?: string) => {
+    const formId = formIdOverride || currentForm?.formId;
+    if (!formId) {
+      console.warn('[SAVE] No form id available for save');
+      return;
+    }
+
+    const pdfBytes = getPdfBytesForForm(formId);
+    if (!pdfBytes) {
       console.warn('[SAVE] No PDF data to save');
       return;
     }
 
+    const isCurrentForm = formId === currentForm.formId;
+
     try {
-      console.log(`[SAVE] Starting save process, PDF size: ${pdfBytesRef.current.length} bytes`);
-      setSaveStatus('saving');
+      console.log(`[SAVE] Starting save process for ${formId}, PDF size: ${pdfBytes.length} bytes`);
+      if (isCurrentForm) {
+        setSaveStatus('saving');
+      }
+
+      let pdfBytesToSave = pdfBytes;
+      if (isCurrentForm && formId === 'adp-deposit' && currentSignature) {
+        const lastEmbedded = embeddedSignatureByFormRef.current.get(formId);
+        if (lastEmbedded !== currentSignature) {
+          const updatedBytes = await embedAdpSignature(pdfBytes, currentSignature);
+          if (updatedBytes !== pdfBytes) {
+            pdfBytesToSave = updatedBytes;
+            pdfBytesRef.current = updatedBytes;
+            pdfBytesByFormRef.current.set(formId, updatedBytes);
+          }
+          embeddedSignatureByFormRef.current.set(formId, currentSignature);
+        }
+      }
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
 
       // Convert Uint8Array to base64
       const base64 = btoa(
-        Array.from(pdfBytesRef.current)
+        Array.from(pdfBytesToSave)
           .map(byte => String.fromCharCode(byte))
           .join('')
       );
@@ -191,12 +305,12 @@ function FormViewerContent() {
       console.log(`[SAVE] Base64 preview: ${base64.substring(0, 50)}...`);
 
       // Save to database (+ optionally persist i9 mode/selections)
-      console.log(`[SAVE] Sending to API for form: ${currentForm.formId}`);
+      console.log(`[SAVE] Sending to API for form: ${formId}`);
       const payload: any = {
-        formName: currentForm.formId,
+        formName: formId,
         formData: base64,
       };
-      if (formName === 'i9') {
+      if (formId === 'i9') {
         payload.i9Mode = i9Mode;
         payload.i9Selections = i9Selections;
       }
@@ -214,19 +328,29 @@ function FormViewerContent() {
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
-        setSaveStatus('saved');
-        setLastSaved(new Date());
-        setTimeout(() => setSaveStatus('idle'), 2000);
+        if (isCurrentForm) {
+          setSaveStatus('saved');
+          setLastSaved(new Date());
+          setTimeout(() => setSaveStatus('idle'), 2000);
+        }
       } else {
         const error = await response.json();
         console.error('[SAVE] ❌ Save failed:', error);
-        setSaveStatus('error');
-        setTimeout(() => setSaveStatus('idle'), 3000);
+        if (isCurrentForm) {
+          setSaveStatus('error');
+          setTimeout(() => setSaveStatus('idle'), 3000);
+        }
       }
     } catch (error) {
       console.error('[SAVE] ❌ Save exception:', error);
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
+      if (isCurrentForm) {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      }
+    }
+
+    if (isCurrentForm && currentForm.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
     }
   };
 
@@ -235,13 +359,38 @@ function FormViewerContent() {
     await handleManualSave();
   };
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   // Continue to next form
   const handleContinue = async () => {
-    console.log('Continue clicked, pdfBytesRef:', pdfBytesRef.current ? 'has data' : 'null');
+    const currentPdfBytes = getPdfBytesForForm();
+    console.log('Continue clicked, pdfBytesRef:', currentPdfBytes ? 'has data' : 'null');
+    setMissingRequiredFields([]);
 
     // Check if signature is required but not provided
     if (currentForm.requiresSignature && !currentSignature) {
-      alert('Please provide your signature before continuing to the next form.');
+      setValidationError('Please provide your signature in the signature box below before continuing.');
+      setEmptyFieldPage(null);
+      void handleManualSave();
+
+      // Scroll to the signature section
+      setTimeout(() => {
+        const signatureSection = document.querySelector('h2');
+        if (signatureSection && signatureSection.textContent === 'Signature Required') {
+          signatureSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } else {
+          window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        }
+      }, 100);
+
       return;
     }
 
@@ -249,6 +398,713 @@ function FormViewerContent() {
     if (!currentForm.requiresSignature && !hasReadForm) {
       alert('Please confirm that you have read and understood this document.');
       return;
+    }
+
+    // Validate required fields for ADP Direct Deposit
+    if (formName === 'adp-deposit' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'Employee Name', friendly: 'Employee Name' },
+          { name: 'Date', friendly: 'Date' },
+          { name: 'Bank NameCityState', friendly: 'Bank Name/City/State' },
+          { name: 'Account Number', friendly: 'Account Number' },
+          { name: 'SSN1', friendly: 'SSN (part 1)' },
+          { name: 'SSN2', friendly: 'SSN (part 2)' },
+          { name: 'SSN3', friendly: 'SSN (part 3)' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating ADP Direct Deposit fields:', err);
+      }
+    }
+
+    // Validate required fields for CA DE-4
+    if (formName === 'fillable' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Name 1', page: 1, friendly: 'Name' },
+          { name: 'Social Security Number 1', page: 1, friendly: 'Social Security Number' },
+          { name: 'Address 1', page: 1, friendly: 'Address' },
+          { name: 'City', page: 1, friendly: 'City' },
+          { name: 'State', page: 1, friendly: 'State' },
+          { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
+          { name: '1a', page: 1, friendly: '1a' },
+          { name: '1b', page: 1, friendly: '1b' },
+          { name: '1c', page: 1, friendly: '1c' },
+          { name: 'Date Employee Signed', page: 1, friendly: 'Date Employee Signed' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const filingStatusFields = [
+          'Filing Status 1',
+          'Filing Status 2',
+          'Filing Status 3'
+        ];
+
+        let hasFilingStatus = false;
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasFilingStatus) {
+          setMissingRequiredFields(filingStatusFields);
+          setValidationError('Please select a Filing Status on page 1 of the PDF');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        const worksheetAFields = [
+          'WKsheetA_A',
+          'WKsheetA_B',
+          'WKsheetA_C',
+          'WKsheetA_D',
+          'WKsheetA_E',
+          'WKsheetA_F'
+        ];
+
+        let hasWorksheetAValue = false;
+        for (const fieldName of worksheetAFields) {
+          try {
+            const field = form.getTextField(fieldName);
+            const value = field.getText();
+            if (value && value.trim() !== '') {
+              hasWorksheetAValue = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasWorksheetAValue) {
+          setMissingRequiredFields(worksheetAFields);
+          setValidationError('Please fill in at least one Worksheet A field on page 3 of the PDF');
+          setEmptyFieldPage(3);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="3"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating CA DE-4 fields:', err);
+      }
+    }
+    // Validate required fields for Federal W-4
+    if (formName === 'fw4' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_01[0]', page: 1, friendly: 'First name and middle initial' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_02[0]', page: 1, friendly: 'Last name' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', page: 1, friendly: 'Address' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', page: 1, friendly: 'City, state, and ZIP code' },
+          { name: 'topmostSubform[0].Page1[0].f1_05[0]', page: 1, friendly: 'Social Security number' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', page: 1, friendly: 'Step 3: Qualifying children (under 17) amount' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', page: 1, friendly: 'Step 3: Other dependents amount' },
+          { name: 'topmostSubform[0].Page1[0].f1_09[0]', page: 1, friendly: 'Step 3: Total dependents amount' },
+          { name: 'Employee Date', page: 1, friendly: 'Employee date' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const filingStatusFields = [
+          'topmostSubform[0].Page1[0].c1_1[0]',
+          'topmostSubform[0].Page1[0].c1_1[1]',
+          'topmostSubform[0].Page1[0].c1_1[2]',
+          'topmostSubform[0].Page1[0].c1_2[0]'
+        ];
+
+        let hasFilingStatus = false;
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasFilingStatus) {
+          setMissingRequiredFields(filingStatusFields);
+          setValidationError('Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household / Exempt');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating W-4 fields:', err);
+      }
+    }
+    // Validate required fields for ADP Direct Deposit
+    if (formName === 'adp-deposit' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Employee Name', page: 1, friendly: 'Employee Name' },
+          { name: 'Date', page: 1, friendly: 'Date' },
+          { name: 'Bank NameCityState', page: 1, friendly: 'Bank Name / City / State' },
+          { name: 'Account Number', page: 1, friendly: 'Account Number' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const ssnFields = ['SSN1', 'SSN2', 'SSN3'];
+        const ssnValues = ssnFields.map((fieldName) => {
+          try {
+            const field = form.getTextField(fieldName);
+            return (field.getText() || '').trim();
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+            return '';
+          }
+        });
+
+        if (ssnValues.some((value) => value === '')) {
+          setMissingRequiredFields(ssnFields);
+          setValidationError('Please fill in the required field: "Social Security # (XXX-XX-XXXX)" on page 1 of the PDF');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating ADP Direct Deposit fields:', err);
+      }
+    }
+    // Validate required fields for employee handbook
+    if (formName === 'employee-handbook' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        // List of required fields in order from top to bottom with their page numbers
+        const requiredFields = [
+          { name: 'employee_name1', page: 77, friendly: 'Employee Name (Top of last page)' },
+          { name: 'employee_initialsprev', page: 77, friendly: 'Initials (Section 1)' },
+          { name: 'employee_initials2prev', page: 77, friendly: 'Initials (Section 2)' },
+          { name: 'employee_initials3prev', page: 77, friendly: 'Initials (Section 3)' },
+          { name: 'acknowledgment_date1', page: 77, friendly: 'Date (Section 1)' },
+          { name: 'printedName1', page: 77, friendly: 'Printed Name (Section 1)' },
+          { name: 'employee_name', page: 77, friendly: 'Employee Name (Middle section)' },
+          { name: 'employee_initials', page: 77, friendly: 'Initials (Section 4)' },
+          { name: 'employee_initials2', page: 77, friendly: 'Initials (Section 5)' },
+          { name: 'employee_initials3', page: 77, friendly: 'Initials (Section 6)' },
+          { name: 'acknowledgment_date', page: 77, friendly: 'Date (Section 2)' },
+          { name: 'printedName', page: 77, friendly: 'Printed Name (Section 2)' },
+          { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
+          { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
+          { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
+          { name: 'date5', page: 77, friendly: 'Date (Section 5)' },
+          { name: 'printedName4', page: 77, friendly: 'Printed Name (Section 4)' },
+          { name: 'date6', page: 77, friendly: 'Date (Section 6)' },
+        ];
+
+        const resolveFieldScrollTarget = (fieldName: string) => {
+          const selectorName =
+            typeof CSS !== 'undefined' && typeof (CSS as any).escape === 'function'
+              ? (CSS as any).escape(fieldName)
+              : fieldName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const fieldElements = Array.from(
+            document.querySelectorAll(`[data-field-name="${selectorName}"]`)
+          ) as HTMLElement[];
+
+          if (fieldElements.length === 0) {
+            return { fieldElement: null as HTMLElement | null, scrollContainer: null as HTMLElement | null, fieldTop: null as number | null, pageNumber: null as number | null };
+          }
+
+          const findScrollableAncestor = (element: HTMLElement | null) => {
+            let current = element?.parentElement || null;
+            while (current) {
+              const style = window.getComputedStyle(current);
+              const overflowY = style.overflowY;
+              const isScrollable =
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                current.scrollHeight > current.clientHeight;
+              if (isScrollable) return current;
+              current = current.parentElement;
+            }
+            return null;
+          };
+
+          const fieldElement = fieldElements.reduce((best, current) => {
+            const bestRect = best.getBoundingClientRect();
+            const currentRect = current.getBoundingClientRect();
+            return currentRect.top < bestRect.top ? current : best;
+          }, fieldElements[0]);
+
+          const scrollContainer =
+            findScrollableAncestor(fieldElement) ||
+            (fieldElement.closest('[data-pdf-scroll-container="true"]') as HTMLElement | null);
+          const containerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : null;
+          const fieldRect = fieldElement.getBoundingClientRect();
+          const fieldTop = scrollContainer && containerRect
+            ? fieldRect.top - containerRect.top + scrollContainer.scrollTop
+            : window.scrollY + fieldRect.top;
+
+          let pageNumber: number | null = null;
+          const canvases = Array.from(document.querySelectorAll('canvas[data-page-number]')) as HTMLCanvasElement[];
+          if (canvases.length) {
+            for (const canvas of canvases) {
+              const canvasRect = canvas.getBoundingClientRect();
+              const canvasTop = scrollContainer && containerRect
+                ? canvasRect.top - containerRect.top + scrollContainer.scrollTop
+                : window.scrollY + canvasRect.top;
+              const canvasBottom = canvasTop + canvasRect.height;
+
+              if (fieldTop >= canvasTop && fieldTop <= canvasBottom) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+                break;
+              }
+              if (fieldTop >= canvasTop) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+              }
+            }
+          }
+
+          return { fieldElement, scrollContainer, fieldTop, pageNumber };
+        };
+
+        // Check each required field
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              // Found empty required field
+              const scrollTarget = resolveFieldScrollTarget(fieldInfo.name);
+              const displayPage = scrollTarget.pageNumber ?? fieldInfo.page;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${displayPage} of the PDF`);
+              setEmptyFieldPage(displayPage);
+              void handleManualSave();
+
+              // Scroll to the specific page in the PDF viewer
+              setTimeout(() => {
+                if (scrollTarget.fieldElement) {
+                  scrollTarget.fieldElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  if (scrollTarget.scrollContainer && typeof scrollTarget.fieldTop === 'number') {
+                    scrollTarget.scrollContainer.scrollTo({ top: Math.max(scrollTarget.fieldTop - 160, 0), behavior: 'smooth' });
+                  }
+                  const input = scrollTarget.fieldElement.querySelector('input') as HTMLInputElement | null;
+                  if (input) {
+                    input.focus({ preventScroll: true });
+                  }
+                  return;
+                }
+
+                const canvas = document.querySelector(`canvas[data-page-number="${displayPage}"]`);
+                if (canvas) {
+                  const scrollContainer = document.querySelector('[data-pdf-scroll-container="true"]') as HTMLElement | null;
+                  if (scrollContainer) {
+                    const canvasRect = canvas.getBoundingClientRect();
+                    const containerRect = scrollContainer.getBoundingClientRect();
+                    const targetTop = canvasRect.top - containerRect.top + scrollContainer.scrollTop;
+                    scrollContainer.scrollTo({ top: Math.max(targetTop -160, 0), behavior: 'smooth' });
+                  } else {
+                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                } else {
+                  // Fallback to scroll to top if canvas not found
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              // Prevent continuing
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        // Clear any previous validation errors if all fields are filled
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating PDF fields:', err);
+      }
+    }
+
+    // Validate required fields for Temporary Employment Commission Agreement
+    if (formName === 'temp-employment-agreement' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+        const lastPageNumber = pdfDoc.getPages().length;
+
+        try {
+          const field = form.getTextField('employee_signature_date');
+          const value = field.getText();
+
+          if (!value || value.trim() === '') {
+            setMissingRequiredFields(['employee_signature_date']);
+            setValidationError(`Please fill in the required field: "Date" on page ${lastPageNumber} of the PDF`);
+            setEmptyFieldPage(lastPageNumber);
+            void handleManualSave();
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${lastPageNumber}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+        } catch (err) {
+          console.warn('Field employee_signature_date not found or error checking:', err);
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating Temp Employment Agreement fields:', err);
+      }
+    }
+
+    // Validate required fields for Notice to Employee
+    if (formName === 'notice-to-employee' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Employee Name', page: 1, friendly: 'Employee Name' },
+          { name: 'PRINT NAME of Employee', page: 2, friendly: 'Printed Name (Employee)' },
+          { name: 'Date_2', page: 2, friendly: 'Date (Employee)' }
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating Notice to Employee fields:', err);
+      }
+    }
+
+    // Validate required fields for I-9
+    if (formName === 'i9' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const requiredFields = [
+          { name: 'Last Name (Family Name)', page: 1, friendly: 'Last Name (Family Name)' },
+          { name: 'First Name Given Name', page: 1, friendly: 'First Name (Given Name)' },
+          { name: 'Address Street Number and Name', page: 1, friendly: 'Address (Street Number and Name)' },
+          { name: 'City or Town', page: 1, friendly: 'City or Town' },
+          { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
+          { name: 'Date of Birth mmddyyyy', page: 1, friendly: 'Date of Birth (mm/dd/yyyy)' },
+          { name: "Today's Date mmddyyy", page: 1, friendly: "Today's Date (mm/dd/yyyy)" },
+          { name: 'US Social Security Number', page: 1, friendly: 'U.S. Social Security Number' },
+          { name: 'Employees E-mail Address', page: 1, friendly: "Employee's Email Address" },
+          { name: 'Telephone Number', page: 1, friendly: "Employee's Telephone Number" }
+        ];
+
+        const getFieldValue = (fieldName: string) => {
+          const field = form.getField(fieldName) as any;
+          if (field && typeof field.getText === 'function') {
+            return field.getText() || '';
+          }
+          if (field && typeof field.getSelected === 'function') {
+            const selected = field.getSelected();
+            if (Array.isArray(selected)) {
+              return selected.filter(Boolean).join(', ');
+            }
+            return selected || '';
+          }
+          return '';
+        };
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const value = getFieldValue(fieldInfo.name);
+
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const citizenshipFields = ['CB_1', 'CB_2', 'CB_3', 'CB_4'];
+        let hasCitizenshipSelection = false;
+        for (const fieldName of citizenshipFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasCitizenshipSelection = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasCitizenshipSelection) {
+          setMissingRequiredFields(citizenshipFields);
+          setValidationError('Please select your citizenship/immigration status on page 1 of the PDF: Filing Status: 1) U.S. citizen 2) Noncitizen national 3) Lawful permanent resident 4) Alien authorized to work');
+          setEmptyFieldPage(1);
+          void handleManualSave();
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="1"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating I-9 fields:', err);
+      }
     }
 
     // I-9 validations (mode + selections + files)
@@ -283,12 +1139,23 @@ function FormViewerContent() {
     }
 
     // Save before continuing if we have data
-    if (pdfBytesRef.current) {
+    if (currentPdfBytes) {
       console.log('Saving before continue...');
-      await handleManualSave();
+      await handleManualSave(currentForm.formId);
       console.log('Save completed');
     } else {
       console.log('No PDF data to save, continuing anyway');
+    }
+
+    if (currentForm.requiresSignature && currentSignature) {
+      console.log('[CONTINUE] Saving signature for form:', currentForm.formId);
+      await saveSignatureToDatabase(currentSignature);
+    } else {
+      console.log('[CONTINUE] No signature save needed:', {
+        requiresSignature: currentForm.requiresSignature,
+        hasSignature: !!currentSignature,
+        formId: currentForm.formId
+      });
     }
 
     // Navigate to next form
@@ -305,7 +1172,16 @@ function FormViewerContent() {
     }
   };
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    const currentPdfBytes = getPdfBytesForForm();
+    if (currentPdfBytes) {
+      await handleManualSave(currentForm.formId);
+    }
+
+    if (currentForm.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
+    }
+
     // Find the previous form
     const formNames = Object.keys(formConfig);
     const currentIndex = formNames.indexOf(formName);
@@ -378,12 +1254,67 @@ function FormViewerContent() {
     if (canvas) {
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
-      // Save signature for current form
+      // Save signature for current form using form_id (not formName)
+      // This ensures each form has its own signature in the database
+      console.log('[SIGNATURE DRAW] Saving signature to Map with key:', currentForm.formId);
       setSignatures(prev => {
         const newSigs = new Map(prev);
-        newSigs.set(formName, dataUrl);
+        newSigs.set(currentForm.formId, dataUrl);
+        console.log('[SIGNATURE DRAW] Map now contains keys:', Array.from(newSigs.keys()));
         return newSigs;
       });
+
+      if (currentForm.requiresSignature) {
+        void saveSignatureToDatabase(dataUrl);
+      }
+    }
+  };
+
+  // Function to save signature to database
+  const saveSignatureToDatabase = async (signatureData: string) => {
+    // Check if this exact signature was already saved for this form
+    const signatureKey = `${currentForm.formId}_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      console.log('[SIGNATURE] ⏭️ Signature already saved, skipping');
+      return;
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const currentPdfBytes = getPdfBytesForForm(currentForm.formId);
+
+      console.log('[SIGNATURE] 💾 Saving signature for form:', currentForm.formId);
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: currentForm.formId,
+          formType: currentForm.display,
+          signatureData: signatureData,
+          formData: currentPdfBytes ? btoa(
+            Array.from(currentPdfBytes)
+              .map(byte => String.fromCharCode(byte))
+              .join('')
+          ) : undefined
+        })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('[SIGNATURE] ✅ Signature saved to database:', result);
+        // Mark this signature as saved
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[SIGNATURE] ❌ Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[SIGNATURE] ❌ Exception saving signature:', error);
     }
   };
 
@@ -399,12 +1330,14 @@ function FormViewerContent() {
       }
     }
     setCurrentSignature('');
-    // Remove signature for current form
+    // Remove signature for current form using form_id
     setSignatures(prev => {
       const newSigs = new Map(prev);
-      newSigs.delete(formName);
+      newSigs.delete(currentForm.formId);
       return newSigs;
     });
+    // Reset last saved signature reference
+    lastSavedSignatureRef.current = null;
   };
 
   // I-9 Document Upload Functions (A/B/C slots)
@@ -432,6 +1365,7 @@ function FormViewerContent() {
 
       if (!response.ok) {
         const error = await response.json();
+        console.error('[I9_UPLOAD] Server error:', error);
         throw new Error(error.error || 'Upload failed');
       }
 
@@ -517,6 +1451,37 @@ function FormViewerContent() {
     }
   };
 
+  // Load saved signatures from database
+  const loadSavedSignatures = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        }
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        if (result.signatures) {
+          // Convert signatures object to Map
+          const sigMap = new Map<string, string>();
+          Object.entries(result.signatures).forEach(([formId, sigData]: [string, any]) => {
+            if (sigData?.signature_data) {
+              sigMap.set(formId, sigData.signature_data);
+            }
+          });
+          setSignatures(sigMap);
+          console.log('[SIGNATURE] ✅ Loaded signatures from database:', sigMap.size);
+        }
+      }
+    } catch (error) {
+      console.error('[SIGNATURE] ❌ Error loading signatures:', error);
+    }
+  };
+
   // Load I-9 documents when on I-9 form
   useEffect(() => {
     if (formName === 'i9') {
@@ -524,40 +1489,69 @@ function FormViewerContent() {
     }
   }, [formName]);
 
+  // Load signatures from database on mount
+  useEffect(() => {
+    loadSavedSignatures();
+  }, []);
+
   // Load signature for current form and reset canvas when form changes
   useEffect(() => {
+    console.log('[SIGNATURE LOAD] Form changed:', {
+      formName,
+      formId: currentForm.formId,
+      availableSignatures: Array.from(signatures.keys()),
+      hasSignatureForThisForm: signatures.has(currentForm.formId)
+    });
+
     // Reset read confirmation when form changes
     setHasReadForm(false);
 
-    // Load existing drawn signature for this form if it exists
-    const savedSignature = signatures.get(formName);
+    // Reset last saved signature reference when form changes
+    lastSavedSignatureRef.current = null;
+
+    // IMPORTANT: Only load signature from database, not from the local signatures Map
+    // This ensures each form has its own independent signature
+    const savedSignature = signatures.get(currentForm.formId);
+    console.log('[SIGNATURE LOAD] Looking for signature with key:', currentForm.formId, 'Found:', !!savedSignature);
+
     if (savedSignature && savedSignature.startsWith('data:image')) {
+      console.log('[SIGNATURE LOAD] Loading saved signature for', currentForm.formId);
       setCurrentSignature(savedSignature);
+      if (currentForm?.formId) {
+        lastSavedSignatureRef.current = `${currentForm.formId}_${savedSignature}`;
+      }
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
         const img = new Image();
         img.onload = () => {
           if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'white';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0);
           }
         };
         img.src = savedSignature;
       }
     } else {
-      // Clear signature for new form or unsupported saved data
+      // Clear signature for new form or when no signature exists for this specific form
+      console.log('[SIGNATURE LOAD] No signature found, clearing canvas for', currentForm.formId);
       setCurrentSignature('');
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          // Aggressively clear the canvas
           ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.fillStyle = 'white';
           ctx.fillRect(0, 0, canvas.width, canvas.height);
+          // Force a reset of the canvas state
+          ctx.beginPath();
         }
       }
     }
-  }, [formName, signatures]);
+  }, [formName, currentForm.formId, signatures]);
 
   // Cleanup timer on unmount
   useEffect(() => {
@@ -605,13 +1599,63 @@ function FormViewerContent() {
           {saveStatus === 'error' && (
             <span style={{ color: '#d32f2f' }}>⚠ Save failed</span>
           )}
-          {lastSaved && (
-            <span style={{ color: '#666', fontSize: '12px' }}>
-              Last saved: {lastSaved.toLocaleTimeString()}
-            </span>
-          )}
+            {lastSaved && (
+              <span style={{ color: '#666', fontSize: '12px' }}>
+                Last saved: {lastSaved.toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '14px',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+            >
+              Logout
+            </button>
+          </div>
         </div>
-      </div>
+
+      {/* Validation Error Banner */}
+      {validationError && (
+        <div style={{
+          backgroundColor: '#ffebee',
+          border: '3px solid #d32f2f',
+          borderRadius: '12px',
+          padding: '20px 28px',
+          margin: '0 24px 0 24px',
+          marginTop: '16px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '16px',
+          boxShadow: '0 4px 12px rgba(211, 47, 47, 0.3)',
+          animation: 'slideDown 0.3s ease-out'
+        }}>
+          <svg style={{ width: '32px', height: '32px', fill: '#d32f2f', flexShrink: 0 }} viewBox="0 0 24 24">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+          </svg>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 'bold', color: '#d32f2f', marginBottom: '8px', fontSize: '18px' }}>
+              ⚠ Required Field Missing
+            </div>
+            <div style={{ color: '#c62828', fontSize: '15px', fontWeight: '500', marginBottom: '6px' }}>
+              {validationError}
+            </div>
+            <div style={{ color: '#c62828', fontSize: '13px', backgroundColor: '#fff', padding: '8px 12px', borderRadius: '6px', border: '1px solid #ffcdd2' }}>
+              📄 Please scroll down to <strong>page {emptyFieldPage}</strong> in the PDF below and fill in the required field before continuing.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* PDF Editor */}
       <div style={{
@@ -630,6 +1674,9 @@ function FormViewerContent() {
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
             skipButtonDetection={!currentForm.requiresSignature}
+            requiredFieldNames={missingRequiredFields}
+            showRequiredFieldErrors={missingRequiredFields.length > 0}
+            continueUrl={continueUrl}
           />
         </div>
 
@@ -695,7 +1742,8 @@ function FormViewerContent() {
             borderRadius: '8px',
             padding: '24px',
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            order: formName === 'i9' ? 2 : 0
           }}>
             <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: 'bold' }}>
               Signature Required
@@ -770,7 +1818,7 @@ function FormViewerContent() {
                   <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
                 </svg>
                 <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>
-                  Signature saved for this document
+                  Signature captured
                 </span>
               </div>
             )}
@@ -784,7 +1832,8 @@ function FormViewerContent() {
             borderRadius: '8px',
             padding: '24px',
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-            marginBottom: '20px'
+            marginBottom: '20px',
+            order: 1
           }}>
             <h2 style={{ margin: 0, fontSize: '20px', fontWeight: 'bold' }}>
               Identity & Employment Verification (Form I-9)
@@ -1077,7 +2126,8 @@ function FormViewerContent() {
           backgroundColor: 'white',
           borderRadius: '8px',
           boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-          marginTop: 'auto'
+          marginTop: 'auto',
+          order: formName === 'i9' ? 3 : 0
         }}>
           <button
             onClick={handleBack}

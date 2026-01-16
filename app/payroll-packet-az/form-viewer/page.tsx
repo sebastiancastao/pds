@@ -8,12 +8,15 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 
 const AZ_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'az-state-supplements', formId: 'az-state-supplements', display: 'AZ State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-az/az-state-supplements' },
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', formId: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
   { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'temp-employment-agreement', formId: 'az-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-az/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', formId: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', formId: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', formId: 'state-tax', display: 'State Tax Form', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fillable' },

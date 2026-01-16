@@ -100,43 +100,80 @@ export async function GET(request: NextRequest) {
       (downloadRecords || []).map((record: any) => record.user_id)
     );
 
+    // Get all vendor_onboarding_status records
+    const { data: onboardingStatuses, error: onboardingError } = await supabaseAdmin
+      .from('vendor_onboarding_status')
+      .select('profile_id, onboarding_completed');
+
+    if (onboardingError) {
+      console.error('[USERS-ALL] Error fetching onboarding statuses:', onboardingError);
+      // Continue without onboarding statuses instead of failing
+    }
+
+    // Create a map of profile_id to onboarding status
+    const onboardingStatusMap = new Map(
+      (onboardingStatuses || []).map((record: any) => [record.profile_id, record.onboarding_completed])
+    );
+
+    // Get profile IDs for mapping
+    const { data: profilesData, error: profilesError } = await supabaseAdmin
+      .from('profiles')
+      .select('id, user_id');
+
+    if (profilesError) {
+      console.error('[USERS-ALL] Error fetching profiles:', profilesError);
+    }
+
+    // Create a map of user_id to profile_id
+    const userToProfileMap = new Map(
+      (profilesData || []).map((p: any) => [p.user_id, p.id])
+    );
+
     // Transform the data to flatten the profiles and decrypt PII
-    const transformedUsers = (users || []).map((user: any) => ({
-      // User fields
-      id: user.id,
-      email: user.email,
-      role: user.role,
-      division: user.division,
-      is_active: user.is_active,
-      created_at: user.created_at,
-      updated_at: user.updated_at,
-      last_login: user.last_login,
-      failed_login_attempts: user.failed_login_attempts,
-      account_locked_until: user.account_locked_until,
-      is_temporary_password: user.is_temporary_password,
-      must_change_password: user.must_change_password,
-      password_expires_at: user.password_expires_at,
-      last_password_change: user.last_password_change,
-      background_check_completed: user.background_check_completed ?? false,
-      background_check_completed_at: user.background_check_completed_at,
-      // Profile fields (decrypted PII)
-      first_name: safeDecrypt(user.profiles.first_name),
-      last_name: safeDecrypt(user.profiles.last_name),
-      phone: safeDecrypt(user.profiles.phone),
-      address: safeDecrypt(user.profiles.address),
-      city: safeDecrypt(user.profiles.city),
-      state: user.profiles.state,
-      zip_code: safeDecrypt(user.profiles.zip_code),
-      mfa_enabled: user.profiles.mfa_enabled,
-      onboarding_status: user.profiles.onboarding_status,
-      onboarding_completed_at: user.profiles.onboarding_completed_at,
-      latitude: user.profiles.latitude,
-      longitude: user.profiles.longitude,
-      profile_created_at: user.profiles.created_at,
-      profile_updated_at: user.profiles.updated_at,
-      // Computed fields
-      has_download_records: userIdsWithDownloads.has(user.id),
-    })).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
+    const transformedUsers = (users || []).map((user: any) => {
+      const profileId = userToProfileMap.get(user.id);
+      const hasOnboardingRecord = profileId ? onboardingStatusMap.has(profileId) : false;
+      const vendorOnboardingCompleted = profileId ? onboardingStatusMap.get(profileId) : null;
+
+      return {
+        // User fields
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        division: user.division,
+        is_active: user.is_active,
+        created_at: user.created_at,
+        updated_at: user.updated_at,
+        last_login: user.last_login,
+        failed_login_attempts: user.failed_login_attempts,
+        account_locked_until: user.account_locked_until,
+        is_temporary_password: user.is_temporary_password,
+        must_change_password: user.must_change_password,
+        password_expires_at: user.password_expires_at,
+        last_password_change: user.last_password_change,
+        background_check_completed: user.background_check_completed ?? false,
+        background_check_completed_at: user.background_check_completed_at,
+        // Profile fields (decrypted PII)
+        first_name: safeDecrypt(user.profiles.first_name),
+        last_name: safeDecrypt(user.profiles.last_name),
+        phone: safeDecrypt(user.profiles.phone),
+        address: safeDecrypt(user.profiles.address),
+        city: safeDecrypt(user.profiles.city),
+        state: user.profiles.state,
+        zip_code: safeDecrypt(user.profiles.zip_code),
+        mfa_enabled: user.profiles.mfa_enabled,
+        onboarding_status: user.profiles.onboarding_status,
+        onboarding_completed_at: user.profiles.onboarding_completed_at,
+        latitude: user.profiles.latitude,
+        longitude: user.profiles.longitude,
+        profile_created_at: user.profiles.created_at,
+        profile_updated_at: user.profiles.updated_at,
+        // Computed fields
+        has_download_records: userIdsWithDownloads.has(user.id),
+        has_vendor_onboarding_record: hasOnboardingRecord,
+        vendor_onboarding_completed: vendorOnboardingCompleted,
+      };
+    }).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
 
     return NextResponse.json({ users: transformedUsers }, { status: 200 });
   } catch (err: any) {

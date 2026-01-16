@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, MouseEvent, TouchEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
 
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
+
+const getToday = () => new Date().toISOString().split('T')[0];
 
 const initialFormData = {
   personal: {
@@ -24,7 +27,7 @@ const initialFormData = {
     position: '',
     department: '',
     manager: '',
-    startDate: '',
+    startDate: getToday(),
     employeeId: '',
   },
   emergency: {
@@ -40,17 +43,105 @@ export default function EmployeeInformationPage() {
   const router = useRouter();
   const [formData, setFormData] = useState(initialFormData);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
-  useEffect(() => {
+  const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }, []);
+
+  const restoreSignatureOnCanvas = useCallback(
+    (dataUrl?: string) => {
+      if (!dataUrl) {
+        clearCanvas();
+        return;
+      }
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      clearCanvas();
+      const img = new Image();
+      img.onload = () => {
+        ctx.drawImage(img, 0, 0);
+      };
+      img.src = dataUrl;
+    },
+    [clearCanvas]
+  );
+
+  useEffect(() => {
+    clearCanvas();
+  }, [clearCanvas]);
+
+  useEffect(() => {
+    const loadExistingData = async () => {
+      setLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) {
+          router.push('/login');
+          return;
+        }
+
+        const response = await fetch('/api/employee-information', {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data.info) {
+            setFormData({
+              personal: {
+                firstName: data.info.first_name || '',
+                lastName: data.info.last_name || '',
+                middleInitial: data.info.middle_initial || '',
+                address: data.info.address || '',
+                city: data.info.city || '',
+                state: data.info.state || 'CA',
+                zip: data.info.zip || '',
+                phone: data.info.phone || '',
+                email: data.info.email || '',
+                dateOfBirth: data.info.date_of_birth || '',
+                ssn: data.info.ssn || '',
+              },
+              employment: {
+                position: data.info.position || '',
+                department: data.info.department || '',
+                manager: data.info.manager || '',
+                startDate: getToday(),
+                employeeId: data.info.employee_id || '',
+              },
+              emergency: {
+                name: data.info.emergency_contact_name || '',
+                relationship: data.info.emergency_contact_relationship || '',
+                phone: data.info.emergency_contact_phone || '',
+              },
+              acknowledgements: !!data.info.acknowledgements,
+              signature: data.info.signature || '',
+            });
+            restoreSignatureOnCanvas(data.info.signature || '');
+          }
+        }
+      } catch (error) {
+        console.error('[EMPLOYEE-INFORMATION] Load error:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadExistingData();
+  }, [restoreSignatureOnCanvas, router]);
 
   const handleFieldChange = (section: keyof typeof initialFormData, field: string) => (
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement>
@@ -127,14 +218,48 @@ export default function EmployeeInformationPage() {
   };
 
   const clearSignature = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    clearCanvas();
     setFormData(prev => ({ ...prev, signature: '' }));
+  };
+
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    const signatureKey = `employee-information_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        personal: formData.personal,
+        employment: formData.employment,
+        emergency: formData.emergency,
+        acknowledgements: formData.acknowledgements
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: 'employee-information',
+          formType: 'Employee Information',
+          signatureData,
+          formData: formDataForSignature
+        })
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[EMPLOYEE-INFORMATION] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[EMPLOYEE-INFORMATION] Exception saving signature:', error);
+    }
   };
 
   const sectionStyle = {
@@ -154,24 +279,117 @@ export default function EmployeeInformationPage() {
   } as const;
 
   const handleSubmit = async () => {
-    if (!formData.personal.firstName || !formData.personal.lastName) {
-      alert('Name is required.');
+    const requiredFields: { value: string; label: string }[] = [
+      { value: formData.personal.firstName, label: 'First Name' },
+      { value: formData.personal.lastName, label: 'Last Name' },
+      { value: formData.personal.address, label: 'Street Address' },
+      { value: formData.personal.city, label: 'City' },
+      { value: formData.personal.state, label: 'State' },
+      { value: formData.personal.zip, label: 'ZIP Code' },
+      { value: formData.personal.phone, label: 'Phone Number' },
+      { value: formData.personal.email, label: 'Email Address' },
+      { value: formData.personal.dateOfBirth, label: 'Date of Birth' },
+      { value: formData.personal.ssn, label: 'Social Security Number' },
+      { value: formData.employment.position, label: 'Job Title / Position' },
+      { value: formData.emergency.name, label: 'Emergency Contact Name' },
+      { value: formData.emergency.relationship, label: 'Emergency Contact Relationship' },
+      { value: formData.emergency.phone, label: 'Emergency Contact Phone' },
+    ];
+
+    const missingField = requiredFields.find(field => !field.value.trim());
+    if (missingField) {
+      alert(`Please fill in the required field: ${missingField.label}.`);
       return;
     }
+
     if (!formData.acknowledgements) {
       alert('Please acknowledge the form at the bottom before submitting.');
       return;
     }
-    if (!formData.signature) {
+
+    const signatureData = formData.signature || canvasRef.current?.toDataURL() || '';
+    if (!signatureData) {
       alert('Please draw your signature before submitting.');
       return;
     }
     setSaving(true);
-    await new Promise(resolve => setTimeout(resolve, 600));
-    setSaving(false);
-    alert('Employee information captured. HR will follow up if anything else is required.');
-    router.push('/login');
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('Session expired. Please log in again.');
+        router.push('/login');
+        return;
+      }
+
+      const response = await fetch('/api/employee-information', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          personal: formData.personal,
+          employment: formData.employment,
+          emergency: formData.emergency,
+          acknowledgements: formData.acknowledgements,
+          signature: signatureData,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to save employee information.');
+      }
+
+      await saveSignatureToDatabase(signatureData, session?.access_token);
+
+      if (signatureData !== formData.signature) {
+        setFormData(prev => ({ ...prev, signature: signatureData }));
+      }
+
+      try {
+        const notificationResponse = await fetch('/api/onboarding-notification', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            form: 'payroll-packet-ca/employee-information',
+            trigger: 'save-finish',
+          }),
+        });
+        if (!notificationResponse.ok) {
+          let detail = '';
+          try { detail = await notificationResponse.text(); } catch {}
+          console.warn('[EMPLOYEE-INFORMATION] Onboarding notification failed:', notificationResponse.status, detail);
+        }
+      } catch (error) {
+        console.warn('[EMPLOYEE-INFORMATION] Onboarding notification exception:', error);
+      }
+
+      alert('Employee information captured. HR will follow up if anything else is required.');
+      router.push('/login');
+    } catch (error) {
+      console.error('[EMPLOYEE-INFORMATION] Save error:', error);
+      alert(error instanceof Error ? error.message : 'Failed to save employee information.');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div style={{ padding: '40px', textAlign: 'center' }}>
+        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+        <p style={{ marginTop: '20px', color: '#666' }}>Loading...</p>
+      </div>
+    );
+  }
+
+  const requiredMark = <span style={{ color: '#d32f2f' }}>*</span>;
+  const optionalTag = null;
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f5f5f5', padding: '24px' }}>
@@ -194,7 +412,7 @@ export default function EmployeeInformationPage() {
           <h2 style={{ marginTop: 0 }}>Personal Details</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
             <label>
-              <span>First Name</span>
+              <span>First Name {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.firstName}
@@ -203,7 +421,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Middle Initial</span>
+              <span>Middle Initial {optionalTag}</span>
               <input
                 type="text"
                 value={formData.personal.middleInitial}
@@ -212,7 +430,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Last Name</span>
+              <span>Last Name {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.lastName}
@@ -221,7 +439,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label style={{ gridColumn: '1 / -1' }}>
-              <span>Street Address</span>
+              <span>Street Address {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.address}
@@ -230,7 +448,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>City</span>
+              <span>City {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.city}
@@ -239,7 +457,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>State</span>
+              <span>State {requiredMark}</span>
               <select value={formData.personal.state} onChange={handleFieldChange('personal', 'state')} style={inputStyle}>
                 {STATES.map(state => (
                   <option key={state} value={state}>
@@ -249,7 +467,7 @@ export default function EmployeeInformationPage() {
               </select>
             </label>
             <label>
-              <span>ZIP Code</span>
+              <span>ZIP Code {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.zip}
@@ -258,7 +476,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Phone Number</span>
+              <span>Phone Number {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.phone}
@@ -267,7 +485,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Email Address</span>
+              <span>Email Address {requiredMark}</span>
               <input
                 type="email"
                 value={formData.personal.email}
@@ -276,7 +494,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Date of Birth</span>
+              <span>Date of Birth {requiredMark}</span>
               <input
                 type="date"
                 value={formData.personal.dateOfBirth}
@@ -285,7 +503,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Social Security Number</span>
+              <span>Social Security Number {requiredMark}</span>
               <input
                 type="text"
                 value={formData.personal.ssn}
@@ -300,7 +518,7 @@ export default function EmployeeInformationPage() {
           <h2 style={{ marginTop: 0 }}>Employment Details</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px' }}>
             <label>
-              <span>Job Title / Position</span>
+              <span>Job Title / Position {requiredMark}</span>
               <input
                 type="text"
                 value={formData.employment.position}
@@ -309,7 +527,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Department</span>
+              <span>Department {optionalTag}</span>
               <input
                 type="text"
                 value={formData.employment.department}
@@ -318,7 +536,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Manager / Supervisor</span>
+              <span>Manager / Supervisor {optionalTag}</span>
               <input
                 type="text"
                 value={formData.employment.manager}
@@ -327,16 +545,17 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Start Date</span>
+              <span>Start Date {optionalTag}</span>
               <input
                 type="date"
                 value={formData.employment.startDate}
                 onChange={handleFieldChange('employment', 'startDate')}
-                style={inputStyle}
+                disabled
+                style={{ ...inputStyle, backgroundColor: '#f1f3f4', cursor: 'not-allowed' }}
               />
             </label>
             <label>
-              <span>Employee ID (if available)</span>
+              <span>Employee ID (if available){optionalTag}</span>
               <input
                 type="text"
                 value={formData.employment.employeeId}
@@ -351,7 +570,7 @@ export default function EmployeeInformationPage() {
           <h2 style={{ marginTop: 0 }}>Emergency Contact</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: '16px' }}>
             <label>
-              <span>Contact Name</span>
+              <span>Contact Name {requiredMark}</span>
               <input
                 type="text"
                 value={formData.emergency.name}
@@ -360,7 +579,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Relationship</span>
+              <span>Relationship {requiredMark}</span>
               <input
                 type="text"
                 value={formData.emergency.relationship}
@@ -369,7 +588,7 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Phone Number</span>
+              <span>Phone Number {requiredMark}</span>
               <input
                 type="text"
                 value={formData.emergency.phone}
@@ -388,11 +607,13 @@ export default function EmployeeInformationPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginTop: '12px' }}>
             <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
               <input type="checkbox" checked={formData.acknowledgements} onChange={handleAcknowledgementToggle} />
-              <span>By checking this box, I acknowledge the above statement.</span>
+              <span>By checking this box, I acknowledge the above statement. {requiredMark}</span>
             </label>
           </div>
           <div style={{ marginTop: '20px' }}>
-            <span style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>Signature (draw below)</span>
+            <span style={{ display: 'block', marginBottom: '8px', fontWeight: '600' }}>
+              Signature (draw below) {requiredMark}
+            </span>
             <div
               style={{
                 border: '2px solid #dfe1e5',
@@ -438,7 +659,7 @@ export default function EmployeeInformationPage() {
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px' }}>
           <button
-            onClick={() => router.push('/')}
+            onClick={() => router.back()}
             style={{
               padding: '14px 24px',
               backgroundColor: '#f5f5f5',
@@ -448,7 +669,7 @@ export default function EmployeeInformationPage() {
               cursor: 'pointer',
             }}
           >
-            Cancel
+            Back
           </button>
           <button
             onClick={handleSubmit}

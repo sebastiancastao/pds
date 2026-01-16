@@ -924,9 +924,7 @@ export default function RegisterPage() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Need help?{' '}
-              <a href="#" className="text-primary-600 hover:text-primary-700 font-medium">
-                Contact HR Support
-              </a>
+                Contact Support at portal@1pds.net
             </p>
           </div>
         </div>

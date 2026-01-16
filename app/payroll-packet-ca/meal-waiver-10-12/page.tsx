@@ -6,24 +6,13 @@ import { supabase } from '@/lib/supabase';
 
 type WaiverType = '10_hour' | '12_hour';
 
-const WAIVER_OPTIONS: { value: WaiverType; title: string; description: string }[] = [
-  {
-    value: '10_hour',
-    title: '10-hour waiver',
-    description: 'Use this version when your shift is scheduled for up to ten hours and you are waiving the second meal period.',
-  },
-  {
-    value: '12_hour',
-    title: '12-hour waiver',
-    description: 'Use this version when your shift extends to twelve hours and you need to waive the second and third meal periods.',
-  },
-];
+const DEFAULT_WAIVER_TYPE: WaiverType = '10_hour';
 
 const getDefaultSignatureDate = () => new Date().toISOString().split('T')[0];
 
 export default function MealWaiver10to12Page() {
   const router = useRouter();
-  const [selectedWaiverType, setSelectedWaiverType] = useState<WaiverType>('10_hour');
+  const selectedWaiverType: WaiverType = DEFAULT_WAIVER_TYPE;
   const [employeeName, setEmployeeName] = useState('');
   const [position, setPosition] = useState('');
   const [acknowledges, setAcknowledges] = useState(false);
@@ -33,6 +22,7 @@ export default function MealWaiver10to12Page() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -184,6 +174,47 @@ export default function MealWaiver10to12Page() {
     setSignature('');
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    const signatureKey = `meal-waiver-10-12_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        waiver_type: selectedWaiverType,
+        employee_name: employeeName,
+        position,
+        signature_date: signatureDate,
+        acknowledges_terms: acknowledges
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: 'meal-waiver-10-12',
+          formType: 'Meal Waiver 10/12 Hour',
+          signatureData,
+          formData: formDataForSignature
+        })
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[MEAL WAIVER 10/12] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[MEAL WAIVER 10/12] Exception saving signature:', error);
+    }
+  };
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -233,6 +264,7 @@ export default function MealWaiver10to12Page() {
         throw new Error(error.error || 'Failed to save meal waiver');
       }
 
+      await saveSignatureToDatabase(signature, session?.access_token);
       alert('Meal waiver saved successfully!');
       return true;
     } catch (error) {
@@ -247,25 +279,6 @@ export default function MealWaiver10to12Page() {
   const handleContinue = async () => {
     const ok = await handleSave();
     if (!ok) return;
-
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const resp = await fetch('/api/onboarding-notification', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-        body: JSON.stringify({ form: 'meal-waiver-10-12', trigger: 'save-finish', state: 'ca' }),
-      });
-      if (!resp.ok) {
-        let detail = '';
-        try { detail = await resp.text(); } catch {}
-        console.warn('[MEAL-WAIVER-10-12] Onboarding notification failed:', resp.status, detail);
-      }
-    } catch (e) {
-      console.warn('[MEAL-WAIVER-10-12] Onboarding notification exception:', e);
-    }
 
     router.push('/payroll-packet-ca/employee-information');
   };
@@ -283,8 +296,6 @@ export default function MealWaiver10to12Page() {
     );
   }
 
-  const currentOption = WAIVER_OPTIONS.find((option) => option.value === selectedWaiverType);
-
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f5f5f5', padding: '24px' }}>
       <div
@@ -298,41 +309,9 @@ export default function MealWaiver10to12Page() {
         }}
       >
         <div style={{ marginBottom: '24px' }}>
-          <div
-            style={{
-              display: 'flex',
-              gap: '12px',
-              marginBottom: '16px',
-              flexWrap: 'wrap',
-            }}
-          >
-            {WAIVER_OPTIONS.map((option) => {
-              const isActive = option.value === selectedWaiverType;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => setSelectedWaiverType(option.value)}
-                  style={{
-                    padding: '10px 18px',
-                    borderRadius: '999px',
-                    border: isActive ? '2px solid #1976d2' : '1px solid #ddd',
-                    backgroundColor: isActive ? '#e3f2fd' : '#fff',
-                    fontWeight: isActive ? 'bold' : '500',
-                    cursor: 'pointer',
-                    color: '#1a1a1a',
-                  }}
-                >
-                  {option.title}
-                </button>
-              );
-            })}
-          </div>
-          {currentOption && (
-            <p style={{ fontSize: '14px', color: '#555', margin: 0 }}>
-              {currentOption.description}
-            </p>
-          )}
+          <p style={{ fontSize: '14px', color: '#555', margin: 0 }}>
+            This waiver covers employees working 10- or 12-hour shifts.
+          </p>
         </div>
 
         <div style={{ marginBottom: '32px', textAlign: 'center' }}>
@@ -370,7 +349,7 @@ export default function MealWaiver10to12Page() {
             <li style={{ marginBottom: '8px' }}>I understand my right to take an unpaid 30-minute meal period when working more than 5 hours.</li>
             <li style={{ marginBottom: '8px' }}>I voluntarily choose to waive the second meal period when my workday spans ten hours, or both the second and third meal periods when it spans twelve hours.</li>
             <li style={{ marginBottom: '8px' }}>I may revoke this waiver at any time by providing written notice to my employer.</li>
-            <li style={{ marginBottom: '8px' }}>This waiver is only in effect for the specific shift length selected above.</li>
+            <li style={{ marginBottom: '8px' }}>This waiver is only in effect for my scheduled shift length.</li>
           </ul>
           <p style={{ fontStyle: 'italic', color: '#666' }}>
             Signing this agreement does not affect other rights you have under California labor law for shifts that exceed twelve hours.
@@ -460,7 +439,7 @@ export default function MealWaiver10to12Page() {
                 style={{ width: '20px', height: '20px', marginTop: '2px', cursor: 'pointer' }}
               />
               <span style={{ fontSize: '14px', color: '#333', lineHeight: '1.5' }}>
-                <strong>I acknowledge and agree</strong> that I have read and understand this meal period waiver agreement and the shift length selected above. I voluntarily waive the required meal periods for this shift length and understand I may revoke the waiver at any time.
+                <strong>I acknowledge and agree</strong> that I have read and understand this meal period waiver agreement. I voluntarily waive the required meal periods for the shift length covered by this waiver and understand I may revoke the waiver at any time.
               </span>
             </label>
           </div>
@@ -604,7 +583,7 @@ export default function MealWaiver10to12Page() {
                 if (!saving) e.currentTarget.style.backgroundColor = '#1976d2';
               }}
             >
-              Save & Finish
+              Save & Continue
             </button>
           </div>
         </div>

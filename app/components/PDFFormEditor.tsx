@@ -18,6 +18,9 @@ interface PDFFormEditorProps {
   onContinue?: () => void;
   onProgress?: (progress: number) => void; // 0.0 - 1.0
   skipButtonDetection?: boolean; // Skip detecting and overlaying embedded PDF buttons
+  requiredFieldNames?: string[];
+  showRequiredFieldErrors?: boolean;
+  continueUrl?: string;
 }
 
 interface FormField {
@@ -29,10 +32,218 @@ interface FormField {
   value: string;
 }
 
-export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress, skipButtonDetection }: PDFFormEditorProps) {
+const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
+  'employee-handbook': {
+    date5: 'date6',
+    date6: 'date5',
+    date3: 'date4',
+    date4: 'date3',
+  },
+  'notice-to-employee': {
+    Date: 'Date_2',
+    Date_2: 'Date',
+  },
+  'wi-notice-to-employee': {
+    Date: 'Date_2',
+    Date_2: 'Date',
+  },
+  i9: {
+    'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
+    "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',
+  },
+  'wi-i9': {
+    'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
+    "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',
+  },
+};
+
+const getMirroredFieldName = (formId: string, fieldName: string) =>
+  MIRRORED_FIELDS[formId]?.[fieldName];
+
+const HIDDEN_ADP_DEPOSIT_FIELDS = new Set<string>([
+  'Company Code',
+  'Company Name',
+  'Employee File Number',
+  'Employee Signature',
+  'Payroll Mgr Name',
+  'Payroll Mgr Signature',
+]);
+
+const HIDDEN_I9_FIELDS = new Set<string>([
+  'Signature of Employer or AR',
+  'Signature of Employee',
+  'Last Name First Name and Title of Employer or Authorized Representative',
+  'Employers Business or Org Name',
+  'Employers Business or Org Address',
+]);
+
+const MASKED_I9_FIELDS = new Set<string>([
+]);
+
+const HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
+  'PRINT NAME of Employer representative',
+]);
+
+const HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
+  'Rates of Pay',
+  'Overtime Rates of Pay',
+  'Other provide specifics',
+  'Rate by check box',
+  'Hour',
+  'Shift',
+  'Day',
+  'Week',
+  'Salary',
+  'Piece rate',
+]);
+
+const isAdpDepositForm = (formId: string) =>
+  formId === 'adp-deposit' || formId.endsWith('-adp-deposit');
+
+const isI9Form = (formId: string) =>
+  formId === 'i9' || formId.endsWith('-i9');
+
+const isNoticeToEmployeeForm = (formId: string) =>
+  formId === 'notice-to-employee' || formId.endsWith('-notice-to-employee');
+
+const isWiNoticeToEmployeeForm = (formId: string) =>
+  formId === 'wi-notice-to-employee';
+
+const shouldMaskField = (formId: string, fieldName: string) =>
+  isI9Form(formId) && MASKED_I9_FIELDS.has(fieldName);
+
+const shouldHideField = (formId: string, fieldName: string) =>
+  (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
+  (isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName)) ||
+  (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
+  (isWiNoticeToEmployeeForm(formId) && HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName));
+
+const ADP_NET_AMOUNT_SLOTS = [
+  { name: 'adp_entire_net_amount_1', referenceField: 'Checking1', fallbackY: 241.745 },
+  { name: 'adp_entire_net_amount_2', referenceField: 'Check Box9', fallbackY: 176.368 },
+];
+
+type PdfRect = { x: number; y: number; width: number; height: number };
+
+const getWidgetRect = (field: any): PdfRect | null => {
+  const widgets = field?.acroField?.getWidgets?.() || [];
+  if (!widgets.length) return null;
+  const rect = widgets[0].getRectangle();
+  if (!rect) return null;
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+};
+
+const collectCheckboxRects = (form: any): PdfRect[] => {
+  const rects: PdfRect[] = [];
+  for (const field of form.getFields()) {
+    if (!('isChecked' in field)) continue;
+    const widgets = field?.acroField?.getWidgets?.() || [];
+    for (const widget of widgets) {
+      const rect = widget?.getRectangle?.();
+      if (rect) {
+        rects.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+      }
+    }
+  }
+  return rects;
+};
+
+const rectNear = (a: PdfRect, b: PdfRect, tolerance = 1.5) =>
+  Math.abs(a.x - b.x) <= tolerance &&
+  Math.abs(a.y - b.y) <= tolerance &&
+  Math.abs(a.width - b.width) <= tolerance &&
+  Math.abs(a.height - b.height) <= tolerance;
+
+const ensureAdpNetAmountCheckboxes = (pdfDoc: any, formId: string) => {
+  if (!isAdpDepositForm(formId)) return;
+
+  const form = pdfDoc.getForm();
+  const fieldNames = new Set<string>();
+  for (const field of form.getFields()) {
+    try {
+      fieldNames.add(field.getName());
+    } catch {
+      // Ignore malformed field names.
+    }
+  }
+
+  let baseRect: PdfRect | null = null;
+  try {
+    const baseField = form.getCheckBox('Check Box16');
+    baseRect = getWidgetRect(baseField);
+  } catch {
+    baseRect = null;
+  }
+
+  const defaultRect: PdfRect = baseRect || {
+    x: 446.741,
+    y: 106.149,
+    width: 7.87,
+    height: 6.659,
+  };
+
+  const existingRects = collectCheckboxRects(form);
+  const page = pdfDoc.getPages()[0];
+
+  for (const slot of ADP_NET_AMOUNT_SLOTS) {
+    if (fieldNames.has(slot.name)) continue;
+
+    let y = slot.fallbackY;
+    try {
+      const refField = form.getField(slot.referenceField);
+      const refRect = getWidgetRect(refField);
+      if (refRect) {
+        y = refRect.y;
+      }
+    } catch {
+      // Keep fallback position when reference field is missing.
+    }
+
+    const targetRect: PdfRect = {
+      x: defaultRect.x,
+      y,
+      width: defaultRect.width,
+      height: defaultRect.height,
+    };
+
+    if (existingRects.some((rect) => rectNear(rect, targetRect))) continue;
+
+    const checkbox = form.createCheckBox(slot.name);
+    checkbox.addToPage(page, targetRect);
+    existingRects.push(targetRect);
+  }
+};
+
+const applyWiNoticeToEmployeeDefaults = (pdfDoc: any, formId: string) => {
+  if (!isWiNoticeToEmployeeForm(formId)) return;
+
+  try {
+    const form = pdfDoc.getForm();
+    const commissionField = form.getCheckBox('Commission');
+    if (typeof commissionField.isChecked === 'function' && !commissionField.isChecked()) {
+      commissionField.check();
+    }
+  } catch (error) {
+    console.warn('[NOTICE_TO_EMPLOYEE] Failed to pre-check Commission checkbox for WI', error);
+  }
+};
+
+export default function PDFFormEditor({
+  pdfUrl,
+  formId,
+  onSave,
+  onFieldChange,
+  onContinue,
+  onProgress,
+  skipButtonDetection,
+  requiredFieldNames,
+  showRequiredFieldErrors,
+  continueUrl
+}: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
+  const [maskedFields, setMaskedFields] = useState<FormField[]>([]);
   const [fieldValues, setFieldValues] = useState<Map<string, string>>(new Map());
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<any>(null);
@@ -165,6 +376,8 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       let pdfBytes: ArrayBuffer;
       let savedPdfBytes: Uint8Array | null = null;
+      let pdfLibDoc: any;
+      let usedSavedBytesForLoad = false;
 
       if (savedData.found && savedData.formData) {
         console.log('Step 2: Attempting to load saved PDF from database');
@@ -195,7 +408,10 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
           console.error('ÔØî Error loading saved PDF:', loadErr.message);
           console.log('­ƒôÑ Fetching fresh PDF from URL:', pdfUrl);
           savedPdfBytes = null;
-          const response = await fetch(pdfUrl, { cache: 'no-store' });
+          const response = await fetch(pdfUrl, {
+            cache: 'no-store',
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+          });
           console.log('PDF fetch response status:', response.status);
           if (!response.ok) {
             throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
@@ -205,7 +421,10 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         }
       } else {
         console.log('Step 2: Fetching fresh PDF from URL:', pdfUrl);
-        const response = await fetch(pdfUrl, { cache: 'no-store' });
+        const response = await fetch(pdfUrl, {
+          cache: 'no-store',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+        });
         console.log('PDF fetch response status:', response.status);
         if (!response.ok) {
           throw new Error(`Failed to fetch PDF: ${response.status} ${response.statusText}`);
@@ -214,23 +433,135 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         console.log('Fresh PDF loaded, size:', pdfBytes.byteLength, 'bytes');
       }
 
-      // Prefer the latest template PDF bytes whenever possible (to avoid stale embedded artifacts in saved PDFs).
-      // Keep `savedPdfBytes` so we can copy its field values onto the fresh template after pdf-lib loads.
-      if (savedPdfBytes) {
+      // Load pdf-lib early so we can decide whether to use saved bytes or a fresh template.
+      console.log('Step 2b: Loading pdf-lib library...');
+      const { PDFDocument, PDFName } = await import('pdf-lib');
+      console.log('pdf-lib loaded successfully');
+
+      const detectXfaForm = (doc: any) => {
         try {
-          console.log('Step 2b: Fetching fresh PDF template to replace saved PDF bytes...');
-          const templateResponse = await fetch(pdfUrl, { cache: 'no-store' });
-          console.log('Template fetch response status:', templateResponse.status);
-          if (templateResponse.ok) {
-            pdfBytes = await templateResponse.arrayBuffer();
-            console.log('Fresh PDF template loaded, size:', pdfBytes.byteLength, 'bytes');
-          } else {
-            console.warn(`[LOAD] Template fetch failed (${templateResponse.status}). Continuing with saved PDF bytes.`);
+          const catalog =
+            (doc as any).catalog ||
+            (doc?.context?.trailerInfo?.Root
+              ? doc.context.lookup(doc.context.trailerInfo.Root)
+              : undefined);
+          const acroFormRef = catalog?.get?.(PDFName.of('AcroForm'));
+          if (acroFormRef) {
+            const acroForm = doc.context.lookup(acroFormRef);
+            const xfa = acroForm?.get?.(PDFName.of('XFA'));
+            return !!xfa;
           }
-        } catch (templateErr: any) {
-          console.warn('[LOAD] Template fetch exception. Continuing with saved PDF bytes.', templateErr?.message);
+        } catch (xfaErr) {
+          console.warn('[LOAD] Failed to detect XFA form', xfaErr);
+        }
+        return false;
+      };
+
+      const shouldUseSavedPdf = formId === 'adp-deposit';
+
+      if (savedPdfBytes) {
+        console.log('Step 2c: Parsing saved PDF with pdf-lib...');
+        const savedDoc = await PDFDocument.load(savedPdfBytes);
+        const isXfaForm = detectXfaForm(savedDoc);
+
+        if (!isXfaForm && !shouldUseSavedPdf) {
+          let useSavedBytes = false;
+          try {
+            console.log('Step 2d: Fetching fresh PDF template to replace saved PDF bytes...');
+            const templateResponse = await fetch(pdfUrl, {
+              cache: 'no-store',
+              headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+            });
+            console.log('Template fetch response status:', templateResponse.status);
+            if (templateResponse.ok) {
+              pdfBytes = await templateResponse.arrayBuffer();
+              console.log('Fresh PDF template loaded, size:', pdfBytes.byteLength, 'bytes');
+            } else {
+              console.warn(`[LOAD] Template fetch failed (${templateResponse.status}). Continuing with saved PDF bytes.`);
+              useSavedBytes = true;
+            }
+          } catch (templateErr: any) {
+            console.warn('[LOAD] Template fetch exception. Continuing with saved PDF bytes.', templateErr?.message);
+            useSavedBytes = true;
+          }
+
+          if (useSavedBytes) {
+            pdfBytes = new Uint8Array(savedPdfBytes).buffer;
+            pdfLibDoc = savedDoc;
+            usedSavedBytesForLoad = true;
+          } else {
+            console.log('Step 2e: Parsing PDF template with pdf-lib...');
+            pdfLibDoc = await PDFDocument.load(pdfBytes);
+            console.log('pdf-lib template loaded successfully');
+
+            console.log('Step 2f: Re-applying saved form field values onto fresh template (non-XFA)...');
+            try {
+              const savedForm = savedDoc.getForm();
+              const targetForm = pdfLibDoc.getForm();
+
+              const targetFieldsByName = new Map<string, any>();
+              for (const targetField of targetForm.getFields()) {
+                try {
+                  targetFieldsByName.set(targetField.getName(), targetField);
+                } catch {
+                  // Ignore malformed fields
+                }
+              }
+
+              let copiedCount = 0;
+              for (const savedField of savedForm.getFields()) {
+                let fieldName = '';
+                try {
+                  fieldName = savedField.getName();
+                } catch {
+                  continue;
+                }
+
+                const targetField = targetFieldsByName.get(fieldName);
+                if (!targetField) continue;
+
+                try {
+                  if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
+                    (targetField as any).setText((savedField as any).getText() || '');
+                    copiedCount++;
+                  } else if (typeof (savedField as any).isChecked === 'function') {
+                    const checked = (savedField as any).isChecked();
+                    if (checked && typeof (targetField as any).check === 'function') (targetField as any).check();
+                    if (!checked && typeof (targetField as any).uncheck === 'function') (targetField as any).uncheck();
+                    copiedCount++;
+                  } else if (typeof (savedField as any).getSelected === 'function' && typeof (targetField as any).select === 'function') {
+                    const selected = (savedField as any).getSelected();
+                    const value = Array.isArray(selected) ? selected[0] : selected;
+                    if (value) {
+                      (targetField as any).select(value);
+                      copiedCount++;
+                    }
+                  }
+                } catch (copyErr: any) {
+                  console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
+                }
+              }
+
+              console.log(`Step 2f: Copied ${copiedCount} saved field values`);
+            } catch (mergeErr: any) {
+              console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
+            }
+          }
+        } else {
+          pdfBytes = new Uint8Array(savedPdfBytes).buffer;
+          pdfLibDoc = savedDoc;
+          usedSavedBytesForLoad = true;
         }
       }
+
+      if (!pdfLibDoc) {
+        console.log('Step 2c: Parsing PDF with pdf-lib...');
+        pdfLibDoc = await PDFDocument.load(pdfBytes);
+        console.log('pdf-lib document loaded successfully');
+      }
+      ensureAdpNetAmountCheckboxes(pdfLibDoc, formId);
+      applyWiNoticeToEmployeeDefaults(pdfLibDoc, formId);
+      pdfLibDocRef.current = pdfLibDoc;
 
       // Load with PDF.js for rendering - use UNPKG CDN
       console.log('Step 3: Loading PDF.js from UNPKG...');
@@ -273,80 +604,17 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         throw new Error(`PDF.js document loading failed: ${pdfLoadErr.message}`);
       }
 
-      // Load with pdf-lib for form manipulation
-      console.log('Step 5: Loading pdf-lib library...');
-      const { PDFDocument } = await import('pdf-lib');
-      console.log('pdf-lib loaded successfully');
-
-      console.log('Step 6: Parsing PDF with pdf-lib...');
-      // Use the original pdfBytes for pdf-lib
-      const pdfLibDoc = await PDFDocument.load(pdfBytes);
-      console.log('pdf-lib document loaded successfully');
-      pdfLibDocRef.current = pdfLibDoc;
-
-      // If we loaded saved PDF bytes, prefer the latest template for rendering but preserve the user's progress by
-      // copying field values from the saved PDF onto the fresh template doc.
-      if (savedPdfBytes) {
-        console.log('Step 6b: Re-applying saved form field values onto fresh template...');
-        try {
-          const savedDoc = await PDFDocument.load(savedPdfBytes);
-          const savedForm = savedDoc.getForm();
-          const targetForm = pdfLibDoc.getForm();
-
-          const targetFieldsByName = new Map<string, any>();
-          for (const targetField of targetForm.getFields()) {
-            try {
-              targetFieldsByName.set(targetField.getName(), targetField);
-            } catch {
-              // Ignore malformed fields
-            }
-          }
-
-          let copiedCount = 0;
-          for (const savedField of savedForm.getFields()) {
-            let fieldName = '';
-            try {
-              fieldName = savedField.getName();
-            } catch {
-              continue;
-            }
-
-            const targetField = targetFieldsByName.get(fieldName);
-            if (!targetField) continue;
-
-            try {
-              if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
-                (targetField as any).setText((savedField as any).getText() || '');
-                copiedCount++;
-              } else if (typeof (savedField as any).isChecked === 'function') {
-                const checked = (savedField as any).isChecked();
-                if (checked && typeof (targetField as any).check === 'function') (targetField as any).check();
-                if (!checked && typeof (targetField as any).uncheck === 'function') (targetField as any).uncheck();
-                copiedCount++;
-              } else if (typeof (savedField as any).getSelected === 'function' && typeof (targetField as any).select === 'function') {
-                const selected = (savedField as any).getSelected();
-                const value = Array.isArray(selected) ? selected[0] : selected;
-                if (value) {
-                  (targetField as any).select(value);
-                  copiedCount++;
-                }
-              }
-            } catch (copyErr: any) {
-              console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
-            }
-          }
-
-          console.log(`Step 6b: Copied ${copiedCount} saved field values`);
-        } catch (mergeErr: any) {
-          console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
-        }
-      }
+      // pdf-lib is loaded earlier to keep saved form data intact on revisits.
 
       // Extract form fields
       console.log('Step 7: Extracting form fields...');
-      const fields = await extractFormFields(pdfLibDoc);
+      let fields = await extractFormFields(pdfLibDoc);
+      // Hide employer-only fields on the ADP direct deposit and I-9 forms.
+      const masked = fields.filter((field) => shouldMaskField(formId, field.baseName));
+      fields = fields.filter((field) => !shouldHideField(formId, field.baseName));
       console.log('Extracted', fields.length, 'form fields');
       setFormFields(fields);
+      setMaskedFields(masked);
 
       const initialValues = new Map<string, string>();
       fields.forEach(field => {
@@ -389,33 +657,38 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             console.log('Annotations found:', annotations ? annotations.length : 0);
 
             if (annotations && Array.isArray(annotations)) {
-              for (let i = 0; i < annotations.length; i++) {
-                const annot = annotations[i];
-                console.log(`Annotation ${i}:`, {
+              const linkAnnots = annotations.filter(
+                (annot) => annot?.subtype === 'Link' && annot?.url && annot?.rect
+              );
+
+              linkAnnots.forEach((annot, index) => {
+                console.log(`Annotation ${index}:`, {
                   subtype: annot?.subtype,
                   hasUrl: !!annot?.url,
                   hasRect: !!annot?.rect,
                   url: annot?.url
                 });
+              });
 
-                if (annot && annot.subtype === 'Link' && annot.url && annot.rect) {
-                  const rect = annot.rect;
-                  console.log('Link annotation rect:', rect);
-                  // Verify rect is an array with at least 4 elements
-                  if (Array.isArray(rect) && rect.length >= 4) {
-                    // Store button position for the last page
-                    if (lastPageNum === pdfDocRef.current.numPages) {
-                      const buttonRect = {
-                        x: rect[0],
-                        y: rect[1],
-                        width: rect[2] - rect[0],
-                        height: rect[3] - rect[1]
-                      };
-                      console.log('Continue button found:', buttonRect);
-                      setContinueButtonRect(buttonRect);
-                      break; // Found the button, no need to continue
-                    }
-                  }
+              let targetAnnot = linkAnnots.find((annot) => annot.url === continueUrl);
+              if (!targetAnnot && linkAnnots.length > 0) {
+                targetAnnot = linkAnnots.reduce((best, current) =>
+                  current.rect[0] > best.rect[0] ? current : best
+                );
+              }
+
+              if (targetAnnot?.rect) {
+                const rect = targetAnnot.rect;
+                console.log('Link annotation rect:', rect);
+                if (Array.isArray(rect) && rect.length >= 4) {
+                  const buttonRect = {
+                    x: rect[0],
+                    y: rect[1],
+                    width: rect[2] - rect[0],
+                    height: rect[3] - rect[1]
+                  };
+                  console.log('Continue button found:', buttonRect);
+                  setContinueButtonRect(buttonRect);
                 }
               }
             }
@@ -432,7 +705,9 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       // Provide initial PDF bytes
       console.log('Step 10: Saving initial PDF bytes...');
-      const initialPdfBytes = await pdfLibDoc.save();
+      const initialPdfBytes = usedSavedBytesForLoad && savedPdfBytes
+        ? savedPdfBytes
+        : await pdfLibDoc.save();
       console.log('Initial PDF bytes saved, size:', initialPdfBytes.length);
       if (onSave) {
         onSave(initialPdfBytes);
@@ -620,37 +895,48 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   };
 
   const handleFieldChange = useCallback((fieldName: string, value: string) => {
+    const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+
     setFieldValues(prev => {
       const newValues = new Map(prev);
       newValues.set(fieldName, value);
+      if (mirrorFieldName) {
+        newValues.set(mirrorFieldName, value);
+      }
       return newValues;
     });
 
-    updatePDFField(fieldName, value);
+    const updates: Record<string, string> = { [fieldName]: value };
+    if (mirrorFieldName) {
+      updates[mirrorFieldName] = value;
+    }
+    updatePDFFields(updates);
 
     if (onFieldChange) {
       onFieldChange();
     }
-  }, [onFieldChange]);
+  }, [formId, onFieldChange]);
 
-  const updatePDFField = async (fieldName: string, value: string) => {
+  const updatePDFFields = async (updates: Record<string, string>) => {
     if (!pdfLibDocRef.current) return;
 
     try {
-      console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
       const form = pdfLibDocRef.current.getForm();
-      const field = form.getField(fieldName);
+      for (const [fieldName, value] of Object.entries(updates)) {
+        console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
+        const field = form.getField(fieldName);
 
-      if ('setText' in field) {
-        field.setText(value);
-        console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
-      } else if ('check' in field || 'uncheck' in field) {
-        if (value === 'true') {
-          field.check();
-        } else {
-          field.uncheck();
+        if ('setText' in field) {
+          field.setText(value);
+          console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
+        } else if ('check' in field || 'uncheck' in field) {
+          if (value === 'true') {
+            field.check();
+          } else {
+            field.uncheck();
+          }
+          console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
         }
-        console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
       }
 
       console.log('[UPDATE FIELD] Saving PDF with updated field...');
@@ -732,17 +1018,23 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   };
 
   const pageOffsets = calculatePageOffsets();
+  const maskPadding = 2;
 
   return (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100%',
-      backgroundColor: '#525659',
-      overflow: 'auto'
-    }}>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        backgroundColor: '#525659',
+        overflow: 'auto'
+      }}
+    >
       {/* PDF Canvas with Overlaid Inputs */}
-      <div style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}>
+      <div
+        data-pdf-scroll-container="true"
+        style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}
+      >
         <div style={{
           position: 'relative',
           boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
@@ -763,6 +1055,35 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             {/* Canvases are added here via DOM manipulation */}
           </div>
 
+          {/* Mask I-9 employer fields to keep the area blank */}
+          {pageViewports.length > 0 && maskedFields.map((field) => {
+            const pageIndex = field.page - 1;
+            if (pageIndex < 0 || pageIndex >= pageViewports.length) return null;
+
+            const viewport = pageViewports[pageIndex];
+            const pageOffset = pageOffsets[pageIndex];
+
+            const x = field.rect[0] * scale;
+            const y = pageOffset + (viewport.height - (field.rect[1] + field.rect[3]) * scale);
+            const width = field.rect[2] * scale;
+            const height = field.rect[3] * scale;
+
+            return (
+              <div
+                key={`mask-${field.id}`}
+                style={{
+                  position: 'absolute',
+                  left: `${x - maskPadding}px`,
+                  top: `${y - maskPadding}px`,
+                  width: `${width + maskPadding * 2}px`,
+                  height: `${height + maskPadding * 2}px`,
+                  backgroundColor: '#fff',
+                  pointerEvents: 'none'
+                }}
+              />
+            );
+          })}
+
           {/* Overlay form fields on all pages */}
           {pageViewports.length > 0 && formFields.map((field, index) => {
             const pageIndex = field.page - 1;
@@ -770,6 +1091,14 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
             const viewport = pageViewports[pageIndex];
             const pageOffset = pageOffsets[pageIndex];
+            const fieldValue = fieldValues.get(field.baseName) || '';
+            const isMissingRequired = Boolean(
+              showRequiredFieldErrors &&
+              requiredFieldNames?.includes(field.baseName) &&
+              (field.type === 'checkbox'
+                ? fieldValue !== 'true'
+                : String(fieldValue).trim() === '')
+            );
 
             // Convert PDF coordinates to canvas coordinates
             const x = field.rect[0] * scale;
@@ -780,6 +1109,9 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             return (
               <div
                 key={field.id}
+                data-field-name={field.baseName}
+                data-field-id={field.id}
+                data-field-page={field.page}
                 style={{
                   position: 'absolute',
                   left: `${x}px`,
@@ -792,24 +1124,28 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
                 {field.type === 'checkbox' ? (
                   <input
                     type="checkbox"
-                    checked={fieldValues.get(field.baseName) === 'true'}
+                    checked={fieldValue === 'true'}
                     onChange={(e) => handleFieldChange(field.baseName, e.target.checked ? 'true' : 'false')}
                     style={{
                       width: '100%',
                       height: '100%',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      outline: isMissingRequired ? '2px solid #d32f2f' : 'none',
+                      outlineOffset: '1px',
+                      boxShadow: isMissingRequired ? '0 0 0 2px rgba(211,47,47,0.35)' : 'none',
+                      accentColor: isMissingRequired ? '#d32f2f' : undefined
                     }}
                   />
                 ) : (
                   <input
                     type="text"
-                    value={fieldValues.get(field.baseName) || ''}
+                    value={fieldValue}
                     onChange={(e) => handleFieldChange(field.baseName, e.target.value)}
                     style={{
                       width: '100%',
                       height: '100%',
-                      border: '1px solid rgba(0,0,255,0.3)',
-                      backgroundColor: 'rgba(255,255,255,0.9)',
+                      border: isMissingRequired ? '2px solid #d32f2f' : '1px solid rgba(0,0,255,0.3)',
+                      backgroundColor: isMissingRequired ? 'rgba(211,47,47,0.08)' : 'rgba(255,255,255,0.9)',
                       fontSize: `${height * 0.6}px`,
                       padding: '2px 4px',
                       boxSizing: 'border-box'

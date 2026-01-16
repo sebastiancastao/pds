@@ -15,6 +15,9 @@ type MealWaiverFormProps = {
   backHref: string;
   nextHref: string | null;
   isLastForm?: boolean;
+  showTypeSelector?: boolean;
+  signatureFormId?: string;
+  signatureFormType?: string;
 };
 
 const getDefaultDate = () => new Date().toISOString().split('T')[0];
@@ -28,6 +31,9 @@ export default function MealWaiverForm({
   backHref,
   nextHref,
   isLastForm = false,
+  showTypeSelector = true,
+  signatureFormId,
+  signatureFormType,
 }: MealWaiverFormProps) {
   const router = useRouter();
   const [selectedType, setSelectedType] = useState<WaiverType>(allowedTypes[0]);
@@ -40,6 +46,7 @@ export default function MealWaiverForm({
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -191,6 +198,49 @@ export default function MealWaiverForm({
     setSignature('');
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    if (!signatureFormId || !signatureFormType) return;
+
+    const signatureKey = `${signatureFormId}_${selectedType}_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        waiver_type: selectedType,
+        employee_name: employeeName,
+        position,
+        signature_date: signatureDate,
+        acknowledges_terms: acknowledges,
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: signatureFormId,
+          formType: signatureFormType,
+          signatureData,
+          formData: formDataForSignature,
+        }),
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[MEAL WAIVER] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[MEAL WAIVER] Exception saving signature:', error);
+    }
+  };
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -240,6 +290,7 @@ export default function MealWaiverForm({
         throw new Error(error.error || 'Failed to save meal waiver');
       }
 
+      await saveSignatureToDatabase(signature, session?.access_token);
       alert('Meal waiver saved successfully!');
       return true;
     } catch (error) {
@@ -319,7 +370,7 @@ export default function MealWaiverForm({
         }}
       >
         <div style={{ marginBottom: '24px' }}>
-          {allowedTypes.length > 1 && (
+          {showTypeSelector && allowedTypes.length > 1 && (
             <div
               style={{
                 display: 'flex',
