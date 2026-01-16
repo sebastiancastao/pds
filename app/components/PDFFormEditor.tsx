@@ -20,6 +20,7 @@ interface PDFFormEditorProps {
   skipButtonDetection?: boolean; // Skip detecting and overlaying embedded PDF buttons
   requiredFieldNames?: string[];
   showRequiredFieldErrors?: boolean;
+  continueUrl?: string;
 }
 
 interface FormField {
@@ -42,6 +43,10 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
     Date: 'Date_2',
     Date_2: 'Date',
   },
+  i9: {
+    'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
+    "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',
+  },
 };
 
 const getMirroredFieldName = (formId: string, fieldName: string) =>
@@ -51,13 +56,19 @@ const HIDDEN_ADP_DEPOSIT_FIELDS = new Set<string>([
   'Company Code',
   'Company Name',
   'Employee File Number',
+  'Employee Signature',
   'Payroll Mgr Name',
   'Payroll Mgr Signature',
 ]);
 
 const HIDDEN_I9_FIELDS = new Set<string>([
   'Signature of Employer or AR',
-  'S2 Todays Date mmddyyyy',
+  'Last Name First Name and Title of Employer or Authorized Representative',
+  'Employers Business or Org Name',
+  'Employers Business or Org Address',
+]);
+
+const MASKED_I9_FIELDS = new Set<string>([
 ]);
 
 const HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
@@ -74,7 +85,7 @@ const isNoticeToEmployeeForm = (formId: string) =>
   formId === 'notice-to-employee' || formId.endsWith('-notice-to-employee');
 
 const shouldMaskField = (formId: string, fieldName: string) =>
-  isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName);
+  isI9Form(formId) && MASKED_I9_FIELDS.has(fieldName);
 
 const shouldHideField = (formId: string, fieldName: string) =>
   (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
@@ -186,7 +197,8 @@ export default function PDFFormEditor({
   onProgress,
   skipButtonDetection,
   requiredFieldNames,
-  showRequiredFieldErrors
+  showRequiredFieldErrors,
+  continueUrl
 }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -604,33 +616,38 @@ export default function PDFFormEditor({
             console.log('Annotations found:', annotations ? annotations.length : 0);
 
             if (annotations && Array.isArray(annotations)) {
-              for (let i = 0; i < annotations.length; i++) {
-                const annot = annotations[i];
-                console.log(`Annotation ${i}:`, {
+              const linkAnnots = annotations.filter(
+                (annot) => annot?.subtype === 'Link' && annot?.url && annot?.rect
+              );
+
+              linkAnnots.forEach((annot, index) => {
+                console.log(`Annotation ${index}:`, {
                   subtype: annot?.subtype,
                   hasUrl: !!annot?.url,
                   hasRect: !!annot?.rect,
                   url: annot?.url
                 });
+              });
 
-                if (annot && annot.subtype === 'Link' && annot.url && annot.rect) {
-                  const rect = annot.rect;
-                  console.log('Link annotation rect:', rect);
-                  // Verify rect is an array with at least 4 elements
-                  if (Array.isArray(rect) && rect.length >= 4) {
-                    // Store button position for the last page
-                    if (lastPageNum === pdfDocRef.current.numPages) {
-                      const buttonRect = {
-                        x: rect[0],
-                        y: rect[1],
-                        width: rect[2] - rect[0],
-                        height: rect[3] - rect[1]
-                      };
-                      console.log('Continue button found:', buttonRect);
-                      setContinueButtonRect(buttonRect);
-                      break; // Found the button, no need to continue
-                    }
-                  }
+              let targetAnnot = linkAnnots.find((annot) => annot.url === continueUrl);
+              if (!targetAnnot && linkAnnots.length > 0) {
+                targetAnnot = linkAnnots.reduce((best, current) =>
+                  current.rect[0] > best.rect[0] ? current : best
+                );
+              }
+
+              if (targetAnnot?.rect) {
+                const rect = targetAnnot.rect;
+                console.log('Link annotation rect:', rect);
+                if (Array.isArray(rect) && rect.length >= 4) {
+                  const buttonRect = {
+                    x: rect[0],
+                    y: rect[1],
+                    width: rect[2] - rect[0],
+                    height: rect[3] - rect[1]
+                  };
+                  console.log('Continue button found:', buttonRect);
+                  setContinueButtonRect(buttonRect);
                 }
               }
             }
@@ -1036,9 +1053,10 @@ export default function PDFFormEditor({
             const fieldValue = fieldValues.get(field.baseName) || '';
             const isMissingRequired = Boolean(
               showRequiredFieldErrors &&
-              field.type !== 'checkbox' &&
               requiredFieldNames?.includes(field.baseName) &&
-              String(fieldValue).trim() === ''
+              (field.type === 'checkbox'
+                ? fieldValue !== 'true'
+                : String(fieldValue).trim() === '')
             );
 
             // Convert PDF coordinates to canvas coordinates
@@ -1070,7 +1088,11 @@ export default function PDFFormEditor({
                     style={{
                       width: '100%',
                       height: '100%',
-                      cursor: 'pointer'
+                      cursor: 'pointer',
+                      outline: isMissingRequired ? '2px solid #d32f2f' : 'none',
+                      outlineOffset: '1px',
+                      boxShadow: isMissingRequired ? '0 0 0 2px rgba(211,47,47,0.35)' : 'none',
+                      accentColor: isMissingRequired ? '#d32f2f' : undefined
                     }}
                   />
                 ) : (

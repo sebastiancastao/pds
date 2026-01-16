@@ -7,6 +7,8 @@ import { supabase } from '@/lib/supabase';
 
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
 
+const getToday = () => new Date().toISOString().split('T')[0];
+
 const initialFormData = {
   personal: {
     firstName: '',
@@ -25,7 +27,7 @@ const initialFormData = {
     position: '',
     department: '',
     manager: '',
-    startDate: '',
+    startDate: getToday(),
     employeeId: '',
   },
   emergency: {
@@ -44,6 +46,7 @@ export default function EmployeeInformationPage() {
   const [loading, setLoading] = useState(true);
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -116,7 +119,7 @@ export default function EmployeeInformationPage() {
                 position: data.info.position || '',
                 department: data.info.department || '',
                 manager: data.info.manager || '',
-                startDate: data.info.start_date || '',
+                startDate: getToday(),
                 employeeId: data.info.employee_id || '',
               },
               emergency: {
@@ -219,6 +222,46 @@ export default function EmployeeInformationPage() {
     setFormData(prev => ({ ...prev, signature: '' }));
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    const signatureKey = `employee-information_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        personal: formData.personal,
+        employment: formData.employment,
+        emergency: formData.emergency,
+        acknowledgements: formData.acknowledgements
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: 'employee-information',
+          formType: 'Employee Information',
+          signatureData,
+          formData: formDataForSignature
+        })
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[EMPLOYEE-INFORMATION] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[EMPLOYEE-INFORMATION] Exception saving signature:', error);
+    }
+  };
+
   const sectionStyle = {
     backgroundColor: '#fff',
     borderRadius: '8px',
@@ -248,7 +291,6 @@ export default function EmployeeInformationPage() {
       { value: formData.personal.dateOfBirth, label: 'Date of Birth' },
       { value: formData.personal.ssn, label: 'Social Security Number' },
       { value: formData.employment.position, label: 'Job Title / Position' },
-      { value: formData.employment.startDate, label: 'Start Date' },
       { value: formData.emergency.name, label: 'Emergency Contact Name' },
       { value: formData.emergency.relationship, label: 'Emergency Contact Relationship' },
       { value: formData.emergency.phone, label: 'Emergency Contact Phone' },
@@ -300,6 +342,8 @@ export default function EmployeeInformationPage() {
         throw new Error(error.error || 'Failed to save employee information.');
       }
 
+      await saveSignatureToDatabase(signatureData, session?.access_token);
+
       if (signatureData !== formData.signature) {
         setFormData(prev => ({ ...prev, signature: signatureData }));
       }
@@ -345,7 +389,7 @@ export default function EmployeeInformationPage() {
   }
 
   const requiredMark = <span style={{ color: '#d32f2f' }}>*</span>;
-  const optionalTag = <span style={{ color: '#777', fontWeight: 400 }}> (optional)</span>;
+  const optionalTag = null;
 
   return (
     <div style={{ minHeight: '100vh', backgroundColor: '#f5f5f5', padding: '24px' }}>
@@ -501,12 +545,13 @@ export default function EmployeeInformationPage() {
               />
             </label>
             <label>
-              <span>Start Date {requiredMark}</span>
+              <span>Start Date {optionalTag}</span>
               <input
                 type="date"
                 value={formData.employment.startDate}
                 onChange={handleFieldChange('employment', 'startDate')}
-                style={inputStyle}
+                disabled
+                style={{ ...inputStyle, backgroundColor: '#f1f3f4', cursor: 'not-allowed' }}
               />
             </label>
             <label>

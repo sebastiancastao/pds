@@ -1,7 +1,7 @@
 // app/api/pdf-form-progress/user/[userId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -46,6 +46,11 @@ type SignatureEntry = {
 
 const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
 const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9']);
+const MEAL_WAIVER_TITLES: Record<string, string> = {
+  '6_hour': 'Meal Period Waiver (6 Hour)',
+  '10_hour': 'Meal Period Waiver (10 Hour)',
+  '12_hour': 'Meal Period Waiver (12 Hour)',
+};
 
 function toBase64(data: any): string {
   if (!data) return '';
@@ -93,6 +98,140 @@ function displayNameForForm(formName: string) {
   return formName
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+const formatDateLabel = (value?: string | null) => {
+  if (!value) return 'N/A';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString('en-US');
+};
+
+async function addMealWaiversToMergedPdf(
+  mergedPdf: PDFDocument,
+  userId: string
+): Promise<void> {
+  try {
+    const { data: waivers, error } = await supabaseAdmin
+      .from('meal_waivers')
+      .select('*')
+      .eq('user_id', userId)
+      .order('waiver_type', { ascending: true });
+
+    if (error) {
+      console.error('[PDF_FORMS] Error fetching meal waivers:', error);
+      return;
+    }
+
+    if (!waivers || waivers.length === 0) {
+      console.log('[PDF_FORMS] No meal waivers found for user:', userId);
+      return;
+    }
+
+    const titleFont = await mergedPdf.embedFont(StandardFonts.HelveticaBold);
+    const bodyFont = await mergedPdf.embedFont(StandardFonts.Helvetica);
+
+    for (const waiver of waivers) {
+      const title = MEAL_WAIVER_TITLES[waiver.waiver_type] || 'Meal Period Waiver';
+      const page = mergedPdf.addPage([612, 792]);
+      let cursorY = 720;
+
+      page.drawText(title, {
+        x: 50,
+        y: cursorY,
+        size: 20,
+        font: titleFont,
+        color: rgb(0.1, 0.1, 0.1),
+      });
+      cursorY -= 32;
+
+      const drawRow = (label: string, value: string) => {
+        page.drawText(`${label}:`, {
+          x: 50,
+          y: cursorY,
+          size: 12,
+          font: titleFont,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        page.drawText(value, {
+          x: 210,
+          y: cursorY,
+          size: 12,
+          font: bodyFont,
+          color: rgb(0, 0, 0),
+        });
+        cursorY -= 20;
+      };
+
+      drawRow('Employee Name', waiver.employee_name || 'N/A');
+      drawRow('Position', waiver.position || 'N/A');
+      drawRow('Waiver Type', waiver.waiver_type || 'N/A');
+      drawRow('Signature Date', formatDateLabel(waiver.signature_date));
+      drawRow('Acknowledged Terms', waiver.acknowledges_terms ? 'Yes' : 'No');
+
+      cursorY -= 10;
+      page.drawText('Employee Signature:', {
+        x: 50,
+        y: cursorY,
+        size: 12,
+        font: titleFont,
+        color: rgb(0.2, 0.2, 0.2),
+      });
+
+      const signatureBox = { x: 50, y: cursorY - 70, width: 200, height: 60 };
+      const signatureValue = waiver.employee_signature || '';
+
+      if (signatureValue.startsWith('data:image/')) {
+        try {
+          const { format, base64 } = normalizeSignatureImage(signatureValue);
+          const imageBytes = Buffer.from(base64, 'base64');
+          const signatureImage =
+            format === 'jpg' || format === 'jpeg'
+              ? await mergedPdf.embedJpg(imageBytes)
+              : await mergedPdf.embedPng(imageBytes);
+
+          const scale = Math.min(
+            signatureBox.width / signatureImage.width,
+            signatureBox.height / signatureImage.height,
+            1
+          );
+          const drawWidth = signatureImage.width * scale;
+          const drawHeight = signatureImage.height * scale;
+          const x = signatureBox.x + (signatureBox.width - drawWidth) / 2;
+          const y = signatureBox.y + (signatureBox.height - drawHeight) / 2;
+
+          page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
+        } catch (imgError) {
+          console.error('[PDF_FORMS] Failed to embed meal waiver signature image', imgError);
+          page.drawText('Signature on file', {
+            x: signatureBox.x,
+            y: signatureBox.y + 20,
+            size: 12,
+            font: bodyFont,
+            color: rgb(0, 0, 0),
+          });
+        }
+      } else if (signatureValue) {
+        page.drawText(signatureValue, {
+          x: signatureBox.x,
+          y: signatureBox.y + 20,
+          size: 12,
+          font: bodyFont,
+          color: rgb(0, 0, 0),
+        });
+      } else {
+        page.drawText('No signature captured', {
+          x: signatureBox.x,
+          y: signatureBox.y + 20,
+          size: 12,
+          font: bodyFont,
+          color: rgb(0.4, 0.4, 0.4),
+        });
+      }
+    }
+  } catch (error) {
+    console.error('[PDF_FORMS] Error adding meal waivers:', error);
+  }
 }
 
 // Fetch I-9 documents for a user and add them to the merged PDF
@@ -489,6 +628,10 @@ export async function GET(
         console.error('[PDF_FORMS] Error processing form:', form.form_name, formError);
       }
     }
+
+    // Add meal waivers to the merged PDF
+    console.log('[PDF_FORMS] Adding meal waivers for user:', userId);
+    await addMealWaiversToMergedPdf(mergedPdf, userId);
 
     // Add I-9 supporting documents (List A, B, C) to the merged PDF
     console.log('[PDF_FORMS] Adding I-9 supporting documents for user:', userId);

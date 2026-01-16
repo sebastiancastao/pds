@@ -122,20 +122,6 @@ export async function GET(request: NextRequest) {
       backgroundColor: rgb(1, 1, 1),
     });
 
-    // y: 7140 - Sign Name 1
-    const signName1 = form.createTextField('signName1');
-    signName1.setText('');
-    signName1.enableRequired();
-    signName1.addToPage(lastPage, {
-      x: 280,
-      y: 7140,
-      width: 180,
-      height: 20,
-      borderWidth: 1,
-      borderColor: rgb(0, 0, 0),
-      backgroundColor: rgb(1, 1, 1),
-    });
-
     // y: 6300 - Employee Name
     const employeeNameField = form.createTextField('employee_name');
     employeeNameField.setText('');
@@ -213,20 +199,6 @@ export async function GET(request: NextRequest) {
     printedName.addToPage(lastPage, {
       x: 280,
       y: 5575,
-      width: 180,
-      height: 20,
-      borderWidth: 1,
-      borderColor: rgb(0, 0, 0),
-      backgroundColor: rgb(1, 1, 1),
-    });
-
-    // y: 5505 - Sign Name
-    const signName = form.createTextField('signName');
-    signName.setText('');
-    signName.enableRequired();
-    signName.addToPage(lastPage, {
-      x: 280,
-      y: 5505,
       width: 180,
       height: 20,
       borderWidth: 1,
@@ -366,19 +338,20 @@ export async function GET(request: NextRequest) {
       const scale = signatureWidth / signatureImage.width;
       const signatureHeight = signatureImage.height * scale;
 
-      const drawEmployerSignature = (page: any, options?: { y?: number }) => {
+      const drawEmployerSignature = (page: any, options?: { y?: number; heightScale?: number }) => {
         const y = options?.y ?? 250;
+        const heightScale = options?.heightScale ?? 1;
         page.drawImage(signatureImage, {
           x: 250,
           y,
           width: signatureWidth,
-          height: signatureHeight,
+          height: signatureHeight * heightScale,
         });
       };
 
       drawEmployerSignature(lastPage);
       if (nextEmployerPage) {
-        drawEmployerSignature(nextEmployerPage, { y: 265 });
+        drawEmployerSignature(nextEmployerPage, { y: 275, heightScale: 0.8 });
       }
     } catch (error) {
       console.warn('[EMPLOYEE-HANDBOOK] Failed to embed employer signature image', error);

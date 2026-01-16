@@ -15,6 +15,7 @@ export default function MealWaiver6HourPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   // Load existing data
   useEffect(() => {
@@ -152,6 +153,47 @@ export default function MealWaiver6HourPage() {
     setSignature('');
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    const signatureKey = `meal-waiver-6hour_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        waiver_type: '6_hour',
+        employee_name: employeeName,
+        position,
+        signature_date: signatureDate,
+        acknowledges_terms: acknowledges
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: 'meal-waiver-6hour',
+          formType: 'Meal Waiver 6 Hour',
+          signatureData,
+          formData: formDataForSignature
+        })
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[MEAL WAIVER 6HR] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[MEAL WAIVER 6HR] Exception saving signature:', error);
+    }
+  };
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -199,6 +241,7 @@ export default function MealWaiver6HourPage() {
         throw new Error(error.error || 'Failed to save meal waiver');
       }
 
+      await saveSignatureToDatabase(signature, session?.access_token);
       alert('Meal waiver saved successfully!');
     } catch (error) {
       console.error('Save error:', error);

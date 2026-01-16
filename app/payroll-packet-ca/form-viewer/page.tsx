@@ -75,6 +75,7 @@ function FormViewerContent() {
   const [hasReadForm, setHasReadForm] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
   const lastSavedSignatureRef = useRef<string | null>(null);
 
   // (Email notification moved to explicit Save click per request)
@@ -107,6 +108,11 @@ function FormViewerContent() {
 
   const currentForm = formConfig[formName];
   const mealWaiverRoute = MEAL_WAIVER_ROUTE_MAP[formName];
+  const continueUrl = currentForm?.next
+    ? currentForm.next === 'meal-waiver-6hour'
+      ? '/payroll-packet-ca/meal-waiver-6hour'
+      : `/payroll-packet-ca/form-viewer?form=${currentForm.next}`
+    : undefined;
 
   useEffect(() => {
     if (!currentForm && mealWaiverRoute) {
@@ -162,6 +168,7 @@ function FormViewerContent() {
       clearTimeout(autoSaveTimerRef.current);
       autoSaveTimerRef.current = null;
     }
+    setMissingRequiredFields([]);
   }, [formName]);
 
   const getPdfBytesForForm = (formIdOverride?: string) => {
@@ -356,6 +363,7 @@ function FormViewerContent() {
   const handleContinue = async () => {
     const currentPdfBytes = getPdfBytesForForm();
     console.log('Continue clicked, pdfBytesRef:', currentPdfBytes ? 'has data' : 'null');
+    setMissingRequiredFields([]);
 
     // Check if signature is required but not provided
     if (currentForm.requiresSignature && !currentSignature) {
@@ -421,6 +429,7 @@ function FormViewerContent() {
             if (!value || value.trim() === '') {
               const page = getFieldPage(field);
               const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
               void handleManualSave();
@@ -474,6 +483,7 @@ function FormViewerContent() {
             const value = field.getText();
 
             if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
@@ -514,6 +524,7 @@ function FormViewerContent() {
         }
 
         if (!hasFilingStatus) {
+          setMissingRequiredFields(filingStatusFields);
           setValidationError('Please select a Filing Status on page 1 of the PDF');
           setEmptyFieldPage(1);
           void handleManualSave();
@@ -554,6 +565,7 @@ function FormViewerContent() {
         }
 
         if (!hasWorksheetAValue) {
+          setMissingRequiredFields(worksheetAFields);
           setValidationError('Please fill in at least one Worksheet A field on page 3 of the PDF');
           setEmptyFieldPage(3);
           void handleManualSave();
@@ -601,6 +613,7 @@ function FormViewerContent() {
             const value = field.getText();
 
             if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
@@ -642,6 +655,7 @@ function FormViewerContent() {
         }
 
         if (!hasFilingStatus) {
+          setMissingRequiredFields(filingStatusFields);
           setValidationError('Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household / Exempt');
           setEmptyFieldPage(1);
           void handleManualSave();
@@ -684,6 +698,7 @@ function FormViewerContent() {
             const value = field.getText();
 
             if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
@@ -716,6 +731,7 @@ function FormViewerContent() {
         });
 
         if (ssnValues.some((value) => value === '')) {
+          setMissingRequiredFields(ssnFields);
           setValidationError('Please fill in the required field: "Social Security # (XXX-XX-XXXX)" on page 1 of the PDF');
           setEmptyFieldPage(1);
           void handleManualSave();
@@ -753,14 +769,12 @@ function FormViewerContent() {
           { name: 'employee_initials3prev', page: 77, friendly: 'Initials (Section 3)' },
           { name: 'acknowledgment_date1', page: 77, friendly: 'Date (Section 1)' },
           { name: 'printedName1', page: 77, friendly: 'Printed Name (Section 1)' },
-          { name: 'signName1', page: 77, friendly: 'Signature (Section 1)' },
           { name: 'employee_name', page: 77, friendly: 'Employee Name (Middle section)' },
           { name: 'employee_initials', page: 77, friendly: 'Initials (Section 4)' },
           { name: 'employee_initials2', page: 77, friendly: 'Initials (Section 5)' },
           { name: 'employee_initials3', page: 77, friendly: 'Initials (Section 6)' },
           { name: 'acknowledgment_date', page: 77, friendly: 'Date (Section 2)' },
           { name: 'printedName', page: 77, friendly: 'Printed Name (Section 2)' },
-          { name: 'signName', page: 77, friendly: 'Signature (Section 2)' },
           { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
           { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
           { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
@@ -844,6 +858,7 @@ function FormViewerContent() {
               // Found empty required field
               const scrollTarget = resolveFieldScrollTarget(fieldInfo.name);
               const displayPage = scrollTarget.pageNumber ?? fieldInfo.page;
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${displayPage} of the PDF`);
               setEmptyFieldPage(displayPage);
               void handleManualSave();
@@ -908,6 +923,7 @@ function FormViewerContent() {
           const value = field.getText();
 
           if (!value || value.trim() === '') {
+            setMissingRequiredFields(['employee_signature_date']);
             setValidationError(`Please fill in the required field: "Date" on page ${lastPageNumber} of the PDF`);
             setEmptyFieldPage(lastPageNumber);
             void handleManualSave();
@@ -954,6 +970,7 @@ function FormViewerContent() {
             const value = field.getText();
 
             if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
@@ -1021,6 +1038,7 @@ function FormViewerContent() {
             const value = getFieldValue(fieldInfo.name);
 
             if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
@@ -1056,6 +1074,7 @@ function FormViewerContent() {
         }
 
         if (!hasCitizenshipSelection) {
+          setMissingRequiredFields(citizenshipFields);
           setValidationError('Please select your citizenship/immigration status on page 1 of the PDF: Filing Status: 1) U.S. citizen 2) Noncitizen national 3) Lawful permanent resident 4) Alien authorized to work');
           setEmptyFieldPage(1);
           void handleManualSave();
@@ -1236,6 +1255,9 @@ function FormViewerContent() {
         return newSigs;
       });
 
+      if (currentForm.requiresSignature) {
+        void saveSignatureToDatabase(dataUrl);
+      }
     }
   };
 
@@ -1625,6 +1647,9 @@ function FormViewerContent() {
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
             skipButtonDetection={!currentForm.requiresSignature}
+            requiredFieldNames={missingRequiredFields}
+            showRequiredFieldErrors={missingRequiredFields.length > 0}
+            continueUrl={continueUrl}
           />
         </div>
 

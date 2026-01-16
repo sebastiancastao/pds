@@ -22,6 +22,7 @@ export default function MealWaiver10to12Page() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
 
   const clearCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -173,6 +174,47 @@ export default function MealWaiver10to12Page() {
     setSignature('');
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    const signatureKey = `meal-waiver-10-12_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        waiver_type: selectedWaiverType,
+        employee_name: employeeName,
+        position,
+        signature_date: signatureDate,
+        acknowledges_terms: acknowledges
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {})
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: 'meal-waiver-10-12',
+          formType: 'Meal Waiver 10/12 Hour',
+          signatureData,
+          formData: formDataForSignature
+        })
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json();
+        console.error('[MEAL WAIVER 10/12] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[MEAL WAIVER 10/12] Exception saving signature:', error);
+    }
+  };
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -222,6 +264,7 @@ export default function MealWaiver10to12Page() {
         throw new Error(error.error || 'Failed to save meal waiver');
       }
 
+      await saveSignatureToDatabase(signature, session?.access_token);
       alert('Meal waiver saved successfully!');
       return true;
     } catch (error) {

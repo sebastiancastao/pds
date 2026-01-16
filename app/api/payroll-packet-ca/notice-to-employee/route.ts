@@ -108,8 +108,9 @@ export async function GET() {
         }
 
         const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+        const heightScale = 0.8;
         const drawWidth = signatureImage.width * scale;
-        const drawHeight = signatureImage.height * scale;
+        const drawHeight = signatureImage.height * scale * heightScale;
         const signatureOffsetX = -56;
         const x = rect.x + (rect.width - drawWidth) / 2 + signatureOffsetX;
         const y = rect.y + (rect.height - drawHeight) / 2;
@@ -130,6 +131,7 @@ export async function GET() {
     if (embeddedEmployerSignature) {
       removeFieldFromPdf('Signature8');
     }
+    removeFieldFromPdf('Signature9');
 
     try {
       form.getCheckBox('Commission').check();
