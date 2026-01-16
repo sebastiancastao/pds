@@ -18,6 +18,8 @@ interface PDFFormEditorProps {
   onContinue?: () => void;
   onProgress?: (progress: number) => void; // 0.0 - 1.0
   skipButtonDetection?: boolean; // Skip detecting and overlaying embedded PDF buttons
+  requiredFieldNames?: string[];
+  showRequiredFieldErrors?: boolean;
 }
 
 interface FormField {
@@ -36,15 +38,160 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
     date3: 'date4',
     date4: 'date3',
   },
+  'notice-to-employee': {
+    Date: 'Date_2',
+    Date_2: 'Date',
+  },
 };
 
 const getMirroredFieldName = (formId: string, fieldName: string) =>
   MIRRORED_FIELDS[formId]?.[fieldName];
 
-export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, onContinue, onProgress, skipButtonDetection }: PDFFormEditorProps) {
+const HIDDEN_ADP_DEPOSIT_FIELDS = new Set<string>([
+  'Company Code',
+  'Company Name',
+  'Employee File Number',
+  'Payroll Mgr Name',
+  'Payroll Mgr Signature',
+]);
+
+const HIDDEN_I9_FIELDS = new Set<string>([
+  'Signature of Employer or AR',
+  'S2 Todays Date mmddyyyy',
+]);
+
+const HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
+  'PRINT NAME of Employer representative',
+]);
+
+const isAdpDepositForm = (formId: string) =>
+  formId === 'adp-deposit' || formId.endsWith('-adp-deposit');
+
+const isI9Form = (formId: string) =>
+  formId === 'i9' || formId.endsWith('-i9');
+
+const isNoticeToEmployeeForm = (formId: string) =>
+  formId === 'notice-to-employee' || formId.endsWith('-notice-to-employee');
+
+const shouldMaskField = (formId: string, fieldName: string) =>
+  isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName);
+
+const shouldHideField = (formId: string, fieldName: string) =>
+  (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
+  (isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName)) ||
+  (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName));
+
+const ADP_NET_AMOUNT_SLOTS = [
+  { name: 'adp_entire_net_amount_1', referenceField: 'Checking1', fallbackY: 241.745 },
+  { name: 'adp_entire_net_amount_2', referenceField: 'Check Box9', fallbackY: 176.368 },
+];
+
+type PdfRect = { x: number; y: number; width: number; height: number };
+
+const getWidgetRect = (field: any): PdfRect | null => {
+  const widgets = field?.acroField?.getWidgets?.() || [];
+  if (!widgets.length) return null;
+  const rect = widgets[0].getRectangle();
+  if (!rect) return null;
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+};
+
+const collectCheckboxRects = (form: any): PdfRect[] => {
+  const rects: PdfRect[] = [];
+  for (const field of form.getFields()) {
+    if (!('isChecked' in field)) continue;
+    const widgets = field?.acroField?.getWidgets?.() || [];
+    for (const widget of widgets) {
+      const rect = widget?.getRectangle?.();
+      if (rect) {
+        rects.push({ x: rect.x, y: rect.y, width: rect.width, height: rect.height });
+      }
+    }
+  }
+  return rects;
+};
+
+const rectNear = (a: PdfRect, b: PdfRect, tolerance = 1.5) =>
+  Math.abs(a.x - b.x) <= tolerance &&
+  Math.abs(a.y - b.y) <= tolerance &&
+  Math.abs(a.width - b.width) <= tolerance &&
+  Math.abs(a.height - b.height) <= tolerance;
+
+const ensureAdpNetAmountCheckboxes = (pdfDoc: any, formId: string) => {
+  if (!isAdpDepositForm(formId)) return;
+
+  const form = pdfDoc.getForm();
+  const fieldNames = new Set<string>();
+  for (const field of form.getFields()) {
+    try {
+      fieldNames.add(field.getName());
+    } catch {
+      // Ignore malformed field names.
+    }
+  }
+
+  let baseRect: PdfRect | null = null;
+  try {
+    const baseField = form.getCheckBox('Check Box16');
+    baseRect = getWidgetRect(baseField);
+  } catch {
+    baseRect = null;
+  }
+
+  const defaultRect: PdfRect = baseRect || {
+    x: 446.741,
+    y: 106.149,
+    width: 7.87,
+    height: 6.659,
+  };
+
+  const existingRects = collectCheckboxRects(form);
+  const page = pdfDoc.getPages()[0];
+
+  for (const slot of ADP_NET_AMOUNT_SLOTS) {
+    if (fieldNames.has(slot.name)) continue;
+
+    let y = slot.fallbackY;
+    try {
+      const refField = form.getField(slot.referenceField);
+      const refRect = getWidgetRect(refField);
+      if (refRect) {
+        y = refRect.y;
+      }
+    } catch {
+      // Keep fallback position when reference field is missing.
+    }
+
+    const targetRect: PdfRect = {
+      x: defaultRect.x,
+      y,
+      width: defaultRect.width,
+      height: defaultRect.height,
+    };
+
+    if (existingRects.some((rect) => rectNear(rect, targetRect))) continue;
+
+    const checkbox = form.createCheckBox(slot.name);
+    checkbox.addToPage(page, targetRect);
+    existingRects.push(targetRect);
+  }
+};
+
+export default function PDFFormEditor({
+  pdfUrl,
+  formId,
+  onSave,
+  onFieldChange,
+  onContinue,
+  onProgress,
+  skipButtonDetection,
+  requiredFieldNames,
+  showRequiredFieldErrors
+}: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
   const [formFields, setFormFields] = useState<FormField[]>([]);
+  const [maskedFields, setMaskedFields] = useState<FormField[]>([]);
   const [fieldValues, setFieldValues] = useState<Map<string, string>>(new Map());
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<any>(null);
@@ -360,6 +507,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
         pdfLibDoc = await PDFDocument.load(pdfBytes);
         console.log('pdf-lib document loaded successfully');
       }
+      ensureAdpNetAmountCheckboxes(pdfLibDoc, formId);
       pdfLibDocRef.current = pdfLibDoc;
 
       // Load with PDF.js for rendering - use UNPKG CDN
@@ -407,9 +555,13 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
       // Extract form fields
       console.log('Step 7: Extracting form fields...');
-      const fields = await extractFormFields(pdfLibDoc);
+      let fields = await extractFormFields(pdfLibDoc);
+      // Hide employer-only fields on the ADP direct deposit and I-9 forms.
+      const masked = fields.filter((field) => shouldMaskField(formId, field.baseName));
+      fields = fields.filter((field) => !shouldHideField(formId, field.baseName));
       console.log('Extracted', fields.length, 'form fields');
       setFormFields(fields);
+      setMaskedFields(masked);
 
       const initialValues = new Map<string, string>();
       fields.forEach(field => {
@@ -808,6 +960,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
   };
 
   const pageOffsets = calculatePageOffsets();
+  const maskPadding = 2;
 
   return (
     <div
@@ -844,6 +997,35 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
             {/* Canvases are added here via DOM manipulation */}
           </div>
 
+          {/* Mask I-9 employer fields to keep the area blank */}
+          {pageViewports.length > 0 && maskedFields.map((field) => {
+            const pageIndex = field.page - 1;
+            if (pageIndex < 0 || pageIndex >= pageViewports.length) return null;
+
+            const viewport = pageViewports[pageIndex];
+            const pageOffset = pageOffsets[pageIndex];
+
+            const x = field.rect[0] * scale;
+            const y = pageOffset + (viewport.height - (field.rect[1] + field.rect[3]) * scale);
+            const width = field.rect[2] * scale;
+            const height = field.rect[3] * scale;
+
+            return (
+              <div
+                key={`mask-${field.id}`}
+                style={{
+                  position: 'absolute',
+                  left: `${x - maskPadding}px`,
+                  top: `${y - maskPadding}px`,
+                  width: `${width + maskPadding * 2}px`,
+                  height: `${height + maskPadding * 2}px`,
+                  backgroundColor: '#fff',
+                  pointerEvents: 'none'
+                }}
+              />
+            );
+          })}
+
           {/* Overlay form fields on all pages */}
           {pageViewports.length > 0 && formFields.map((field, index) => {
             const pageIndex = field.page - 1;
@@ -851,6 +1033,13 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
 
             const viewport = pageViewports[pageIndex];
             const pageOffset = pageOffsets[pageIndex];
+            const fieldValue = fieldValues.get(field.baseName) || '';
+            const isMissingRequired = Boolean(
+              showRequiredFieldErrors &&
+              field.type !== 'checkbox' &&
+              requiredFieldNames?.includes(field.baseName) &&
+              String(fieldValue).trim() === ''
+            );
 
             // Convert PDF coordinates to canvas coordinates
             const x = field.rect[0] * scale;
@@ -876,7 +1065,7 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
                 {field.type === 'checkbox' ? (
                   <input
                     type="checkbox"
-                    checked={fieldValues.get(field.baseName) === 'true'}
+                    checked={fieldValue === 'true'}
                     onChange={(e) => handleFieldChange(field.baseName, e.target.checked ? 'true' : 'false')}
                     style={{
                       width: '100%',
@@ -887,13 +1076,13 @@ export default function PDFFormEditor({ pdfUrl, formId, onSave, onFieldChange, o
                 ) : (
                   <input
                     type="text"
-                    value={fieldValues.get(field.baseName) || ''}
+                    value={fieldValue}
                     onChange={(e) => handleFieldChange(field.baseName, e.target.value)}
                     style={{
                       width: '100%',
                       height: '100%',
-                      border: '1px solid rgba(0,0,255,0.3)',
-                      backgroundColor: 'rgba(255,255,255,0.9)',
+                      border: isMissingRequired ? '2px solid #d32f2f' : '1px solid rgba(0,0,255,0.3)',
+                      backgroundColor: isMissingRequired ? 'rgba(211,47,47,0.08)' : 'rgba(255,255,255,0.9)',
                       fontSize: `${height * 0.6}px`,
                       padding: '2px 4px',
                       boxSizing: 'border-box'

@@ -409,6 +409,214 @@ export default function StatePayrollFormViewer({
       return;
     }
 
+    // Validate required fields for ADP Direct Deposit
+    if (selectedForm === 'adp-deposit' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'Employee Name', friendly: 'Employee Name' },
+          { name: 'Date', friendly: 'Date' },
+          { name: 'Bank NameCityState', friendly: 'Bank Name/City/State' },
+          { name: 'Account Number', friendly: 'Account Number' },
+          { name: 'SSN1', friendly: 'SSN (part 1)' },
+          { name: 'SSN2', friendly: 'SSN (part 2)' },
+          { name: 'SSN3', friendly: 'SSN (part 3)' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating ADP Direct Deposit fields:', err);
+      }
+    }
+
+    // Validate required fields for WI W-4 (Step 1 a/b and filing status).
+    if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_01[0]', friendly: 'Step 1(a) First name and middle initial (employee)' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_02[0]', friendly: 'Step 1(b) Last name (employee)' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const filingStatusFields = [
+          'topmostSubform[0].Page1[0].c1_1[0]',
+          'topmostSubform[0].Page1[0].c1_1[1]',
+          'topmostSubform[0].Page1[0].c1_1[2]',
+        ];
+
+        let hasFilingStatus = false;
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasFilingStatus) {
+          let page = 1;
+          try {
+            const field = form.getCheckBox(filingStatusFields[0]);
+            page = getFieldPage(field);
+          } catch {
+            page = 1;
+          }
+          const message = 'Please select a filing status in Step 1(c) (Single or Married filing separately, Married filing jointly, or Head of household) on page 1 of the PDF';
+          setValidationError(message);
+          setEmptyFieldPage(page);
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        const step3Fields = [
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', label: 'Qualifying children amount' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', label: 'Other dependents amount' },
+        ];
+
+        const step3Values = step3Fields.map(({ name }) => {
+          try {
+            const field = form.getTextField(name);
+            return (field.getText() || '').trim();
+          } catch (err) {
+            console.warn(`Field ${name} not found or error checking:`, err);
+            return '';
+          }
+        });
+
+        if (step3Values.every((value) => value === '')) {
+          let page = 1;
+          try {
+            const field = form.getTextField(step3Fields[0].name);
+            page = getFieldPage(field);
+          } catch {
+            page = 1;
+          }
+          const message =
+            'Please fill in at least one Step 3 field (Qualifying children or Other dependents) on page 1 of the PDF';
+          setValidationError(message);
+          setEmptyFieldPage(page);
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating WI W-4 fields:', err);
+      }
+    }
+
     // Validate required fields for employee handbook
     if (selectedForm === 'employee-handbook' && pdfBytesRef.current) {
       console.log('[VALIDATION] Employee handbook validation starting...');
@@ -725,11 +933,11 @@ export default function StatePayrollFormViewer({
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
+          zIndex: 10,
         }}
       >
         <div>
-          <div style={{ fontSize: '14px', color: '#666' }}>{stateName} Payroll Packet</div>
-          <h1 style={{ margin: 0, fontSize: '22px', fontWeight: 'bold' }}>{currentForm.display}</h1>
+          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold' }}>{currentForm.display}</h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '14px' }}>
           {saveStatus === 'saving' && <span style={{ color: '#1976d2' }}>💾 Saving...</span>}
@@ -770,28 +978,6 @@ export default function StatePayrollFormViewer({
                 </div>
               )}
             </div>
-            <button
-              onClick={() => {
-                setValidationError(null);
-                setEmptyFieldPage(null);
-              }}
-              style={{
-                padding: '10px 20px',
-                backgroundColor: '#d32f2f',
-                color: 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                fontSize: '14px',
-                flexShrink: 0,
-                transition: 'background-color 0.2s'
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#b71c1c')}
-              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#d32f2f')}
-            >
-              Dismiss
-            </button>
           </div>
         )}
 
@@ -803,48 +989,29 @@ export default function StatePayrollFormViewer({
             onSave={handlePDFSave}
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
+            skipButtonDetection={!currentForm.requiresSignature}
           />
         </div>
 
         {currentForm.requiresSignature && (
-          <div
-            style={{
-              backgroundColor: 'white',
-              borderRadius: '8px',
-              padding: '24px',
-              boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
-              marginBottom: '20px',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                marginBottom: '16px',
-              }}
-            >
-              <h2 style={{ margin: 0, fontSize: '18px', fontWeight: 'bold' }}>Signature Required</h2>
-              {currentSignature && (
-                <button
-                  onClick={clearSignature}
-                  style={{
-                    padding: '8px 16px',
-                    backgroundColor: '#f44336',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                    fontSize: '14px',
-                  }}
-                >
-                  Clear Signature
-                </button>
-              )}
-            </div>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '24px',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            marginBottom: '20px',
+            order: selectedForm === 'i9' ? 2 : 0
+          }}>
+            <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: 'bold' }}>
+              Signature Required
+            </h2>
 
-            <div style={{ border: '2px solid #ddd', borderRadius: '6px', overflow: 'hidden', backgroundColor: 'white' }}>
+            <div style={{
+              border: '2px solid #ddd',
+              borderRadius: '6px',
+              overflow: 'hidden',
+              backgroundColor: 'white'
+            }}>
               <canvas
                 ref={canvasRef}
                 width={600}
@@ -856,27 +1023,60 @@ export default function StatePayrollFormViewer({
                 onTouchStart={startDrawing}
                 onTouchMove={draw}
                 onTouchEnd={stopDrawing}
-                style={{ width: '100%', height: '200px', cursor: 'crosshair', touchAction: 'none' }}
+                style={{
+                  width: '100%',
+                  height: '200px',
+                  cursor: 'crosshair',
+                  touchAction: 'none'
+                }}
               />
             </div>
-            <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
-              Draw your signature above using your mouse or touchscreen
-            </p>
+
+            <div style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: '12px'
+            }}>
+              <p style={{ margin: 0, fontSize: '12px', color: '#666' }}>
+                Draw your signature above using your mouse or touchscreen
+              </p>
+              {currentSignature && (
+                <button
+                  onClick={clearSignature}
+                  style={{
+                    padding: '8px 16px',
+                    backgroundColor: '#f44336',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  Clear Signature
+                </button>
+              )}
+            </div>
 
             {currentSignature && (
-              <div
-                style={{
-                  marginTop: '16px',
-                  padding: '12px',
-                  backgroundColor: '#e8f5e9',
-                  border: '1px solid #4caf50',
-                  borderRadius: '6px',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px',
-                }}
-              >
-                <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>Signature captured</span>
+              <div style={{
+                marginTop: '16px',
+                padding: '12px',
+                backgroundColor: '#e8f5e9',
+                border: '1px solid #4caf50',
+                borderRadius: '6px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px'
+              }}>
+                <svg style={{ width: '20px', height: '20px', fill: '#4caf50' }} viewBox="0 0 24 24">
+                  <path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z" />
+                </svg>
+                <span style={{ color: '#2e7d32', fontWeight: 'bold', fontSize: '14px' }}>
+                  Signature captured
+                </span>
               </div>
             )}
           </div>
@@ -1083,6 +1283,7 @@ export default function StatePayrollFormViewer({
             borderRadius: '8px',
             boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
             marginTop: 'auto',
+            order: selectedForm === 'i9' ? 3 : 0,
           }}
         >
           <button
@@ -1153,7 +1354,7 @@ export default function StatePayrollFormViewer({
                 }
               }}
             >
-              {currentForm.next ? 'Save & Continue →' : 'Save & Continue'}
+              {currentForm.next ? 'Save & Continue' : 'Save & Finish'}
             </button>
           </div>
         </div>
@@ -1270,3 +1471,4 @@ export function StatePayrollFormViewerWithSuspense(props: StatePayrollFormViewer
     </ViewerShell>
   );
 }
+

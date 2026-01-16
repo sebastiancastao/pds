@@ -771,7 +771,7 @@ function VerifyMFAContent() {
             <div className="mt-6 pt-6 border-t border-gray-200">
               <p className="text-center text-sm text-gray-600">
                 Having trouble?{' '}
-                  Contact Support at portal@1pds.com
+                  Contact Support at portal@1pds.net
               
               </p>
             </div>

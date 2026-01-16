@@ -43,7 +43,8 @@
       "Bash(git cherry-pick:*)",
       "Bash(npx supabase:*)",
       "Bash(git config:*)",
-      "Bash(timeout 30 npx next build:*)"
+      "Bash(timeout 30 npx next build:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": []

@@ -9,8 +9,12 @@ export async function GET() {
     const pdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const form = pdfDoc.getForm();
+    let embeddedEmployerSignature = false;
 
     const fieldsToRemove = [
+      'Rates of Pay',
+      'Overtime Rates of Pay',
+      'Other provide specifics',
       'Rate by check box',
       'Hour',
       'Shift',
@@ -71,8 +75,60 @@ export async function GET() {
       }
     };
 
+    try {
+      const employerRepNameField = form.getTextField('PRINT NAME of Employer representative');
+      employerRepNameField.setText('Dawn M. Kaplan Lister');
+      employerRepNameField.enableReadOnly();
+    } catch (error) {
+      console.warn('[NOTICE_TO_EMPLOYEE] Failed to set employer representative name', error);
+    }
+
+    try {
+      const signaturePath = join(process.cwd(), 'image001.png');
+      const signatureBytes = readFileSync(signaturePath);
+      const signatureImage = await pdfDoc.embedPng(signatureBytes);
+      const signatureField = form.getField('Signature8') as any;
+      const widgets = signatureField?.acroField?.getWidgets?.() || [];
+
+      if (widgets.length > 0) {
+        const widget = widgets[0];
+        const rect = widget.getRectangle();
+        const pageRef = widget.P?.();
+        let page = pageRef ? pdfDoc.getPages().find((p) => p.ref === pageRef) : undefined;
+
+        if (!page && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+          const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+          if (widgetRef) {
+            page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+          }
+        }
+
+        if (!page) {
+          page = pdfDoc.getPages()[0];
+        }
+
+        const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+        const drawWidth = signatureImage.width * scale;
+        const drawHeight = signatureImage.height * scale;
+        const signatureOffsetX = -56;
+        const x = rect.x + (rect.width - drawWidth) / 2 + signatureOffsetX;
+        const y = rect.y + (rect.height - drawHeight) / 2;
+
+        page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
+        embeddedEmployerSignature = true;
+      } else {
+        console.warn('[NOTICE_TO_EMPLOYEE] Employer signature field has no widgets');
+      }
+    } catch (error) {
+      console.warn('[NOTICE_TO_EMPLOYEE] Failed to embed employer signature image', error);
+    }
+
     for (const fieldName of fieldsToRemove) {
       removeFieldFromPdf(fieldName);
+    }
+
+    if (embeddedEmployerSignature) {
+      removeFieldFromPdf('Signature8');
     }
 
     try {

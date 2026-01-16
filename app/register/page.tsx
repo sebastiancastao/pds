@@ -924,7 +924,7 @@ export default function RegisterPage() {
           <div className="mt-6 text-center">
             <p className="text-sm text-gray-600">
               Need help?{' '}
-                Contact Support at portal@1pds.com
+                Contact Support at portal@1pds.net
             </p>
           </div>
         </div>

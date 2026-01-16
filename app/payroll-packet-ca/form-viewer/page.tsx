@@ -382,6 +382,72 @@ function FormViewerContent() {
       return;
     }
 
+    // Validate required fields for ADP Direct Deposit
+    if (formName === 'adp-deposit' && currentPdfBytes) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(currentPdfBytes);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'Employee Name', friendly: 'Employee Name' },
+          { name: 'Date', friendly: 'Date' },
+          { name: 'Bank NameCityState', friendly: 'Bank Name/City/State' },
+          { name: 'Account Number', friendly: 'Account Number' },
+          { name: 'SSN1', friendly: 'SSN (part 1)' },
+          { name: 'SSN2', friendly: 'SSN (part 2)' },
+          { name: 'SSN3', friendly: 'SSN (part 3)' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setValidationError(message);
+              setEmptyFieldPage(page);
+              void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating ADP Direct Deposit fields:', err);
+      }
+    }
+
     // Validate required fields for CA DE-4
     if (formName === 'fillable' && currentPdfBytes) {
       try {
@@ -826,51 +892,6 @@ function FormViewerContent() {
         setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating PDF fields:', err);
-      }
-    }
-
-    // Validate required fields for Time of Hire Notice
-    if (formName === 'time-of-hire' && currentPdfBytes) {
-      try {
-        const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(currentPdfBytes);
-        const form = pdfDoc.getForm();
-
-        const requiredFields = [
-          { name: 'Address', page: 3, friendly: 'Address' },
-          { name: 'Phone', page: 3, friendly: 'Phone' }
-        ];
-
-        for (const fieldInfo of requiredFields) {
-          try {
-            const field = form.getTextField(fieldInfo.name);
-            const value = field.getText();
-
-            if (!value || value.trim() === '') {
-              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
-              setEmptyFieldPage(fieldInfo.page);
-              void handleManualSave();
-
-              setTimeout(() => {
-                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
-                if (canvas) {
-                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                } else {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-              }, 100);
-
-              return;
-            }
-          } catch (err) {
-            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
-          }
-        }
-
-        setValidationError(null);
-        setEmptyFieldPage(null);
-      } catch (err) {
-        console.error('Error validating Time of Hire Notice fields:', err);
       }
     }
 
@@ -2142,4 +2163,3 @@ export default function FormViewer() {
     </Suspense>
   );
 }
-

@@ -170,7 +170,7 @@ export async function POST(req: NextRequest) {
 `.trim();
 
     // Send email to both admin addresses
-    const recipients = ['portal@1pds.com', 'sebastiancastao379@gmail.com'];
+    const recipients = ['portal@1pds.net', 'sebastiancastao379@gmail.com'];
 
     const result = await sendEmail({
       to: recipients,
