@@ -959,7 +959,6 @@ function FormViewerContent() {
 
         const requiredFields = [
           { name: 'Employee Name', page: 1, friendly: 'Employee Name' },
-          { name: 'Start Date', page: 1, friendly: 'Start Date' },
           { name: 'PRINT NAME of Employee', page: 2, friendly: 'Printed Name (Employee)' },
           { name: 'Date_2', page: 2, friendly: 'Date (Employee)' }
         ];

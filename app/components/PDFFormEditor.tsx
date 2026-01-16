@@ -84,6 +84,13 @@ const HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
   'Rates of Pay',
   'Overtime Rates of Pay',
   'Other provide specifics',
+  'Rate by check box',
+  'Hour',
+  'Shift',
+  'Day',
+  'Week',
+  'Salary',
+  'Piece rate',
 ]);
 
 const isAdpDepositForm = (formId: string) =>
@@ -200,6 +207,20 @@ const ensureAdpNetAmountCheckboxes = (pdfDoc: any, formId: string) => {
     const checkbox = form.createCheckBox(slot.name);
     checkbox.addToPage(page, targetRect);
     existingRects.push(targetRect);
+  }
+};
+
+const applyWiNoticeToEmployeeDefaults = (pdfDoc: any, formId: string) => {
+  if (!isWiNoticeToEmployeeForm(formId)) return;
+
+  try {
+    const form = pdfDoc.getForm();
+    const commissionField = form.getCheckBox('Commission');
+    if (typeof commissionField.isChecked === 'function' && !commissionField.isChecked()) {
+      commissionField.check();
+    }
+  } catch (error) {
+    console.warn('[NOTICE_TO_EMPLOYEE] Failed to pre-check Commission checkbox for WI', error);
   }
 };
 
@@ -535,6 +556,7 @@ export default function PDFFormEditor({
         console.log('pdf-lib document loaded successfully');
       }
       ensureAdpNetAmountCheckboxes(pdfLibDoc, formId);
+      applyWiNoticeToEmployeeDefaults(pdfLibDoc, formId);
       pdfLibDocRef.current = pdfLibDoc;
 
       // Load with PDF.js for rendering - use UNPKG CDN

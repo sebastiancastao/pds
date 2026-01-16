@@ -481,12 +481,68 @@ export default function StatePayrollFormViewer({
       } catch (err) {
         console.error('Error validating ADP Direct Deposit fields:', err);
       }
-    }
+      }
 
-    // Validate required fields for WI W-4 (Step 1 a/b and filing status).
-    if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
-      try {
-        const { PDFDocument } = await import('pdf-lib');
+      // Validate required fields for WI Notice to Employee
+      if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
+          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+          const form = pdfDoc.getForm();
+
+          const getFieldPage = (field: any) => {
+            try {
+              const widgets = field?.acroField?.getWidgets?.() || [];
+              if (!widgets.length) return 1;
+              const widget = widgets[0];
+              const pageRef = widget?.P?.();
+              if (!pageRef) return 1;
+              const pages = pdfDoc.getPages();
+              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+              return pageIndex >= 0 ? pageIndex + 1 : 1;
+            } catch {
+              return 1;
+            }
+          };
+
+          const requiredField = { name: 'Employee Name', friendly: 'Employee Name' };
+
+          try {
+            const field = form.getTextField(requiredField.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([requiredField.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+          }
+
+          setValidationError(null);
+          setEmptyFieldPage(null);
+        } catch (err) {
+          console.error('Error validating WI Notice to Employee fields:', err);
+        }
+      }
+
+      // Validate required fields for WI W-4 (Step 1 a/b and filing status).
+      if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
         const form = pdfDoc.getForm();
 
