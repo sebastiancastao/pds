@@ -417,11 +417,11 @@ export default function StatePayrollFormViewer({
       return;
     }
 
-    // Validate required fields for ADP Direct Deposit
-    if (selectedForm === 'adp-deposit' && pdfBytesRef.current) {
-      try {
-        const { PDFDocument } = await import('pdf-lib');
-        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+      // Validate required fields for ADP Direct Deposit
+      if (selectedForm === 'adp-deposit' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
+          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
         const form = pdfDoc.getForm();
 
         const getFieldPage = (field: any) => {
@@ -480,7 +480,74 @@ export default function StatePayrollFormViewer({
         setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating ADP Direct Deposit fields:', err);
+        }
       }
+
+      // Validate required fields for WI state tax form
+      if (selectedForm === 'state-tax' && stateCode === 'wi' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
+          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+          const form = pdfDoc.getForm();
+
+          const getFieldPage = (field: any) => {
+            try {
+              const widgets = field?.acroField?.getWidgets?.() || [];
+              if (!widgets.length) return 1;
+              const widget = widgets[0];
+              const pageRef = widget?.P?.();
+              if (!pageRef) return 1;
+              const pages = pdfDoc.getPages();
+              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+              return pageIndex >= 0 ? pageIndex + 1 : 1;
+            } catch {
+              return 1;
+            }
+          };
+
+          const requiredFields = [
+            { name: 'wiFirstName', friendly: 'Employee Legal Name' },
+            { name: 'wiSSN', friendly: 'Social Security Number' },
+            { name: 'homeAddress', friendly: 'Employee Address' },
+            { name: 'DOB', friendly: 'Date of Birth' },
+            { name: 'city', friendly: 'City' },
+            { name: 'state', friendly: 'State' },
+            { name: 'zip', friendly: 'ZIP Code' },
+            { name: 'DOH', friendly: 'Date of Hire' },
+          ];
+
+          for (const fieldInfo of requiredFields) {
+            try {
+              const field = form.getTextField(fieldInfo.name);
+              const value = field.getText();
+              if (!value || value.trim() === '') {
+                const page = getFieldPage(field);
+                const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+                setMissingRequiredFields([fieldInfo.name]);
+                setValidationError(message);
+                setEmptyFieldPage(page);
+
+                setTimeout(() => {
+                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                  if (canvas) {
+                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  } else {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }
+                }, 100);
+
+                return;
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+            }
+          }
+
+          setValidationError(null);
+          setEmptyFieldPage(null);
+        } catch (err) {
+          console.error('Error validating WI state tax fields:', err);
+        }
       }
 
       // Validate required fields for WI Notice to Employee
@@ -536,6 +603,62 @@ export default function StatePayrollFormViewer({
           setEmptyFieldPage(null);
         } catch (err) {
           console.error('Error validating WI Notice to Employee fields:', err);
+        }
+      }
+
+      // Validate required fields for WI Temporary Employment Agreement
+      if (selectedForm === 'temp-employment-agreement' && stateCode === 'wi' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
+          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+          const form = pdfDoc.getForm();
+
+          const getFieldPage = (field: any) => {
+            try {
+              const widgets = field?.acroField?.getWidgets?.() || [];
+              if (!widgets.length) return 1;
+              const widget = widgets[0];
+              const pageRef = widget?.P?.();
+              if (!pageRef) return 1;
+              const pages = pdfDoc.getPages();
+              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+              return pageIndex >= 0 ? pageIndex + 1 : 1;
+            } catch {
+              return 1;
+            }
+          };
+
+          const requiredField = { name: 'employee_signature_date', friendly: 'Date' };
+
+          try {
+            const field = form.getTextField(requiredField.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([requiredField.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+          }
+
+          setValidationError(null);
+          setEmptyFieldPage(null);
+        } catch (err) {
+          console.error('Error validating WI Temp Employment Agreement fields:', err);
         }
       }
 

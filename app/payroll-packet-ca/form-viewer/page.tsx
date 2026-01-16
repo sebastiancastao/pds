@@ -359,6 +359,16 @@ function FormViewerContent() {
     await handleManualSave();
   };
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   // Continue to next form
   const handleContinue = async () => {
     const currentPdfBytes = getPdfBytesForForm();
@@ -1589,13 +1599,31 @@ function FormViewerContent() {
           {saveStatus === 'error' && (
             <span style={{ color: '#d32f2f' }}>⚠ Save failed</span>
           )}
-          {lastSaved && (
-            <span style={{ color: '#666', fontSize: '12px' }}>
-              Last saved: {lastSaved.toLocaleTimeString()}
-            </span>
-          )}
+            {lastSaved && (
+              <span style={{ color: '#666', fontSize: '12px' }}>
+                Last saved: {lastSaved.toLocaleTimeString()}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '14px',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+            >
+              Logout
+            </button>
+          </div>
         </div>
-      </div>
 
       {/* Validation Error Banner */}
       {validationError && (

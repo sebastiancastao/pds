@@ -43,6 +43,10 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
     Date: 'Date_2',
     Date_2: 'Date',
   },
+  'wi-notice-to-employee': {
+    Date: 'Date_2',
+    Date_2: 'Date',
+  },
   i9: {
     'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
     "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',

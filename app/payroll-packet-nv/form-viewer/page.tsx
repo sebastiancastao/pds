@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourNVPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12NVPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
+import { supabase } from '@/lib/supabase';
 
 const NV_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
@@ -30,21 +31,63 @@ export default function PayrollPacketNVFormViewer() {
 }
 
 function PayrollPacketNVFormViewerContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const selectedForm = searchParams.get('form');
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
+  let content: React.ReactNode;
   if (selectedForm === 'meal-waiver-10-12') {
-    return <MealWaiver10to12NVPage />;
-  }
-  if (selectedForm === 'meal-waiver-6hour') {
-    return <MealWaiver6HourNVPage />;
-  }
-  if (selectedForm === 'employee-information') {
-    return <EmployeeInformationNVForm />;
+    content = <MealWaiver10to12NVPage />;
+  } else if (selectedForm === 'meal-waiver-6hour') {
+    content = <MealWaiver6HourNVPage />;
+  } else if (selectedForm === 'employee-information') {
+    content = <EmployeeInformationNVForm />;
+  } else {
+    content = <StatePayrollFormViewerWithSuspense stateCode="nv" stateName="Nevada" forms={NV_FORMS} />;
   }
 
   return (
-    <StatePayrollFormViewerWithSuspense stateCode="nv" stateName="Nevada" forms={NV_FORMS} />
+    <>
+      <div
+        style={{
+          position: 'fixed',
+          top: '16px',
+          right: '16px',
+          zIndex: 1000,
+        }}
+      >
+        <button
+          type="button"
+          onClick={handleLogout}
+          style={{
+            padding: '8px 16px',
+            backgroundColor: '#f5f5f5',
+            color: '#333',
+            border: '1px solid #ddd',
+            borderRadius: '6px',
+            fontWeight: 'bold',
+            cursor: 'pointer',
+            fontSize: '14px',
+            boxShadow: '0 1px 4px rgba(0,0,0,0.12)',
+          }}
+          onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+          onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+        >
+          Logout
+        </button>
+      </div>
+      {content}
+    </>
   );
 }
 

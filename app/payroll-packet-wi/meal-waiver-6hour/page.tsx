@@ -12,6 +12,8 @@ export default function MealWaiver6HourWIPage() {
       allowedTypes={['6_hour']}
       backHref="/payroll-packet-wi/form-viewer?form=notice-to-employee"
       nextHref="/payroll-packet-wi/meal-waiver-10-12"
+      signatureFormId="meal-waiver-6hour"
+      signatureFormType="Meal Waiver 6 Hour"
     />
   );
 }
