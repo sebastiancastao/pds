@@ -1558,88 +1558,60 @@ export async function sendBackgroundCheckApprovalEmail(data: {
               </p>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                Great news! Your background check has been approved and processed successfully. You can now proceed with completing your onboarding process.
+                Great news! Your background check has been successfully completed and approved.
               </p>
 
-              <!-- Success Box -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%); border-radius: 8px; border: 2px solid #34C759; margin: 30px 0;">
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                You are now scheduled to continue with <strong>PDS Onboarding – Part 2</strong>, which includes <strong>MANDATORY TRAINING</strong> for the Updated Handbook and Documents Review.
+              </p>
+
+              <!-- Important Notice Box -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
                 <tr>
-                  <td style="padding: 25px; text-align: center;">
-                    <div style="font-size: 48px; margin-bottom: 10px;">🎉</div>
-                    <h2 style="color: #065f46; margin: 0 0 10px 0; font-size: 20px; font-weight: 600;">Background Check Complete</h2>
-                    <p style="color: #065f46; margin: 0; font-size: 15px;">
-                      Your background check has been reviewed and approved by our team.
+                  <td style="padding: 20px;">
+                    <p style="color: #856404; margin: 0; font-size: 14px;">
+                      <strong>⚠️ Attendance is required</strong> in order to proceed with the onboarding process.
                     </p>
                   </td>
                 </tr>
               </table>
 
-              <!-- Next Steps -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="color: #0c5280; margin: 0 0 10px 0; font-size: 14px;"><strong>📝 Next Steps - Complete Your Onboarding:</strong></p>
-                    <ol style="color: #0c5280; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6;">
-                      <li>Log in to your PDS account</li>
-                      <li>Navigate to your dashboard</li>
-                      <li>Complete any remaining onboarding forms</li>
-                      <li>Review and sign required documents</li>
-                      <li>Set up your profile information</li>
-                    </ol>
-                  </td>
-                </tr>
-              </table>
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                A separate email from <a href="mailto:Portal@1pds.net" style="color: #2196F3; text-decoration: none;">Portal@1pds.net</a> will be sent with available training session options and registration details.
+              </p>
 
-              <!-- Dashboard Button -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
-                <tr>
-                  <td align="center">
-                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/dashboard"
-                       style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
-                      Go to Login
-                    </a>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- What's Next -->
-              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">🚀 What's Next?</h3>
+              <!-- What We'll Cover -->
+              <h3 style="color: #333333; font-size: 18px; margin: 30px 0 15px 0;">📋 During this session, we will:</h3>
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f9fafb; border-radius: 8px; border: 1px solid #e5e7eb; margin: 20px 0;">
                 <tr>
                   <td style="padding: 24px;">
                     <ul style="color: #4b5563; margin: 0; padding-left: 24px; font-size: 16px; line-height: 1.8;">
-                      <li style="margin-bottom: 10px;">Complete your employee profile</li>
-                      <li style="margin-bottom: 10px;">Review company policies and procedures</li>
-                      <li style="margin-bottom: 10px;">Set up your payment information</li>
-                      <li style="margin-bottom: 10px;">Complete tax withholding forms (W-4, I-9)</li>
-                      <li style="margin-bottom: 0;">Schedule your orientation session</li>
+                      <li style="margin-bottom: 10px;">Review the updated employee handbook</li>
+                      <li style="margin-bottom: 10px;">Complete required document updates</li>
+                      <li style="margin-bottom: 0;">Address onboarding-related questions</li>
                     </ul>
                   </td>
                 </tr>
               </table>
 
-              <!-- Important Note -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 20px 0;">
+              <!-- Device Note -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
                 <tr>
                   <td style="padding: 20px;">
-                    <p style="color: #856404; margin: 0; font-size: 14px;">
-                      <strong>⏰ Time Sensitive:</strong> Please complete your onboarding as soon as possible. Some forms and documents are time-sensitive and must be completed before you can begin work.
+                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
+                      <strong>💻 Important:</strong> Please plan to join using a laptop, desktop computer, or iPad, as mobile devices may not support proper document completion.
                     </p>
                   </td>
                 </tr>
               </table>
 
-              <!-- Support -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
-                      <strong>Need help?</strong> If you have any questions about the onboarding process, please contact us at
-                      <a href="mailto:portal@1pds.net" style="color: #2196F3; text-decoration: none;">portal@1pds.net</a>
-                    </p>
-                  </td>
-                </tr>
-              </table>
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0;">
+                Thank you for your cooperation as we complete the onboarding process.
+              </p>
+
+              <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0 0 0;">
+                <strong>PDS Onboarding Team</strong>
+              </p>
             </td>
           </tr>
 
