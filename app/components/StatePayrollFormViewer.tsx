@@ -128,6 +128,7 @@ export default function StatePayrollFormViewer({
   const [healthInsuranceAcknowledged, setHealthInsuranceAcknowledged] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
   const lastSavedSignatureRef = useRef<string | null>(null);
 
   const basePath = `/payroll-packet-${stateCode}`;
@@ -226,7 +227,8 @@ export default function StatePayrollFormViewer({
     lastSavedSignatureRef.current = null;
 
     // Load existing drawn signature for this form if it exists
-    const savedSignature = signatures.get(selectedForm);
+    const signatureKey = currentForm?.formId || selectedForm;
+    const savedSignature = signatures.get(signatureKey);
     if (savedSignature && savedSignature.startsWith('data:image')) {
       setCurrentSignature(savedSignature);
       if (currentForm?.formId) {
@@ -259,7 +261,8 @@ export default function StatePayrollFormViewer({
 
     // Reset health insurance acknowledgment when form changes
     setHealthInsuranceAcknowledged(false);
-  }, [selectedForm, signatures]);
+    setMissingRequiredFields([]);
+  }, [currentForm?.formId, selectedForm, signatures]);
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes`);
@@ -336,6 +339,10 @@ export default function StatePayrollFormViewer({
       setSaveStatus('error');
       setTimeout(() => setSaveStatus('idle'), 3000);
     }
+
+    if (currentForm?.requiresSignature && currentSignature) {
+      await saveSignatureToDatabase(currentSignature);
+    }
   };
 
   const handleDocumentUpload = async (
@@ -384,6 +391,7 @@ export default function StatePayrollFormViewer({
     console.log('[VALIDATION] handleContinue called, selectedForm:', selectedForm);
     console.log('[VALIDATION] currentForm:', currentForm);
     console.log('[VALIDATION] currentSignature:', currentSignature);
+    setMissingRequiredFields([]);
 
     // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
@@ -448,6 +456,7 @@ export default function StatePayrollFormViewer({
             if (!value || value.trim() === '') {
               const page = getFieldPage(field);
               const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
 
@@ -508,6 +517,7 @@ export default function StatePayrollFormViewer({
             if (!value || value.trim() === '') {
               const page = getFieldPage(field);
               const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
 
@@ -555,6 +565,7 @@ export default function StatePayrollFormViewer({
             page = 1;
           }
           const message = 'Please select a filing status in Step 1(c) (Single or Married filing separately, Married filing jointly, or Head of household) on page 1 of the PDF';
+          setMissingRequiredFields(filingStatusFields);
           setValidationError(message);
           setEmptyFieldPage(page);
 
@@ -595,6 +606,7 @@ export default function StatePayrollFormViewer({
           }
           const message =
             'Please fill in at least one Step 3 field (Qualifying children or Other dependents) on page 1 of the PDF';
+          setMissingRequiredFields(step3Fields.map((field) => field.name));
           setValidationError(message);
           setEmptyFieldPage(page);
 
@@ -695,6 +707,124 @@ export default function StatePayrollFormViewer({
     }
 
     if (selectedForm === 'i9') {
+      if (stateCode === 'wi' && pdfBytesRef.current) {
+        try {
+          const { PDFDocument } = await import('pdf-lib');
+          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+          const form = pdfDoc.getForm();
+
+          const getFieldPage = (field: any) => {
+            try {
+              const widgets = field?.acroField?.getWidgets?.() || [];
+              if (!widgets.length) return 1;
+              const widget = widgets[0];
+              const pageRef = widget?.P?.();
+              if (!pageRef) return 1;
+              const pages = pdfDoc.getPages();
+              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+              return pageIndex >= 0 ? pageIndex + 1 : 1;
+            } catch {
+              return 1;
+            }
+          };
+
+          const requiredFields = [
+            { name: 'Last Name (Family Name)', friendly: 'Last Name' },
+            { name: 'First Name Given Name', friendly: 'First Name' },
+            { name: 'Address Street Number and Name', friendly: 'Address' },
+            { name: 'City or Town', friendly: 'City or Town' },
+            { name: 'State', friendly: 'State' },
+            { name: 'ZIP Code', friendly: 'ZIP Code' },
+            { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth' },
+            { name: 'US Social Security Number', friendly: 'U.S. Social Security Number' },
+            { name: 'Employees E-mail Address', friendly: "Employee's Email Address" },
+            { name: 'Telephone Number', friendly: "Employee's Telephone Number" },
+            { name: "Today's Date mmddyyy", friendly: "Today's Date" },
+          ];
+
+          const missingFields: string[] = [];
+          let firstMissing: { friendly: string; page: number } | null = null;
+
+          for (const fieldInfo of requiredFields) {
+            try {
+              const field = form.getTextField(fieldInfo.name);
+              const value = field.getText();
+              if (!value || value.trim() === '') {
+                const page = getFieldPage(field);
+                if (!firstMissing) {
+                  firstMissing = { friendly: fieldInfo.friendly, page };
+                }
+                missingFields.push(fieldInfo.name);
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+            }
+          }
+
+          if (missingFields.length > 0 && firstMissing) {
+            const message = `Please fill in the required field: "${firstMissing.friendly}" on page ${firstMissing.page} of the PDF`;
+            setMissingRequiredFields(missingFields);
+            setValidationError(message);
+            setEmptyFieldPage(firstMissing.page);
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${firstMissing.page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+
+          const statusCheckboxes = ['CB_1', 'CB_2', 'CB_3', 'CB_4'];
+          let hasStatus = false;
+          for (const fieldName of statusCheckboxes) {
+            try {
+              const field = form.getCheckBox(fieldName);
+              if (field.isChecked()) {
+                hasStatus = true;
+                break;
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldName} not found or error checking:`, err);
+            }
+          }
+
+          if (!hasStatus) {
+            let page = 1;
+            try {
+              const field = form.getCheckBox(statusCheckboxes[0]);
+              page = getFieldPage(field);
+            } catch {
+              page = 1;
+            }
+            const message = `Please select at least one work authorization status checkbox in Section 1 on page ${page} of the PDF`;
+            setMissingRequiredFields(statusCheckboxes);
+            setValidationError(message);
+            setEmptyFieldPage(page);
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+
+          setValidationError(null);
+          setEmptyFieldPage(null);
+        } catch (err) {
+          console.error('Error validating I-9 fields:', err);
+        }
+      }
+
       if (i9Mode === 'A') {
         if (!i9Selections.listA) {
           alert('Please choose a List A document type.');
@@ -823,13 +953,17 @@ export default function StatePayrollFormViewer({
     if (canvas) {
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
+      const signatureKey = currentForm?.formId || selectedForm;
       // Save signature for current form
       setSignatures(prev => {
         const newSigs = new Map(prev);
-        newSigs.set(selectedForm, dataUrl);
+        newSigs.set(signatureKey, dataUrl);
         return newSigs;
       });
 
+      if (currentForm?.requiresSignature) {
+        void saveSignatureToDatabase(dataUrl);
+      }
     }
   };
 
@@ -891,10 +1025,11 @@ export default function StatePayrollFormViewer({
       }
     }
     setCurrentSignature('');
+    const signatureKey = currentForm?.formId || selectedForm;
     // Remove signature for current form
     setSignatures(prev => {
       const newSigs = new Map(prev);
-      newSigs.delete(selectedForm);
+      newSigs.delete(signatureKey);
       return newSigs;
     });
   };
@@ -990,6 +1125,8 @@ export default function StatePayrollFormViewer({
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
             skipButtonDetection={!currentForm.requiresSignature}
+            requiredFieldNames={missingRequiredFields}
+            showRequiredFieldErrors={missingRequiredFields.length > 0}
           />
         </div>
 
@@ -1471,4 +1608,3 @@ export function StatePayrollFormViewerWithSuspense(props: StatePayrollFormViewer
     </ViewerShell>
   );
 }
-

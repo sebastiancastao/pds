@@ -47,6 +47,10 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
     'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
     "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',
   },
+  'wi-i9': {
+    'S2 Todays Date mmddyyyy': "Today's Date mmddyyy",
+    "Today's Date mmddyyy": 'S2 Todays Date mmddyyyy',
+  },
 };
 
 const getMirroredFieldName = (formId: string, fieldName: string) =>
@@ -63,6 +67,7 @@ const HIDDEN_ADP_DEPOSIT_FIELDS = new Set<string>([
 
 const HIDDEN_I9_FIELDS = new Set<string>([
   'Signature of Employer or AR',
+  'Signature of Employee',
   'Last Name First Name and Title of Employer or Authorized Representative',
   'Employers Business or Org Name',
   'Employers Business or Org Address',
