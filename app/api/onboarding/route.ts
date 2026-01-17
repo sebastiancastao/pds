@@ -309,19 +309,85 @@ export async function POST(req: NextRequest) {
             const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
             const fullName = `${firstName} ${lastName}`.trim() || 'User';
 
-            const subject = 'Onboarding Documents Approved';
+            const subject = 'Phase 2 Onboarding Documents Approved';
             const html = `
 <!DOCTYPE html>
 <html>
   <head><meta charset="UTF-8"><title>${subject}</title></head>
-  <body style="font-family: Arial, sans-serif; color: #111827; padding: 20px;">
-    <h2 style="margin:0 0 20px 0; color: #10b981;">Congratulations, ${firstName || 'User'}!</h2>
-    <p style="margin:0 0 16px 0; font-size: 16px;">Your onboarding documents have been reviewed and approved.</p>
-    <p style="margin:0 0 16px 0; font-size: 16px;">You are now fully onboarded into the system. Welcome aboard!</p>
-    <div style="margin: 24px 0; padding: 16px; background-color: #f3f4f6; border-radius: 8px;">
-      <p style="margin:0; font-size: 14px; color: #6b7280;">Approval Date: ${new Date().toLocaleString()}</p>
-    </div>
-    <p style="margin:0 0 16px 0; font-size: 14px; color: #6b7280;">If you have any questions, please contact HR.</p>
+  <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+    <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+      <tr>
+        <td align="center">
+          <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <!-- Header -->
+            <tr>
+              <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Congratulations!</h1>
+                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Phase 2 Complete</p>
+              </td>
+            </tr>
+            <!-- Body -->
+            <tr>
+              <td style="padding: 40px 30px;">
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  Hello <strong>${fullName}</strong>,
+                </p>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  Congratulations! Your Phase 2 onboarding documents have been successfully reviewed and approved.
+                </p>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  You will now advance to <strong>Phase 3</strong> of the onboarding process, which will include calendar availability review and clock-in / clock-out training.
+                </p>
+                <!-- Important Notice -->
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
+                  <tr>
+                    <td style="padding: 20px;">
+                      <p style="color: #856404; margin: 0; font-size: 14px;">
+                        <strong>Mandatory training is required.</strong> A separate email will be sent with training session details.
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0 0 0;">
+                  Thank you,<br>
+                  <strong>Your Onboarding Team</strong>
+                </p>
+                <!-- Login Button -->
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                  <tr>
+                    <td align="center">
+                      <a href="https://pds-murex.vercel.app/login"
+                         style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                        Login to Your Account
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="padding-top: 15px;">
+                      <p style="color: #666666; font-size: 13px; margin: 0;">
+                        Or copy and paste this link in your browser:<br>
+                        <a href="https://pds-murex.vercel.app/login" style="color: #667eea; text-decoration: none; word-break: break-all;">https://pds-murex.vercel.app/login</a>
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <!-- Footer -->
+            <tr>
+              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+                <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                  This email was sent by PDS Time Tracking System
+                </p>
+                <p style="color: #999999; font-size: 11px; margin: 0;">
+                  © ${new Date().getFullYear()} PDS. All rights reserved.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
   </body>
 </html>`.trim();
 

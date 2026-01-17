@@ -313,6 +313,7 @@ export default function MealWaiverForm({
             data: { session },
           } = await supabase.auth.getSession();
 
+          const completionForm = basePath ? basePath.replace(/^\//, '') : 'meal-waiver';
           const response = await fetch('/api/onboarding-notification', {
             method: 'POST',
             headers: {
@@ -320,7 +321,7 @@ export default function MealWaiverForm({
               ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
             },
             body: JSON.stringify({
-              form: 'meal-waiver',
+              form: completionForm,
               trigger: 'save-finish',
             }),
           });

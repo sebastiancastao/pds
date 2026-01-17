@@ -6,7 +6,7 @@ export default function PayrollPacketWIPage() {
   const router = useRouter();
 
   const handleStartForm = () => {
-    router.push('/payroll-packet-wi/form-viewer?form=adp-deposit');
+    router.push('/payroll-packet-wi/form-viewer?form=state-tax');
   };
 
   return (

@@ -242,17 +242,6 @@ export async function GET() {
     });
     exempt.enableRequired();
 
-    const signature = form.createTextField('signature');
-    addRotatedField(signature, {
-      x: 70,
-      y: height - 277,
-      width: 180,
-      height: 12,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    signature.enableRequired();
-
     const date = form.createTextField('date');
     addRotatedField(date, {
       x: 350,

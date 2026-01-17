@@ -7,19 +7,19 @@ import MealWaiver10to12WIPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
 
 const WI_FORMS: FormSpec[] = [
+  { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
+  { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/fw4' },
+  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/i9' },
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
   { id: 'wi-state-supplements', formId: 'wi-state-supplements', display: 'WI State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/wi-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
-  { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
-  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/notice-to-employee' },
   { id: 'temp-employment-agreement', formId: 'wi-temp-employment-agreement', display: 'Temporary Employment Commission Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
-  { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
 ];
 
 export default function PayrollPacketWIFormViewer() {
@@ -143,7 +143,7 @@ function EmployeeInformationWIForm() {
   const handleContinue = async () => {
     const ok = handleSave();
     if (ok) {
-      router.push('/payroll-packet-wi/form-viewer?form=fw4');
+      router.push('/payroll-packet-wi/form-viewer?form=notice-to-employee');
     }
   };
 

@@ -297,11 +297,13 @@ export async function POST(req: NextRequest) {
     let nextStage: string;
     if (statePrefix === 'ca') {
       // de4 is the first form; background-disclosure is not part of form-viewer.
-      if (recentFormName === 'de4' || recentFormName === 'background-disclosure') {
+      if (recentFormName === 'de4' || recentFormName === 'state-tax' || recentFormName === 'background-disclosure') {
         nextStage = `/payroll-packet-ca/form-viewer`;
       } else {
         nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
       }
+    } else if (statePrefix === 'wi') {
+      nextStage = `/payroll-packet-wi/form-viewer?form=${recentFormName}`;
     } else {
       nextStage = `/payroll-packet-${statePrefix}/${recentFormName}`;
     }

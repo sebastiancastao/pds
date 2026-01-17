@@ -489,15 +489,17 @@ export default function PDFFormEditor({
             pdfBytes = new Uint8Array(savedPdfBytes).buffer;
             pdfLibDoc = savedDoc;
             usedSavedBytesForLoad = true;
-          } else {
-            console.log('Step 2e: Parsing PDF template with pdf-lib...');
-            pdfLibDoc = await PDFDocument.load(pdfBytes);
-            console.log('pdf-lib template loaded successfully');
+            } else {
+              console.log('Step 2e: Parsing PDF template with pdf-lib...');
+              pdfLibDoc = await PDFDocument.load(pdfBytes);
+              console.log('pdf-lib template loaded successfully');
 
-            console.log('Step 2f: Re-applying saved form field values onto fresh template (non-XFA)...');
-            try {
-              const savedForm = savedDoc.getForm();
-              const targetForm = pdfLibDoc.getForm();
+              console.log('Step 2f: Re-applying saved form field values onto fresh template (non-XFA)...');
+              let copiedCount = 0;
+              let copyFailed = false;
+              try {
+                const savedForm = savedDoc.getForm();
+                const targetForm = pdfLibDoc.getForm();
 
               const targetFieldsByName = new Map<string, any>();
               for (const targetField of targetForm.getFields()) {
@@ -505,15 +507,14 @@ export default function PDFFormEditor({
                   targetFieldsByName.set(targetField.getName(), targetField);
                 } catch {
                   // Ignore malformed fields
+                  }
                 }
-              }
 
-              let copiedCount = 0;
-              for (const savedField of savedForm.getFields()) {
-                let fieldName = '';
-                try {
-                  fieldName = savedField.getName();
-                } catch {
+                for (const savedField of savedForm.getFields()) {
+                  let fieldName = '';
+                  try {
+                    fieldName = savedField.getName();
+                  } catch {
                   continue;
                 }
 
@@ -540,15 +541,23 @@ export default function PDFFormEditor({
                 } catch (copyErr: any) {
                   console.warn(`[LOAD] Failed to copy value for field "${fieldName}"`, copyErr?.message);
                 }
+                }
+
+                console.log(`Step 2f: Copied ${copiedCount} saved field values`);
+              } catch (mergeErr: any) {
+                copyFailed = true;
+                console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
               }
 
-              console.log(`Step 2f: Copied ${copiedCount} saved field values`);
-            } catch (mergeErr: any) {
-              console.warn('[LOAD] Failed to merge saved field values onto template', mergeErr?.message);
+              if (copyFailed || copiedCount === 0) {
+                console.warn('[LOAD] Falling back to saved PDF bytes after merge failure/zero matches');
+                pdfBytes = new Uint8Array(savedPdfBytes).buffer;
+                pdfLibDoc = savedDoc;
+                usedSavedBytesForLoad = true;
+              }
             }
-          }
-        } else {
-          pdfBytes = new Uint8Array(savedPdfBytes).buffer;
+          } else {
+            pdfBytes = new Uint8Array(savedPdfBytes).buffer;
           pdfLibDoc = savedDoc;
           usedSavedBytesForLoad = true;
         }
@@ -1118,7 +1127,16 @@ export default function PDFFormEditor({
                   top: `${y}px`,
                   width: `${width}px`,
                   height: `${height}px`,
-                  pointerEvents: 'auto'
+                  pointerEvents: 'auto',
+                  boxShadow:
+                    field.type === 'checkbox' && isMissingRequired
+                      ? '0 0 0 2px rgba(211,47,47,0.8)'
+                      : 'none',
+                  borderRadius: field.type === 'checkbox' ? '3px' : '0',
+                  backgroundColor:
+                    field.type === 'checkbox' && isMissingRequired
+                      ? 'rgba(211,47,47,0.08)'
+                      : 'transparent'
                 }}
               >
                 {field.type === 'checkbox' ? (

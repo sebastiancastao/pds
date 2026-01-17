@@ -513,7 +513,8 @@ export default function StatePayrollFormViewer({
             { name: 'city', friendly: 'City' },
             { name: 'state', friendly: 'State' },
             { name: 'zip', friendly: 'ZIP Code' },
-            { name: 'DOH', friendly: 'Date of Hire' },
+            { name: 'total', friendly: 'Total' },
+            { name: 'date', friendly: 'Date Signed' },
           ];
 
           for (const fieldInfo of requiredFields) {
@@ -541,6 +542,49 @@ export default function StatePayrollFormViewer({
             } catch (err) {
               console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
             }
+          }
+
+          const exemptionFields = [
+            { name: 'exemptionYS', friendly: 'Exemption (Self)' },
+            { name: 'exemptionSpouse', friendly: 'Exemption (Spouse)' },
+            { name: 'exemptionDependents', friendly: 'Exemption (Dependents)' },
+          ];
+
+          const exemptionValues = exemptionFields.map(({ name }) => {
+            try {
+              const field = form.getTextField(name);
+              return (field.getText() || '').trim();
+            } catch (err) {
+              console.warn(`Field ${name} not found or error checking:`, err);
+              return '';
+            }
+          });
+
+          if (exemptionValues.every((value) => value === '')) {
+            let page = 1;
+            try {
+              const field = form.getTextField(exemptionFields[0].name);
+              page = getFieldPage(field);
+            } catch {
+              page = 1;
+            }
+            const message =
+              'Please fill in at least one exemption field (Self, Spouse, or Dependents) on page ' +
+              `${page} of the PDF`;
+            setMissingRequiredFields(exemptionFields.map((field) => field.name));
+            setValidationError(message);
+            setEmptyFieldPage(page);
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
           }
 
           setValidationError(null);
@@ -687,6 +731,9 @@ export default function StatePayrollFormViewer({
         const requiredFields = [
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_01[0]', friendly: 'Step 1(a) First name and middle initial (employee)' },
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_02[0]', friendly: 'Step 1(b) Last name (employee)' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', friendly: 'Step 1(c) Address (employee)' },
+          { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', friendly: 'Step 1(d) City or town, state, and ZIP code (employee)' },
+          { name: 'topmostSubform[0].Page1[0].f1_05[0]', friendly: 'Social Security number (employee)' },
         ];
 
         for (const fieldInfo of requiredFields) {
@@ -716,14 +763,14 @@ export default function StatePayrollFormViewer({
           }
         }
 
-        const filingStatusFields = [
+        const step1cFilingStatusFields = [
           'topmostSubform[0].Page1[0].c1_1[0]',
           'topmostSubform[0].Page1[0].c1_1[1]',
           'topmostSubform[0].Page1[0].c1_1[2]',
         ];
 
         let hasFilingStatus = false;
-        for (const fieldName of filingStatusFields) {
+        for (const fieldName of step1cFilingStatusFields) {
           try {
             const field = form.getCheckBox(fieldName);
             if (field.isChecked()) {
@@ -738,13 +785,13 @@ export default function StatePayrollFormViewer({
         if (!hasFilingStatus) {
           let page = 1;
           try {
-            const field = form.getCheckBox(filingStatusFields[0]);
+            const field = form.getCheckBox(step1cFilingStatusFields[0]);
             page = getFieldPage(field);
           } catch {
             page = 1;
           }
-          const message = 'Please select a filing status in Step 1(c) (Single or Married filing separately, Married filing jointly, or Head of household) on page 1 of the PDF';
-          setMissingRequiredFields(filingStatusFields);
+          const message = 'Please select at least one filing status option in Step 1(c) on page 1 of the PDF';
+          setMissingRequiredFields(step1cFilingStatusFields);
           setValidationError(message);
           setEmptyFieldPage(page);
 
@@ -908,17 +955,16 @@ export default function StatePayrollFormViewer({
           };
 
           const requiredFields = [
-            { name: 'Last Name (Family Name)', friendly: 'Last Name' },
-            { name: 'First Name Given Name', friendly: 'First Name' },
-            { name: 'Address Street Number and Name', friendly: 'Address' },
-            { name: 'City or Town', friendly: 'City or Town' },
-            { name: 'State', friendly: 'State' },
-            { name: 'ZIP Code', friendly: 'ZIP Code' },
-            { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth' },
-            { name: 'US Social Security Number', friendly: 'U.S. Social Security Number' },
-            { name: 'Employees E-mail Address', friendly: "Employee's Email Address" },
-            { name: 'Telephone Number', friendly: "Employee's Telephone Number" },
-            { name: "Today's Date mmddyyy", friendly: "Today's Date" },
+            { name: 'Last Name (Family Name)', friendly: 'Last Name', type: 'text' },
+            { name: 'First Name Given Name', friendly: 'First Name', type: 'text' },
+            { name: 'Address Street Number and Name', friendly: 'Address', type: 'text' },
+            { name: 'City or Town', friendly: 'City or Town', type: 'text' },
+            { name: 'ZIP Code', friendly: 'ZIP Code', type: 'text' },
+            { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth', type: 'text' },
+            { name: 'US Social Security Number', friendly: 'U.S. Social Security Number', type: 'text' },
+            { name: 'Employees E-mail Address', friendly: "Employee's Email Address", type: 'text' },
+            { name: 'Telephone Number', friendly: "Employee's Telephone Number", type: 'text' },
+            { name: "Today's Date mmddyyy", friendly: "Today's Date", type: 'text' },
           ];
 
           const missingFields: string[] = [];
@@ -926,8 +972,14 @@ export default function StatePayrollFormViewer({
 
           for (const fieldInfo of requiredFields) {
             try {
-              const field = form.getTextField(fieldInfo.name);
-              const value = field.getText();
+              const field = form.getField(fieldInfo.name) as any;
+              let value = '';
+              if (fieldInfo.type === 'dropdown' && typeof field.getSelected === 'function') {
+                const selected = field.getSelected();
+                value = Array.isArray(selected) ? selected.join('') : String(selected ?? '');
+              } else if (typeof field.getText === 'function') {
+                value = field.getText() || '';
+              }
               if (!value || value.trim() === '') {
                 const page = getFieldPage(field);
                 if (!firstMissing) {
