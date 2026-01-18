@@ -104,7 +104,16 @@ export async function DELETE(
         .eq('user_id', employeeId)
     );
 
-    // 6. Delete vendor background checks (if profile exists)
+    // 6. Delete form signatures
+    console.log('[DELETE USER] Deleting form signatures...');
+    deletions.push(
+      supabase
+        .from('form_signatures')
+        .delete()
+        .eq('user_id', employeeId)
+    );
+
+    // 8. Delete vendor background checks (if profile exists)
     if (profileId) {
       console.log('[DELETE USER] Deleting background checks...');
       deletions.push(
@@ -118,7 +127,7 @@ export async function DELETE(
     // Execute all deletions
     await Promise.all(deletions);
 
-    // 7. Delete profile (must be done after related records)
+    // 9. Delete profile (must be done after related records)
     console.log('[DELETE USER] Deleting profile...');
     const { error: profileError } = await supabase
       .from('profiles')
@@ -130,7 +139,7 @@ export async function DELETE(
       // Continue anyway - profile might not exist
     }
 
-    // 8. Remove user row from users table
+    // 10. Remove user row from users table
     console.log('[DELETE USER] Deleting user row...');
 
     // If audit logs have a FK to public.users, detach them so the user row can be deleted.
@@ -157,7 +166,7 @@ export async function DELETE(
       }, { status: 500 });
     }
 
-    // 9. Delete auth user (must be done last)
+    // 11. Delete auth user (must be done last)
     console.log('[DELETE USER] Deleting auth user...');
     const { error: authError } = await supabase.auth.admin.deleteUser(employeeId);
 
