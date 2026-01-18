@@ -1,9 +1,9 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, PDFRef } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const pdfPath = join(process.cwd(), 'fw4.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
@@ -27,7 +27,7 @@ export async function GET() {
         borderWidth: 0,
       });
     } catch (error) {
-      console.warn('[FW4 WI] Failed to add Employee Date field', error);
+      console.warn('[FW4 AZ] Failed to add Employee Date field', error);
     }
 
     const fieldsToRemove = [
@@ -83,7 +83,7 @@ export async function GET() {
           (pdfDoc as any).context.delete(field.ref);
         }
       } catch (error) {
-        console.warn(`[FW4] Field not found or removal failed: ${fieldName}`, error);
+        console.warn(`[FW4 AZ] Field not found or removal failed: ${fieldName}`, error);
       }
     };
 
@@ -102,7 +102,7 @@ export async function GET() {
       },
     });
   } catch (error: any) {
-    console.error('FW4 PDF generation error:', error);
+    console.error('FW4 AZ PDF generation error:', error);
     return NextResponse.json(
       { error: 'Failed to generate FW4 PDF', details: error.message },
       { status: 500 },

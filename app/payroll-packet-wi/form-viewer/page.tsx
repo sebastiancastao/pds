@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourWIPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12WIPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
+import { supabase } from '@/lib/supabase';
 
 const WI_FORMS: FormSpec[] = [
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
@@ -151,6 +152,16 @@ function EmployeeInformationWIForm() {
     router.push('/payroll-packet-wi/form-viewer?form=time-of-hire');
   };
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   const inputStyle = {
     width: '100%',
     padding: '12px',
@@ -178,6 +189,26 @@ function EmployeeInformationWIForm() {
           padding: '32px',
         }}
       >
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+          <button
+            type="button"
+            onClick={handleLogout}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f5f5f5',
+              color: '#333',
+              border: '1px solid #ddd',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+          >
+            Logout
+          </button>
+        </div>
         <div style={{ marginBottom: '32px', textAlign: 'center' }}>
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#1a1a1a', marginBottom: '8px' }}>
             Employee Information

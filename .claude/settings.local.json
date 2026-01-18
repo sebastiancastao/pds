@@ -44,7 +44,9 @@
       "Bash(npx supabase:*)",
       "Bash(git config:*)",
       "Bash(timeout 30 npx next build:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(git fetch:*)",
+      "Bash(git merge:*)"
     ],
     "deny": [],
     "ask": []
