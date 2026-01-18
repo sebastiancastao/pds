@@ -162,9 +162,23 @@ export async function DELETE(
     const { error: authError } = await supabase.auth.admin.deleteUser(employeeId);
 
     if (authError) {
+      // Log the full error structure for debugging
+      console.log('[DELETE USER] Auth error details:', JSON.stringify(authError, null, 2));
+
       // If user not found in auth, that's acceptable - they may have been deleted already
       // or only existed in the users table (e.g., imported data)
-      if (authError.code === 'user_not_found' || authError.status === 404) {
+      // Check multiple ways the error code might be exposed
+      const errorCode = (authError as any).code || (authError as any).__code;
+      const errorStatus = (authError as any).status;
+      const errorMessage = authError.message?.toLowerCase() || '';
+
+      const isUserNotFound =
+        errorCode === 'user_not_found' ||
+        errorStatus === 404 ||
+        errorMessage.includes('user not found') ||
+        errorMessage.includes('not found');
+
+      if (isUserNotFound) {
         console.log('[DELETE USER] Auth user not found (already deleted or never existed in auth):', employeeId);
       } else {
         console.error('[DELETE USER] Error deleting auth user:', authError);
