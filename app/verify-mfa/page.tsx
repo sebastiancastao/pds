@@ -341,32 +341,50 @@ function VerifyMFAContent() {
               const onboardingResult = await onboardingResponse.json();
               console.log('[VERIFY-MFA DEBUG] Onboarding API response:', JSON.stringify(onboardingResult, null, 2));
 
-              // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
               if (onboardingResult.hasOnboardingRecord && !onboardingResult.approved) {
                 pendingOnboardingRedirect = '/onboarding-pending';
-                console.log('[VERIFY-MFA DEBUG] ⚠️ Onboarding record exists but not approved - redirecting to pending page');
+                console.log('[VERIFY-MFA DEBUG] Onboarding record exists but not approved - redirecting to pending page');
               } else if (onboardingResult.approved) {
-                console.log('[VERIFY-MFA DEBUG] ✅ Onboarding approved - no redirect needed');
-              } else if (!onboardingResult.hasOnboardingRecord) {
-                // No record means user hasn't completed onboarding yet - check their current stage
-                console.log('[VERIFY-MFA DEBUG] ℹ️ No onboarding record found - checking onboarding stage...');
+                console.log('[VERIFY-MFA DEBUG] Onboarding approved - no redirect needed');
+              } else {
+                console.log('[VERIFY-MFA DEBUG] Onboarding not approved - determining last updated form');
+                let localRedirect: string | null = null;
                 try {
-                  const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${session.access_token}`
-                    },
-                  });
-                  if (stageResponse.ok) {
-                    const stageResult = await stageResponse.json();
-                    if (stageResult.nextStage) {
-                      pendingOnboardingRedirect = stageResult.nextStage;
-                      console.log('[VERIFY-MFA DEBUG] 📋 Onboarding stage detected:', stageResult.nextStage);
+                  const stored = localStorage.getItem('onboarding_last_form');
+                  if (stored) {
+                    const parsed = JSON.parse(stored);
+                    if (parsed?.userId === session.user.id && typeof parsed?.path === 'string') {
+                      if (parsed.path.startsWith('/payroll-packet-')) {
+                        localRedirect = parsed.path;
+                      }
                     }
                   }
-                } catch (stageError) {
-                  console.error('[VERIFY-MFA DEBUG] ❌ Error checking onboarding stage:', stageError);
+                } catch (e) {
+                  console.warn('[VERIFY-MFA DEBUG] Failed to read local onboarding redirect:', e);
+                }
+
+                if (localRedirect) {
+                  pendingOnboardingRedirect = localRedirect;
+                  console.log('[VERIFY-MFA DEBUG] Using local onboarding redirect:', pendingOnboardingRedirect);
+                } else {
+                  try {
+                    const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${session.access_token}`
+                      },
+                    });
+                    if (stageResponse.ok) {
+                      const stageResult = await stageResponse.json();
+                      if (stageResult.nextStage) {
+                        pendingOnboardingRedirect = stageResult.nextStage;
+                        console.log('[VERIFY-MFA DEBUG] Onboarding stage detected:', stageResult.nextStage);
+                      }
+                    }
+                  } catch (stageError) {
+                    console.error('[VERIFY-MFA DEBUG] Error checking onboarding stage:', stageError);
+                  }
                 }
               }
             }

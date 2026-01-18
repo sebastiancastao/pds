@@ -65,6 +65,36 @@ const NV_ONBOARDING_FORMS = [
   'meal-waiver-10-12'
 ];
 
+
+const STATE_PREFIX_PATTERN = /^(ca|ny|wi|az|nv)-/;
+
+function getFormSequenceByPrefix(prefix: string) {
+  switch (prefix) {
+    case 'ny':
+      return NY_ONBOARDING_FORMS;
+    case 'wi':
+      return WI_ONBOARDING_FORMS;
+    case 'az':
+      return AZ_ONBOARDING_FORMS;
+    case 'nv':
+      return NV_ONBOARDING_FORMS;
+    default:
+      return CA_ONBOARDING_FORMS;
+  }
+}
+
+function detectStatePrefixFromForms(forms: Array<{ form_name: string }> = []) {
+  if (!forms.length) return null;
+
+  const mostRecentFormName = forms[0].form_name.toLowerCase();
+  const match = mostRecentFormName.match(STATE_PREFIX_PATTERN);
+  if (match) return match[1];
+
+  // Unprefixed form names map to California.
+  return 'ca';
+}
+
+
 /**
  * POST /api/auth/check-onboarding-stage
  * Determines which onboarding stage a worker is currently at based on their completed forms
@@ -178,7 +208,8 @@ export async function POST(req: NextRequest) {
     const { data: completedForms, error: formsError } = await adminClient
       .from('pdf_form_progress')
       .select('form_name, updated_at')
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .order('updated_at', { ascending: false });
 
     if (formsError) {
       console.error('[Check Onboarding Stage API] ❌ Error fetching completed forms:', formsError);
@@ -190,6 +221,16 @@ export async function POST(req: NextRequest) {
 
     console.log('[Check Onboarding Stage API] ✅ Raw completed forms data:', completedForms);
     console.log('[Check Onboarding Stage API] Number of completed forms:', completedForms?.length || 0);
+
+    const detectedPrefix = detectStatePrefixFromForms(completedForms || []);
+    if (detectedPrefix && detectedPrefix !== statePrefix) {
+      console.log('[Check Onboarding Stage API] Overriding state prefix based on completed forms:', {
+        previous: statePrefix,
+        detected: detectedPrefix
+      });
+      statePrefix = detectedPrefix;
+      formSequence = getFormSequenceByPrefix(statePrefix);
+    }
 
     // Log each raw form name from database
     console.log('[Check Onboarding Stage API] ===== RAW FORM NAMES FROM DATABASE =====');
@@ -293,7 +334,7 @@ export async function POST(req: NextRequest) {
     const recentFormName = mostRecentForm.form_name.toLowerCase().replace(/^(ca|ny|wi|az|nv)-/, '');
 
     // Build the correct URL based on state
-    // California uses form-viewer with query param, other states use direct routes
+    // California uses base form-viewer for DE-4; other states use form-viewer with query param
     let nextStage: string;
     if (statePrefix === 'ca') {
       // de4 is the first form; background-disclosure is not part of form-viewer.
@@ -302,10 +343,8 @@ export async function POST(req: NextRequest) {
       } else {
         nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
       }
-    } else if (statePrefix === 'wi') {
-      nextStage = `/payroll-packet-wi/form-viewer?form=${recentFormName}`;
     } else {
-      nextStage = `/payroll-packet-${statePrefix}/${recentFormName}`;
+      nextStage = `/payroll-packet-${statePrefix}/form-viewer?form=${recentFormName}`;
     }
 
     console.log('[Check Onboarding Stage API] ========================================');

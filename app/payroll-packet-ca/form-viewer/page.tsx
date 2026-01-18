@@ -332,6 +332,15 @@ function FormViewerContent() {
           setSaveStatus('saved');
           setLastSaved(new Date());
           setTimeout(() => setSaveStatus('idle'), 2000);
+
+          if (session?.user?.id && typeof window !== 'undefined') {
+            const lastPath = `${window.location.pathname}${window.location.search}`;
+            localStorage.setItem("onboarding_last_form", JSON.stringify({
+              userId: session.user.id,
+              path: lastPath,
+              savedAt: new Date().toISOString(),
+            }));
+          }
         }
       } else {
         const error = await response.json();

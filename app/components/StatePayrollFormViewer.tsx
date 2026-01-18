@@ -328,6 +328,15 @@ export default function StatePayrollFormViewer({
         setSaveStatus('saved');
         setLastSaved(new Date());
         setTimeout(() => setSaveStatus('idle'), 2000);
+
+        if (session?.user?.id && typeof window !== 'undefined') {
+          const lastPath = `${window.location.pathname}${window.location.search}`;
+          localStorage.setItem("onboarding_last_form", JSON.stringify({
+            userId: session.user.id,
+            path: lastPath,
+            savedAt: new Date().toISOString(),
+          }));
+        }
       } else {
         const error = await response.json();
         console.error('[SAVE] ❌ Save failed:', error);
@@ -873,14 +882,12 @@ export default function StatePayrollFormViewer({
           { name: 'employee_initials3prev', page: 77, friendly: 'Initials (Section 3)' },
           { name: 'acknowledgment_date1', page: 77, friendly: 'Date (Section 1)' },
           { name: 'printedName1', page: 77, friendly: 'Printed Name (Section 1)' },
-          { name: 'signName1', page: 77, friendly: 'Signature (Section 1)' },
           { name: 'employee_name', page: 77, friendly: 'Employee Name (Middle section)' },
           { name: 'employee_initials', page: 77, friendly: 'Initials (Section 4)' },
           { name: 'employee_initials2', page: 77, friendly: 'Initials (Section 5)' },
           { name: 'employee_initials3', page: 77, friendly: 'Initials (Section 6)' },
           { name: 'acknowledgment_date', page: 77, friendly: 'Date (Section 2)' },
           { name: 'printedName', page: 77, friendly: 'Printed Name (Section 2)' },
-          { name: 'signName', page: 77, friendly: 'Signature (Section 2)' },
           { name: 'date3', page: 77, friendly: 'Date (Section 3)' },
           { name: 'printedName3', page: 77, friendly: 'Printed Name (Section 3)' },
           { name: 'date4', page: 77, friendly: 'Date (Section 4)' },
@@ -888,6 +895,71 @@ export default function StatePayrollFormViewer({
           { name: 'printedName4', page: 77, friendly: 'Printed Name (Section 4)' },
           { name: 'date6', page: 77, friendly: 'Date (Section 6)' }
         ];
+
+        const resolveFieldScrollTarget = (fieldName: string) => {
+          const selectorName =
+            typeof CSS !== 'undefined' && typeof (CSS as any).escape === 'function'
+              ? (CSS as any).escape(fieldName)
+              : fieldName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+          const fieldElements = Array.from(
+            document.querySelectorAll(`[data-field-name="${selectorName}"]`)
+          ) as HTMLElement[];
+
+          if (fieldElements.length === 0) {
+            return { fieldElement: null as HTMLElement | null, scrollContainer: null as HTMLElement | null, fieldTop: null as number | null, pageNumber: null as number | null };
+          }
+
+          const findScrollableAncestor = (element: HTMLElement | null) => {
+            let current = element?.parentElement || null;
+            while (current) {
+              const style = window.getComputedStyle(current);
+              const overflowY = style.overflowY;
+              const isScrollable =
+                (overflowY === 'auto' || overflowY === 'scroll') &&
+                current.scrollHeight > current.clientHeight;
+              if (isScrollable) return current;
+              current = current.parentElement;
+            }
+            return null;
+          };
+
+          const fieldElement = fieldElements.reduce((best, current) => {
+            const bestRect = best.getBoundingClientRect();
+            const currentRect = current.getBoundingClientRect();
+            return currentRect.top < bestRect.top ? current : best;
+          }, fieldElements[0]);
+
+          const scrollContainer =
+            findScrollableAncestor(fieldElement) ||
+            (fieldElement.closest('[data-pdf-scroll-container="true"]') as HTMLElement | null);
+          const containerRect = scrollContainer ? scrollContainer.getBoundingClientRect() : null;
+          const fieldRect = fieldElement.getBoundingClientRect();
+          const fieldTop = scrollContainer && containerRect
+            ? fieldRect.top - containerRect.top + scrollContainer.scrollTop
+            : window.scrollY + fieldRect.top;
+
+          let pageNumber: number | null = null;
+          const canvases = Array.from(document.querySelectorAll('canvas[data-page-number]')) as HTMLCanvasElement[];
+          if (canvases.length) {
+            for (const canvas of canvases) {
+              const canvasRect = canvas.getBoundingClientRect();
+              const canvasTop = scrollContainer && containerRect
+                ? canvasRect.top - containerRect.top + scrollContainer.scrollTop
+                : window.scrollY + canvasRect.top;
+              const canvasBottom = canvasTop + canvasRect.height;
+
+              if (fieldTop >= canvasTop && fieldTop <= canvasBottom) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+                break;
+              }
+              if (fieldTop >= canvasTop) {
+                pageNumber = Number(canvas.dataset.pageNumber);
+              }
+            }
+          }
+
+          return { fieldElement, scrollContainer, fieldTop, pageNumber };
+        };
 
         // Check each required field
         for (const fieldInfo of requiredFields) {
@@ -898,20 +970,39 @@ export default function StatePayrollFormViewer({
 
             if (!value || value.trim() === '') {
               // Found empty required field
-              console.log(`[VALIDATION] Empty field found: ${fieldInfo.name}`);
-              const errorMessage = `Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`;
-              console.log('[VALIDATION] Setting validation error:', errorMessage);
-              setValidationError(errorMessage);
-              setEmptyFieldPage(fieldInfo.page);
-              console.log('[VALIDATION] State updated, should show banner now');
+              const scrollTarget = resolveFieldScrollTarget(fieldInfo.name);
+              const displayPage = scrollTarget.pageNumber ?? fieldInfo.page;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${displayPage} of the PDF`);
+              setEmptyFieldPage(displayPage);
+              void handleManualSave();
 
-              // Scroll to the specific page in the PDF viewer
+              // Scroll to the specific field in the PDF viewer
               setTimeout(() => {
-                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (scrollTarget.fieldElement) {
+                  scrollTarget.fieldElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  if (scrollTarget.scrollContainer && typeof scrollTarget.fieldTop === 'number') {
+                    scrollTarget.scrollContainer.scrollTo({ top: Math.max(scrollTarget.fieldTop - 160, 0), behavior: 'smooth' });
+                  }
+                  const input = scrollTarget.fieldElement.querySelector('input') as HTMLInputElement | null;
+                  if (input) {
+                    input.focus({ preventScroll: true });
+                  }
+                  return;
+                }
+
+                const canvas = document.querySelector(`canvas[data-page-number="${displayPage}"]`);
                 if (canvas) {
-                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  const scrollContainer = document.querySelector('[data-pdf-scroll-container="true"]') as HTMLElement | null;
+                  if (scrollContainer) {
+                    const canvasRect = canvas.getBoundingClientRect();
+                    const containerRect = scrollContainer.getBoundingClientRect();
+                    const targetTop = canvasRect.top - containerRect.top + scrollContainer.scrollTop;
+                    scrollContainer.scrollTo({ top: Math.max(targetTop - 160, 0), behavior: 'smooth' });
+                  } else {
+                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
                 } else {
-                  // Fallback to scroll to top if canvas not found
                   window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
               }, 100);
@@ -925,6 +1016,7 @@ export default function StatePayrollFormViewer({
         }
 
         // Clear any previous validation errors if all fields are filled
+        setMissingRequiredFields([]);
         setValidationError(null);
         setEmptyFieldPage(null);
       } catch (err) {

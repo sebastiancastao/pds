@@ -12,8 +12,7 @@ export default function MealWaiver10to12WIPage() {
       allowedTypes={['10_hour', '12_hour']}
       showTypeSelector={false}
       backHref="/payroll-packet-wi/meal-waiver-6hour"
-      nextHref={null}
-      isLastForm={true}
+      nextHref="/payroll-packet-wi"
       signatureFormId="meal-waiver-10-12"
       signatureFormType="Meal Waiver 10/12 Hour"
     />

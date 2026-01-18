@@ -266,16 +266,32 @@ export default function LoginPage() {
           console.log('[LOGIN DEBUG] - onboardingApproved:', onboardingApproved);
           console.log('[LOGIN DEBUG] - hasOnboardingRecord:', hasOnboardingRecord);
 
-          // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
           if (hasOnboardingRecord && !onboardingApproved) {
-            // User has a record but onboarding_completed is false - redirect to pending page
-            console.log('[LOGIN DEBUG] ⚠️ SCENARIO: User has vendor_onboarding_status record with onboarding_completed = false');
-            console.log('[LOGIN DEBUG] Redirecting to onboarding pending page');
+            console.log('[LOGIN DEBUG] Onboarding record exists but not approved - redirecting to pending page');
             onboardingRedirectPath = '/onboarding-pending';
-          } else if (!hasOnboardingRecord && !onboardingApproved) {
-            // User hasn't submitted onboarding PDFs yet - determine their current stage
-            console.log('[LOGIN DEBUG] ⚠️ SCENARIO A: User has NOT submitted onboarding PDFs');
-            console.log('[LOGIN DEBUG] 🔍 Calling /api/auth/check-onboarding-stage to detect current stage...');
+          } else if (!onboardingApproved) {
+            // User has not finished onboarding - determine last updated form
+            console.log('[LOGIN DEBUG] Onboarding not approved - determining last updated form');
+            console.log('[LOGIN DEBUG] Has onboarding record:', hasOnboardingRecord);
+            let localRedirect: string | null = null;
+            try {
+              const stored = localStorage.getItem('onboarding_last_form');
+              if (stored) {
+                const parsed = JSON.parse(stored);
+                if (parsed?.userId === authData.user.id && typeof parsed?.path === 'string') {
+                  if (parsed.path.startsWith('/payroll-packet-')) {
+                    localRedirect = parsed.path;
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn('[LOGIN DEBUG] Failed to read local onboarding redirect:', e);
+            }
+            if (localRedirect) {
+              onboardingRedirectPath = localRedirect;
+              console.log('[LOGIN DEBUG] Using local onboarding redirect:', onboardingRedirectPath);
+            } else {
+            console.log('[LOGIN DEBUG] Calling /api/auth/check-onboarding-stage to detect current stage...');
 
             // Call the onboarding stage detection API
             try {
@@ -292,25 +308,26 @@ export default function LoginPage() {
               if (stageResponse.ok) {
                 const stageResult = await stageResponse.json();
                 onboardingRedirectPath = stageResult.nextStage;
-                console.log('[LOGIN DEBUG] ✅ Stage API returned success');
+                console.log('[LOGIN DEBUG] Stage API returned success');
                 console.log('[LOGIN DEBUG] Full stage API response:', JSON.stringify(stageResult, null, 2));
-                console.log('[LOGIN DEBUG] ⭐ Next stage detected:', onboardingRedirectPath);
+                console.log('[LOGIN DEBUG] Next stage detected:', onboardingRedirectPath);
                 console.log('[LOGIN DEBUG] Progress:', `${stageResult.completedCount}/${stageResult.totalCount} forms (${stageResult.percentComplete}%)`);
                 console.log('[LOGIN DEBUG] Approved status:', stageResult.approved);
               } else {
                 // Fallback to default
                 const errorData = await stageResponse.json();
-                console.error('[LOGIN DEBUG] ❌ Stage API returned error:', errorData);
+                console.error('[LOGIN DEBUG] Stage API returned error:', errorData);
                 onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
                 console.log('[LOGIN DEBUG] Using fallback redirect:', onboardingRedirectPath);
               }
             } catch (stageError) {
-              console.error('[LOGIN DEBUG] ❌ Exception calling stage detection API:', stageError);
+              console.error('[LOGIN DEBUG] Exception calling stage detection API:', stageError);
               onboardingRedirectPath = bgCheckResult.onboardingRedirect || '/payroll-packet-ca/employee-information';
               console.log('[LOGIN DEBUG] Using fallback redirect after error:', onboardingRedirectPath);
             }
 
-            console.log('[LOGIN DEBUG] 🎯 FINAL onboarding redirect path will be:', onboardingRedirectPath);
+            console.log('[LOGIN DEBUG] FINAL onboarding redirect path will be:', onboardingRedirectPath);
+            }
           } else if (onboardingApproved) {
             // Onboarding approved
             console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding approved');
