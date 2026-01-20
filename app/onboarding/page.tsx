@@ -12,6 +12,13 @@ interface OnboardingStatus {
   updated_at: string;
 }
 
+interface FormProgress {
+  form_name: string;
+  updated_at: string;
+  position: number;
+  display_name: string;
+}
+
 interface User {
   id: string;
   user_id: string;
@@ -31,6 +38,10 @@ interface User {
   pdf_latest_update?: string | null;
   pdf_downloaded: boolean;
   pdf_downloaded_at: string | null;
+  latest_form_progress: FormProgress | null;
+  forms_completed: number;
+  total_forms: number;
+  completed_forms: string[];
 }
 
 export default function OnboardingPage() {
@@ -41,6 +52,8 @@ export default function OnboardingPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
+  const [filterForm, setFilterForm] = useState<string>('all');
+  const [showOnlyWithProgress, setShowOnlyWithProgress] = useState(false);
 
   // Current user's role (from users table)
   const [myRole, setMyRole] = useState<string | null>(null);
@@ -281,6 +294,19 @@ export default function OnboardingPage() {
         if (user.has_temporary_password) return false;
       }
 
+      if (filterForm === 'no_progress') {
+        if (user.latest_form_progress) return false;
+      } else if (filterForm !== 'all') {
+        if (!user.latest_form_progress || user.latest_form_progress.form_name !== filterForm) return false;
+      }
+
+      // Filter to show only users with progress (must have form progress with position > 0)
+      if (showOnlyWithProgress) {
+        if (!user.latest_form_progress || user.latest_form_progress.position === 0) {
+          return false;
+        }
+      }
+
       return true;
     })
     .sort((a, b) => {
@@ -322,6 +348,15 @@ export default function OnboardingPage() {
   const temporaryPasswordCount = users.filter(u => u.has_temporary_password).length;
   const backgroundCompletedCount = users.filter(u => u.background_check_completed).length;
   const pdfSubmittedCount = users.filter(u => u.has_submitted_pdf).length;
+
+  // Get unique form names for the filter dropdown
+  const uniqueFormNames = Array.from(
+    new Set(
+      users
+        .filter(u => u.latest_form_progress?.form_name)
+        .map(u => u.latest_form_progress!.form_name)
+    )
+  ).sort();
 
   // Allow editing only for HR or Exec
   const canEditOnboarding = (myRole?.trim().toLowerCase() === 'hr') || (myRole?.trim().toLowerCase() === 'exec');
@@ -399,7 +434,7 @@ export default function OnboardingPage() {
 
         {/* Filters */}
         <div className="bg-white rounded-lg shadow mb-6 p-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">
                 Search Users
@@ -443,6 +478,37 @@ export default function OnboardingPage() {
                 <option value="permanent">Permanent</option>
               </select>
             </div>
+            <div>
+              <label htmlFor="filterForm" className="block text-sm font-medium text-gray-700 mb-1">
+                Form Progress
+              </label>
+              <select
+                id="filterForm"
+                value={filterForm}
+                onChange={(e) => setFilterForm(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Forms</option>
+                <option value="no_progress">No Progress</option>
+                {uniqueFormNames.map((formName) => (
+                  <option key={formName} value={formName}>
+                    {formName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center">
+            <input
+              type="checkbox"
+              id="showOnlyWithProgress"
+              checked={showOnlyWithProgress}
+              onChange={(e) => setShowOnlyWithProgress(e.target.checked)}
+              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded cursor-pointer"
+            />
+            <label htmlFor="showOnlyWithProgress" className="ml-2 text-sm text-gray-700 cursor-pointer">
+              Show only users with form progress
+            </label>
           </div>
         </div>
 
@@ -461,7 +527,7 @@ export default function OnboardingPage() {
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Form Progress</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Password Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Onboarding Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDF Submitted</th>
@@ -487,9 +553,53 @@ export default function OnboardingPage() {
                         <div className="text-sm text-gray-500">{user.email}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800 capitalize">
-                          {user.role}
-                        </span>
+                        <div className="min-w-[180px]">
+                          {user.latest_form_progress ? (
+                            <>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium text-gray-700">
+                                  Step {user.latest_form_progress.position}/{user.total_forms}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {Math.round((user.latest_form_progress.position / user.total_forms) * 100)}%
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div
+                                  className={`h-2 rounded-full transition-all ${
+                                    user.latest_form_progress.position === user.total_forms
+                                      ? 'bg-green-500'
+                                      : 'bg-indigo-500'
+                                  }`}
+                                  style={{ width: `${(user.latest_form_progress.position / user.total_forms) * 100}%` }}
+                                />
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1 truncate" title={user.latest_form_progress.display_name}>
+                                {user.latest_form_progress.display_name}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                {new Date(user.latest_form_progress.updated_at).toLocaleDateString()}
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium text-gray-500">
+                                  Not started
+                                </span>
+                                <span className="text-xs text-gray-400">
+                                  0%
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div className="h-2 rounded-full bg-gray-300" style={{ width: '0%' }} />
+                              </div>
+                              <div className="text-xs text-gray-400 mt-1">
+                                No forms completed
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {user.has_temporary_password ? (

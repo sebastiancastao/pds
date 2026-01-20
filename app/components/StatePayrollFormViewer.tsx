@@ -411,6 +411,7 @@ export default function StatePayrollFormViewer({
     console.log('[VALIDATION] currentForm:', currentForm);
     console.log('[VALIDATION] currentSignature:', currentSignature);
     setMissingRequiredFields([]);
+    const shouldSaveOnMissing = stateCode === 'ny';
 
     // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
@@ -656,6 +657,10 @@ export default function StatePayrollFormViewer({
                 setValidationError(message);
                 setEmptyFieldPage(page);
 
+                if (shouldSaveOnMissing) {
+                  void handleManualSave();
+                }
+
                 setTimeout(() => {
                   const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
                   if (canvas) {
@@ -816,8 +821,8 @@ export default function StatePayrollFormViewer({
       }
     }
 
-      // Validate required fields for AZ Notice to Employee
-      if (selectedForm === 'notice-to-employee' && stateCode === 'az' && pdfBytesRef.current) {
+      // Validate required fields for AZ/NY Notice to Employee
+      if (selectedForm === 'notice-to-employee' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -854,6 +859,10 @@ export default function StatePayrollFormViewer({
                 setMissingRequiredFields([fieldInfo.name]);
                 setValidationError(message);
                 setEmptyFieldPage(page);
+
+                if (shouldSaveOnMissing) {
+                  void handleManualSave();
+                }
 
                 setTimeout(() => {
                   const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -934,12 +943,13 @@ export default function StatePayrollFormViewer({
       }
     }
 
-      // Validate required fields for AZ Temporary Employment Agreement
-      if (selectedForm === 'temp-employment-agreement' && stateCode === 'az' && pdfBytesRef.current) {
+      // Validate required fields for AZ/NY Temporary Employment Agreement
+      if (selectedForm === 'temp-employment-agreement' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
           const form = pdfDoc.getForm();
+          const lastPageNumber = pdfDoc.getPages().length;
 
           const getFieldPage = (field: any) => {
             try {
@@ -962,11 +972,15 @@ export default function StatePayrollFormViewer({
             const field = form.getTextField(requiredField.name);
             const value = field.getText();
             if (!value || value.trim() === '') {
-              const page = getFieldPage(field);
+              const page = stateCode === 'ny' ? lastPageNumber : getFieldPage(field);
               const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
               setMissingRequiredFields([requiredField.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1140,8 +1154,8 @@ export default function StatePayrollFormViewer({
       }
     }
 
-    // Validate required fields for AZ W-4
-    if (selectedForm === 'fw4' && stateCode === 'az' && pdfBytesRef.current) {
+    // Validate required fields for AZ/NY W-4
+    if (selectedForm === 'fw4' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
       try {
         const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -1184,6 +1198,10 @@ export default function StatePayrollFormViewer({
               setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1234,6 +1252,10 @@ export default function StatePayrollFormViewer({
           setMissingRequiredFields(filingStatusFields);
           setValidationError(message);
           setEmptyFieldPage(page);
+
+          if (shouldSaveOnMissing) {
+            void handleManualSave();
+          }
 
           setTimeout(() => {
             const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1538,7 +1560,7 @@ export default function StatePayrollFormViewer({
         }
       }
 
-      if (stateCode === 'az' && pdfBytesRef.current) {
+      if ((stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -1646,6 +1668,10 @@ export default function StatePayrollFormViewer({
             setMissingRequiredFields(citizenshipFields);
             setValidationError(message);
             setEmptyFieldPage(page);
+
+            if (shouldSaveOnMissing) {
+              void handleManualSave();
+            }
 
             setTimeout(() => {
               const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
