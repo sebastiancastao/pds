@@ -120,6 +120,8 @@ export default function ResetUserPasswordPage() {
         throw new Error(data.error || 'Failed to load users');
       }
 
+      console.log('[RESET-PASSWORD-PAGE] Loaded users:', data.users?.length);
+      console.log('[RESET-PASSWORD-PAGE] First 3 users:', data.users?.slice(0, 3).map((u: User) => ({ id: u.id, email: u.email })));
       setUsers(data.users || []);
     } catch (err: any) {
       console.error('[RESET-PASSWORD-PAGE] Error loading users:', err);
@@ -154,6 +156,7 @@ export default function ResetUserPasswordPage() {
         },
         body: JSON.stringify({
           userId: selectedUser.id,
+          userEmail: selectedUser.email, // Include email as fallback
           sendEmail,
         }),
       });
