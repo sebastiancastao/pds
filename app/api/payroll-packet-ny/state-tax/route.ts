@@ -45,7 +45,7 @@ export async function GET() {
     // Save and return the modified PDF
     const modifiedPdfBytes = await pdfDoc.save();
 
-    return new NextResponse(modifiedPdfBytes, {
+    return new NextResponse(Buffer.from(modifiedPdfBytes), {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': 'inline; filename="NY_State_Tax_Form.pdf"',
