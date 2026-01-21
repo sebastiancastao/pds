@@ -358,9 +358,9 @@ export async function GET(request: NextRequest) {
     }
 
 
-    
 
-    
+
+
 
     // Save the PDF with the new fields
     const pdfBytes = await pdfDoc.save();

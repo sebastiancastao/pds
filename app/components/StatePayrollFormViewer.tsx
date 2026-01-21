@@ -104,10 +104,10 @@ export default function StatePayrollFormViewer({
   const currentForm = isAzStateTax
     ? { ...currentFormBase, api: '/api/payroll-packet-az/fillable' }
     : isNyStateTax
-    ? { ...currentFormBase, api: '/api/payroll-packet-common/state-tax?state=ny' }
-    : isWiStateTax
-    ? { ...currentFormBase, api: '/api/payroll-packet-wi/fillable' }
-    : currentFormBase;
+      ? { ...currentFormBase, api: '/api/payroll-packet-common/state-tax?state=ny' }
+      : isWiStateTax
+        ? { ...currentFormBase, api: '/api/payroll-packet-wi/fillable' }
+        : currentFormBase;
 
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
@@ -411,6 +411,7 @@ export default function StatePayrollFormViewer({
     console.log('[VALIDATION] currentForm:', currentForm);
     console.log('[VALIDATION] currentSignature:', currentSignature);
     setMissingRequiredFields([]);
+    const shouldSaveOnMissing = stateCode === 'ny';
 
     // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
@@ -436,11 +437,11 @@ export default function StatePayrollFormViewer({
       return;
     }
 
-      // Validate required fields for ADP Direct Deposit
-      if (selectedForm === 'adp-deposit' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+    // Validate required fields for ADP Direct Deposit
+    if (selectedForm === 'adp-deposit' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
         const form = pdfDoc.getForm();
 
         const getFieldPage = (field: any) => {
@@ -499,218 +500,302 @@ export default function StatePayrollFormViewer({
         setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating ADP Direct Deposit fields:', err);
-        }
       }
+    }
 
-      // Validate required fields for WI state tax form
-      if (selectedForm === 'state-tax' && stateCode === 'wi' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
+    // Validate required fields for WI state tax form
+    if (selectedForm === 'state-tax' && stateCode === 'wi' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
 
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredFields = [
-            { name: 'wiFirstName', friendly: 'Employee Legal Name' },
-            { name: 'wiSSN', friendly: 'Social Security Number' },
-            { name: 'homeAddress', friendly: 'Employee Address' },
-            { name: 'DOB', friendly: 'Date of Birth' },
-            { name: 'city', friendly: 'City' },
-            { name: 'state', friendly: 'State' },
-            { name: 'zip', friendly: 'ZIP Code' },
-            { name: 'total', friendly: 'Total' },
-            { name: 'date', friendly: 'Date Signed' },
-          ];
-
-          for (const fieldInfo of requiredFields) {
-            try {
-              const field = form.getTextField(fieldInfo.name);
-              const value = field.getText();
-              if (!value || value.trim() === '') {
-                const page = getFieldPage(field);
-                const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
-                setMissingRequiredFields([fieldInfo.name]);
-                setValidationError(message);
-                setEmptyFieldPage(page);
-
-                setTimeout(() => {
-                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                  if (canvas) {
-                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } else {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }
-                }, 100);
-
-                return;
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
-            }
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
           }
+        };
 
-          const exemptionFields = [
-            { name: 'exemptionYS', friendly: 'Exemption (Self)' },
-            { name: 'exemptionSpouse', friendly: 'Exemption (Spouse)' },
-            { name: 'exemptionDependents', friendly: 'Exemption (Dependents)' },
-          ];
+        const requiredFields = [
+          { name: 'wiFirstName', friendly: 'Employee Legal Name' },
+          { name: 'wiSSN', friendly: 'Social Security Number' },
+          { name: 'homeAddress', friendly: 'Employee Address' },
+          { name: 'DOB', friendly: 'Date of Birth' },
+          { name: 'city', friendly: 'City' },
+          { name: 'state', friendly: 'State' },
+          { name: 'zip', friendly: 'ZIP Code' },
+          { name: 'total', friendly: 'Total' },
+          { name: 'date', friendly: 'Date Signed' },
+        ];
 
-          const exemptionValues = exemptionFields.map(({ name }) => {
-            try {
-              const field = form.getTextField(name);
-              return (field.getText() || '').trim();
-            } catch (err) {
-              console.warn(`Field ${name} not found or error checking:`, err);
-              return '';
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
             }
-          });
-
-          if (exemptionValues.every((value) => value === '')) {
-            let page = 1;
-            try {
-              const field = form.getTextField(exemptionFields[0].name);
-              page = getFieldPage(field);
-            } catch {
-              page = 1;
-            }
-            const message =
-              'Please fill in at least one exemption field (Self, Spouse, or Dependents) on page ' +
-              `${page} of the PDF`;
-            setMissingRequiredFields(exemptionFields.map((field) => field.name));
-            setValidationError(message);
-            setEmptyFieldPage(page);
-
-            setTimeout(() => {
-              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-              if (canvas) {
-                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              } else {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }, 100);
-
-            return;
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
           }
+        }
 
-          setValidationError(null);
-          setEmptyFieldPage(null);
+        const exemptionFields = [
+          { name: 'exemptionYS', friendly: 'Exemption (Self)' },
+          { name: 'exemptionSpouse', friendly: 'Exemption (Spouse)' },
+          { name: 'exemptionDependents', friendly: 'Exemption (Dependents)' },
+        ];
+
+        const exemptionValues = exemptionFields.map(({ name }) => {
+          try {
+            const field = form.getTextField(name);
+            return (field.getText() || '').trim();
+          } catch (err) {
+            console.warn(`Field ${name} not found or error checking:`, err);
+            return '';
+          }
+        });
+
+        if (exemptionValues.every((value) => value === '')) {
+          let page = 1;
+          try {
+            const field = form.getTextField(exemptionFields[0].name);
+            page = getFieldPage(field);
+          } catch {
+            page = 1;
+          }
+          const message =
+            'Please fill in at least one exemption field (Self, Spouse, or Dependents) on page ' +
+            `${page} of the PDF`;
+          setMissingRequiredFields(exemptionFields.map((field) => field.name));
+          setValidationError(message);
+          setEmptyFieldPage(page);
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating WI state tax fields:', err);
       }
     }
 
-      // Validate required fields for AZ state tax form
-      if (selectedForm === 'state-tax' && stateCode === 'az' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
+    // Validate required fields for AZ state tax form
+    if (selectedForm === 'state-tax' && stateCode === 'az' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
 
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredFields = [
-            { name: 'azFirstName', friendly: 'Employee Legal Name' },
-            { name: 'azSSN', friendly: 'Social Security Number' },
-            { name: 'homeAdress', friendly: 'Employee Address' },
-            { name: 'city', friendly: 'City' },
-            { name: 'state', friendly: 'State' },
-            { name: 'zip', friendly: 'ZIP Code' },
-            { name: 'date', friendly: 'Date Signed' },
-          ];
-
-          for (const fieldInfo of requiredFields) {
-            try {
-              const field = form.getTextField(fieldInfo.name);
-              const value = field.getText();
-              if (!value || value.trim() === '') {
-                const page = getFieldPage(field);
-                const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
-                setMissingRequiredFields([fieldInfo.name]);
-                setValidationError(message);
-                setEmptyFieldPage(page);
-
-                setTimeout(() => {
-                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                  if (canvas) {
-                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } else {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }
-                }, 100);
-
-                return;
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
-            }
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
           }
+        };
 
-          const withholdingCheckboxes = [
-            'OneCheckBox',
-            'pointFiveCheckBox ',
-            'onePercentCheckBox',
-            'onePointFiveCheckBox',
-            'twoPercentCheckBox',
-            'twoPointFiveCheckBox',
-            'threePercentCheckBox',
-            'threePointFiveCheckBox',
-            'extraAmmountCheckBox',
-            'twoCheckBox',
-          ];
+        const requiredFields = [
+          { name: 'azFirstName', friendly: 'Employee Legal Name' },
+          { name: 'azSSN', friendly: 'Social Security Number' },
+          { name: 'homeAdress', friendly: 'Employee Address' },
+          { name: 'city', friendly: 'City' },
+          { name: 'state', friendly: 'State' },
+          { name: 'zip', friendly: 'ZIP Code' },
+          { name: 'date', friendly: 'Date Signed' },
+        ];
 
-          let hasWithholdingSelection = false;
-          let extraAmountSelected = false;
-          for (const fieldName of withholdingCheckboxes) {
-            try {
-              const field = form.getCheckBox(fieldName);
-              if (field.isChecked()) {
-                hasWithholdingSelection = true;
-                if (fieldName === 'extraAmmountCheckBox') {
-                  extraAmountSelected = true;
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldName} not found or error checking:`, err);
-            }
-          }
+              }, 100);
 
-          if (!hasWithholdingSelection) {
-            let page = 1;
-            try {
-              const field = form.getCheckBox(withholdingCheckboxes[0]);
-              page = getFieldPage(field);
-            } catch {
-              page = 1;
+              return;
             }
-            const message = `Please select a withholding percentage or additional amount option on page ${page} of the PDF`;
-            setMissingRequiredFields(withholdingCheckboxes);
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        const withholdingCheckboxes = [
+          'OneCheckBox',
+          'pointFiveCheckBox ',
+          'onePercentCheckBox',
+          'onePointFiveCheckBox',
+          'twoPercentCheckBox',
+          'twoPointFiveCheckBox',
+          'threePercentCheckBox',
+          'threePointFiveCheckBox',
+          'extraAmmountCheckBox',
+          'twoCheckBox',
+        ];
+
+        let hasWithholdingSelection = false;
+        let extraAmountSelected = false;
+        for (const fieldName of withholdingCheckboxes) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasWithholdingSelection = true;
+              if (fieldName === 'extraAmmountCheckBox') {
+                extraAmountSelected = true;
+              }
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+
+        if (!hasWithholdingSelection) {
+          let page = 1;
+          try {
+            const field = form.getCheckBox(withholdingCheckboxes[0]);
+            page = getFieldPage(field);
+          } catch {
+            page = 1;
+          }
+          const message = `Please select a withholding percentage or additional amount option on page ${page} of the PDF`;
+          setMissingRequiredFields(withholdingCheckboxes);
+          setValidationError(message);
+          setEmptyFieldPage(page);
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        if (extraAmountSelected) {
+          try {
+            const field = form.getTextField('extraAmmount');
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please enter the additional withholding amount on page ${page} of the PDF`;
+              setMissingRequiredFields(['extraAmmount']);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn('Field extraAmmount not found or error checking:', err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating AZ state tax fields:', err);
+      }
+    }
+
+    // Validate required fields for WI Notice to Employee
+    if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredField = { name: 'Employee Name', friendly: 'Employee Name' };
+
+        try {
+          const field = form.getTextField(requiredField.name);
+          const value = field.getText();
+          if (!value || value.trim() === '') {
+            const page = getFieldPage(field);
+            const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
+            setMissingRequiredFields([requiredField.name]);
             setValidationError(message);
             setEmptyFieldPage(page);
 
@@ -725,192 +810,59 @@ export default function StatePayrollFormViewer({
 
             return;
           }
-
-          if (extraAmountSelected) {
-            try {
-              const field = form.getTextField('extraAmmount');
-              const value = field.getText();
-              if (!value || value.trim() === '') {
-                const page = getFieldPage(field);
-                const message = `Please enter the additional withholding amount on page ${page} of the PDF`;
-                setMissingRequiredFields(['extraAmmount']);
-                setValidationError(message);
-                setEmptyFieldPage(page);
-
-                setTimeout(() => {
-                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                  if (canvas) {
-                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } else {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }
-                }, 100);
-
-                return;
-              }
-            } catch (err) {
-              console.warn('Field extraAmmount not found or error checking:', err);
-            }
-          }
-
-          setValidationError(null);
-          setEmptyFieldPage(null);
         } catch (err) {
-          console.error('Error validating AZ state tax fields:', err);
+          console.warn(`Field ${requiredField.name} not found or error checking:`, err);
         }
-      }
 
-      // Validate required fields for WI Notice to Employee
-      if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
-
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredField = { name: 'Employee Name', friendly: 'Employee Name' };
-
-          try {
-            const field = form.getTextField(requiredField.name);
-            const value = field.getText();
-            if (!value || value.trim() === '') {
-              const page = getFieldPage(field);
-              const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
-              setMissingRequiredFields([requiredField.name]);
-              setValidationError(message);
-              setEmptyFieldPage(page);
-
-              setTimeout(() => {
-                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                if (canvas) {
-                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                } else {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-              }, 100);
-
-              return;
-            }
-          } catch (err) {
-            console.warn(`Field ${requiredField.name} not found or error checking:`, err);
-          }
-
-          setValidationError(null);
-          setEmptyFieldPage(null);
+        setValidationError(null);
+        setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating WI Notice to Employee fields:', err);
       }
     }
 
-      // Validate required fields for AZ Notice to Employee
-      if (selectedForm === 'notice-to-employee' && stateCode === 'az' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
+    // Validate required fields for AZ/NY Notice to Employee
+    if (selectedForm === 'notice-to-employee' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
 
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredFields = [
-            { name: 'Employee Name', friendly: 'Employee Name' },
-            { name: 'PRINT NAME of Employee', friendly: 'Printed Name (Employee)' },
-            { name: 'Date_2', friendly: 'Date (Employee)' },
-          ];
-
-          for (const fieldInfo of requiredFields) {
-            try {
-              const field = form.getTextField(fieldInfo.name);
-              const value = field.getText();
-              if (!value || value.trim() === '') {
-                const page = getFieldPage(field);
-                const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
-                setMissingRequiredFields([fieldInfo.name]);
-                setValidationError(message);
-                setEmptyFieldPage(page);
-
-                setTimeout(() => {
-                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                  if (canvas) {
-                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                  } else {
-                    window.scrollTo({ top: 0, behavior: 'smooth' });
-                  }
-                }, 100);
-
-                return;
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
-            }
-          }
-
-          setValidationError(null);
-          setEmptyFieldPage(null);
-        } catch (err) {
-          console.error('Error validating AZ Notice to Employee fields:', err);
-        }
-      }
-
-      // Validate required fields for WI Temporary Employment Agreement
-      if (selectedForm === 'temp-employment-agreement' && stateCode === 'wi' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
-
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredField = { name: 'employee_signature_date', friendly: 'Date' };
-
+        const getFieldPage = (field: any) => {
           try {
-            const field = form.getTextField(requiredField.name);
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'Employee Name', friendly: 'Employee Name' },
+          { name: 'PRINT NAME of Employee', friendly: 'Printed Name (Employee)' },
+          { name: 'Date_2', friendly: 'Date (Employee)' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
             const value = field.getText();
             if (!value || value.trim() === '') {
               const page = getFieldPage(field);
-              const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
-              setMissingRequiredFields([requiredField.name]);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -924,76 +876,138 @@ export default function StatePayrollFormViewer({
               return;
             }
           } catch (err) {
-            console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
           }
+        }
 
-          setValidationError(null);
-          setEmptyFieldPage(null);
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating AZ Notice to Employee fields:', err);
+      }
+    }
+
+    // Validate required fields for WI Temporary Employment Agreement
+    if (selectedForm === 'temp-employment-agreement' && stateCode === 'wi' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredField = { name: 'employee_signature_date', friendly: 'Date' };
+
+        try {
+          const field = form.getTextField(requiredField.name);
+          const value = field.getText();
+          if (!value || value.trim() === '') {
+            const page = getFieldPage(field);
+            const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
+            setMissingRequiredFields([requiredField.name]);
+            setValidationError(message);
+            setEmptyFieldPage(page);
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+        } catch (err) {
+          console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating WI Temp Employment Agreement fields:', err);
       }
     }
 
-      // Validate required fields for AZ Temporary Employment Agreement
-      if (selectedForm === 'temp-employment-agreement' && stateCode === 'az' && pdfBytesRef.current) {
-        try {
-          const { PDFDocument } = await import('pdf-lib');
-          const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-          const form = pdfDoc.getForm();
+    // Validate required fields for AZ/NY Temporary Employment Agreement
+    if (selectedForm === 'temp-employment-agreement' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+        const lastPageNumber = pdfDoc.getPages().length;
 
-          const getFieldPage = (field: any) => {
-            try {
-              const widgets = field?.acroField?.getWidgets?.() || [];
-              if (!widgets.length) return 1;
-              const widget = widgets[0];
-              const pageRef = widget?.P?.();
-              if (!pageRef) return 1;
-              const pages = pdfDoc.getPages();
-              const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
-              return pageIndex >= 0 ? pageIndex + 1 : 1;
-            } catch {
-              return 1;
-            }
-          };
-
-          const requiredField = { name: 'employee_signature_date', friendly: 'Date' };
-
+        const getFieldPage = (field: any) => {
           try {
-            const field = form.getTextField(requiredField.name);
-            const value = field.getText();
-            if (!value || value.trim() === '') {
-              const page = getFieldPage(field);
-              const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
-              setMissingRequiredFields([requiredField.name]);
-              setValidationError(message);
-              setEmptyFieldPage(page);
-
-              setTimeout(() => {
-                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-                if (canvas) {
-                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                } else {
-                  window.scrollTo({ top: 0, behavior: 'smooth' });
-                }
-              }, 100);
-
-              return;
-            }
-          } catch (err) {
-            console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
           }
+        };
 
-          setValidationError(null);
-          setEmptyFieldPage(null);
-        } catch (err) {
-          console.error('Error validating AZ Temp Employment Agreement fields:', err);
-        }
-      }
+        const requiredField = { name: 'employee_signature_date', friendly: 'Date' };
 
-      // Validate required fields for WI W-4 (Step 1 a/b and filing status).
-      if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
         try {
-          const { PDFDocument } = await import('pdf-lib');
+          const field = form.getTextField(requiredField.name);
+          const value = field.getText();
+          if (!value || value.trim() === '') {
+            const page = stateCode === 'ny' ? lastPageNumber : getFieldPage(field);
+            const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
+            setMissingRequiredFields([requiredField.name]);
+            setValidationError(message);
+            setEmptyFieldPage(page);
+
+            if (shouldSaveOnMissing) {
+              void handleManualSave();
+            }
+
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+
+            return;
+          }
+        } catch (err) {
+          console.warn(`Field ${requiredField.name} not found or error checking:`, err);
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating AZ Temp Employment Agreement fields:', err);
+      }
+    }
+
+    // Validate required fields for WI W-4 (Step 1 a/b and filing status).
+    if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
         const form = pdfDoc.getForm();
 
@@ -1140,8 +1154,8 @@ export default function StatePayrollFormViewer({
       }
     }
 
-    // Validate required fields for AZ W-4
-    if (selectedForm === 'fw4' && stateCode === 'az' && pdfBytesRef.current) {
+    // Validate required fields for AZ/NY W-4
+    if (selectedForm === 'fw4' && (stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
       try {
         const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -1184,6 +1198,10 @@ export default function StatePayrollFormViewer({
               setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1234,6 +1252,10 @@ export default function StatePayrollFormViewer({
           setMissingRequiredFields(filingStatusFields);
           setValidationError(message);
           setEmptyFieldPage(page);
+
+          if (shouldSaveOnMissing) {
+            void handleManualSave();
+          }
 
           setTimeout(() => {
             const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1538,7 +1560,7 @@ export default function StatePayrollFormViewer({
         }
       }
 
-      if (stateCode === 'az' && pdfBytesRef.current) {
+      if ((stateCode === 'az' || stateCode === 'ny') && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -1646,6 +1668,10 @@ export default function StatePayrollFormViewer({
             setMissingRequiredFields(citizenshipFields);
             setValidationError(message);
             setEmptyFieldPage(page);
+
+            if (shouldSaveOnMissing) {
+              void handleManualSave();
+            }
 
             setTimeout(() => {
               const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -1957,7 +1983,7 @@ export default function StatePayrollFormViewer({
             animation: 'slideDown 0.3s ease-out'
           }}>
             <svg style={{ width: '32px', height: '32px', fill: '#d32f2f', flexShrink: 0 }} viewBox="0 0 24 24">
-              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
             </svg>
             <div style={{ flex: 1 }}>
               <div style={{ fontWeight: 'bold', color: '#d32f2f', marginBottom: '8px', fontSize: '18px' }}>
