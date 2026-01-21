@@ -6,7 +6,7 @@ import { PDFDocument } from 'pdf-lib';
 export async function GET() {
   try {
     // Read the NY State W4 PDF
-    const pdfPath = path.join(process.cwd(), 'NY State 2025 W4 form.pdf');
+    const pdfPath = path.join(process.cwd(), 'pdfs', 'NY State 2025 W4 form.pdf');
     const pdfBytes = await readFile(pdfPath);
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const form = pdfDoc.getForm();
@@ -22,7 +22,7 @@ export async function GET() {
           try {
             // Get the PDFName for /Off
             const { PDFName } = await import('pdf-lib');
-            field.acroField.setValue(PDFName.of('Off'));
+            (field.acroField as any).setValue(PDFName.of('Off'));
             console.log(`[NY STATE TAX API] Cleared default selection for ${fieldName} using PDFName.of('Off')`);
           } catch (e1) {
             console.warn(`[NY STATE TAX API] PDFName method failed for ${fieldName}:`, e1);
