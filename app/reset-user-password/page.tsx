@@ -55,7 +55,7 @@ export default function ResetUserPasswordPage() {
           .from('users')
           .select('role')
           .eq('id', session.user.id)
-          .single();
+          .single<{ role: string }>();
 
         const userRole = userData?.role ?? "";
 
