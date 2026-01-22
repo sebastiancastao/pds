@@ -420,6 +420,19 @@ export default function UserManagementPage() {
             Export to Excel
           </button>
           <Link
+            href="/reset-user-password"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#f59e0b',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Reset User Password
+          </Link>
+          <Link
             href="/global-calendar"
             style={{
               padding: '0.5rem 1rem',
