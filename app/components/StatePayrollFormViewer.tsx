@@ -291,6 +291,12 @@ export default function StatePayrollFormViewer({
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
+      console.log('[SAVE] Session check:', {
+        hasSession: !!session,
+        hasAccessToken: !!session?.access_token,
+        userId: session?.user?.id,
+        tokenPreview: session?.access_token?.substring(0, 20) + '...'
+      });
 
       // Convert Uint8Array to base64
       const base64 = btoa(

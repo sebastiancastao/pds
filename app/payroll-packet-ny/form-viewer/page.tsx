@@ -7,7 +7,7 @@ import MealWaiver10to12NYPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
 
 const NY_FORMS: FormSpec[] = [
-  { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
   { id: 'ny-state-supplements', formId: 'ny-state-supplements', display: 'NY State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/ny-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
