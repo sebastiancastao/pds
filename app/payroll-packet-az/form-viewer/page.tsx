@@ -62,7 +62,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -85,7 +85,7 @@ function EmployeeInformationAZForm() {
     position: '',
     startDate: '',
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
@@ -267,14 +267,16 @@ function EmployeeInformationAZForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+              Social Security Number <span style={{ color: '#d32f2f' }}>*</span>
+            </label>
             <input
               style={inputStyle}
               type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              maxLength={11}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
           </div>
         </div>

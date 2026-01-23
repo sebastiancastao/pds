@@ -5,6 +5,8 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
 const WAIVER_TYPE = '10_hour';
+const SIGNATURE_FORM_ID = 'ny-meal-waiver-10-12';
+const SIGNATURE_FORM_TYPE = 'NY Meal Waiver 10/12 Hour';
 
 const getDefaultDate = () => new Date().toISOString().split('T')[0];
 
@@ -25,6 +27,7 @@ const generalTerms = [
 export default function MealWaiver10to12NYPage() {
   const router = useRouter();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastSavedSignatureRef = useRef<string | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [fullName, setFullName] = useState('');
   const [position, setPosition] = useState('');
@@ -168,6 +171,51 @@ export default function MealWaiver10to12NYPage() {
     setSignature('');
   };
 
+  const saveSignatureToDatabase = async (signatureData: string, sessionToken?: string | null) => {
+    if (!signatureData) {
+      return;
+    }
+
+    const signatureKey = `${SIGNATURE_FORM_ID}_${signatureData}`;
+    if (lastSavedSignatureRef.current === signatureKey) {
+      return;
+    }
+
+    try {
+      const formDataForSignature = JSON.stringify({
+        waiver_type: WAIVER_TYPE,
+        employee_name: fullName.trim(),
+        position: position.trim() || null,
+        signature_date: signatureDate,
+        acknowledges_terms: acknowledged,
+      });
+
+      const response = await fetch('/api/form-signatures/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          formId: SIGNATURE_FORM_ID,
+          formType: SIGNATURE_FORM_TYPE,
+          signatureData,
+          formData: formDataForSignature,
+        }),
+      });
+
+      if (response.ok) {
+        lastSavedSignatureRef.current = signatureKey;
+      } else {
+        const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+        console.error('[NY MEAL WAIVER] Failed to save signature:', error);
+      }
+    } catch (error) {
+      console.error('[NY MEAL WAIVER] Exception saving signature:', error);
+    }
+  };
+
   const handleSave = async () => {
     if (!fullName.trim()) {
       alert('Please enter your printed name.');
@@ -214,6 +262,8 @@ export default function MealWaiver10to12NYPage() {
         const error = await response.json();
         throw new Error(error.error || 'Failed to save meal waiver');
       }
+
+      await saveSignatureToDatabase(signature, session?.access_token);
 
       alert('Meal waiver saved successfully.');
       return true;

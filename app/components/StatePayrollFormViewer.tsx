@@ -771,6 +771,142 @@ export default function StatePayrollFormViewer({
       }
     }
 
+    // Validate required fields for NY state tax form
+    if (selectedForm === 'state-tax' && stateCode === 'ny' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: 'First name and middle initial', friendly: 'First name & middle initial' },
+          { name: 'Last name', friendly: 'Last name' },
+          { name: 'Permanent mailing address', friendly: 'Permanent home address' },
+          { name: 'City, village or post office', friendly: 'City' },
+          { name: 'State', friendly: 'State' },
+          { name: 'ZIP code', friendly: 'ZIP code' },
+          { name: 'Your SSN', friendly: 'Social Security Number' },
+          { name: 'Date', friendly: 'Date' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+
+        const getFieldValue = (name: string) => {
+          try {
+            return (form.getTextField(name)?.getText() || '').trim();
+          } catch {
+            return '';
+          }
+        };
+
+        const checkAtLeastOneFilled = (names: string[], friendly: string) => {
+          const values = names.map(getFieldValue);
+          if (values.every((value) => !value)) {
+            const sampleField = form.getTextField(names[0]) || form.getTextField(names[1]);
+            const page = getFieldPage(sampleField);
+            const message = `Please fill in at least one of the ${friendly} fields on page ${page}`;
+            setMissingRequiredFields(names);
+            setValidationError(message);
+            setEmptyFieldPage(page);
+            if (shouldSaveOnMissing) {
+              void handleManualSave();
+            }
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+            return true;
+          }
+          return false;
+        };
+
+        if (checkAtLeastOneFilled(['line 1', 'line 2'], '"line 1" or "line 2"')) {
+          return;
+        }
+        if (checkAtLeastOneFilled(['line 3', 'line 4', 'line 5'], '"line 3", "line 4", or "line 5"')) {
+          return;
+        }
+
+        try {
+          const statusField = form.getCheckBox('Status');
+          if (!statusField.isChecked()) {
+            const page = getFieldPage(statusField);
+            const message = `Please select a filing status option on page ${page} of the PDF`;
+            setMissingRequiredFields(['Status']);
+            setValidationError(message);
+            setEmptyFieldPage(page);
+            if (shouldSaveOnMissing) {
+              void handleManualSave();
+            }
+            setTimeout(() => {
+              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+              if (canvas) {
+                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              } else {
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }
+            }, 100);
+            return;
+          }
+        } catch (err) {
+          console.warn('Status checkbox validation failed:', err);
+        }
+      } catch (err) {
+        console.error('Error validating NY state tax fields:', err);
+      }
+    }
+
     // Validate required fields for WI Notice to Employee
     if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
       try {
@@ -1188,9 +1324,6 @@ export default function StatePayrollFormViewer({
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', friendly: 'Address' },
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', friendly: 'City, state, and ZIP code' },
           { name: 'topmostSubform[0].Page1[0].f1_05[0]', friendly: 'Social Security number' },
-          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', friendly: 'Step 3: Qualifying children (under 17) amount' },
-          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', friendly: 'Step 3: Other dependents amount' },
-          { name: 'topmostSubform[0].Page1[0].f1_09[0]', friendly: 'Step 3: Total dependents amount' },
           { name: 'Employee Date', friendly: 'Employee date' },
         ];
 
@@ -1229,7 +1362,6 @@ export default function StatePayrollFormViewer({
           'topmostSubform[0].Page1[0].c1_1[0]',
           'topmostSubform[0].Page1[0].c1_1[1]',
           'topmostSubform[0].Page1[0].c1_1[2]',
-          'topmostSubform[0].Page1[0].c1_2[0]',
         ];
 
         let hasFilingStatus = false;
@@ -1254,8 +1386,53 @@ export default function StatePayrollFormViewer({
             page = 1;
           }
           const message =
-            'Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household / Exempt';
+            'Please select at least one filing status option in Step 1(c) on page 1 of the PDF';
           setMissingRequiredFields(filingStatusFields);
+          setValidationError(message);
+          setEmptyFieldPage(page);
+
+          if (shouldSaveOnMissing) {
+            void handleManualSave();
+          }
+
+          setTimeout(() => {
+            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+            if (canvas) {
+              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            } else {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          }, 100);
+
+          return;
+        }
+
+        const step3Fields = [
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', label: 'Qualifying children amount' },
+          { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', label: 'Other dependents amount' },
+        ];
+
+        const step3Values = step3Fields.map(({ name }) => {
+          try {
+            const field = form.getTextField(name);
+            return (field.getText() || '').trim();
+          } catch (err) {
+            console.warn(`Field ${name} not found or error checking:`, err);
+            return '';
+          }
+        });
+
+        if (step3Values.every((value) => value === '')) {
+          let page = 1;
+          try {
+            const field = form.getTextField(step3Fields[0].name);
+            page = getFieldPage(field);
+          } catch {
+            page = 1;
+          }
+          const message =
+            'Please fill in at least one Step 3 field (Qualifying children or Other dependents) on page 1 of the PDF';
+          setMissingRequiredFields(step3Fields.map((field) => field.name));
           setValidationError(message);
           setEmptyFieldPage(page);
 
@@ -1278,7 +1455,7 @@ export default function StatePayrollFormViewer({
         setValidationError(null);
         setEmptyFieldPage(null);
       } catch (err) {
-        console.error('Error validating AZ W-4 fields:', err);
+        console.error('Error validating AZ/NY W-4 fields:', err);
       }
     }
 

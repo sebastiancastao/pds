@@ -103,7 +103,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -126,7 +126,7 @@ function EmployeeInformationNVForm() {
     position: '',
     startDate: '',
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
@@ -148,7 +148,7 @@ function EmployeeInformationNVForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       alert('Please enter both first and last name.');
       return false;
@@ -161,12 +161,43 @@ function EmployeeInformationNVForm() {
       alert('Please provide a phone number and email.');
       return false;
     }
+    if (!form.ssn.trim()) {
+      alert('Please provide your Social Security Number.');
+      return false;
+    }
 
     setSaving(true);
     try {
+      // Save to localStorage as backup
       localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
-      setTimeout(() => setSaving(false), 300);
-      alert('Employee information saved.');
+
+      // Save to database with encrypted SSN
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('You must be logged in to save employee information.');
+        setSaving(false);
+        return false;
+      }
+
+      const response = await fetch('/api/employee-information/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(form)
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Save error:', error);
+        alert('Failed to save employee information to database.');
+        setSaving(false);
+        return false;
+      }
+
+      setSaving(false);
+      alert('Employee information saved successfully.');
       return true;
     } catch (e) {
       console.error('Save error:', e);
@@ -278,14 +309,16 @@ function EmployeeInformationNVForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+              Social Security Number <span style={{ color: '#d32f2f' }}>*</span>
+            </label>
             <input
               style={inputStyle}
               type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              maxLength={11}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
           </div>
         </div>

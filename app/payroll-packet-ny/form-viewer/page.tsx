@@ -13,9 +13,9 @@ const NY_FORMS: FormSpec[] = [
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
-  { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
-  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
-  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'fw4', formId: 'ny-fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/fw4' },
+  { id: 'i9', formId: 'ny-i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/i9' },
+  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/notice-to-employee' },
   { id: 'temp-employment-agreement', formId: 'ny-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
@@ -61,7 +61,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -84,21 +84,25 @@ function EmployeeInformationNYForm() {
     position: '',
     startDate: '',
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
   });
 
   useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
     try {
       const cached = localStorage.getItem(EMPLOYEE_INFO_STORAGE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached);
-        setForm((prev) => ({ ...prev, ...parsed }));
+        setForm((prev) => ({ ...prev, ...parsed, startDate: today }));
+      } else {
+        setForm((prev) => ({ ...prev, startDate: today }));
       }
     } catch (e) {
       console.warn('Could not load saved employee info', e);
+      setForm((prev) => ({ ...prev, startDate: today }));
     }
   }, []);
 
@@ -117,6 +121,10 @@ function EmployeeInformationNYForm() {
     }
     if (!form.phone.trim() || !form.email.trim()) {
       alert('Please provide a phone number and email.');
+      return false;
+    }
+    if (!form.ssn.trim()) {
+      alert('Please provide your Social Security Number.');
       return false;
     }
 
@@ -236,14 +244,14 @@ function EmployeeInformationNYForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Social Security Number <span style={{ color: '#d32f2f' }}>*</span></label>
             <input
               style={inputStyle}
               type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              maxLength={11}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
           </div>
         </div>
@@ -346,10 +354,11 @@ function EmployeeInformationNYForm() {
                 Start Date
               </label>
               <input
-                style={inputStyle}
+                style={{ ...inputStyle, backgroundColor: '#f5f5f5', cursor: 'not-allowed' }}
                 type="date"
                 value={form.startDate}
                 onChange={(e) => updateField('startDate', e.target.value)}
+                disabled
               />
             </div>
           </div>

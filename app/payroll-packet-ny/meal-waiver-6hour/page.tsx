@@ -12,6 +12,8 @@ export default function MealWaiver6HourNYPage() {
       allowedTypes={['6_hour']}
       backHref="/payroll-packet-ny/form-viewer?form=notice-to-employee"
       nextHref="/payroll-packet-ny/meal-waiver-10-12"
+      signatureFormId="ny-meal-waiver-6hour"
+      signatureFormType="NY Meal Waiver 6 Hour"
     />
   );
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { encrypt, decrypt, isEncrypted } from '@/lib/encryption';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -42,6 +43,20 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ error: missingTableMessage }, { status: 500 });
       }
       return NextResponse.json({ error: 'Failed to fetch employee information' }, { status: 500 });
+    }
+
+    // Decrypt SSN if data exists
+    if (data && data.ssn) {
+      try {
+        // Only decrypt if it appears to be encrypted
+        if (isEncrypted(data.ssn)) {
+          data.ssn = decrypt(data.ssn);
+          console.log('[EMPLOYEE-INFORMATION] SSN decrypted successfully');
+        }
+      } catch (error) {
+        console.error('[EMPLOYEE-INFORMATION] Decryption error:', error);
+        // Don't fail the request, just return encrypted data
+      }
     }
 
     return NextResponse.json({ info: data || null }, { status: 200 });
@@ -108,6 +123,16 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Acknowledgement and signature are required' }, { status: 400 });
     }
 
+    // Encrypt the SSN before saving
+    let encryptedSSN: string;
+    try {
+      encryptedSSN = encrypt(personal.ssn);
+      console.log('[EMPLOYEE-INFORMATION] SSN encrypted successfully');
+    } catch (error) {
+      console.error('[EMPLOYEE-INFORMATION] Encryption error:', error);
+      return NextResponse.json({ error: 'Failed to encrypt sensitive data' }, { status: 500 });
+    }
+
     const payload = {
       user_id: userData.user.id,
       first_name: personal.firstName,
@@ -120,7 +145,7 @@ export async function POST(request: NextRequest) {
       phone: personal.phone,
       email: personal.email,
       date_of_birth: personal.dateOfBirth,
-      ssn: personal.ssn,
+      ssn: encryptedSSN,
       position: employment?.position,
       department: employment?.department || null,
       manager: employment?.manager || null,

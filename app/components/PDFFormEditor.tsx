@@ -30,6 +30,7 @@ interface FormField {
   rect: number[];
   page: number;
   value: string;
+  widgetValue?: string;
 }
 
 const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
@@ -57,8 +58,21 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
   },
 };
 
-const getMirroredFieldName = (formId: string, fieldName: string) =>
-  MIRRORED_FIELDS[formId]?.[fieldName];
+const getMirroringKey = (formId: string) => {
+  if (MIRRORED_FIELDS[formId]) {
+    return formId;
+  }
+  if (formId.endsWith('-notice-to-employee')) {
+    return 'notice-to-employee';
+  }
+  return formId;
+};
+
+const getMirroredFieldName = (formId: string, fieldName: string) => {
+  const mirrorKey = getMirroringKey(formId);
+  return MIRRORED_FIELDS[mirrorKey]?.[fieldName];
+};
+
 
 const HIDDEN_ADP_DEPOSIT_FIELDS = new Set<string>([
   'Company Code',
@@ -97,6 +111,12 @@ const HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS = new Set<string>([
   'Piece rate',
 ]);
 
+const HIDDEN_STATE_TAX_FIELDS = new Set<string>([
+  "Employer's name and address",
+  "Employer's name and address-2",
+  'EIN',
+]);
+
 const isAdpDepositForm = (formId: string) =>
   formId === 'adp-deposit' || formId.endsWith('-adp-deposit');
 
@@ -112,11 +132,15 @@ const isWiNoticeToEmployeeForm = (formId: string) =>
 const shouldMaskField = (formId: string, fieldName: string) =>
   isI9Form(formId) && MASKED_I9_FIELDS.has(fieldName);
 
+const isStateTaxForm = (formId: string) =>
+  formId === 'state-tax' || formId.endsWith('-state-tax');
+
 const shouldHideField = (formId: string, fieldName: string) =>
   (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
   (isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName)) ||
   (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
-  (isWiNoticeToEmployeeForm(formId) && HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName));
+  (isWiNoticeToEmployeeForm(formId) && HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
+  (isStateTaxForm(formId) && HIDDEN_STATE_TAX_FIELDS.has(fieldName));
 
 const ADP_NET_AMOUNT_SLOTS = [
   { name: 'adp_entire_net_amount_1', referenceField: 'Checking1', fallbackY: 241.745 },
@@ -255,6 +279,12 @@ export default function PDFFormEditor({
   const renderTaskRef = useRef<any>(null);
   const isLoadingRef = useRef(false);
 
+  const getFieldValueByBaseName = (baseName: string) => {
+    const fieldForBase = formFields.find((field) => field.baseName === baseName);
+    if (!fieldForBase) return '';
+    return fieldValues.get(fieldForBase.id) || '';
+  };
+
   // Report completion progress to parent whenever fields/values change
   useEffect(() => {
     if (!onProgress) return;
@@ -268,9 +298,9 @@ export default function PDFFormEditor({
     for (const baseName of uniqueBaseNames) {
       const field = formFields.find((f) => f.baseName === baseName);
       if (!field) continue;
-      const value = fieldValues.get(baseName) || '';
+      const value = getFieldValueByBaseName(baseName);
       if (field.type === 'checkbox') {
-        if (value === 'true') filled += 1;
+        if (value !== 'false' && value !== '') filled += 1;
       } else if (String(value).trim().length > 0) {
         filled += 1;
       }
@@ -627,7 +657,7 @@ export default function PDFFormEditor({
 
       const initialValues = new Map<string, string>();
       fields.forEach(field => {
-        initialValues.set(field.baseName, field.value);
+        initialValues.set(field.id, field.value);
       });
       setFieldValues(initialValues);
 
@@ -766,7 +796,13 @@ export default function PDFFormEditor({
             console.log(`  Field type: text, value: "${fieldValue}"`);
           } else if ('isChecked' in field) {
             fieldType = 'checkbox';
-            fieldValue = field.isChecked() ? 'true' : 'false';
+            const checked = field.isChecked();
+            if (checked) {
+              const value = field.getValue?.();
+              fieldValue = value || 'true';
+            } else {
+              fieldValue = 'false';
+            }
             console.log(`  Field type: checkbox, value: ${fieldValue}`);
           }
 
@@ -809,13 +845,23 @@ export default function PDFFormEditor({
             });
             console.log(`    Page index: ${pageIndex}`);
 
+            const widgetValue = widget.getOnValue?.() || '';
+            const appearanceState = widget.getAppearanceState?.();
+            const isWidgetChecked = appearanceState && appearanceState !== 'Off' && widgetValue
+              ? appearanceState === widgetValue
+              : false;
+            const numericId = `${fieldName}::${i}`;
+            const value = fieldType === 'checkbox'
+              ? (isWidgetChecked ? widgetValue : 'false')
+              : fieldValue;
             const fieldData = {
-              id: `${fieldName}::${i}`,
+              id: numericId,
               baseName: fieldName,
               type: fieldType,
               rect: [rect.x, rect.y, rect.width, rect.height],
               page: pageIndex >= 0 ? pageIndex + 1 : 1,
-              value: fieldValue
+              value,
+              widgetValue
             };
             console.log(`    Adding field:`, fieldData);
             fields.push(fieldData);
@@ -903,35 +949,48 @@ export default function PDFFormEditor({
     }
   };
 
-  const handleFieldChange = useCallback((fieldName: string, value: string) => {
-    const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+  type FieldUpdate = {
+    fieldName: string;
+    value: string;
+    widgetValue?: string;
+  };
 
-    setFieldValues(prev => {
-      const newValues = new Map(prev);
-      newValues.set(fieldName, value);
-      if (mirrorFieldName) {
-        newValues.set(mirrorFieldName, value);
+  const handleFieldChange = useCallback(
+    (fieldId: string, fieldName: string, value: string, widgetValue?: string) => {
+      const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+
+      setFieldValues((prev) => {
+        const newValues = new Map(prev);
+        newValues.set(fieldId, value);
+        if (mirrorFieldName && mirrorFieldName !== fieldName) {
+          const mirrorField = formFields.find((f) => f.baseName === mirrorFieldName);
+          if (mirrorField) {
+            newValues.set(mirrorField.id, value);
+          }
+        }
+        return newValues;
+      });
+
+      const updates: FieldUpdate[] = [{ fieldName, value, widgetValue }];
+      if (mirrorFieldName && mirrorFieldName !== fieldName) {
+        updates.push({ fieldName: mirrorFieldName, value });
       }
-      return newValues;
-    });
+      updatePDFFields(updates);
 
-    const updates: Record<string, string> = { [fieldName]: value };
-    if (mirrorFieldName) {
-      updates[mirrorFieldName] = value;
-    }
-    updatePDFFields(updates);
+      if (onFieldChange) {
+        onFieldChange();
+      }
+    },
+    [formFields, formId, onFieldChange],
+  );
 
-    if (onFieldChange) {
-      onFieldChange();
-    }
-  }, [formId, onFieldChange]);
-
-  const updatePDFFields = async (updates: Record<string, string>) => {
+  const updatePDFFields = async (updates: FieldUpdate[]) => {
     if (!pdfLibDocRef.current) return;
 
     try {
       const form = pdfLibDocRef.current.getForm();
-      for (const [fieldName, value] of Object.entries(updates)) {
+      for (const update of updates) {
+        const { fieldName, value, widgetValue } = update;
         console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
         const field = form.getField(fieldName);
 
@@ -939,12 +998,18 @@ export default function PDFFormEditor({
           field.setText(value);
           console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
         } else if ('check' in field || 'uncheck' in field) {
-          if (value === 'true') {
+          if (value === 'false') {
+            field.uncheck();
+          } else if (widgetValue) {
+            field.check(widgetValue);
+          } else if (value === 'true') {
             field.check();
           } else {
-            field.uncheck();
+            field.check();
           }
-          console.log(`[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value}`);
+          console.log(
+            `[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value} (widget: ${widgetValue || 'default'})`
+          );
         }
       }
 
@@ -1100,12 +1165,17 @@ export default function PDFFormEditor({
 
             const viewport = pageViewports[pageIndex];
             const pageOffset = pageOffsets[pageIndex];
-            const fieldValue = fieldValues.get(field.baseName) || '';
+            const fieldValue = fieldValues.get(field.id) || '';
+            const isChecked = field.type === 'checkbox'
+              ? field.widgetValue
+                ? fieldValue === field.widgetValue
+                : fieldValue === 'true'
+              : false;
             const isMissingRequired = Boolean(
               showRequiredFieldErrors &&
               requiredFieldNames?.includes(field.baseName) &&
               (field.type === 'checkbox'
-                ? fieldValue !== 'true'
+                ? !isChecked
                 : String(fieldValue).trim() === '')
             );
 
@@ -1142,8 +1212,12 @@ export default function PDFFormEditor({
                 {field.type === 'checkbox' ? (
                   <input
                     type="checkbox"
-                    checked={fieldValue === 'true'}
-                    onChange={(e) => handleFieldChange(field.baseName, e.target.checked ? 'true' : 'false')}
+                    checked={isChecked}
+                    onChange={(e) => {
+                      const widgetValue = field.widgetValue;
+                      const newValue = e.target.checked ? (widgetValue || 'true') : 'false';
+                      handleFieldChange(field.id, field.baseName, newValue, widgetValue);
+                    }}
                     style={{
                       width: '100%',
                       height: '100%',
@@ -1158,7 +1232,7 @@ export default function PDFFormEditor({
                   <input
                     type="text"
                     value={fieldValue}
-                    onChange={(e) => handleFieldChange(field.baseName, e.target.value)}
+                    onChange={(e) => handleFieldChange(field.id, field.baseName, e.target.value)}
                     style={{
                       width: '100%',
                       height: '100%',

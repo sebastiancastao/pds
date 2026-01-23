@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, MouseEvent, TouchEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { supabase } from '@/lib/supabase';
 
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
 
@@ -172,6 +173,10 @@ export default function EmployeeInformationForm({
       alert('Name is required.');
       return;
     }
+    if (!formData.personal.ssn || !formData.personal.ssn.trim()) {
+      alert('Social Security Number is required.');
+      return;
+    }
     if (!formData.acknowledgements) {
       alert('Please acknowledge the form at the bottom before submitting.');
       return;
@@ -180,14 +185,48 @@ export default function EmployeeInformationForm({
       alert('Please draw your signature before submitting.');
       return;
     }
+
     setSaving(true);
-    await new Promise((resolve) => setTimeout(resolve, 400));
-    setSaving(false);
-    alert('Employee information captured. HR will follow up if anything else is required.');
-    if (nextFormId) {
-      router.push(`${basePath}/form-viewer?form=${nextFormId}`);
-    } else {
-      router.push(basePath);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('Session expired. Please log in again.');
+        router.push('/login');
+        return;
+      }
+
+      // Save to database with encrypted SSN
+      const response = await fetch('/api/employee-information', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          personal: formData.personal,
+          employment: formData.employment,
+          emergency: formData.emergency,
+          acknowledgements: formData.acknowledgements,
+          signature: formData.signature,
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to save employee information.');
+      }
+
+      alert('Employee information captured. HR will follow up if anything else is required.');
+      if (nextFormId) {
+        router.push(`${basePath}/form-viewer?form=${nextFormId}`);
+      } else {
+        router.push(basePath);
+      }
+    } catch (error) {
+      console.error('[EMPLOYEE-INFORMATION] Save error:', error);
+      alert(error instanceof Error ? error.message : 'Failed to save employee information.');
+    } finally {
+      setSaving(false);
     }
   };
 

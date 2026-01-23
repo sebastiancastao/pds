@@ -61,28 +61,8 @@ export async function GET(request: NextRequest) {
       }
     };
 
-    // Get today's date in mm/dd/yyyy format
-    const today = new Date();
-    const todayFormatted = `${String(today.getMonth() + 1).padStart(2, '0')}/${String(today.getDate()).padStart(2, '0')}/${today.getFullYear()}`;
-
-    // Pre-fill Today's Date field for employee
-    try {
-      const todaysDateField = form.getTextField("Today's Date mmddyyy");
-      todaysDateField.setText(todayFormatted);
-    } catch (error) {
-      console.warn('[I9-NY] Failed to set Today\'s Date field', error);
-    }
-
     // Add employer data
     let embeddedEmployerSignature = false;
-
-    // Pre-fill employer date field (Section 2) - syncs with employee date via MIRRORED_FIELDS
-    try {
-      const employerDateField = form.getTextField('S2 Todays Date mmddyyyy');
-      employerDateField.setText(todayFormatted);
-    } catch (error) {
-      console.warn('[I9-NY] Failed to set employer date field (S2 Todays Date mmddyyyy)', error);
-    }
 
     try {
       const employerNameField = form.getTextField('Last Name First Name and Title of Employer or Authorized Representative');

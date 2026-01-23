@@ -5,7 +5,7 @@ import { join } from 'path';
 
 export async function GET(request: NextRequest) {
   try {
-    const pdfPath = join(process.cwd(), 'pdfs', 'fw4.pdf');
+    const pdfPath = join(process.cwd(), 'fw4.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     const form = pdfDoc.getForm();
