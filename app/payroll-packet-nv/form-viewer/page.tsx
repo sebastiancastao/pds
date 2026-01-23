@@ -208,7 +208,7 @@ function EmployeeInformationNVForm() {
   };
 
   const handleContinue = async () => {
-    const ok = handleSave();
+    const ok = await handleSave();
     if (ok) {
       router.push('/payroll-packet-nv/form-viewer?form=fw4');
     }
