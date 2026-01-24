@@ -48,6 +48,7 @@ export default function OnboardingPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
@@ -185,22 +186,46 @@ export default function OnboardingPage() {
     }
   };
 
-  const downloadBlob = (blob: Blob, filename: string) => {
-    const nav: any = typeof window !== 'undefined' ? window.navigator : null;
-    if (nav?.msSaveOrOpenBlob) {
-      nav.msSaveOrOpenBlob(blob, filename);
-      return;
+  const downloadFromUrl = (url: string, filename: string) => {
+    try {
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+
+      requestAnimationFrame(() => {
+        a.click();
+        setTimeout(() => {
+          if (a.parentNode) {
+            document.body.removeChild(a);
+          }
+          window.URL.revokeObjectURL(url);
+        }, 100);
+      });
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  };
 
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadBlob = (blob: Blob, filename: string) => {
+    try {
+      // Handle IE/Edge legacy
+      const nav: any = typeof window !== 'undefined' ? window.navigator : null;
+      if (nav?.msSaveOrOpenBlob) {
+        nav.msSaveOrOpenBlob(blob, filename);
+        return;
+      }
 
-    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      // Create object URL and download
+      const url = window.URL.createObjectURL(blob);
+      downloadFromUrl(url, filename);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
   const handleExportToExcel = async () => {
@@ -228,31 +253,101 @@ export default function OnboardingPage() {
   };
 
   const handleDownloadPDF = async (userId: string, userName: string) => {
+    // Prevent multiple simultaneous downloads
+    if (downloadingPdf) {
+      alert('Another download is in progress. Please wait.');
+      return;
+    }
+
+    setDownloadingPdf(userId);
+
     try {
+      console.log('[PDF Download] Starting download for user:', userId);
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=form_signatures`, {
+
+      // Create AbortController with a 5-minute timeout to match server maxDuration
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('[PDF Download] Request timed out after 5 minutes');
+        controller.abort();
+      }, 300000); // 5 minutes
+
+      console.log('[PDF Download] Fetching PDF from API...');
+      const startTime = Date.now();
+
+      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
+        },
+        signal: controller.signal,
+        cache: 'no-store'
       });
 
+      clearTimeout(timeoutId);
+      const fetchTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`[PDF Download] Response received in ${fetchTime}s, status:`, response.status);
+
       if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to download PDF');
+        const errorText = await response.text();
+        let errorMessage = 'Failed to download PDF';
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
-      // Get the merged PDF blob
-      const blob = await response.blob();
+      // Get the merged PDF data
+      console.log('[PDF Download] Reading response data...');
+      console.log('[PDF Download] Content-Type:', response.headers.get('Content-Type'));
+      const contentLength = response.headers.get('Content-Length');
+      console.log('[PDF Download] Content-Length:', contentLength, contentLength ? `(${(parseInt(contentLength) / 1024 / 1024).toFixed(2)} MB)` : '');
+
+      let blob;
+      try {
+        // Try using arrayBuffer which can be more memory-efficient for large files
+        console.log('[PDF Download] Reading as ArrayBuffer...');
+        const arrayBuffer = await response.arrayBuffer();
+        console.log('[PDF Download] ArrayBuffer size:', arrayBuffer.byteLength, 'bytes', `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+
+        // Convert ArrayBuffer to Blob
+        blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      } catch (dataError) {
+        console.error('[PDF Download] Error reading response data:', dataError);
+        throw new Error(`Failed to read PDF data: ${dataError instanceof Error ? dataError.message : 'Unknown error'}. The PDF might be too large for your browser to handle.`);
+      }
+
+      // Validate blob
+      if (!blob || blob.size === 0) {
+        throw new Error('Received empty PDF file');
+      }
+
+      console.log('[PDF Download] PDF blob created, size:', blob.size, 'bytes', `(${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
 
       // Extract filename from Content-Disposition header or use default
       const contentDisposition = response.headers.get('Content-Disposition');
       let filename = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
 
       if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
-        if (filenameMatch) {
-          filename = filenameMatch[1];
+        console.log('[PDF Download] Content-Disposition:', contentDisposition);
+
+        // Try to extract filename from Content-Disposition header
+        // Handles both quoted and unquoted filenames
+        const filenameMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) ||
+                              contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].trim();
+          console.log('[PDF Download] Extracted filename:', filename);
         }
+      }
+
+      // Ensure the filename has .pdf extension
+      if (!filename.toLowerCase().endsWith('.pdf')) {
+        console.warn('[PDF Download] Filename missing .pdf extension, adding it:', filename);
+        filename = filename + '.pdf';
       }
 
       // Download the merged PDF
@@ -270,7 +365,14 @@ export default function OnboardingPage() {
       alert(`Successfully downloaded onboarding documents for ${userName}`);
     } catch (err: any) {
       console.error('Error downloading PDF:', err);
-      alert(`Failed to download PDF: ${err.message}`);
+
+      if (err.name === 'AbortError') {
+        alert(`Download timed out after 5 minutes. The PDF may be too large or the server is taking too long to process it. Please try again or contact support.`);
+      } else {
+        alert(`Failed to download PDF: ${err.message}`);
+      }
+    } finally {
+      setDownloadingPdf(null);
     }
   };
 
@@ -668,14 +770,27 @@ export default function OnboardingPage() {
                           {user.has_submitted_pdf && (
                             <button
                               onClick={() => handleDownloadPDF(user.user_id, user.full_name)}
+                              disabled={downloadingPdf === user.user_id}
                               className={`px-2 py-1 text-xs font-medium rounded border ${
-                                user.pdf_downloaded
+                                downloadingPdf === user.user_id
+                                  ? 'text-gray-400 bg-gray-50 border-gray-300 cursor-wait'
+                                  : user.pdf_downloaded
                                   ? 'text-purple-600 hover:text-purple-800 hover:bg-purple-50 border-purple-300 bg-purple-50'
                                   : 'text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300'
-                              }`}
-                              title={user.pdf_downloaded ? 'Downloaded - Click to download again' : 'Download onboarding documents'}
+                              } disabled:opacity-50`}
+                              title={
+                                downloadingPdf === user.user_id
+                                  ? 'Generating PDF... This may take up to 5 minutes for large documents'
+                                  : user.pdf_downloaded
+                                  ? 'Downloaded - Click to download again'
+                                  : 'Download onboarding documents'
+                              }
                             >
-                              {user.pdf_downloaded ? 'Downloaded ✓' : 'Download Docs'}
+                              {downloadingPdf === user.user_id
+                                ? 'Generating PDF...'
+                                : user.pdf_downloaded
+                                ? 'Downloaded ✓'
+                                : 'Download Docs'}
                             </button>
                           )}
                         </div>

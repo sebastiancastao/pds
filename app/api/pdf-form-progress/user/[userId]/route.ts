@@ -3,6 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
+// Disable caching and increase body size limit for large PDFs
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -42,6 +46,80 @@ const formDisplayNames: Record<string, string> = {
 type SignatureEntry = {
   signature_data: string;
   signature_type?: string | null;
+  signed_at?: string | null;
+};
+
+const parseSignedAt = (value?: string | null): number | null => {
+  if (!value) return null;
+  const time = Date.parse(value);
+  return Number.isNaN(time) ? null : time;
+};
+
+const normalizeSignatureData = (value?: string | null) => {
+  if (!value) return '';
+  return value.trim();
+};
+
+const hasDrawingSignature = (entry: SignatureEntry) => {
+  const type = entry.signature_type?.toLowerCase();
+  const data = entry.signature_data.toLowerCase();
+  return (
+    type === 'drawn' ||
+    type === 'handwritten' ||
+    data.startsWith('data:image/')
+  );
+};
+
+const upsertSignatureEntry = (
+  map: Map<string, SignatureEntry>,
+  key: string,
+  entry: SignatureEntry
+) => {
+  if (!key) return;
+  const normalizedData = normalizeSignatureData(entry.signature_data);
+  if (!normalizedData) return;
+
+  const sanitizedEntry: SignatureEntry = {
+    ...entry,
+    signature_data: normalizedData,
+  };
+
+  const existing = map.get(key);
+  if (existing) {
+    const candidateDrawn = hasDrawingSignature(sanitizedEntry);
+    const existingDrawn = hasDrawingSignature(existing);
+
+    if (candidateDrawn && !existingDrawn) {
+      map.set(key, sanitizedEntry);
+      return;
+    }
+
+    if (!candidateDrawn && existingDrawn) {
+      return;
+    }
+
+    const existingTime = parseSignedAt(existing.signed_at);
+    const candidateTime = parseSignedAt(sanitizedEntry.signed_at);
+
+    if (candidateTime === null) {
+      return;
+    }
+
+    if (existingTime === null || candidateTime >= existingTime) {
+      map.set(key, sanitizedEntry);
+    }
+    return;
+  }
+
+  map.set(key, sanitizedEntry);
+};
+
+const isMissingFormsSignatureTableError = (error: any) => {
+  const message = (error?.message || '').toString().toLowerCase();
+  return (
+    message.includes('forms_signature') &&
+    (message.includes('does not exist') || message.includes('could not find the table'))
+  );
 };
 
 const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
@@ -277,19 +355,34 @@ async function addI9DocumentsToMergedPdf(
       },
     ].filter((doc) => doc.url);
 
-    for (const doc of documentsToProcess) {
+    // Fetch all I-9 documents in parallel for better performance
+    console.log('[PDF_FORMS] Fetching', documentsToProcess.length, 'I-9 documents in parallel...');
+    const fetchPromises = documentsToProcess.map(async (doc) => {
       try {
-        console.log('[PDF_FORMS] Processing I-9 document:', doc.label, doc.filename);
-
-        // Fetch the document from the URL
         const response = await fetch(doc.url);
         if (!response.ok) {
           console.error('[PDF_FORMS] Failed to fetch I-9 document:', doc.url, response.status);
-          continue;
+          return null;
         }
-
         const contentType = response.headers.get('content-type') || '';
         const docBytes = await response.arrayBuffer();
+        return { doc, contentType, docBytes };
+      } catch (error) {
+        console.error('[PDF_FORMS] Error fetching I-9 document:', doc.label, error);
+        return null;
+      }
+    });
+
+    const fetchedDocuments = await Promise.all(fetchPromises);
+    console.log('[PDF_FORMS] Fetched', fetchedDocuments.filter(d => d !== null).length, 'I-9 documents');
+
+    // Process fetched documents
+    for (const fetchedDoc of fetchedDocuments) {
+      if (!fetchedDoc) continue;
+
+      const { doc, contentType, docBytes } = fetchedDoc;
+      try {
+        console.log('[PDF_FORMS] Processing I-9 document:', doc.label, doc.filename);
 
         if (contentType.includes('pdf')) {
           // If it's a PDF, copy its pages to the merged PDF
@@ -451,6 +544,7 @@ export async function GET(
     }
 
     console.log('[PDF_FORMS] Fetching forms for user:', userId);
+    const startTime = Date.now();
 
     // Retrieve all form progress for the user
     const { data: forms, error } = await supabaseAdmin
@@ -458,6 +552,8 @@ export async function GET(
       .select('form_name, form_data, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: true });
+
+    console.log(`[PDF_FORMS] ⏱️ Forms fetch took ${Date.now() - startTime}ms`);
 
     if (error) {
       console.error('[PDF_FORMS] Error fetching forms:', error);
@@ -474,43 +570,84 @@ export async function GET(
       );
     }
 
-    const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase();
-    const useFormSignatures = signatureSource === 'form_signatures';
+    const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase() || '';
+    const useFormSignatures = signatureSource === 'form_signatures' || signatureSource === 'forms_signature';
     const signatureByForm = new Map<string, SignatureEntry>();
     let legacySignature: SignatureEntry | null = null;
 
     if (useFormSignatures) {
+      const sigFetchStart = Date.now();
       const formIds = Array.from(new Set(forms.map((form) => form.form_name).filter(Boolean)));
       if (formIds.length > 0) {
-        const { data: signatures, error: signatureError } = await supabaseAdmin
-          .from('form_signatures')
-          .select('form_id, signature_data, signature_type, signed_at')
-          .eq('user_id', userId)
-          .eq('signature_role', 'employee')
-          .in('form_id', formIds)
-          .order('signed_at', { ascending: false });
+        const tableCandidates =
+          signatureSource === 'forms_signature'
+            ? ['forms_signature', 'form_signatures']
+            : ['form_signatures'];
+
+        let signatures: Array<{
+          form_id?: string | null;
+          signature_data?: string | null;
+          signature_type?: string | null;
+          signed_at?: string | null;
+        }> = [];
+        let signatureError: any = null;
+        let signatureTableUsed = 'form_signatures';
+
+        for (const tableName of tableCandidates) {
+          const { data: fetchedSignatures, error: fetchError } = await supabaseAdmin
+            .from(tableName)
+            .select('form_id, signature_data, signature_type, signed_at')
+            .eq('user_id', userId)
+            .eq('signature_role', 'employee')
+            .in('form_id', formIds)
+            .order('signed_at', { ascending: false });
+
+          if (fetchError) {
+            if (tableName === 'forms_signature' && isMissingFormsSignatureTableError(fetchError)) {
+              console.warn('[PDF_FORMS] Table forms_signature not found, falling back to form_signatures', fetchError.message);
+              continue;
+            }
+            signatureError = fetchError;
+            break;
+          }
+
+          signatures = fetchedSignatures || [];
+          signatureTableUsed = tableName;
+          signatureError = null;
+          break;
+        }
 
         if (signatureError) {
           console.error('[PDF_FORMS] Error fetching form signatures:', signatureError);
-        } else if (signatures) {
-          console.log('[PDF_FORMS] Found', signatures.length, 'signatures for user', userId);
+          return NextResponse.json(
+            { error: 'Failed to retrieve form signatures', details: signatureError.message },
+            { status: 500 }
+          );
+        }
+
+        if (signatures.length > 0) {
+          console.log('[PDF_FORMS] Found', signatures.length, 'signatures for user', userId, `(table: ${signatureTableUsed})`);
+
+          // Process signatures efficiently without logging each one
           signatures.forEach((signature) => {
             const formId = signature?.form_id;
-            if (!formId || signatureByForm.has(formId)) return;
-            console.log('[PDF_FORMS] Mapping signature for form:', formId);
-            signatureByForm.set(formId, {
+            if (!formId || !signature.signature_data) return;
+            const entry: SignatureEntry = {
               signature_data: signature.signature_data,
               signature_type: signature.signature_type,
-            });
+              signed_at: signature.signed_at,
+            };
             const normalizedFormId = normalizeFormKey(formId);
-            if (normalizedFormId !== formId && !signatureByForm.has(normalizedFormId)) {
-              signatureByForm.set(normalizedFormId, {
-                signature_data: signature.signature_data,
-                signature_type: signature.signature_type,
-              });
+            upsertSignatureEntry(signatureByForm, formId, entry);
+            if (normalizedFormId !== formId) {
+              upsertSignatureEntry(signatureByForm, normalizedFormId, entry);
             }
           });
-          console.log('[PDF_FORMS] Signature map keys:', Array.from(signatureByForm.keys()));
+          console.log('[PDF_FORMS] Created signature map with', signatureByForm.size, 'unique form mappings');
+          console.log(`[PDF_FORMS] ⏱️ Signature fetch & processing took ${Date.now() - sigFetchStart}ms`);
+        } else {
+          console.log('[PDF_FORMS] No signatures found for user', userId, 'in table', signatureTableUsed);
+          console.log(`[PDF_FORMS] ⏱️ Signature fetch took ${Date.now() - sigFetchStart}ms`);
         }
       }
     } else {
@@ -534,9 +671,15 @@ export async function GET(
     console.log('[PDF_FORMS] Retrieved', forms.length, 'forms');
 
     // Create a new merged PDF document
+    const pdfCreateStart = Date.now();
     const mergedPdf = await PDFDocument.create();
+    console.log(`[PDF_FORMS] ⏱️ PDF creation took ${Date.now() - pdfCreateStart}ms`);
 
     // Process each form and add to merged PDF
+    const formProcessStart = Date.now();
+    let totalSignatureTime = 0;
+    let totalCopyTime = 0;
+
     for (const form of forms) {
       try {
         const base64Data = toBase64(form.form_data);
@@ -551,22 +694,94 @@ export async function GET(
         // Load the PDF
         const formPdf = await PDFDocument.load(pdfBytes);
 
+        // Flatten form fields to ensure they render consistently across all browsers
+        // This converts editable form fields to static content
+        const isHandbook = (form.form_name || '').toLowerCase().includes('handbook');
+        try {
+          const pdfForm = formPdf.getForm();
+          const fields = pdfForm.getFields();
+
+          if (fields.length > 0) {
+            // For employee handbook, log field details with VALUES to debug
+            if (isHandbook) {
+              console.log(`[PDF_FORMS] Employee handbook has ${fields.length} form fields`);
+              // Log ALL fields with their values
+              fields.forEach((f, i) => {
+                const name = f.getName();
+                const type = f.constructor.name;
+                let value = '';
+                try {
+                  if (type === 'PDFTextField') {
+                    value = (f as any).getText() || '(empty)';
+                  } else if (type === 'PDFCheckBox') {
+                    value = (f as any).isChecked() ? 'checked' : 'unchecked';
+                  } else if (type === 'PDFDropdown' || type === 'PDFOptionList') {
+                    value = (f as any).getSelected()?.join(', ') || '(empty)';
+                  }
+                } catch {
+                  value = '(could not read)';
+                }
+                console.log(`[PDF_FORMS]   Field ${i + 1}: "${name}" (${type}) = "${value}"`);
+              });
+            }
+
+            // Update field appearances to ensure all fields have visual representation
+            try {
+              const helveticaFont = await formPdf.embedFont(StandardFonts.Helvetica);
+              // Force every field to regenerate its appearance even if the existing
+              // streams look up-to-date so nothing gets skipped.
+              fields.forEach((field) => {
+                try {
+                  pdfForm.markFieldAsDirty(field.ref);
+                } catch {
+                  // ignore if marking fails for a widgetless field
+                }
+              });
+              pdfForm.updateFieldAppearances(helveticaFont);
+            } catch (fontError) {
+              console.log('[PDF_FORMS] Could not update field appearances:', form.form_name);
+            }
+
+            pdfForm.flatten();
+            console.log('[PDF_FORMS] Flattened', fields.length, 'form fields for:', form.form_name);
+          } else {
+            console.log('[PDF_FORMS] No form fields found in:', form.form_name);
+          }
+        } catch (flattenError) {
+          // Some PDFs may not have forms or flattening may fail - continue without flattening
+          console.log('[PDF_FORMS] Could not flatten form (may not have editable fields):', form.form_name, (flattenError as Error).message);
+        }
+
+        const formPageCount = formPdf.getPageCount();
+
         const normalizedFormName = normalizeFormKey(form.form_name || '');
         const signatureForForm = useFormSignatures
           ? signatureByForm.get(form.form_name) || signatureByForm.get(normalizedFormName)
           : legacySignature;
 
-        console.log('[PDF_FORMS] Processing form:', form.form_name, 'normalized:', normalizedFormName, 'hasSignature:', !!signatureForForm);
+        console.log('[PDF_FORMS] Processing form:', form.form_name, '(', formPageCount, 'pages)');
 
-        // If signature exists, embed it on the target page
+        // If signature exists, embed it on the target page(s)
         if (signatureForForm?.signature_data) {
-          console.log('[PDF_FORMS] ✅ Embedding signature on form:', form.form_name);
+          const sigStart = Date.now();
           const pages = formPdf.getPages();
-          const pageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedFormName)
+          const pageCount = pages.length;
+          const defaultPageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedFormName)
             ? 0
-            : Math.max(pages.length - 1, 0);
-          const targetPage = pages[pageIndex];
-          const { width, height } = targetPage.getSize();
+            : Math.max(pageCount - 1, 0);
+          const isEmployeeHandbook = normalizedFormName.includes('handbook');
+
+          // For employee handbook, add signatures to the LAST 10 pages
+          const handbookPageCount = Math.min(10, pageCount);
+          const handbookEndIndex = pageCount - 1; // Last page (0-indexed)
+          const handbookStartIndex = Math.max(0, pageCount - handbookPageCount); // 10 pages before the end
+          const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
+            ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
+            : [defaultPageIndex];
+
+          if (isEmployeeHandbook) {
+            console.log(`[PDF_FORMS] Employee handbook (${pageCount} pages): Adding signatures to pages ${handbookStartIndex + 1}-${handbookEndIndex + 1} (last ${signaturePageIndexes.length} pages)`);
+          }
 
           try {
             let signatureImage;
@@ -576,70 +791,101 @@ export async function GET(
             const isTyped = signatureKind === 'typed' || signatureKind === 'type';
             const isDataUrl = signatureValue.startsWith('data:image/');
 
-            // Position signature - lower for I-9 form, standard for others
-            const signatureWidth = 150;
-            const signatureHeight = 50;
-            const x = width - signatureWidth - 50;
-            const isI9Form = normalizedFormName === 'i9';
-            const y = isI9Form ? 100 : 50;
-
-            if (isTyped && !isDataUrl) {
-              targetPage.drawText(signatureValue, {
-                x,
-                y: y + signatureHeight / 2,
-                size: 10,
-              });
-            } else {
+            // Embed signature image once before the loop (more efficient for multi-page signatures like employee handbook)
+            if (!isTyped) {
               const { format, base64 } = normalizeSignatureImage(signatureValue);
               const imageBytes = Buffer.from(base64, 'base64');
               signatureImage =
                 format === 'jpg' || format === 'jpeg'
                   ? await formPdf.embedJpg(imageBytes)
                   : await formPdf.embedPng(imageBytes);
-
-              targetPage.drawImage(signatureImage, {
-                x,
-                y,
-                width: signatureWidth,
-                height: signatureHeight,
-              });
             }
 
-            // Add "Digitally Signed" text above signature
-            targetPage.drawText('Digitally Signed:', {
-              x,
-              y: y + signatureHeight + 5,
-              size: 8,
-            });
+            const signatureWidth = 150;
+            const signatureHeight = 15;
+            const isI9Form = normalizedFormName === 'i9';
+            const isFW4Form = normalizedFormName === 'fw4';
+            const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
+
+            for (const pageIdx of signaturePageIndexes) {
+              const page = pages[pageIdx];
+              const { width, height } = page.getSize();
+
+              const baseX = width - signatureWidth - 50;
+              const baseY = isI9Form ? 100 : 50;
+            const fw4OffsetX = isFW4Form ? -200 : 0;
+            const fw4OffsetY = isFW4Form ? 70 : 0;
+              const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
+              const i9OffsetX = isI9Form ? -400 : 0;
+              const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 : 0;
+              const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 : 0;
+              const x = Math.max(0, baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX);
+              const y = isI9Form
+                ? Math.max(0, i9DateFieldY - 200)
+                : Math.min(height - signatureHeight, baseY + fw4OffsetY + noticeToEmployeeOffsetY);
+
+              if (isTyped && !isDataUrl) {
+                page.drawText(signatureValue, {
+                  x,
+                  y: y + signatureHeight / 2,
+                  size: 10,
+                });
+              } else if (signatureImage) {
+                page.drawImage(signatureImage, {
+                  x,
+                  y,
+                  width: signatureWidth,
+                  height: signatureHeight,
+                });
+              }
+
+              page.drawText('Digitally Signed:', {
+                x,
+                y: y + signatureHeight + 5,
+                size: 8,
+              });
+            }
           } catch (imgError) {
             console.error('[PDF_FORMS] ❌ Error embedding signature on form:', form.form_name, imgError);
           }
-        } else {
-          console.log('[PDF_FORMS] ⚠️ No signature found for form:', form.form_name);
+          totalSignatureTime += (Date.now() - sigStart);
         }
 
         // Copy all pages from this form to the merged PDF
-        const copiedPages = await mergedPdf.copyPages(formPdf, formPdf.getPageIndices());
-        copiedPages.forEach((page) => {
+        const copyStart = Date.now();
+        const pageIndicesToCopy = formPdf.getPageIndices();
+        const copiedPages = await mergedPdf.copyPages(formPdf, pageIndicesToCopy);
+
+        copiedPages.forEach((page, index) => {
           mergedPdf.addPage(page);
         });
+
+        totalCopyTime += (Date.now() - copyStart);
+        console.log('[PDF_FORMS] ✅ Added', copiedPages.length, 'pages from', form.form_name, '- Total:', mergedPdf.getPageCount(), 'pages');
 
       } catch (formError) {
         console.error('[PDF_FORMS] Error processing form:', form.form_name, formError);
       }
     }
 
+    console.log(`[PDF_FORMS] ⏱️ Form processing took ${Date.now() - formProcessStart}ms (Signatures: ${totalSignatureTime}ms, Copying: ${totalCopyTime}ms)`);
+
     // Add meal waivers to the merged PDF
+    const mealWaiverStart = Date.now();
     console.log('[PDF_FORMS] Adding meal waivers for user:', userId);
     await addMealWaiversToMergedPdf(mergedPdf, userId);
+    console.log(`[PDF_FORMS] ⏱️ Meal waivers took ${Date.now() - mealWaiverStart}ms`);
 
     // Add I-9 supporting documents (List A, B, C) to the merged PDF
+    const i9Start = Date.now();
     console.log('[PDF_FORMS] Adding I-9 supporting documents for user:', userId);
     await addI9DocumentsToMergedPdf(mergedPdf, userId);
+    console.log(`[PDF_FORMS] ⏱️ I-9 documents took ${Date.now() - i9Start}ms`);
 
     // Save the merged PDF
+    const saveStart = Date.now();
     const mergedPdfBytes = await mergedPdf.save();
-    const mergedPdfBase64 = Buffer.from(mergedPdfBytes).toString('base64');
+    console.log(`[PDF_FORMS] ⏱️ PDF save took ${Date.now() - saveStart}ms, size: ${(mergedPdfBytes.length / 1024 / 1024).toFixed(2)} MB`);
 
     // Get user name for filename
     const { data: targetUserData } = await supabaseAdmin
@@ -652,11 +898,19 @@ export async function GET(
     const fileName = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
 
     // Return the merged PDF as a downloadable file
-    return new NextResponse(Buffer.from(mergedPdfBase64, 'base64'), {
+    const pdfBuffer = Buffer.from(mergedPdfBytes);
+
+    const totalTime = Date.now() - startTime;
+    console.log(`[PDF_FORMS] ✅ TOTAL TIME: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}s) - Generated ${mergedPdf.getPageCount()} pages`);
+
+    return new NextResponse(pdfBuffer, {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${fileName}"`,
+        'Content-Length': pdfBuffer.length.toString(),
+        'Cache-Control': 'no-store',
       },
+      status: 200,
     });
   } catch (error: any) {
     console.error('[PDF_FORMS] Error:', error);
