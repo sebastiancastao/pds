@@ -399,7 +399,7 @@ function VerifyMFAContent() {
         console.log('[VERIFY-MFA DEBUG] 🗑️ Cleaning up sessionStorage');
         sessionStorage.removeItem('pending_onboarding_redirect');
 
-        if (pendingOnboardingRedirect) {
+        if (pendingOnboardingRedirect && pendingOnboardingRedirect !== '/verify-mfa') {
           console.log('[VERIFY-MFA DEBUG] ========================================');
           console.log('[VERIFY-MFA DEBUG] 🎯 REDIRECTING TO:', pendingOnboardingRedirect);
           console.log('[VERIFY-MFA DEBUG] ========================================');
@@ -821,6 +821,5 @@ export default function VerifyMFAPage() {
     </Suspense>
   );
 }
-
 
 

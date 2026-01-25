@@ -55,33 +55,40 @@ export function AuthGuard({
     }
 
     // Step 3: Check if page is onboarding-only (should redirect if MFA already set up)
+    const mfaVerifiedFlag = sessionStorage.getItem('mfa_verified');
+    const hasMfaVerified = mfaVerifiedFlag === 'true';
+
     if (onboardingOnly) {
       console.log('[AUTH GUARD] Checking onboarding status (page is onboarding-only)...');
-      
-      // Check if user has already set up MFA (TOTP)
-      const { data: profileDataArray } = await (supabase
-        .from('profiles')
-        .select('mfa_secret, mfa_enabled')
-        .eq('user_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(1) as any);
-      
-      const profileData = profileDataArray?.[0] || null;
-      
-      console.log('[AUTH GUARD] Onboarding check:', {
-        hasMfaSecret: !!profileData?.mfa_secret,
-        mfaEnabled: profileData?.mfa_enabled
-      });
-      
-      // If user has MFA secret, they've completed TOTP onboarding
-      if (profileData?.mfa_secret) {
-        console.log('[AUTH GUARD] ⚠️ User has completed TOTP onboarding (MFA secret exists)');
-        console.log('[AUTH GUARD] ❌ Onboarding-only page not accessible, redirecting to /verify-mfa');
-        router.push('/verify-mfa');
-        return;
+
+      if (hasMfaVerified) {
+        console.log('[AUTH GUARD] ✅ MFA already verified, allowing onboarding-only page');
+      } else {
+        // Check if user has already set up MFA (TOTP)
+        const { data: profileDataArray } = await (supabase
+          .from('profiles')
+          .select('mfa_secret, mfa_enabled')
+          .eq('user_id', session.user.id)
+          .order('created_at', { ascending: false })
+          .limit(1) as any);
+
+        const profileData = profileDataArray?.[0] || null;
+
+        console.log('[AUTH GUARD] Onboarding check:', {
+          hasMfaSecret: !!profileData?.mfa_secret,
+          mfaEnabled: profileData?.mfa_enabled
+        });
+
+        // If user has MFA secret, they've completed TOTP onboarding
+        if (profileData?.mfa_secret) {
+          console.log('[AUTH GUARD] ⚠️ User has completed TOTP onboarding (MFA secret exists)');
+          console.log('[AUTH GUARD] ❌ Onboarding-only page not accessible, redirecting to /verify-mfa');
+          router.push('/verify-mfa');
+          return;
+        }
+
+        console.log('[AUTH GUARD] ✅ User in onboarding phase, allowing access to onboarding page');
       }
-      
-      console.log('[AUTH GUARD] ✅ User in onboarding phase, allowing access to onboarding page');
     }
 
     // Step 4: Check if user has reached MFA verification step
@@ -140,4 +147,3 @@ export function AuthGuard({
 
   return <>{children}</>;
 }
-
