@@ -337,8 +337,9 @@ export async function POST(req: NextRequest) {
     // California uses base form-viewer for DE-4; other states use form-viewer with query param
     let nextStage: string;
     if (statePrefix === 'ca') {
-      // de4 is the first form; background-disclosure is not part of form-viewer.
-      if (recentFormName === 'de4' || recentFormName === 'state-tax' || recentFormName === 'background-disclosure') {
+      // de4 is the first form; background check forms are not part of form-viewer.
+      // If the last form is a background check form, redirect to the first CA form
+      if (recentFormName === 'de4' || recentFormName === 'state-tax' || recentFormName === 'background-disclosure' || recentFormName === 'background-waiver' || recentFormName === 'background-addon') {
         nextStage = `/payroll-packet-ca/form-viewer`;
       } else {
         nextStage = `/payroll-packet-ca/form-viewer?form=${recentFormName}`;
