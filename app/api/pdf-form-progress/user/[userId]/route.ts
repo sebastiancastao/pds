@@ -124,10 +124,20 @@ const isMissingFormsSignatureTableError = (error: any) => {
 
 const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
 const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9']);
+const BACKGROUND_CHECK_FORM_KEYS = new Set([
+  'background-waiver',
+  'background-disclosure',
+  'background-addon',
+]);
 const MEAL_WAIVER_TITLES: Record<string, string> = {
   '6_hour': 'Meal Period Waiver (6 Hour)',
   '10_hour': 'Meal Period Waiver (10 Hour)',
   '12_hour': 'Meal Period Waiver (12 Hour)',
+};
+
+const isBackgroundCheckFormName = (value?: string | null) => {
+  if (!value) return false;
+  return BACKGROUND_CHECK_FORM_KEYS.has(value.toLowerCase());
 };
 
 function toBase64(data: any): string {
@@ -570,6 +580,14 @@ export async function GET(
       );
     }
 
+    const formsToProcess = (forms || []).filter((form) => !isBackgroundCheckFormName(form.form_name));
+    if (formsToProcess.length === 0) {
+      return NextResponse.json(
+        { error: 'No onboarding forms available for download' },
+        { status: 404 }
+      );
+    }
+
     const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase() || '';
     const useFormSignatures = signatureSource === 'form_signatures' || signatureSource === 'forms_signature';
     const signatureByForm = new Map<string, SignatureEntry>();
@@ -577,7 +595,7 @@ export async function GET(
 
     if (useFormSignatures) {
       const sigFetchStart = Date.now();
-      const formIds = Array.from(new Set(forms.map((form) => form.form_name).filter(Boolean)));
+      const formIds = Array.from(new Set(formsToProcess.map((form) => form.form_name).filter(Boolean)));
       if (formIds.length > 0) {
         const tableCandidates =
           signatureSource === 'forms_signature'
@@ -668,7 +686,11 @@ export async function GET(
       }
     }
 
-    console.log('[PDF_FORMS] Retrieved', forms.length, 'forms');
+    console.log(
+      '[PDF_FORMS] Retrieved',
+      formsToProcess.length,
+      'forms (background check documents excluded)'
+    );
 
     // Create a new merged PDF document
     const pdfCreateStart = Date.now();
@@ -680,7 +702,7 @@ export async function GET(
     let totalSignatureTime = 0;
     let totalCopyTime = 0;
 
-    for (const form of forms) {
+    for (const form of formsToProcess) {
       try {
         const base64Data = toBase64(form.form_data);
         if (!base64Data) {
