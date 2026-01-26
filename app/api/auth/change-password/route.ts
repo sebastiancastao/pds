@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Change Password API
+// PDS Time Keeping System - Change Password API
 // Allows authenticated users to change their password
 // Updates temporary password status after successful change
 

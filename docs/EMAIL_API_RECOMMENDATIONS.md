@@ -1,4 +1,4 @@
-# 📧 Email API Recommendations for PDS Time keeping
+# 📧 Email API Recommendations for PDS Time Keeping 
 
 ## Overview
 
@@ -47,7 +47,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 export async function sendEmail(to: string, subject: string, html: string) {
   const { data, error } = await resend.emails.send({
-    from: 'PDS Time keeping<noreply@yourdomain.com>',
+    from: 'PDS Time Keeping <noreply@yourdomain.com>',
     to,
     subject,
     html,
@@ -384,9 +384,9 @@ export async function sendTemporaryPasswordEmail(data: {
 
   try {
     const { data: emailData, error } = await resend.emails.send({
-      from: 'PDS Time keeping<noreply@yourdomain.com>',
+      from: 'PDS Time Keeping <noreply@yourdomain.com>',
       to: email,
-      subject: 'Welcome to PDS Time keeping- Your Account Details',
+      subject: 'Welcome to PDS Time Keeping - Your Account Details',
       html: `
         <!-- Your existing HTML template here -->
         <h1>Welcome ${firstName} ${lastName}!</h1>
@@ -430,7 +430,7 @@ npm run dev
 
 2. **Use Your Domain**
    ```typescript
-   from: 'PDS Time keeping<noreply@pds.com>'
+   from: 'PDS Time Keeping <noreply@pds.com>'
    // Instead of: noreply@resend.dev
    ```
 

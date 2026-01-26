@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Audit Logging
+// PDS Time Keeping System - Audit Logging
 // Immutable audit trail for compliance (SOC2, FLSA, IRS/DOL)
 
 import { supabase } from './supabase';

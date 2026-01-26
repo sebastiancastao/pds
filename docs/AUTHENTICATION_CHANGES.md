@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time keepingSystem authentication requirements have been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users**, replacing the previous tiered system.
+The PDS Time Keeping System authentication requirements have been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users**, replacing the previous tiered system.
 
 ---
 

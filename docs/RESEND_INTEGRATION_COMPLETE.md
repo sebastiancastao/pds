@@ -2,7 +2,7 @@
 
 ## 🎉 Success!
 
-Your PDS Time keepingSystem is now sending **real emails** via Resend!
+Your PDS Time Keeping System is now sending **real emails** via Resend!
 
 ---
 
@@ -73,8 +73,8 @@ You should see:
 
 Look for an email from:
 ```
-From: PDS Time keeping<service@pdsportal.site>
-Subject: Welcome to PDS Time keeping- Your Account Details
+From: PDS Time Keeping <service@pdsportal.site>
+Subject: Welcome to PDS Time Keeping - Your Account Details
 ```
 
 **Check spam folder if you don't see it!**
@@ -125,8 +125,8 @@ Your users will receive:
 ```
 📧 New Email!
 
-From: PDS Time keeping
-Subject: Welcome to PDS Time keeping- Your Account Details
+From: PDS Time Keeping 
+Subject: Welcome to PDS Time Keeping - Your Account Details
 
 [Beautiful HTML email with temporary password]
 ```
@@ -139,7 +139,7 @@ Subject: Welcome to PDS Time keeping- Your Account Details
 
 **Sender Address:**
 ```
-PDS Time keeping<service@furnituretaxi.site>
+PDS Time Keeping <service@furnituretaxi.site>
 ```
 
 **⚠️ Note:** This uses Resend's default domain. For production:
@@ -152,7 +152,7 @@ PDS Time keeping<service@furnituretaxi.site>
 
 2. **Better Email Address Examples:**
    ```
-   PDS Time keeping<noreply@pds.com>
+   PDS Time Keeping <noreply@pds.com>
    PDS Onboarding <onboarding@pds.com>
    PDS Support <support@pds.com>
    ```
@@ -360,7 +360,7 @@ lib/email.ts → generateEmailTemplate()
 
 ## 🎉 You're All Set!
 
-Your PDS Time keepingSystem now sends **real, professional emails** to users!
+Your PDS Time Keeping System now sends **real, professional emails** to users!
 
 ### What You Have:
 - ✅ Production-ready email service

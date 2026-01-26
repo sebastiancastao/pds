@@ -184,7 +184,7 @@ export default function TimekeepingPage() {
 
       if (startDate !== currentDate) {
         // Entry started on a different day - notify user
-        setMessage(`Note: Time keepingstarted on ${startDate} and is now ${currentDate}`);
+        setMessage(`Note: Time Keeping started on ${startDate} and is now ${currentDate}`);
       }
     };
 
@@ -482,7 +482,7 @@ export default function TimekeepingPage() {
           {/* Center badge */}
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="px-6 py-3 rounded-full bg-white/95 backdrop-blur-sm shadow-xl text-green-700 text-lg font-semibold border-2 border-green-200">
-              Time Keeping Active
+              Time Keeping  Active
             </div>
           </div>
         </div>
@@ -515,7 +515,7 @@ export default function TimekeepingPage() {
       <div className="container mx-auto max-w-3xl p-6 space-y-6 relative z-10">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold text-primary-900">Time keeping</h1>
+          <h1 className="text-2xl font-bold text-primary-900">Time Keeping </h1>
           <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${
             isOnline
               ? 'bg-green-100 text-green-800 border border-green-300'

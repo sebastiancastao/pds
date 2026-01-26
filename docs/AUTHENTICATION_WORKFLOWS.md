@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time keepingSystem has **two distinct authentication workflows** depending on whether a user has a temporary password or a permanent password.
+The PDS Time Keeping System has **two distinct authentication workflows** depending on whether a user has a temporary password or a permanent password.
 
 ## 🔑 Two Workflows
 

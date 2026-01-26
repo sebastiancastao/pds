@@ -2,7 +2,7 @@
 
 ## ✅ Security Audit Completed
 
-Your PDS Time keepingSystem has been thoroughly audited for compliance with `.cursorrules` security requirements.
+Your PDS Time Keeping System has been thoroughly audited for compliance with `.cursorrules` security requirements.
 
 ---
 

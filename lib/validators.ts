@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Input Validation
+// PDS Time Keeping System - Input Validation
 // Server-side validation using Zod for security
 
 import { z } from 'zod';
@@ -119,7 +119,7 @@ export const documentUploadSchema = z.object({
 });
 
 // ============================================
-// Time keepingValidation
+// Time Keeping Validation
 // ============================================
 export const clockInOutSchema = z.object({
   action: z.enum(['clock_in', 'clock_out']),

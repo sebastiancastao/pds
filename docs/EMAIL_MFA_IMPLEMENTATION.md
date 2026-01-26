@@ -7,7 +7,7 @@
 
 ## Overview
 
-This implementation adds **email-based Multi-Factor Authentication (MFA)** to the PDS Time keepingSystem. Users receive 6-digit verification codes via email instead of using authenticator apps (TOTP).
+This implementation adds **email-based Multi-Factor Authentication (MFA)** to the PDS Time Keeping System. Users receive 6-digit verification codes via email instead of using authenticator apps (TOTP).
 
 ### Key Features
 

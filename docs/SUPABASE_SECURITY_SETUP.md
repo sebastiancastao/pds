@@ -1,7 +1,7 @@
 # Supabase Security Setup Guide
 ## SQL Injection Prevention & Secure Configuration
 
-This guide explains how the PDS Time keepingSystem implements secure Supabase connections following all `.cursorrules` security requirements.
+This guide explains how the PDS Time Keeping System implements secure Supabase connections following all `.cursorrules` security requirements.
 
 ---
 

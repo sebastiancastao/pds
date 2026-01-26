@@ -394,10 +394,10 @@ export default function LoginPage() {
           
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
-              PDS Time keepingSystem
+              PDS Time Keeping System
             </h1>
             <p className="text-primary-100 text-lg">
-              Secure, compliant employee time keepingand workforce management
+              Secure, compliant employee Time Keeping and workforce management
             </p>
           </div>
         </div>

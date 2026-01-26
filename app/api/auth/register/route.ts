@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Secure Registration API
+// PDS Time Keeping System - Secure Registration API
 // Demonstrates SQL injection prevention and security best practices
 
 import { NextRequest, NextResponse } from 'next/server';

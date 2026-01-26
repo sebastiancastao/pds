@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Update Login Attempts API
+// PDS Time Keeping System - Update Login Attempts API
 // Uses service role to bypass RLS for updating login attempts and account locks
 
 import { NextRequest, NextResponse } from 'next/server';

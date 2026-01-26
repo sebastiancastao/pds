@@ -271,7 +271,7 @@
 
 ════════════════════════════════════════════════════════════════════════════════
                              Created: October 2, 2025
-                      PDS Employee Time keepingSystem
+                      PDS Employee Time Keeping System
                        Secure by Design • Compliant • Audited
 ════════════════════════════════════════════════════════════════════════════════
 

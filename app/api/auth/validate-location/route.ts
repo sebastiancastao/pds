@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Geofence Location Validation API
+// PDS Time Keeping System - Geofence Location Validation API
 // Validates user location against configured geofence zones
 
 import { NextRequest, NextResponse } from 'next/server';

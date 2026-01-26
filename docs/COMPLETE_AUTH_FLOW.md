@@ -1,6 +1,6 @@
 # 🔐 Complete Authentication Flow with MFA
 
-This document describes the complete authentication flow for the PDS Time keepingSystem, including temporary passwords, password changes, MFA setup, and MFA verification.
+This document describes the complete authentication flow for the PDS Time Keeping System, including temporary passwords, password changes, MFA setup, and MFA verification.
 
 ---
 
@@ -143,7 +143,7 @@ The system enforces a secure authentication flow that ensures:
 1. Client calls /api/auth/mfa/setup
 2. Server generates TOTP secret using speakeasy
 3. Server creates QR code with:
-   - Service name: "PDS Time keeping"
+   - Service name: "PDS Time Keeping "
    - User email
    - Secret key
 4. Returns QR code (base64 image) and secret to client

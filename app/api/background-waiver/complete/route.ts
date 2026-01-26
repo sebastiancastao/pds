@@ -86,7 +86,7 @@ function userReceiptHtml(first: string) {
               <tr>
                 <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
                   <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                    This email was sent by PDS Time keepingSystem
+                    This email was sent by PDS Time Keeping System
                   </p>
                   <p style="color: #999999; font-size: 11px; margin: 0;">
                     © ${new Date().getFullYear()} PDS. All rights reserved.

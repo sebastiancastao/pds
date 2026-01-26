@@ -2,7 +2,7 @@
 
 ## Summary of Changes
 
-Your PDS Time keepingSystem has been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users** instead of the previous tiered system (PIN/QR for workers, email+2FA for managers).
+Your PDS Time Keeping System has been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users** instead of the previous tiered system (PIN/QR for workers, email+2FA for managers).
 
 ---
 

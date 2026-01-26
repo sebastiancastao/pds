@@ -1,4 +1,4 @@
-// PDS Time keepingSystem - Email Utilities
+// PDS Time Keeping System - Email Utilities
 // Secure email delivery for temporary passwords and notifications via Resend
 
 import { Resend } from 'resend';
@@ -115,7 +115,7 @@ function generateEmailTemplate(data: {
           <!-- Header -->
           <tr>
             <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Welcome to PDS Time keeping</h1>
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Welcome to PDS Time Keeping </h1>
               <p style="color: #e6e6ff; margin: 10px 0 0 0; font-size: 16px;">Your account has been created</p>
             </td>
           </tr>
@@ -223,7 +223,7 @@ function generateEmailTemplate(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This email was sent by PDS Time keepingSystem
+                This email was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 This message contains confidential information. If you received this in error, please delete it.
@@ -263,13 +263,13 @@ export async function sendInviteEmail(data: {
     day: 'numeric',
   });
 
-  const emailSubject = 'You\'re Invited to PDS Time keeping';
+  const emailSubject = 'You\'re Invited to PDS Time Keeping ';
   const emailBody = `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <title>You're Invited to PDS Time keeping</title>
+  <title>You're Invited to PDS Time Keeping </title>
 </head>
 <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
   <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
@@ -281,7 +281,7 @@ export async function sendInviteEmail(data: {
           <tr>
             <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center;">
               <h1 style="color: #ffffff; margin: 0; font-size: 28px;">🎉 You're Invited!</h1>
-              <p style="color: #e6e6ff; margin: 10px 0 0 0; font-size: 16px;">Join the PDS Time keepingSystem</p>
+              <p style="color: #e6e6ff; margin: 10px 0 0 0; font-size: 16px;">Join the PDS Time Keeping System</p>
             </td>
           </tr>
 
@@ -293,7 +293,7 @@ export async function sendInviteEmail(data: {
               </p>
               
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                You've been invited to join the PDS Time keepingSystem! Click the button below to create your account and get started.
+                You've been invited to join the PDS Time Keeping System! Click the button below to create your account and get started.
               </p>
 
               <!-- Invite Info Box -->
@@ -376,7 +376,7 @@ export async function sendInviteEmail(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This invitation was sent by PDS Time keepingSystem
+                This invitation was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 © ${new Date().getFullYear()} PDS. All rights reserved.
@@ -395,7 +395,7 @@ export async function sendInviteEmail(data: {
   // Send invite email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time keeping<service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
+      from: 'PDS Time Keeping <service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -491,7 +491,7 @@ export async function sendMFAVerificationEmail(
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time keeping<service@pdsportal.site>',
+      from: 'PDS Time Keeping <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
       html: emailBody,
@@ -668,7 +668,7 @@ export async function sendVendorEventInvitationEmail(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This invitation was sent by PDS Time keepingSystem
+                This invitation was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 © ${new Date().getFullYear()} PDS. All rights reserved.
@@ -903,7 +903,7 @@ export async function sendVendorBulkInvitationEmail(data: {
           <tr>
             <td style="background-color: #f9fafb; padding: 32px 40px; text-align: center; border-top: 1px solid #e5e7eb;">
               <p style="color: #6b7280; font-size: 13px; margin: 0 0 8px 0; font-weight: 500;">
-                This invitation was sent by PDS Time keepingSystem
+                This invitation was sent by PDS Time Keeping System
               </p>
               <p style="color: #9ca3af; font-size: 12px; margin: 8px 0 0 0;">
                 © ${new Date().getFullYear()} PDS. All rights reserved.
@@ -1125,7 +1125,7 @@ export async function sendTeamConfirmationEmail(data: {
           <tr>
             <td style="background-color: #f9fafb; padding: 32px 40px; text-align: center; border-top: 1px solid #e5e7eb;">
               <p style="color: #6b7280; font-size: 13px; margin: 0 0 8px 0; font-weight: 500;">
-                This team invitation was sent by PDS Time keepingSystem
+                This team invitation was sent by PDS Time Keeping System
               </p>
               <p style="color: #9ca3af; font-size: 12px; margin: 8px 0 0 0;">
                 © ${new Date().getFullYear()} PDS. All rights reserved.
@@ -1305,7 +1305,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This notification was sent by PDS Time keepingSystem
+                This notification was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 This message contains confidential information. If you received this in error, please delete it.
@@ -1327,7 +1327,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
   // Send email via Resend to admin
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time keeping<service@pdsportal.site>',
+      from: 'PDS Time Keeping <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com', // Admin email
       
       subject: emailSubject,
@@ -1374,7 +1374,7 @@ export async function sendEmail(data: {
 
   try {
     const { data: resendData, error } = await resend.emails.send({
-      from: from || 'PDS Time keeping<service@pdsportal.site>',
+      from: from || 'PDS Time Keeping <service@pdsportal.site>',
       to,
       cc,
       subject,
@@ -1520,7 +1520,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This notification was sent by PDS Time keepingSystem
+                This notification was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 This message contains confidential information. If you received this in error, please delete it.
@@ -1542,7 +1542,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
   // Send email via Resend to admin
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time keeping<service@pdsportal.site>',
+      from: 'PDS Time Keeping <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com',
       subject: emailSubject,
       html: emailBody,
@@ -1695,7 +1695,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This email was sent by PDS Time keepingSystem
+                This email was sent by PDS Time Keeping System
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 This message contains confidential information. If you received this in error, please delete it.
@@ -1717,7 +1717,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
   // Send email via Resend to user
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Time keeping<service@pdsportal.site>',
+      from: 'PDS Time Keeping <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
       html: emailBody,

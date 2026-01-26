@@ -2,7 +2,7 @@
 
 ## Overview
 
-You have **two secure options** for onboarding users to your PDS Time keepingSystem:
+You have **two secure options** for onboarding users to your PDS Time Keeping System:
 
 1. **Direct Signup** - Admin creates account with temporary password (requires service role key)
 2. **Invite System** - Admin sends invite link, user creates own account (NO service role key)
