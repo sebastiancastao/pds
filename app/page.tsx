@@ -106,14 +106,15 @@ export default function Home() {
     }
 
     if (userRole === 'worker') {
-      console.log('[DEBUG] Home - Worker role detected, redirecting to /time-tracking');
-      router.push('/time-tracking');
+      console.log('[DEBUG] Home - Worker role detected, redirecting to /time-keeping');
+      router.push('/time-keeping');
       return;
     }
     if (userRole === 'backgroundchecker') {
       console.log('[DEBUG] Home - Background Checker role detected, redirecting to /background-checks');
       router.push('/background-checks');
       return;
+      
     }
 
     console.log('[DEBUG] Home - All checks passed, showing authenticated home page');
@@ -132,7 +133,7 @@ export default function Home() {
       <main className="min-h-screen flex items-center justify-center">
         <div className="liquid-card-compact p-8 animate-scale-in">
           <div className="animate-spin rounded-full h-16 w-16 border-4 border-transparent border-t-ios-blue mx-auto mb-4"></div>
-          <p className="text-gray-700 font-medium text-center tracking-apple">Loading...</p>
+          <p className="text-gray-700 font-medium text-center keeping-apple">Loading...</p>
         </div>
       </main>
     );
@@ -150,10 +151,10 @@ export default function Home() {
             </svg>
             Authenticated Session
           </div>
-          <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-4 tracking-apple-tight">
+          <h1 className="text-5xl md:text-6xl font-bold text-gray-900 mb-4 keeping-apple-tight">
             Welcome Back
           </h1>
-          <p className="text-lg text-gray-600 mb-6 tracking-apple">
+          <p className="text-lg text-gray-600 mb-6 keeping-apple">
             Logged in as <strong className="text-gray-900">{user.email}</strong>
           </p>
           <button
@@ -180,7 +181,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-bold text-gray-900 mb-2 tracking-apple">Events Dashboard</h3>
+                <h3 className="text-xl font-bold text-gray-900 mb-2 keeping-apple">Events Dashboard</h3>
                 <p className="text-gray-600 mb-3 leading-relaxed">Manage events, invitations, and teams</p>
                 <div className="flex items-center text-ios-blue font-semibold text-sm group-hover:gap-2 gap-1 transition-all">
                   Open Dashboard
@@ -204,7 +205,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex-1">
-                <h3 className="text-xl font-bold text-gray-900 mb-2 tracking-apple">Admin Panel</h3>
+                <h3 className="text-xl font-bold text-gray-900 mb-2 keeping-apple">Admin Panel</h3>
                 <p className="text-gray-600 mb-3 leading-relaxed">Background checks, user creation, and system management</p>
                 <div className="flex items-center text-ios-purple font-semibold text-sm group-hover:gap-2 gap-1 transition-all">
                   Open Admin
@@ -227,7 +228,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex-1">
-                <h3 className="text-lg font-bold text-gray-900 mb-1 tracking-apple">Complete Profile</h3>
+                <h3 className="text-lg font-bold text-gray-900 mb-1 keeping-apple">Complete Profile</h3>
                 <p className="text-gray-600 text-sm leading-relaxed">Update your personal information</p>
               </div>
               <svg className="w-5 h-5 text-gray-400 group-hover:text-gray-600 group-hover:translate-x-1 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -247,7 +248,7 @@ export default function Home() {
                 </div>
               </div>
               <div className="flex-1">
-                <h3 className="text-lg font-bold text-gray-900 mb-1 tracking-apple">Security Settings</h3>
+                <h3 className="text-lg font-bold text-gray-900 mb-1 keeping-apple">Security Settings</h3>
                 <p className="text-gray-600 text-sm leading-relaxed">Manage MFA and security options</p>
               </div>
               <svg className="w-5 h-5 text-gray-400 group-hover:text-gray-600 group-hover:translate-x-1 transition-all" fill="none" stroke="currentColor" viewBox="0 0 24 24">

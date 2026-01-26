@@ -93,7 +93,7 @@ The NY Payroll Packet system now uses a **hybrid approach**:
 
 ### Data Validation
 - Required fields enforced both client-side and server-side
-- Checkbox consent tracking
+- Checkbox consent keeping
 - Timestamp auditing
 
 ### PII Handling
@@ -204,7 +204,7 @@ npm run start
 1. **PDF Auto-Fill:** Pre-populate PDF with user profile data
 2. **Email Integration:** Auto-send filled PDF to HR
 3. **Document Upload:** Allow users to upload completed PDF directly
-4. **Progress Tracking:** Show completion status for both sections
+4. **Progress keeping:** Show completion status for both sections
 5. **Admin Dashboard:** View all submissions in one place
 6. **Export Functionality:** Export web form data to CSV/Excel
 7. **Multi-State Support:** Add similar systems for other states

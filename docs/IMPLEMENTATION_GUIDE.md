@@ -1,4 +1,4 @@
-# PDS Time Tracking System - Security Implementation Guide
+# PDS Time keepingSystem - Security Implementation Guide
 
 This guide will help you implement the critical security features required for `.cursorrules` compliance.
 

@@ -1,4 +1,4 @@
-// PDS Time Tracking System - AES-256 Encryption Utilities
+// PDS Time keepingSystem - AES-256 Encryption Utilities
 // Secure PII data encryption/decryption for compliance
 
 import CryptoJS from 'crypto-js';

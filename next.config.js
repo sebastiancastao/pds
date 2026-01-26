@@ -94,7 +94,7 @@ const nextConfig = {
 
   // Environment variable validation
   env: {
-    NEXT_PUBLIC_APP_NAME: 'PDS Time Tracking System',
+    NEXT_PUBLIC_APP_NAME: 'PDS Time keepingSystem',
   },
 };
 

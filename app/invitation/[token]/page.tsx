@@ -103,7 +103,7 @@ export default function InvitationPage() {
       <div className="container mx-auto max-w-5xl py-12 px-6">
         {/* Header */}
         <div className="mb-10">
-          <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">Your Availability</h1>
+          <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Your Availability</h1>
           <p className="text-lg text-gray-600 font-normal">Select the days you're available to work over the next 3 weeks.</p>
         </div>
 

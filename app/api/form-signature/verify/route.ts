@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
       currentHash: currentFormDataHash.substring(0, 16) + '...',
     });
 
-    // Update verification tracking
+    // Update verification keeping
     const { error: updateError } = await supabase
       .from('form_signatures')
       .update({
@@ -61,7 +61,7 @@ export async function POST(request: NextRequest) {
       .eq('id', signatureId);
 
     if (updateError) {
-      console.error('[VERIFY] Error updating verification tracking:', updateError);
+      console.error('[VERIFY] Error updating verification keeping:', updateError);
     }
 
     // Log verification attempt to audit trail

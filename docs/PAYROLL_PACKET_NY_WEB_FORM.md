@@ -97,7 +97,7 @@ The web form includes **all** fields from the PDF plus additional operational da
 **`database/migrations/008_add_payroll_packets_ny_table.sql`**
 - Complete schema for all form fields
 - Row Level Security (RLS) policies
-- Status tracking (pending_review, approved, needs_revision)
+- Status keeping(pending_review, approved, needs_revision)
 - HR review workflow support
 - Indexes for performance
 
@@ -433,7 +433,7 @@ The PDS NY Payroll Packet system now provides:
 - ✅ **Secure storage** - encrypted PII, RLS policies
 - ✅ **Mobile responsive** - works on all devices
 - ✅ **Beautiful UI** - numbered sections, gradient design
-- ✅ **HR workflow support** - status tracking, review capability
+- ✅ **HR workflow support** - status keeping, review capability
 - ✅ **Compliance-ready** - FLSA, IRS, SOC2 standards
 
 The system is **production-ready** and fully compliant with PDS security requirements. All information is collected via the web form and stored securely in Supabase. 🎉

@@ -56,7 +56,7 @@ Look at your terminal/console for the simulated email:
 📧 EMAIL SENT (SIMULATED)
 ========================================
 To: testuser@pds.com
-Subject: Welcome to PDS Time Tracking - Your Account Details
+Subject: Welcome to PDS Time keeping- Your Account Details
 [Full email with temporary password shown]
 ========================================
 ```
@@ -127,7 +127,7 @@ Users receive a professional email with:
 
 ```
 ┌─────────────────────────────────────┐
-│   🎉 Welcome to PDS Time Tracking   │
+│   🎉 Welcome to PDS Time keeping  │
 │     Your account has been created    │
 ├─────────────────────────────────────┤
 │                                      │

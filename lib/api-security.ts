@@ -1,4 +1,4 @@
-// PDS Time Tracking System - API Security Layer
+// PDS Time keepingSystem - API Security Layer
 // SQL Injection Prevention & Input Validation
 
 import { createServerClient, isValidUUID, isValidEmail, sanitizeInput } from './supabase';

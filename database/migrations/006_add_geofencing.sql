@@ -51,7 +51,7 @@ COMMENT ON COLUMN public.geofence_zones.radius_meters IS 'Radius in meters for c
 COMMENT ON COLUMN public.geofence_zones.polygon_coordinates IS 'Array of {lat, lng} points defining polygon boundary';
 
 -- ============================================
--- Location Tracking Table
+-- Location keepingTable
 -- ============================================
 -- Tracks all login attempts with location data
 
@@ -294,7 +294,7 @@ DO $$
 BEGIN
   RAISE NOTICE '✅ Geofencing tables created successfully';
   RAISE NOTICE '   - geofence_zones (zone definitions)';
-  RAISE NOTICE '   - login_locations (location tracking)';
+  RAISE NOTICE '   - login_locations (location keeping)';
   RAISE NOTICE '✅ Helper functions created';
   RAISE NOTICE '   - check_geofence() (validate location)';
   RAISE NOTICE '   - calculate_distance() (Haversine formula)';

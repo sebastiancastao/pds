@@ -51,7 +51,7 @@
 1353:               <div className="space-y-8">
 1354:                 <section>
 1355:                   <div className="flex items-center justify-between mb-6">
-1356:                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Key Metrics</h2>
+1356:                     <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Key Metrics</h2>
 1357:                     <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
 1358:                   </div>
 1359:                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -67,7 +67,7 @@
 1369:                           <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Total</span>
 1370:                         </div>
 1371:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Total Employees</h3>
-1372:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalEmployees}</div>
+1372:                         <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.totalEmployees}</div>
 1373:                         <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
 1374:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 1375:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -89,7 +89,7 @@
 1391:                           <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Roles</span>
 1392:                         </div>
 1393:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Departments</h3>
-1394:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalDepartments}</div>
+1394:                         <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.totalDepartments}</div>
 1395:                         <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
 1396:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 1397:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -111,7 +111,7 @@
 1413:                           <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">New</span>
 1414:                         </div>
 1415:                         <h3 className="text-sm font-medium text-gray-600 mb-2">New Hires</h3>
-1416:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.newHiresThisMonth}</div>
+1416:                         <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.newHiresThisMonth}</div>
 1417:                         <p className="text-sm text-green-600 font-medium flex items-center gap-1">
 1418:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 1419:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -133,7 +133,7 @@
 1435:                           <span className="px-3 py-1 bg-orange-100 text-orange-700 rounded-full text-xs font-semibold">Security</span>
 1436:                         </div>
 1437:                         <h3 className="text-sm font-medium text-gray-600 mb-2">Background Checks</h3>
-1438:                         <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.approvedBackgroundChecks}</div>
+1438:                         <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.approvedBackgroundChecks}</div>
 1439:                         <p className="text-sm text-orange-600 font-medium flex items-center gap-1">
 1440:                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 1441:                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -148,7 +148,7 @@
 1450:                 {/* Roles */}
 1451:                 <section>
 1452:                   <div className="flex items-center justify-between mb-6">
-1453:                     <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Role Overview</h2>
+1453:                     <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Role Overview</h2>
 1454:                     <span className="text-sm text-gray-500 font-medium">Workforce Distribution</span>
 1455:                   </div>
 1456:                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -184,7 +184,7 @@
 1486:                           </div>
 1487:                           <div className="flex items-end justify-between">
 1488:                             <div>
-1489:                               <div className="text-5xl font-bold text-gray-900 mb-2 tracking-tight">{dept.employee_count}</div>
+1489:                               <div className="text-5xl font-bold text-gray-900 mb-2 keeping-tight">{dept.employee_count}</div>
 1490:                               <div className={`text-sm font-medium flex items-center gap-2 ${
 1491:                                 dept.color === 'blue' ? 'text-blue-600' : 'text-purple-600'
 1492:                               }`}>
@@ -212,7 +212,7 @@
 1514:             {hrView === "employees" && (
 1515:               <div className="space-y-6">
 1516:                 <div className="flex items-center justify-between">
-1517:                   <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">
+1517:                   <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">
 1518:                     All Employees
 1519:                     {employees.length > 0 && <span className="ml-3 text-lg font-normal text-gray-500">({employees.length})</span>}
 1520:                   </h2>

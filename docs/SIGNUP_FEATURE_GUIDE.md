@@ -2,7 +2,7 @@
 
 ## Overview
 
-The signup feature allows administrators to create one or multiple user accounts with secure temporary passwords that are automatically emailed to new users. This implements a secure, FLSA-compliant onboarding process for the PDS Time Tracking System.
+The signup feature allows administrators to create one or multiple user accounts with secure temporary passwords that are automatically emailed to new users. This implements a secure, FLSA-compliant onboarding process for the PDS Time keepingSystem.
 
 ---
 
@@ -153,7 +153,7 @@ All user creation events are logged with:
 
 ### Subject
 ```
-Welcome to PDS Time Tracking - Your Account Details
+Welcome to PDS Time keeping- Your Account Details
 ```
 
 ### Content Includes
@@ -193,7 +193,7 @@ In development mode, emails are logged to the console:
 📧 EMAIL SENT (SIMULATED)
 ========================================
 To: user@example.com
-Subject: Welcome to PDS Time Tracking - Your Account Details
+Subject: Welcome to PDS Time keeping- Your Account Details
 ----------------------------------------
 [Full HTML email content displayed]
 ========================================

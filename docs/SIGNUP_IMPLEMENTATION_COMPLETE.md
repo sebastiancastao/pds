@@ -388,7 +388,7 @@ A **production-ready signup system** featuring:
 
 **Start testing:** `http://localhost:3000/signup`
 
-The signup feature is **fully functional** and ready for your PDS Time Tracking System! 🎊
+The signup feature is **fully functional** and ready for your PDS Time keepingSystem! 🎊
 
 ---
 

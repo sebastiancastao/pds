@@ -80,8 +80,8 @@ export async function GET(req: NextRequest) {
         });
       console.log('[PDF DOWNLOAD] Download tracked for user:', userId, 'by:', user.id);
     } catch (trackError) {
-      console.error('[PDF DOWNLOAD] Error tracking download:', trackError);
-      // Don't fail the download if tracking fails
+      console.error('[PDF DOWNLOAD] Error keepingdownload:', trackError);
+      // Don't fail the download if keepingfails
     }
 
     // Fetch the PDF(s) from background_check_pdfs table

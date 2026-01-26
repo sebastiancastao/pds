@@ -439,7 +439,7 @@ curl -X POST http://localhost:3000/api/auth/register \
    - SQL injection tests
 
 4. **Monitoring**
-   - Set up Sentry for error tracking
+   - Set up Sentry for error keeping
    - Monitor audit logs for suspicious activity
    - Alert on rate limit violations
    - Track failed login attempts

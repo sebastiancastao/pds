@@ -2,7 +2,7 @@
 
 ## 🔐 Your Credentials (Securely Configured)
 
-Your Supabase credentials have been integrated into the PDS Time Tracking System:
+Your Supabase credentials have been integrated into the PDS Time keepingSystem:
 
 - **Supabase URL**: `https://bwvnvzlmqqcdemkpecjw.supabase.co`
 - **Project ID**: `bwvnvzlmqqcdemkpecjw`
@@ -97,14 +97,14 @@ The login page (`app/login/page.tsx`) now includes:
    - Parameterized queries (SQL injection prevention)
 
 2. **Account Security**
-   - Failed login attempt tracking
+   - Failed login attempt keeping
    - Automatic account lockout after 5 failed attempts
    - 15-minute lockout duration
    - Account status validation (active/inactive)
 
 3. **Audit Logging**
    - All login attempts logged
-   - Failed login tracking
+   - Failed login keeping
    - Successful authentication logging
    - IP address and metadata capture
 
@@ -270,5 +270,5 @@ If you encounter issues:
 - ✅ Account lockout mechanism ready
 - ✅ MFA flow prepared
 
-**Your PDS Time Tracking System is now securely connected to Supabase!** 🎉
+**Your PDS Time keepingSystem is now securely connected to Supabase!** 🎉
 

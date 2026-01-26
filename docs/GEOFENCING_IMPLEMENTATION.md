@@ -7,14 +7,14 @@
 
 ## Overview
 
-This implementation adds **location-based access control (geofencing)** to the PDS Time Tracking System. Users can only log in when they are physically located within authorized geographic zones.
+This implementation adds **location-based access control (geofencing)** to the PDS Time keepingSystem. Users can only log in when they are physically located within authorized geographic zones.
 
 ### Key Features
 
 - 📍 **Real-time Location Verification**: GPS/browser geolocation validation
 - 🗺️ **Multiple Zone Types**: Circular (center + radius) and polygon zones
 - 🎯 **Role-Based Zones**: Different zones for workers, managers, finance, execs
-- 📊 **Location Tracking**: All login attempts logged with GPS coordinates
+- 📊 **Location keeping**: All login attempts logged with GPS coordinates
 - ⚡ **Fast Validation**: Efficient Haversine distance calculation
 - 🔒 **Secure & Compliant**: Full audit trail for all location checks
 
@@ -506,7 +506,7 @@ if (userRole === 'exec' || userRole === 'finance') {
 
 2. 📱 **Mobile App Integration**
    - Native GPS for better accuracy
-   - Background location tracking
+   - Background location keeping
 
 3. 🕒 **Time-Based Zones**
    - Allow access only during work hours
@@ -518,7 +518,7 @@ if (userRole === 'exec' || userRole === 'finance') {
 
 5. 📊 **Admin Dashboard**
    - Visual map of geofence zones
-   - Real-time login location tracking
+   - Real-time login location keeping
    - Analytics and reporting
 
 6. 🔔 **Push Notifications**

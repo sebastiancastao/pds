@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS payroll_packets_ny (
   background_check_consent BOOLEAN DEFAULT FALSE,
   certification BOOLEAN NOT NULL DEFAULT FALSE,
   
-  -- Status & Tracking
+  -- Status & keeping
   status VARCHAR(50) DEFAULT 'pending_review', -- pending_review, approved, needs_revision
   reviewed_by UUID REFERENCES auth.users(id),
   reviewed_at TIMESTAMP WITH TIME ZONE,

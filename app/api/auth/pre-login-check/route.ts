@@ -1,4 +1,4 @@
-// PDS Time Tracking System - Pre-Login Account Check API
+// PDS Time keepingSystem - Pre-Login Account Check API
 // Uses service role to bypass RLS for pre-authentication account validation
 
 import { NextRequest, NextResponse } from 'next/server';

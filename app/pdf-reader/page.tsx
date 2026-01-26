@@ -2064,7 +2064,7 @@ export default function PDFReaderPage() {
           <div className="space-y-3 bg-slate-50 border border-slate-200 rounded-xl p-3">
             {text && (
               <div>
-                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+                <div className="text-[10px] font-semibold uppercase keeping-wider text-slate-500 mb-1">
                   Extracted text
                 </div>
                 <pre className="text-[10px] leading-relaxed max-h-40 overflow-y-auto bg-white border border-slate-100 rounded-lg p-2 whitespace-pre-wrap">
@@ -2073,7 +2073,7 @@ export default function PDFReaderPage() {
               </div>
             )}
             <div>
-              <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 mb-1">
+              <div className="text-[10px] font-semibold uppercase keeping-wider text-slate-500 mb-1">
                 Structured data
               </div>
               <pre className="text-[10px] leading-relaxed max-h-40 overflow-y-auto bg-white border border-slate-100 rounded-lg p-2">
@@ -2316,7 +2316,7 @@ export default function PDFReaderPage() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4 mb-8">
           <div>
-            <p className="text-sm font-semibold text-blue-700 uppercase tracking-wide">Utilities</p>
+            <p className="text-sm font-semibold text-blue-700 uppercase keeping-wide">Utilities</p>
             <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mt-1">PDF Reader & Extractor</h1>
             <p className="text-slate-600 mt-2 max-w-2xl">
               Upload a paystub or any PDF to extract text. Automatically performs OCR for image-based PDFs.

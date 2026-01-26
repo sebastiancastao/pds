@@ -1,4 +1,4 @@
-// PDS Time Tracking System - MFA Verification API
+// PDS Time keepingSystem - MFA Verification API
 // Verifies MFA code and enables MFA for user account
 
 import { NextRequest, NextResponse } from 'next/server';

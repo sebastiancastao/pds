@@ -240,9 +240,9 @@ ADD COLUMN department_id UUID REFERENCES departments(id);
 2. **Leave Management**
    - Create leave requests API
    - Approve/reject leave requests
-   - Leave balance tracking
+   - Leave balance keeping
 
-3. **Performance Tracking**
+3. **Performance keeping**
    - Performance review system
    - Goals and objectives
    - Feedback system

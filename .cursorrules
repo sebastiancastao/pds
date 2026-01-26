@@ -1,4 +1,4 @@
-# Employee Time Tracking System - Cursor Rules
+# Employee Time keepingSystem - Cursor Rules
 
 ## Project Overview
 This application is designed to track employee time and worker availability for PDS, replacing manual processes with a compliant, automated system.
@@ -18,7 +18,7 @@ This application is designed to track employee time and worker availability for 
 
 ## System Modules
 
-### Module 1 – Onboarding, Availability & Time Tracking (Custom Portal)
+### Module 1 – Onboarding, Availability & Time keeping(Custom Portal)
 
 **Regulations:**
 - I-9, W-4, W-9, handbook acknowledgments must be securely stored
@@ -153,10 +153,10 @@ Estimated 4–6 weeks including testing before full deployment
 
 ## System Summary
 
-**Current State:** Manual process = not compliant (PII handling, wage/hour tracking, Gmail for PII, payroll audit gaps)
+**Current State:** Manual process = not compliant (PII handling, wage/hour keeping, Gmail for PII, payroll audit gaps)
 
 **New Platform Ensures:**
-1. Secure onboarding & time tracking (FLSA/CA compliant)
+1. Secure onboarding & time keeping(FLSA/CA compliant)
 2. Ticket-driven staffing forecasts
 3. Venue + global scheduling visibility
 4. Audit-ready payroll closeout with CSV upload to ADP

@@ -634,7 +634,7 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
             </div>
             <h1 className="text-3xl font-bold text-gray-900">Create New Users</h1>
             <p className="text-gray-600 mt-2">
-              Add one or multiple users to the PDS Time Tracking System
+              Add one or multiple users to the PDS Time keepingSystem
             </p>
             <p className="text-sm text-gray-500 mt-1">
               Create accounts first, then send credentials via email when ready
@@ -690,16 +690,16 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                 <table className="min-w-full divide-y divide-gray-200 text-sm">
                   <thead className="bg-gray-50">
                     <tr>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor First Name</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Vendor Last Name</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Address Line 1</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">City</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">State</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Zip</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Cell Phone</th>
-                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">Email</th>
-                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">New Hire Packet</th>
-                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase tracking-wide">Actions</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Vendor First Name</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Vendor Last Name</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Address Line 1</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">City</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">State</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Zip</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Cell Phone</th>
+                      <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase keeping-wide">Email</th>
+                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase keeping-wide">New Hire Packet</th>
+                      <th className="px-3 py-2 text-center text-xs font-semibold text-gray-500 uppercase keeping-wide">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="bg-white divide-y divide-gray-200">

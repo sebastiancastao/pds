@@ -579,7 +579,7 @@ export default function EmployeeProfilePage() {
         {/* Header */}
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <h1 className="text-4xl font-semibold text-gray-900 tracking-tight">
+            <h1 className="text-4xl font-semibold text-gray-900 keeping-tight">
               {employee ? (
                 <>
                   {employee.first_name} {employee.last_name}
@@ -780,7 +780,7 @@ export default function EmployeeProfilePage() {
             {/* Sick Leave Summary */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Sick Leave</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Sick Leave</h2>
                 <span className="text-sm text-gray-500">
                   {sickLeaveRequestCount} request{sickLeaveRequestCount === 1 ? "" : "s"}
                 </span>
@@ -800,7 +800,7 @@ export default function EmployeeProfilePage() {
                     <div className="text-xs text-indigo-500 mt-1">Calculated from hours taken</div>
                   </div>
                   <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-amber-700 uppercase tracking-wide">Requests</div>
+                    <div className="text-sm font-medium text-amber-700 uppercase keeping-wide">Requests</div>
                     <div className="text-3xl font-bold text-amber-900">{sickLeaveRequestCount}</div>
                     <div className="text-xs text-amber-500 mt-1">Most recent entries listed below</div>
                   </div>
@@ -808,7 +808,7 @@ export default function EmployeeProfilePage() {
 
                 <div className="mt-6 flex flex-wrap gap-6 text-sm text-gray-500">
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-gray-400">Earned</p>
+                    <p className="text-xs uppercase keeping-wide text-gray-400">Earned</p>
                     <p className="text-lg font-semibold text-gray-900">
                       {sickLeaveAccruedDays.toFixed(2)} days ({formatHours(sickLeaveAccruedHours)})
                     </p>
@@ -817,7 +817,7 @@ export default function EmployeeProfilePage() {
                     </p>
                   </div>
                   <div>
-                    <p className="text-xs uppercase tracking-wide text-gray-400">Available balance</p>
+                    <p className="text-xs uppercase keeping-wide text-gray-400">Available balance</p>
                     <p className="text-lg font-semibold text-gray-900">
                       {sickLeaveBalanceDays.toFixed(2)} days ({formatHours(sickLeaveBalanceHours)})
                     </p>
@@ -853,7 +853,7 @@ export default function EmployeeProfilePage() {
                               </p>
                             </div>
                             <span
-                              className={`px-3 py-1 text-xs font-semibold capitalize tracking-wide border rounded-full ${statusClasses}`}
+                              className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${statusClasses}`}
                             >
                               {entry.status}
                             </span>
@@ -876,7 +876,7 @@ export default function EmployeeProfilePage() {
             {/* All Vendor Events (Confirmed) */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">All Vendor Events</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">All Vendor Events</h2>
               </div>
               <div className="apple-card overflow-hidden">
                 <div className="overflow-x-auto">
@@ -924,7 +924,7 @@ export default function EmployeeProfilePage() {
             {/* I-9 Documents */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">I-9 Documentation</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">I-9 Documentation</h2>
               </div>
               <div className="apple-card p-6">
                 {i9Loading ? (
@@ -1157,7 +1157,7 @@ export default function EmployeeProfilePage() {
             {/* Onboarding PDF Forms */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Onboarding Forms</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Onboarding Forms</h2>
                 <div className="flex items-center gap-2">
                   <Link
                     href={onboardingFormsLink}
@@ -1322,7 +1322,7 @@ export default function EmployeeProfilePage() {
             {/* Raw Time Entries */}
             <section className="mb-16">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Time Entries</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Time Entries</h2>
               </div>
               <div className="apple-card overflow-hidden">
                 <div className="overflow-x-auto">

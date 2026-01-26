@@ -1,4 +1,4 @@
-// PDS Time Tracking System - Authentication Utilities
+// PDS Time keepingSystem - Authentication Utilities
 // Email/Password + MFA authentication for all users
 
 import speakeasy from 'speakeasy';
@@ -106,8 +106,8 @@ export const generateMFASecret = (userEmail: string): {
   otpauthUrl: string;
 } => {
   const secret = speakeasy.generateSecret({
-    name: `PDS Time Tracking (${userEmail})`,
-    issuer: process.env.TOTP_ISSUER || 'PDS Time Tracking',
+    name: `PDS Time keeping(${userEmail})`,
+    issuer: process.env.TOTP_ISSUER || 'PDS Time keeping',
     length: 32,
   });
   

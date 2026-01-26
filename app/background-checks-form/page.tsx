@@ -46,7 +46,7 @@ export default function BackgroundChecksForm() {
       return '/dashboard';
     }
     if (normalized === 'worker' || normalized === 'vendor') {
-      return '/time-tracking';
+      return '/time-keeping';
     }
     if (normalized === 'backgroundchecker' || normalized === 'background-checker') {
       return '/background-checks';

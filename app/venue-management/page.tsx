@@ -338,7 +338,7 @@ export default function VenueManagementPage() {
         {/* Header */}
         <div className="mb-8 flex items-center justify-between">
           <div>
-            <h1 className="text-4xl font-semibold text-gray-900 tracking-tight">
+            <h1 className="text-4xl font-semibold text-gray-900 keeping-tight">
               Venue Management
             </h1>
             <p className="text-gray-600 mt-1">

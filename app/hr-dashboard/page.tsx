@@ -718,7 +718,7 @@ function HRDashboardContent() {
         <div className="mb-12">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">HR Dashboard</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">HR Dashboard</h1>
               <p className="text-lg text-gray-600 font-normal">Manage employees, leave requests, and workforce analytics.</p>
             </div>
           </div>
@@ -812,7 +812,7 @@ function HRDashboardContent() {
           <div className="space-y-8">
             <section>
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Key Metrics</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Key Metrics</h2>
                 <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -828,7 +828,7 @@ function HRDashboardContent() {
                       <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Employees</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Total Employees</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalEmployees}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.totalEmployees}</div>
                     <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -850,7 +850,7 @@ function HRDashboardContent() {
                       <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Departments</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Departments</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{totalDepartments}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{totalDepartments}</div>
                     <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -872,7 +872,7 @@ function HRDashboardContent() {
                       <span className="px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-xs font-semibold">Background Checks</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Approved</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.approvedBackgroundChecks}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.approvedBackgroundChecks}</div>
                     <p className="text-sm text-yellow-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01" />
@@ -888,7 +888,7 @@ function HRDashboardContent() {
 
             <section>
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Departments Overview</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Departments Overview</h2>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {departments.map((dept) => (
@@ -965,10 +965,10 @@ function HRDashboardContent() {
                       <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                           <tr>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Event</th>
-                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Hours</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
+                            <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total</th>
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
@@ -1014,7 +1014,7 @@ function HRDashboardContent() {
                                                       p.status === 'confirmed' ? 'bg-green-100 text-green-700' :
                                                       p.status === 'pending_confirmation' ? 'bg-yellow-100 text-yellow-700' :
                                                       'bg-gray-100 text-gray-600'
-                                                    }`} title="Team member assigned, awaiting time tracking">
+                                                    }`} title="Team member assigned, awaiting time keeping">
                                                       {p.status === 'confirmed' ? 'Confirmed' : p.status === 'pending_confirmation' ? 'Pending' : p.status}
                                                     </span>
                                                   )}
@@ -1088,12 +1088,12 @@ function HRDashboardContent() {
             <section className="rounded-2xl border border-slate-200 bg-white shadow-sm p-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
                 <div>
-                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Paystub Tools</h2>
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Paystub Tools</h2>
                   <p className="text-sm text-gray-500">
                     Click a tool to open it here in the dashboard.
                   </p>
                 </div>
-                <span className="text-xs uppercase tracking-wider text-slate-500 px-3 py-1 border border-slate-200 rounded-full">
+                <span className="text-xs uppercase keeping-wider text-slate-500 px-3 py-1 border border-slate-200 rounded-full">
                   Single-click access
                 </span>
               </div>
@@ -1163,7 +1163,7 @@ function HRDashboardContent() {
         {hrView === "employees" && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Employees</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Employees</h2>
               <div className="flex flex-wrap items-center justify-end gap-3">
                 <div className="relative">
                   <label className="sr-only" htmlFor="employee-search">Search employees</label>
@@ -1303,7 +1303,7 @@ function HRDashboardContent() {
           <div className="space-y-8">
             <section>
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Onboarding Forms Management</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Onboarding Forms Management</h2>
                 <span className="text-sm text-gray-500 font-medium">Upload & Manage Forms</span>
               </div>
 

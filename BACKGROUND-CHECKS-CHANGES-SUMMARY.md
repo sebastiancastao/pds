@@ -26,11 +26,11 @@ This document summarizes all the changes made to the Background Checks page and 
 
 ---
 
-## 3. PDF Download Tracking ✅
+## 3. PDF Download keeping✅
 **What Changed**: System now tracks when PDFs are downloaded and shows visual indicators.
 
 **New Files**:
-- `add-pdf-downloads-tracking.sql` - Database migration
+- `add-pdf-downloads-keeping.sql` - Database migration
 - [app/api/background-checks/export/route.ts](app/api/background-checks/export/route.ts) - Excel export endpoint
 
 **Modified Files**:
@@ -75,16 +75,16 @@ This document summarizes all the changes made to the Background Checks page and 
 
 ## Migration Required ⚠️
 
-To enable PDF download tracking, you must run the SQL migration:
+To enable PDF download keeping, you must run the SQL migration:
 
 ```bash
 # Using Supabase Dashboard
 1. Go to SQL Editor
-2. Copy contents of add-pdf-downloads-tracking.sql
+2. Copy contents of add-pdf-downloads-keeping.sql
 3. Paste and run
 
 # OR using Supabase CLI
-supabase db execute -f add-pdf-downloads-tracking.sql
+supabase db execute -f add-pdf-downloads-keeping.sql
 ```
 
 See [MIGRATION-INSTRUCTIONS.md](MIGRATION-INSTRUCTIONS.md) for detailed instructions.
@@ -98,7 +98,7 @@ All features respect existing role-based access:
   - View the Background Checks page
   - Download PDFs
   - Export to Excel
-  - See download tracking data
+  - See download keepingdata
 
 RLS policies are in place to ensure data security.
 

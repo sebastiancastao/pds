@@ -591,7 +591,7 @@ export default function PaystubGenerator() {
         {/* Header */}
         <div className="flex items-start justify-between gap-4 mb-8">
           <div>
-            <p className="text-sm font-semibold text-blue-700 uppercase tracking-wide">Utilities</p>
+            <p className="text-sm font-semibold text-blue-700 uppercase keeping-wide">Utilities</p>
             <h1 className="text-3xl sm:text-4xl font-bold text-slate-900 mt-1">Paystub Generator</h1>
             <p className="text-slate-600 mt-2 max-w-2xl">
               Generate professional paystubs with customizable payroll information.

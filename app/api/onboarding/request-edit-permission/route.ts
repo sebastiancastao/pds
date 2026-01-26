@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
           <tr>
             <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
               <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This notification was sent by PDS Time Tracking System
+                This notification was sent by PDS Time keepingSystem
               </p>
               <p style="color: #999999; font-size: 11px; margin: 0;">
                 This message contains confidential information. If you received this in error, please delete it.

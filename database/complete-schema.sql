@@ -372,7 +372,7 @@ CREATE TABLE state_rates (
 );
 
 -- =====================================================
--- Time Tracking
+-- Time keeping
 -- =====================================================
 
 -- Time entries
@@ -657,7 +657,7 @@ CREATE INDEX idx_event_staff_user_id ON event_staff(user_id);
 CREATE INDEX idx_event_teams_event_id ON event_teams(event_id);
 CREATE INDEX idx_event_teams_vendor_id ON event_teams(vendor_id);
 
--- Time tracking
+-- Time keeping
 CREATE INDEX idx_time_entries_user_id ON time_entries(user_id);
 CREATE INDEX idx_time_entries_timestamp ON time_entries(timestamp);
 CREATE INDEX idx_time_entries_event_id ON time_entries(event_id);
@@ -805,17 +805,17 @@ COMMENT ON TABLE users IS 'Core user accounts with role-based access';
 COMMENT ON TABLE profiles IS 'User profile information with encrypted PII data';
 COMMENT ON TABLE sessions IS 'Active user sessions for authentication';
 COMMENT ON TABLE audit_logs IS 'Immutable audit trail for compliance';
-COMMENT ON TABLE time_entries IS 'Clock in/out records for time tracking';
+COMMENT ON TABLE time_entries IS 'Clock in/out records for time keeping';
 COMMENT ON TABLE sick_leaves IS 'Sick leave records for employees with duration and approvals';
 COMMENT ON COLUMN sick_leaves.duration_hours IS 'Length of time booked as sick leave in hours';
 COMMENT ON COLUMN sick_leaves.status IS 'Pending/approved/denied workflow state for each request';
 COMMENT ON TABLE events IS 'Events requiring staffing and management';
 COMMENT ON TABLE event_staff IS 'Staff assignments to events';
-COMMENT ON TABLE payouts IS 'Payroll calculations and commission tracking';
+COMMENT ON TABLE payouts IS 'Payroll calculations and commission keeping';
 COMMENT ON TABLE documents IS 'High-sensitivity PII documents with retention policies';
 COMMENT ON TABLE vendor_invitations IS 'Event invitations sent to vendors';
 COMMENT ON TABLE geofence_zones IS 'Geographic zones for location-based security';
-COMMENT ON TABLE login_locations IS 'Login attempt tracking with geolocation';
+COMMENT ON TABLE login_locations IS 'Login attempt keepingwith geolocation';
 COMMENT ON TABLE form_audit_trail IS 'Comprehensive audit trail for I-9/W-4 forms';
 COMMENT ON TABLE form_signatures IS 'Digital signatures with cryptographic binding';
 COMMENT ON TABLE regions IS 'Geographic regions with PostGIS polygon support';

@@ -21,7 +21,7 @@ function msToHMS(ms: number) {
   return `${pad(h)}:${pad(m)}:${pad(s)}`;
 }
 
-export default function TimeTrackingPage() {
+export default function TimekeepingPage() {
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
 
@@ -71,18 +71,18 @@ export default function TimeTrackingPage() {
   // Persist state to localStorage
   useEffect(() => {
     if (openEntry) {
-      localStorage.setItem('time_tracking_open_entry', JSON.stringify(openEntry));
-      localStorage.setItem('time_tracking_notes', notes);
+      localStorage.setItem('time_keeping_open_entry', JSON.stringify(openEntry));
+      localStorage.setItem('time_keeping_notes', notes);
     } else {
-      localStorage.removeItem('time_tracking_open_entry');
-      localStorage.removeItem('time_tracking_notes');
+      localStorage.removeItem('time_keeping_open_entry');
+      localStorage.removeItem('time_keeping_notes');
     }
   }, [openEntry, notes]);
 
   // Restore state from localStorage on mount
   useEffect(() => {
-    const savedEntry = localStorage.getItem('time_tracking_open_entry');
-    const savedNotes = localStorage.getItem('time_tracking_notes');
+    const savedEntry = localStorage.getItem('time_keeping_open_entry');
+    const savedNotes = localStorage.getItem('time_keeping_notes');
     if (savedEntry) {
       try {
         setOpenEntry(JSON.parse(savedEntry));
@@ -184,7 +184,7 @@ export default function TimeTrackingPage() {
 
       if (startDate !== currentDate) {
         // Entry started on a different day - notify user
-        setMessage(`Note: Time tracking started on ${startDate} and is now ${currentDate}`);
+        setMessage(`Note: Time keepingstarted on ${startDate} and is now ${currentDate}`);
       }
     };
 
@@ -386,8 +386,8 @@ export default function TimeTrackingPage() {
       }
 
       // Clear local storage
-      localStorage.removeItem('time_tracking_open_entry');
-      localStorage.removeItem('time_tracking_notes');
+      localStorage.removeItem('time_keeping_open_entry');
+      localStorage.removeItem('time_keeping_notes');
 
       await supabase.auth.signOut();
     } catch (error) {
@@ -482,7 +482,7 @@ export default function TimeTrackingPage() {
           {/* Center badge */}
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="px-6 py-3 rounded-full bg-white/95 backdrop-blur-sm shadow-xl text-green-700 text-lg font-semibold border-2 border-green-200">
-              Tracking active
+              Time Keeping Active
             </div>
           </div>
         </div>
@@ -515,7 +515,7 @@ export default function TimeTrackingPage() {
       <div className="container mx-auto max-w-3xl p-6 space-y-6 relative z-10">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold text-primary-900">Time Tracking</h1>
+          <h1 className="text-2xl font-bold text-primary-900">Time keeping</h1>
           <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium ${
             isOnline
               ? 'bg-green-100 text-green-800 border border-green-300'

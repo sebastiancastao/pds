@@ -1,7 +1,7 @@
 # Profile Photo Implementation Guide
 
 ## Overview
-This document outlines the complete implementation of profile photo upload functionality for the PDS Employee Time Tracking System, including database schema, security measures, and API integration.
+This document outlines the complete implementation of profile photo upload functionality for the PDS Employee Time keepingSystem, including database schema, security measures, and API integration.
 
 ## Database Schema Changes
 

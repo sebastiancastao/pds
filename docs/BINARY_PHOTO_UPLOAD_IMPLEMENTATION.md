@@ -1,7 +1,7 @@
 # Binary Photo Upload Implementation
 
 ## Overview
-This document outlines the complete implementation of binary photo storage in the PDS Employee Time Tracking System, where profile photos are stored as encrypted BYTEA data directly in the database.
+This document outlines the complete implementation of binary photo storage in the PDS Employee Time keepingSystem, where profile photos are stored as encrypted BYTEA data directly in the database.
 
 ## Implementation Summary
 

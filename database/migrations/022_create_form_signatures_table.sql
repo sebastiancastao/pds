@@ -110,7 +110,7 @@ BEGIN
     -- Compare hashes
     v_is_valid := (v_original_hash = p_current_form_data_hash);
 
-    -- Update verification tracking
+    -- Update verification keeping
     UPDATE public.form_signatures
     SET
         verification_attempts = verification_attempts + 1,

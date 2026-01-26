@@ -1,4 +1,4 @@
-// PDS Time Tracking System - MFA Setup API
+// PDS Time keepingSystem - MFA Setup API
 // Generates MFA secret and QR code for user enrollment
 
 import { NextRequest, NextResponse } from 'next/server';

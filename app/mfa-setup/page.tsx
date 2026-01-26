@@ -468,7 +468,7 @@ export default function MFASetupPage() {
                         setVerificationCode(value);
                         setError('');
                       }}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl tracking-widest font-mono"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl keeping-widest font-mono"
                       placeholder="000000"
                       maxLength={6}
                       required

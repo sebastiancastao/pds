@@ -15,7 +15,7 @@ CREATE TABLE public.form_audit_trail (
     action_details JSONB, -- Additional details about the action
     ip_address TEXT, -- IP address of the user
     user_agent TEXT, -- Browser/device user agent
-    device_fingerprint TEXT, -- Device fingerprint for tracking
+    device_fingerprint TEXT, -- Device fingerprint for keeping
     session_id TEXT, -- Session identifier
     field_changed TEXT, -- Specific field that was changed (for 'edited' actions)
     old_value TEXT, -- Previous value (for 'edited' actions)

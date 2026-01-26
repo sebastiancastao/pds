@@ -3,15 +3,15 @@
 -- RUN THIS IN SUPABASE SQL EDITOR
 -- =====================================================
 -- This migration fixes the time_entries schema to support:
--- 1. Event tracking (event_id column)
--- 2. Meal break tracking (meal_start, meal_end actions)
+-- 1. Event keeping(event_id column)
+-- 2. Meal break keeping(meal_start, meal_end actions)
 -- 3. Proper column names for event timesheet queries
 
 -- ============================================================
 -- STEP 1: Update clock_action enum to include meal actions
 -- ============================================================
 
--- Add new enum values for meal tracking
+-- Add new enum values for meal keeping
 ALTER TYPE clock_action ADD VALUE IF NOT EXISTS 'meal_start';
 ALTER TYPE clock_action ADD VALUE IF NOT EXISTS 'meal_end';
 
