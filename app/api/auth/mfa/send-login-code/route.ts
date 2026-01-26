@@ -1,4 +1,4 @@
-// PDS Time Tracking System - Send Email MFA Code (Login)
+// PDS Time keeping System - Send Email MFA Code (Login)
 // Sends verification code via email during login
 
 import { NextRequest, NextResponse } from 'next/server';

@@ -48,12 +48,12 @@ RESEND_API_KEY=re_your_api_key_here
 # Application Configuration
 # ============================================
 NEXT_PUBLIC_APP_URL=http://localhost:3000
-NEXT_PUBLIC_APP_NAME=PDS Time Tracking System
+NEXT_PUBLIC_APP_NAME=PDS Time keeping System
 
 # ============================================
 # MFA/TOTP Configuration
 # ============================================
-TOTP_ISSUER=PDS Time Tracking
+TOTP_ISSUER=PDS Time keeping
 TOTP_WINDOW=1
 ```
 

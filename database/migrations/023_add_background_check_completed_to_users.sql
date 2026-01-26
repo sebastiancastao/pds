@@ -7,7 +7,7 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS background_check_completed BOOLEAN DE
 -- Add index for faster queries
 CREATE INDEX IF NOT EXISTS idx_users_background_check_completed ON users(background_check_completed);
 
--- Add completed_at timestamp for tracking when the background check was completed
+-- Add completed_at timestamp for keeping when the background check was completed
 ALTER TABLE users ADD COLUMN IF NOT EXISTS background_check_completed_at TIMESTAMP WITH TIME ZONE;
 
 -- Comment on columns

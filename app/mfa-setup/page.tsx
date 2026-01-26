@@ -20,7 +20,28 @@ export default function MFASetupPage() {
 
   useEffect(() => {
     checkAuthAndMFA();
+    saveOnboardingProgress();
   }, []);
+
+  // Save onboarding progress so user can be redirected back here on login
+  const saveOnboardingProgress = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      await fetch('/api/auth/save-onboarding-stage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ stage: 'onboarding-mfa-setup' }),
+      });
+      console.log('[MFA Setup] Onboarding progress saved');
+    } catch (err) {
+      console.error('[MFA Setup] Failed to save onboarding progress:', err);
+    }
+  };
 
   // Handle redirect after MFA setup success
   useEffect(() => {
@@ -32,6 +53,25 @@ export default function MFASetupPage() {
             router.push('/');
             return;
           }
+
+          // Clean up the onboarding-mfa-setup entry since MFA is now complete
+          try {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session) {
+              await fetch('/api/auth/delete-onboarding-stage', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${session.access_token}`
+                },
+                body: JSON.stringify({ stage: 'onboarding-mfa-setup' }),
+              });
+              console.log('[MFA Setup] Cleaned up onboarding-mfa-setup stage');
+            }
+          } catch (cleanupErr) {
+            console.warn('[MFA Setup] Failed to clean up onboarding stage:', cleanupErr);
+          }
+
           const { data: userRow } = await (supabase
             .from('users')
             .select('role')
@@ -468,7 +508,7 @@ export default function MFASetupPage() {
                         setVerificationCode(value);
                         setError('');
                       }}
-                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl tracking-widest font-mono"
+                      className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl keeping-widest font-mono"
                       placeholder="000000"
                       maxLength={6}
                       required

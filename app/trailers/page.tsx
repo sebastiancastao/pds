@@ -60,9 +60,9 @@ export default function TrailersPortal() {
           </div>
         </div>
 
-        {/* Time Tracking Module */}
+        {/* Time keeping Module */}
         <div className="card">
-          <h2 className="text-xl font-semibold text-gray-900 mb-6">Time Tracking</h2>
+          <h2 className="text-xl font-semibold text-gray-900 mb-6">Time keeping</h2>
           <div className="grid md:grid-cols-2 gap-6">
             <div className="space-y-4">
               <h3 className="font-medium text-gray-900">Clock In/Out Features</h3>

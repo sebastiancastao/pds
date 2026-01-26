@@ -1,4 +1,4 @@
--- PDS Time Tracking System - Row Level Security (RLS) Policies
+-- PDS Time keeping System - Row Level Security (RLS) Policies
 -- Implements principle of least privilege for data access
 
 -- ============================================

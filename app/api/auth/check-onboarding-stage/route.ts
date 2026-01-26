@@ -65,6 +65,11 @@ const NV_ONBOARDING_FORMS = [
   'meal-waiver-10-12'
 ];
 
+// Pre-registration onboarding stages (before PDF forms)
+const PRE_REGISTRATION_STAGES: Record<string, string> = {
+  'onboarding-mfa-setup': '/mfa-setup',
+  'onboarding-register': '/register',
+};
 
 const STATE_PREFIX_PATTERN = /^(ca|ny|wi|az|nv)-/;
 
@@ -222,6 +227,30 @@ export async function POST(req: NextRequest) {
     console.log('[Check Onboarding Stage API] ✅ Raw completed forms data:', completedForms);
     console.log('[Check Onboarding Stage API] Number of completed forms:', completedForms?.length || 0);
 
+    // Check for pre-registration stages first (mfa-setup, register)
+    // These take priority over PDF forms if they're the most recent
+    if (completedForms && completedForms.length > 0) {
+      const mostRecentEntry = completedForms[0]; // Already sorted by updated_at DESC
+      const preRegStage = PRE_REGISTRATION_STAGES[mostRecentEntry.form_name];
+
+      if (preRegStage) {
+        console.log('[Check Onboarding Stage API] ========================================');
+        console.log('[Check Onboarding Stage API] ⭐ PRE-REGISTRATION STAGE DETECTED');
+        console.log('[Check Onboarding Stage API] Stage:', mostRecentEntry.form_name);
+        console.log('[Check Onboarding Stage API] Redirect path:', preRegStage);
+        console.log('[Check Onboarding Stage API] Last updated:', mostRecentEntry.updated_at);
+        console.log('[Check Onboarding Stage API] ========================================');
+
+        return NextResponse.json({
+          nextStage: preRegStage,
+          completedCount: 0,
+          totalCount: 0,
+          percentComplete: 0,
+          isPreRegistration: true
+        }, { status: 200 });
+      }
+    }
+
     const detectedPrefix = detectStatePrefixFromForms(completedForms || []);
     if (detectedPrefix && detectedPrefix !== statePrefix) {
       console.log('[Check Onboarding Stage API] Overriding state prefix based on completed forms:', {
@@ -239,14 +268,16 @@ export async function POST(req: NextRequest) {
     });
 
     const completedFormNames = new Set(
-      (completedForms || []).map(f => {
-        // Normalize form names - remove state prefix if present
-        const formName = f.form_name.toLowerCase();
-        // Remove state prefixes like 'ca-', 'ny-', etc.
-        const normalized = formName.replace(/^(ca|ny|wi|az|nv)-/, '');
-        console.log('[Check Onboarding Stage API] Normalizing form:', f.form_name, '→', normalized);
-        return normalized;
-      })
+      (completedForms || [])
+        .filter(f => !PRE_REGISTRATION_STAGES[f.form_name]) // Exclude pre-registration stages
+        .map(f => {
+          // Normalize form names - remove state prefix if present
+          const formName = f.form_name.toLowerCase();
+          // Remove state prefixes like 'ca-', 'ny-', etc.
+          const normalized = formName.replace(/^(ca|ny|wi|az|nv)-/, '');
+          console.log('[Check Onboarding Stage API] Normalizing form:', f.form_name, '→', normalized);
+          return normalized;
+        })
     );
 
     console.log('[Check Onboarding Stage API] ===== COMPLETED FORMS =====');

@@ -126,7 +126,7 @@
 ✅ COMPLIANCE & MONITORING
    ├─ Audit logging (all operations)
    ├─ Rate limiting (prevent brute force)
-   ├─ IP and User Agent tracking
+   ├─ IP and User Agent keeping
    ├─ Error logging (no info leakage)
    └─ SOC2 compliance ready
 
@@ -271,7 +271,7 @@
 
 ════════════════════════════════════════════════════════════════════════════════
                              Created: October 2, 2025
-                      PDS Employee Time Tracking System
+                      PDS Employee Time keeping System
                        Secure by Design • Compliant • Audited
 ════════════════════════════════════════════════════════════════════════════════
 

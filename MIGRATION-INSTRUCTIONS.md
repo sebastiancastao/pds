@@ -1,4 +1,4 @@
-# PDF Download Tracking Migration Instructions
+# PDF Download keeping Migration Instructions
 
 ## Overview
 This migration adds functionality to track when background check PDFs are downloaded and changes the download button color from green to purple once downloaded.
@@ -10,7 +10,7 @@ You need to run the SQL migration file to create the new table in your Supabase 
 ### Option A: Using Supabase Dashboard
 1. Go to your Supabase project dashboard
 2. Navigate to **SQL Editor**
-3. Open the file `add-pdf-downloads-tracking.sql`
+3. Open the file `add-pdf-downloads-keeping.sql`
 4. Copy all the contents
 5. Paste into the SQL Editor
 6. Click **Run**
@@ -18,7 +18,7 @@ You need to run the SQL migration file to create the new table in your Supabase 
 ### Option B: Using Supabase CLI
 ```bash
 # If you have Supabase CLI installed
-supabase db execute -f add-pdf-downloads-tracking.sql
+supabase db execute -f add-pdf-downloads-keeping.sql
 ```
 
 ## Step 2: Verify the Migration
@@ -55,7 +55,7 @@ After running the migration, verify that the table was created:
 - ✅ Visual indicator (purple button) for downloaded PDFs
 - ✅ Persists across page refreshes
 - ✅ RLS policies ensure only admin/HR/exec can track downloads
-- ✅ Download tracking doesn't break if migration fails
+- ✅ Download keeping doesn't break if migration fails
 - ✅ **Excel Export**: Export all background check data to Excel with submission status
 
 ## Excel Export Feature:

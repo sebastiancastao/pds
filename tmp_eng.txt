@@ -172,7 +172,7 @@ export default function HRDashboardPage() {
         <div className="mb-12">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">HR Dashboard</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">HR Dashboard</h1>
               <p className="text-lg text-gray-600 font-normal">Manage employees, leave requests, and workforce analytics.</p>
             </div>
           </div>
@@ -224,7 +224,7 @@ export default function HRDashboardPage() {
           <div className="space-y-8">
             <section>
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Key Metrics</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Key Metrics</h2>
                 <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -240,7 +240,7 @@ export default function HRDashboardPage() {
                       <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-semibold">Employees</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Total Employees</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.totalEmployees}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.totalEmployees}</div>
                     <p className="text-sm text-blue-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -262,7 +262,7 @@ export default function HRDashboardPage() {
                       <span className="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs font-semibold">Departments</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Departments</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{totalDepartments}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{totalDepartments}</div>
                     <p className="text-sm text-purple-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -284,7 +284,7 @@ export default function HRDashboardPage() {
                       <span className="px-3 py-1 bg-yellow-100 text-yellow-700 rounded-full text-xs font-semibold">Background Checks</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Approved</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.approvedBackgroundChecks}</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.approvedBackgroundChecks}</div>
                     <p className="text-sm text-yellow-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01" />
@@ -306,7 +306,7 @@ export default function HRDashboardPage() {
                       <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">Engagement</span>
                     </div>
                     <h3 className="text-sm font-medium text-gray-600 mb-2">Avg. Performance</h3>
-                    <div className="text-4xl font-bold text-gray-900 mb-2 tracking-tight">{hrStats.avgPerformance}%</div>
+                    <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">{hrStats.avgPerformance}%</div>
                     <p className="text-sm text-green-600 font-medium flex items-center gap-1">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -320,7 +320,7 @@ export default function HRDashboardPage() {
 
             <section>
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Departments Overview</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Departments Overview</h2>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {departments.map((dept) => (
@@ -349,7 +349,7 @@ export default function HRDashboardPage() {
         {hrView === "employees" && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
-              <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Employees</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Employees</h2>
               <div className="flex items-center gap-3">
                 <label className="sr-only" htmlFor="state-filter">State</label>
                 <select

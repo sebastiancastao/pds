@@ -9,18 +9,20 @@ import { supabase } from '@/lib/supabase';
 
 const NV_FORMS: FormSpec[] = [
   { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
-  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/employee-handbook' },
   { id: 'nv-state-supplements', formId: 'nv-state-supplements', display: 'NV State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/nv-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
-  { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
-  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
-  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/fw4' },
+  { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/i9' },
+  { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/notice-to-employee' },
   { id: 'temp-employment-agreement', formId: 'nv-temp-employment-agreement', display: 'Temporary Employment Commission Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
 ];
+
+const getTodayDate = () => new Date().toISOString().split('T')[0];
 
 export default function PayrollPacketNVFormViewer() {
   return (
@@ -103,7 +105,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -124,9 +126,9 @@ function EmployeeInformationNVForm() {
     phone: '',
     email: '',
     position: '',
-    startDate: '',
+    startDate: getTodayDate(),
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
@@ -137,7 +139,11 @@ function EmployeeInformationNVForm() {
       const cached = localStorage.getItem(EMPLOYEE_INFO_STORAGE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached);
-        setForm((prev) => ({ ...prev, ...parsed }));
+        setForm((prev) => ({
+          ...prev,
+          ...parsed,
+          startDate: getTodayDate(),
+        }));
       }
     } catch (e) {
       console.warn('Could not load saved employee info', e);
@@ -161,10 +167,16 @@ function EmployeeInformationNVForm() {
       alert('Please provide a phone number and email.');
       return false;
     }
+    if (form.ssn.trim().length !== 9) {
+      alert('Please enter your full nine-digit SSN.');
+      return false;
+    }
 
     setSaving(true);
+    const updatedForm = { ...form, startDate: getTodayDate() };
     try {
-      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
+      setForm(updatedForm);
+      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(updatedForm));
       setTimeout(() => setSaving(false), 300);
       alert('Employee information saved.');
       return true;
@@ -278,15 +290,23 @@ function EmployeeInformationNVForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+              Social Security Number <span style={{ color: '#d32f2f' }}>*</span>
+            </label>
             <input
               style={inputStyle}
-              type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              type="password"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={9}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9]/g, '').slice(0, 9))}
+              placeholder="#########"
+              autoComplete="off"
             />
+            <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
+              We only store the digits locally; enter the full nine-digit SSN.
+            </p>
           </div>
         </div>
 
@@ -388,11 +408,14 @@ function EmployeeInformationNVForm() {
                 Start Date
               </label>
               <input
-                style={inputStyle}
+                style={{ ...inputStyle, backgroundColor: '#f0f0f0', cursor: 'not-allowed' }}
                 type="date"
                 value={form.startDate}
-                onChange={(e) => updateField('startDate', e.target.value)}
+                disabled
               />
+              <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
+                Automatically set to today and locked to keep the packet aligned with onboarding.
+              </p>
             </div>
           </div>
         </div>

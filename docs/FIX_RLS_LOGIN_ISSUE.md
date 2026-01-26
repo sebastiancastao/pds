@@ -255,7 +255,7 @@ SUPABASE_SERVICE_ROLE_KEY=your-service-role-key  # ⚠️ CRITICAL for this fix
 - ✅ Input validation (email format, UUID format)
 - ✅ SQL injection prevention (parameterized queries)
 - ✅ Audit logging for all operations
-- ✅ IP and User Agent tracking
+- ✅ IP and User Agent keeping
 - ✅ Service role key stored securely (server-side only)
 - ✅ Minimal data exposure (only account status)
 - ✅ Error messages don't leak sensitive info

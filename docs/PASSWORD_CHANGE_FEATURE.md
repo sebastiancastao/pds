@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time Tracking System now includes a dedicated password change page at `/password` where authenticated users can securely change their passwords. When users with temporary passwords change their password, the `is_temporary_password` flag is automatically set to `false`.
+The PDS Time keeping System now includes a dedicated password change page at `/password` where authenticated users can securely change their passwords. When users with temporary passwords change their password, the `is_temporary_password` flag is automatically set to `false`.
 
 ---
 

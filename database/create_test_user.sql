@@ -1,4 +1,4 @@
--- Create Test User for PDS Time Tracking System
+-- Create Test User for PDS Time keeping System
 -- Email: sebastiancastao379@gmail.com
 -- Password: Test123!@# (meets all security requirements)
 

@@ -77,7 +77,7 @@ export default function AdminPanel() {
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="liquid-card-compact p-8 animate-scale-in">
           <div className="animate-spin rounded-full h-16 w-16 border-4 border-transparent border-t-ios-blue mx-auto mb-4"></div>
-          <p className="text-gray-700 font-medium text-center tracking-apple">Loading admin panel...</p>
+          <p className="text-gray-700 font-medium text-center keeping-apple">Loading admin panel...</p>
         </div>
       </div>
     );
@@ -93,7 +93,7 @@ export default function AdminPanel() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
               </svg>
             </div>
-            <h2 className="text-2xl font-bold text-gray-900 tracking-apple mb-3">Access Denied</h2>
+            <h2 className="text-2xl font-bold text-gray-900 keeping-apple mb-3">Access Denied</h2>
             <p className="text-gray-600 mb-6 leading-relaxed">{error}</p>
             <Link href="/" className="liquid-btn-primary inline-flex items-center gap-2">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -120,8 +120,8 @@ export default function AdminPanel() {
                 </svg>
                 System Administration
               </div>
-              <h1 className="text-5xl font-bold text-gray-900 tracking-apple-tight mb-3">Admin Panel</h1>
-              <p className="text-xl text-gray-600 tracking-apple">Manage users, vendors, and system settings</p>
+              <h1 className="text-5xl font-bold text-gray-900 keeping-apple-tight mb-3">Admin Panel</h1>
+              <p className="text-xl text-gray-600 keeping-apple">Manage users, vendors, and system settings</p>
             </div>
             <Link href="/" className="liquid-btn-glass inline-flex items-center gap-2">
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -145,8 +145,8 @@ export default function AdminPanel() {
                 </div>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600 tracking-apple mb-1">Total Vendors</p>
-                <p className="text-4xl font-bold text-gray-900 tracking-apple-tight">{stats.totalVendors}</p>
+                <p className="text-sm font-semibold text-gray-600 keeping-apple mb-1">Total Vendors</p>
+                <p className="text-4xl font-bold text-gray-900 keeping-apple-tight">{stats.totalVendors}</p>
               </div>
             </div>
           </div>
@@ -162,8 +162,8 @@ export default function AdminPanel() {
                 </div>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600 tracking-apple mb-1">Background Checks Done</p>
-                <p className="text-4xl font-bold text-gray-900 tracking-apple-tight">{stats.backgroundChecksCompleted}</p>
+                <p className="text-sm font-semibold text-gray-600 keeping-apple mb-1">Background Checks Done</p>
+                <p className="text-4xl font-bold text-gray-900 keeping-apple-tight">{stats.backgroundChecksCompleted}</p>
               </div>
             </div>
           </div>
@@ -179,8 +179,8 @@ export default function AdminPanel() {
                 </div>
               </div>
               <div>
-                <p className="text-sm font-semibold text-gray-600 tracking-apple mb-1">Temporary Passwords</p>
-                <p className="text-4xl font-bold text-gray-900 tracking-apple-tight">{stats.temporaryPasswords}</p>
+                <p className="text-sm font-semibold text-gray-600 keeping-apple mb-1">Temporary Passwords</p>
+                <p className="text-4xl font-bold text-gray-900 keeping-apple-tight">{stats.temporaryPasswords}</p>
               </div>
             </div>
           </div>

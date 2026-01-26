@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time Tracking System authentication requirements have been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users**, replacing the previous tiered system.
+The PDS Time keeping System authentication requirements have been updated to use **email/password with Multi-Factor Authentication (MFA) for ALL users**, replacing the previous tiered system.
 
 ---
 
@@ -249,7 +249,7 @@ Add:
    - Simpler codebase
 
 4. **Audit Trail**
-   - Better tracking of who accessed what
+   - Better keeping of who accessed what
    - MFA events are logged
    - Easier to detect unauthorized access
 

@@ -422,8 +422,8 @@ function VerifyMFAContent() {
           console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
           router.push('/background-checks');
         } else if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /time-tracking');
-          router.push('/time-tracking');
+          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /time-keeping');
+          router.push('/time-keeping');
         } else {
           console.log('[VERIFY-MFA DEBUG] Other role - Redirecting to home page');
           router.push('/');
@@ -706,7 +706,7 @@ function VerifyMFAContent() {
                   id="code"
                   value={code}
                   onChange={(e) => handleCodeChange(e.target.value)}
-                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl tracking-widest font-mono"
+                  className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all text-center text-2xl keeping-widest font-mono"
                   placeholder={mfaMethod === 'backup' ? 'A1B2C3D4' : '000000'}
                   maxLength={mfaMethod === 'backup' ? 8 : 6}
                   required

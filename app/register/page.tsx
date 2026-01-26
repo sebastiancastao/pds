@@ -154,15 +154,15 @@ export default function RegisterPage() {
   // Check if MFA verification code has been validated
   useEffect(() => {
     console.log('[REGISTER] Checking MFA verification status...');
-    
+
     const mfaCheckpoint = sessionStorage.getItem('mfa_checkpoint');
     const mfaVerified = sessionStorage.getItem('mfa_verified');
-    
+
     console.log('[REGISTER] MFA status:', {
       checkpoint: mfaCheckpoint,
       verified: mfaVerified
     });
-    
+
     // If checkpoint is set but not verified, user needs to verify MFA
     if (mfaCheckpoint === 'true' && mfaVerified !== 'true') {
       console.log('[REGISTER] ❌ MFA verification required but not completed');
@@ -170,9 +170,32 @@ export default function RegisterPage() {
       router.push('/login');
       return;
     }
-    
+
     console.log('[REGISTER] ✅ MFA verification check passed');
+
+    // Save onboarding progress so user can be redirected back here on login
+    saveOnboardingProgress();
   }, [router]);
+
+  // Save onboarding progress so user can be redirected back here on login
+  const saveOnboardingProgress = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      await fetch('/api/auth/save-onboarding-stage', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({ stage: 'onboarding-register' }),
+      });
+      console.log('[REGISTER] Onboarding progress saved');
+    } catch (err) {
+      console.error('[REGISTER] Failed to save onboarding progress:', err);
+    }
+  };
 
   /**
    * Validate a single field using regex patterns

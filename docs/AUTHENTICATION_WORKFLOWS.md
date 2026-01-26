@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time Tracking System has **two distinct authentication workflows** depending on whether a user has a temporary password or a permanent password.
+The PDS Time keeping System has **two distinct authentication workflows** depending on whether a user has a temporary password or a permanent password.
 
 ## 🔑 Two Workflows
 
@@ -55,7 +55,7 @@ login → /verify-mfa → home (/)
 **Checks:**
 1. Pre-login account status check (locked, inactive, temporary password status)
 2. Authentication with Supabase
-3. Failed login attempt tracking
+3. Failed login attempt keeping
 
 **Redirects:**
 - If `is_temporary_password === true` → `/password`

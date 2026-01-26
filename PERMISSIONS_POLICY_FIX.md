@@ -126,7 +126,7 @@ The security headers in `next.config.js` were configured for **maximum security*
 - Camera: blocked
 - Microphone: blocked
 - Geolocation: blocked ← This was the problem
-- FLoC tracking: blocked
+- FLoC keeping: blocked
 
 **Is `geolocation=(self)` secure?**
 

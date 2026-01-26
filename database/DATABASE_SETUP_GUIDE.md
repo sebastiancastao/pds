@@ -1,4 +1,4 @@
-# Database Setup Guide - PDS Time Tracking System
+# Database Setup Guide - PDS Time keeping System
 
 ## Error Resolution: "type already exists"
 

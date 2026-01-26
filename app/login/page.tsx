@@ -331,8 +331,8 @@ export default function LoginPage() {
           } else if (onboardingApproved) {
             // Onboarding approved
             console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding approved');
-            console.log('[LOGIN DEBUG] No redirect - user will go to /time-tracking after MFA');
-            // No redirect needed - proceed to time tracking after MFA
+            console.log('[LOGIN DEBUG] No redirect - user will go to /time-keeping after MFA');
+            // No redirect needed - proceed to time keeping after MFA
           }
 
           // Store redirect if needed
@@ -498,19 +498,27 @@ export default function LoginPage() {
         console.error('MFA [ERROR] Failed to fetch profile:', error.message);
         if (error.message.includes('row not found')) {
           console.log('MFA [INFO] No profile → /mfa-setup');
+          router.replace('/mfa-setup');
+          return;
         } else if (error.message.includes('more than one row')) {
           console.warn('MFA [WARN] Multiple profiles → data issue');
         }
-        router.replace('/verify-mfa');
+        router.replace('/mfa-setup');
         return;
       }
 
       // Require BOTH secret AND enabled
       if (!mfaProfile?.mfa_secret || !mfaProfile?.mfa_enabled) {
         console.log('MFA [INFO] MFA not fully enabled → /mfa-setup');
-        router.replace('/verify-mfa');
+        router.replace('/mfa-setup');
       } else {
         console.log('MFA [INFO] MFA fully enabled → /verify-mfa');
+        // Clear any stale mfa-setup redirect since MFA is already configured
+        const pendingRedirect = sessionStorage.getItem('pending_onboarding_redirect');
+        if (pendingRedirect === '/mfa-setup') {
+          console.log('MFA [INFO] Clearing stale /mfa-setup redirect - MFA already configured');
+          sessionStorage.removeItem('pending_onboarding_redirect');
+        }
         sessionStorage.setItem('mfa_checkpoint', 'true');
         router.replace('/verify-mfa');
       }
@@ -531,10 +539,10 @@ export default function LoginPage() {
           
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
-              PDS Time Tracking System
+              PDS Time keeping System
             </h1>
             <p className="text-primary-100 text-lg">
-              Secure, compliant employee time tracking and workforce management
+              Secure, compliant employee time keeping and workforce management
             </p>
           </div>
         </div>

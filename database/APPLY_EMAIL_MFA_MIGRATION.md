@@ -15,7 +15,7 @@ Copy ALL the contents (Ctrl+A, Ctrl+C)
 ## Step 2: Open Supabase SQL Editor
 
 1. Go to your Supabase project: https://supabase.com/dashboard
-2. Click on your **PDS Time Tracking** project
+2. Click on your **PDS Time keeping** project
 3. Click **SQL Editor** in the left sidebar
 4. Click **+ New Query**
 

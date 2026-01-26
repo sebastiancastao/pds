@@ -190,8 +190,56 @@ export default function OnboardingPage() {
     setTimeout(() => window.URL.revokeObjectURL(url), 1000);
   };
 
-  const handleExportToExcel = async () => {
+const sanitizeFilename = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
+
+const ensurePdfExtension = (value: string) => {
+  const sanitized = sanitizeFilename(value);
+  return sanitized.toLowerCase().endsWith('.pdf') ? sanitized : `${sanitized}.pdf`;
+};
+
+const buildOnboardingFilename = (userName: string) => {
+  const normalized = userName.replace(/\s+/g, '_').trim();
+  return ensurePdfExtension(`${normalized || 'onboarding'}_Onboarding_Documents`);
+};
+
+const extractFilenameFromContentDisposition = (header?: string | null) => {
+  if (!header) return null;
+  const segments = header.split(';').map((segment) => segment.trim()).filter(Boolean);
+  const parseValue = (segment: string) => {
+    const index = segment.indexOf('=');
+    if (index === -1) return '';
+    return segment.substring(index + 1).trim();
+  };
+
+  const filenameStarSegment = segments.find(
+    (segment) => segment.toLowerCase().startsWith('filename*=')
+  );
+  if (filenameStarSegment) {
+    let value = parseValue(filenameStarSegment);
+    if (/^UTF-8''/i.test(value)) {
+      value = value.replace(/^UTF-8''/i, '');
+    }
+    value = value.replace(/^"(.*)"$/, '$1');
     try {
+      value = decodeURIComponent(value);
+    } catch {
+      /* ignore */
+    }
+    return value ? sanitizeFilename(value) : null;
+  }
+
+  const filenameSegment = segments.find((segment) => segment.toLowerCase().startsWith('filename='));
+  if (filenameSegment) {
+    let value = parseValue(filenameSegment);
+    value = value.replace(/^"(.*)"$/, '$1');
+    return value ? sanitizeFilename(value) : null;
+  }
+
+  return null;
+};
+
+const handleExportToExcel = async () => {
+  try {
       const { data: { session } } = await supabase.auth.getSession();
       const response = await fetch('/api/onboarding/export', {
         method: 'GET',
@@ -215,7 +263,16 @@ export default function OnboardingPage() {
   };
 
   const handleDownloadPDF = async (userId: string, userName: string) => {
+    const downloadStart = Date.now();
+    const elapsedSeconds = () => ((Date.now() - downloadStart) / 1000).toFixed(1);
+    let longWaitTimer: ReturnType<typeof setTimeout> | null = null;
+
     try {
+      console.log(`[PDF_DOWNLOAD] Starting download for ${userName} (${userId})`);
+      longWaitTimer = setTimeout(() => {
+        console.warn(`[PDF_DOWNLOAD] Still waiting for PDF generation after ${elapsedSeconds()}s`);
+      }, 30000);
+
       const { data: { session } } = await supabase.auth.getSession();
       const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=form_signatures`, {
         headers: {
@@ -223,29 +280,26 @@ export default function OnboardingPage() {
         }
       });
 
+      console.log(`[PDF_DOWNLOAD] Response received after ${elapsedSeconds()}s (status ${response.status})`);
+
       if (!response.ok) {
         const data = await response.json();
+        console.error('[PDF_DOWNLOAD] Error payload:', data);
         throw new Error(data.error || 'Failed to download PDF');
       }
 
-      // Get the merged PDF blob
       const blob = await response.blob();
+      console.log(`[PDF_DOWNLOAD] Blob ready (${blob.size} bytes) after ${elapsedSeconds()}s`);
 
-      // Extract filename from Content-Disposition header or use default
-      const contentDisposition = response.headers.get('Content-Disposition');
-      let filename = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
+      const contentDisposition =
+        response.headers.get('Content-Disposition') || response.headers.get('content-disposition');
+      const fallbackFilename = buildOnboardingFilename(userName);
+      const headerFilename = extractFilenameFromContentDisposition(contentDisposition);
+      const filename = ensurePdfExtension(headerFilename || fallbackFilename);
 
-      if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(/filename="?(.+)"?/i);
-        if (filenameMatch) {
-          filename = filenameMatch[1];
-        }
-      }
-
-      // Download the merged PDF
       downloadBlob(blob, filename);
+      console.log(`[PDF_DOWNLOAD] Download completed in ${elapsedSeconds()}s`);
 
-      // Update the user's download status in local state
       setUsers(prev =>
         prev.map(u =>
           u.user_id === userId
@@ -256,8 +310,12 @@ export default function OnboardingPage() {
 
       alert(`Successfully downloaded onboarding documents for ${userName}`);
     } catch (err: any) {
-      console.error('Error downloading PDF:', err);
+      console.error(`[PDF_DOWNLOAD] Failed after ${elapsedSeconds()}s`, err);
       alert(`Failed to download PDF: ${err.message}`);
+    } finally {
+      if (longWaitTimer) {
+        clearTimeout(longWaitTimer);
+      }
     }
   };
 
@@ -459,13 +517,13 @@ export default function OnboardingPage() {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">User Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Role</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Password Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Onboarding Status</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">PDF Submitted</th>
-                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">User Name</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Password Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Onboarding Status</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">PDF Submitted</th>
+                  <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">

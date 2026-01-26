@@ -19,7 +19,7 @@ Your password **"1234"** does not meet the required security standards:
 ## 🔒 Why These Requirements Exist
 
 ### 1. **FLSA Compliance**
-The Fair Labor Standards Act requires secure employee time tracking systems.
+The Fair Labor Standards Act requires secure employee time keeping systems.
 
 ### 2. **SOC2 Compliance**
 Security certification mandates strong password policies.

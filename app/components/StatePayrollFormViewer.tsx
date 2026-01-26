@@ -132,6 +132,7 @@ export default function StatePayrollFormViewer({
   const lastSavedSignatureRef = useRef<string | null>(null);
 
   const basePath = `/payroll-packet-${stateCode}`;
+  const isWiOrNv = stateCode === 'wi' || stateCode === 'nv';
 
   useEffect(() => {
     if (!formConfig[selectedForm]) {
@@ -376,12 +377,30 @@ export default function StatePayrollFormViewer({
         body: formData,
       });
 
+      const parseResponseBody = async () => {
+        const clone = response.clone();
+        try {
+          return await response.json();
+        } catch {
+          return await clone.text();
+        }
+      };
+
+      const responseBody = await parseResponseBody();
+
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || 'Upload failed');
+        const errorMessage =
+          typeof responseBody === 'string'
+            ? responseBody
+            : (responseBody as any)?.error || 'Upload failed';
+        throw new Error(errorMessage);
       }
 
-      const result = await response.json();
+      if (!responseBody || typeof responseBody === 'string') {
+        throw new Error('Upload succeeded but returned an unexpected response.');
+      }
+
+      const result = responseBody;
       const toKey = documentType === 'i9_list_a' ? 'listA' : documentType === 'i9_list_b' ? 'listB' : 'listC';
       setI9Documents((prev) => ({
         ...prev,
@@ -604,7 +623,7 @@ export default function StatePayrollFormViewer({
       }
 
       // Validate required fields for WI Notice to Employee
-      if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
+      if (selectedForm === 'notice-to-employee' && isWiOrNv && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -660,7 +679,7 @@ export default function StatePayrollFormViewer({
       }
 
       // Validate required fields for WI Temporary Employment Agreement
-      if (selectedForm === 'temp-employment-agreement' && stateCode === 'wi' && pdfBytesRef.current) {
+      if (selectedForm === 'temp-employment-agreement' && isWiOrNv && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -716,7 +735,7 @@ export default function StatePayrollFormViewer({
       }
 
       // Validate required fields for WI W-4 (Step 1 a/b and filing status).
-      if (selectedForm === 'fw4' && stateCode === 'wi' && pdfBytesRef.current) {
+      if (selectedForm === 'fw4' && isWiOrNv && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -743,6 +762,7 @@ export default function StatePayrollFormViewer({
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', friendly: 'Step 1(c) Address (employee)' },
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', friendly: 'Step 1(d) City or town, state, and ZIP code (employee)' },
           { name: 'topmostSubform[0].Page1[0].f1_05[0]', friendly: 'Social Security number (employee)' },
+          { name: 'Employee Date', friendly: 'Employee date' },
         ];
 
         for (const fieldInfo of requiredFields) {
@@ -1025,7 +1045,7 @@ export default function StatePayrollFormViewer({
     }
 
     if (selectedForm === 'i9') {
-      if (stateCode === 'wi' && pdfBytesRef.current) {
+      if (isWiOrNv && pdfBytesRef.current) {
         try {
           const { PDFDocument } = await import('pdf-lib');
           const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -1046,11 +1066,13 @@ export default function StatePayrollFormViewer({
             }
           };
 
+          const requireFirstPageOnly = stateCode === 'nv';
           const requiredFields = [
-            { name: 'Last Name (Family Name)', friendly: 'Last Name', type: 'text' },
-            { name: 'First Name Given Name', friendly: 'First Name', type: 'text' },
+            { name: 'Last Name Family Name from Section 1', friendly: 'Last Name', type: 'text' },
+            { name: 'First Name Given Name from Section 1', friendly: 'First Name', type: 'text' },
             { name: 'Address Street Number and Name', friendly: 'Address', type: 'text' },
             { name: 'City or Town', friendly: 'City or Town', type: 'text' },
+            { name: 'State', friendly: 'State', type: 'dropdown' },
             { name: 'ZIP Code', friendly: 'ZIP Code', type: 'text' },
             { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth', type: 'text' },
             { name: 'US Social Security Number', friendly: 'U.S. Social Security Number', type: 'text' },
@@ -1074,6 +1096,9 @@ export default function StatePayrollFormViewer({
               }
               if (!value || value.trim() === '') {
                 const page = getFieldPage(field);
+                if (requireFirstPageOnly && page !== 1) {
+                  continue;
+                }
                 if (!firstMissing) {
                   firstMissing = { friendly: fieldInfo.friendly, page };
                 }
@@ -1103,42 +1128,52 @@ export default function StatePayrollFormViewer({
           }
 
           const statusCheckboxes = ['CB_1', 'CB_2', 'CB_3', 'CB_4'];
-          let hasStatus = false;
+          const statusFieldsForValidation: { name: string; page: number }[] = [];
           for (const fieldName of statusCheckboxes) {
             try {
               const field = form.getCheckBox(fieldName);
-              if (field.isChecked()) {
-                hasStatus = true;
-                break;
+              const page = getFieldPage(field);
+              if (requireFirstPageOnly && page !== 1) {
+                continue;
               }
+              statusFieldsForValidation.push({ name: fieldName, page });
             } catch (err) {
               console.warn(`Field ${fieldName} not found or error checking:`, err);
             }
           }
 
-          if (!hasStatus) {
-            let page = 1;
-            try {
-              const field = form.getCheckBox(statusCheckboxes[0]);
-              page = getFieldPage(field);
-            } catch {
-              page = 1;
-            }
-            const message = `Please select at least one work authorization status checkbox in Section 1 on page ${page} of the PDF`;
-            setMissingRequiredFields(statusCheckboxes);
-            setValidationError(message);
-            setEmptyFieldPage(page);
-
-            setTimeout(() => {
-              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-              if (canvas) {
-                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              } else {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+          if (statusFieldsForValidation.length > 0) {
+            let hasStatus = false;
+            for (const { name } of statusFieldsForValidation) {
+              try {
+                const field = form.getCheckBox(name);
+                if (field.isChecked()) {
+                  hasStatus = true;
+                  break;
+                }
+              } catch (err) {
+                console.warn(`Field ${name} not found or error checking:`, err);
               }
-            }, 100);
+            }
 
-            return;
+            if (!hasStatus) {
+              const page = statusFieldsForValidation[0].page;
+              const message = `Please select at least one work authorization status checkbox in Section 1 on page ${page} of the PDF`;
+              setMissingRequiredFields(statusFieldsForValidation.map((field) => field.name));
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
           }
 
           setValidationError(null);

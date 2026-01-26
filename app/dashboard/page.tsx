@@ -1156,7 +1156,7 @@ export default function DashboardPage() {
         <div className="mb-12">
           <div className="flex items-start justify-between">
             <div className="flex-1">
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 tracking-tight">Dashboard</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Dashboard</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage your events and invite vendors seamlessly."
@@ -1240,7 +1240,7 @@ export default function DashboardPage() {
             {/* Overview */}
             {!loading && !error && events.length > 0 && (
               <section className="mb-10">
-                <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Overview</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Overview</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-6">
                   <div className="apple-stat-card apple-stat-card-blue">
                     <div className="apple-stat-icon apple-stat-icon-blue">
@@ -1322,7 +1322,7 @@ export default function DashboardPage() {
 
             {/* Calendar */}
             <section className="mb-10">
-              <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Calendar</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Calendar</h2>
               {loading && (
                 <div className="apple-card">
                   <div className="flex items-center justify-center py-16">
@@ -1351,7 +1351,7 @@ export default function DashboardPage() {
 
             {/* All Events */}
             <section>
-              <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">All Events</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">All Events</h2>
               {loading && (
                 <div className="apple-card">
                   <div className="flex items-center justify-center py-16">
@@ -1530,7 +1530,7 @@ export default function DashboardPage() {
             {hrView === "overview" && (
               <div className="space-y-8">
                 <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Key Metrics</h2>
+                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Key Metrics</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <div className="apple-stat-card apple-stat-card-blue">
                       <div className="apple-stat-icon apple-stat-icon-blue">
@@ -1585,7 +1585,7 @@ export default function DashboardPage() {
 
                 {/* Departments */}
                 <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 tracking-tight">Department Overview</h2>
+                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Department Overview</h2>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     {departments.map((dept) => (
                       <div key={dept.name} className="apple-card p-6">
@@ -1603,7 +1603,7 @@ export default function DashboardPage() {
                 {/* Recent Leaves */}
                 <section>
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Recent Leave Requests</h2>
+                    <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Recent Leave Requests</h2>
                     <button onClick={() => setHrView("leaves")} className="text-blue-600 hover:text-blue-700 font-medium text-sm">
                       View All →
                     </button>
@@ -1675,7 +1675,7 @@ export default function DashboardPage() {
             {hrView === "employees" && (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">
                     All Employees
                     {employees.length > 0 && <span className="ml-3 text-lg font-normal text-gray-500">({employees.length})</span>}
                   </h2>
@@ -1866,7 +1866,7 @@ export default function DashboardPage() {
             {hrView === "leaves" && (
               <div className="space-y-6">
                 <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Leave Requests</h2>
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Leave Requests</h2>
                   <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
                     <option value="">All Statuses</option>
                     <option value="pending">Pending</option>

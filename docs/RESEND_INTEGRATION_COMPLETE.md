@@ -2,7 +2,7 @@
 
 ## 🎉 Success!
 
-Your PDS Time Tracking System is now sending **real emails** via Resend!
+Your PDS Time keeping System is now sending **real emails** via Resend!
 
 ---
 
@@ -73,8 +73,8 @@ You should see:
 
 Look for an email from:
 ```
-From: PDS Time Tracking <service@pdsportal.site>
-Subject: Welcome to PDS Time Tracking - Your Account Details
+From: PDS Time keeping <service@pdsportal.site>
+Subject: Welcome to PDS Time keeping - Your Account Details
 ```
 
 **Check spam folder if you don't see it!**
@@ -125,8 +125,8 @@ Your users will receive:
 ```
 📧 New Email!
 
-From: PDS Time Tracking
-Subject: Welcome to PDS Time Tracking - Your Account Details
+From: PDS Time keeping
+Subject: Welcome to PDS Time keeping - Your Account Details
 
 [Beautiful HTML email with temporary password]
 ```
@@ -139,7 +139,7 @@ Subject: Welcome to PDS Time Tracking - Your Account Details
 
 **Sender Address:**
 ```
-PDS Time Tracking <service@furnituretaxi.site>
+PDS Time keeping <service@furnituretaxi.site>
 ```
 
 **⚠️ Note:** This uses Resend's default domain. For production:
@@ -152,7 +152,7 @@ PDS Time Tracking <service@furnituretaxi.site>
 
 2. **Better Email Address Examples:**
    ```
-   PDS Time Tracking <noreply@pds.com>
+   PDS Time keeping <noreply@pds.com>
    PDS Onboarding <onboarding@pds.com>
    PDS Support <support@pds.com>
    ```
@@ -316,7 +316,7 @@ lib/email.ts → generateEmailTemplate()
 - [ ] Update sender address to your domain
 - [ ] Test with multiple email providers (Gmail, Outlook, Yahoo)
 - [ ] Customize email template with your branding
-- [ ] Set up email tracking (optional)
+- [ ] Set up email keeping (optional)
 
 ### Production (Before Going Live)
 - [ ] Domain verification complete
@@ -360,7 +360,7 @@ lib/email.ts → generateEmailTemplate()
 
 ## 🎉 You're All Set!
 
-Your PDS Time Tracking System now sends **real, professional emails** to users!
+Your PDS Time keeping System now sends **real, professional emails** to users!
 
 ### What You Have:
 - ✅ Production-ready email service

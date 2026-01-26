@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time Tracking System now supports temporary passwords for secure user onboarding and password resets. This feature ensures users change their passwords on first login and provides time-based password expiration.
+The PDS Time keeping System now supports temporary passwords for secure user onboarding and password resets. This feature ensures users change their passwords on first login and provides time-based password expiration.
 
 ---
 
@@ -457,7 +457,7 @@ For questions about temporary passwords:
 - `is_temporary_password` - Flag for temporary passwords
 - `must_change_password` - Force change on next login
 - `password_expires_at` - Expiration timestamp
-- `last_password_change` - Change history tracking
+- `last_password_change` - Change history keeping
 
 **Use cases:**
 - Admin-created accounts

@@ -1101,10 +1101,12 @@ export default function PDFFormEditor({
             const viewport = pageViewports[pageIndex];
             const pageOffset = pageOffsets[pageIndex];
             const fieldValue = fieldValues.get(field.baseName) || '';
+            const fieldType = typeof field.type === 'string' ? field.type.toLowerCase() : '';
+            const isCheckboxField = fieldType.includes('checkbox');
             const isMissingRequired = Boolean(
               showRequiredFieldErrors &&
               requiredFieldNames?.includes(field.baseName) &&
-              (field.type === 'checkbox'
+              (isCheckboxField
                 ? fieldValue !== 'true'
                 : String(fieldValue).trim() === '')
             );

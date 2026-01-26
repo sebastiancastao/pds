@@ -44,7 +44,8 @@
       "Bash(npx supabase:*)",
       "Bash(git config:*)",
       "Bash(timeout 30 npx next build:*)",
-      "Bash(git pull:*)"
+      "Bash(git pull:*)",
+      "Bash(set GIT_TRACE=1)"
     ],
     "deny": [],
     "ask": []
