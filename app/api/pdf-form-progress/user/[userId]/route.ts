@@ -538,8 +538,8 @@ async function cacheMergedPdf(userId: string, pdfBytes: Uint8Array, sourceTimest
   }
 }
 
-function maxTimestamp(values: Array<string | null | undefined>) {
-  return values.reduce((max, value) => {
+function maxTimestamp(values: Array<string | null | undefined>): string | null {
+  return values.reduce((max: string | null, value): string | null => {
     if (!value) return max;
     return !max || value > max ? value : max;
   }, null as string | null);
@@ -673,7 +673,7 @@ export async function GET(
           console.error('[PDF_FORMS] Error fetching form signatures:', signatureError);
         } else if (signatures) {
           console.log('[PDF_FORMS] Found', signatures.length, 'signatures for user', userId);
-          latestSignatureTimestamp = signatures.reduce((max, signature) => {
+          latestSignatureTimestamp = signatures.reduce((max: string | null, signature): string | null => {
             const candidate = signature?.signed_at;
             if (!candidate) return max;
             return maxTimestamp([max, candidate]);
