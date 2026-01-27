@@ -682,6 +682,20 @@ export default function OnboardingPage() {
                               <div className="text-xs text-gray-400">
                                 {new Date(user.latest_form_progress.updated_at).toLocaleDateString()}
                               </div>
+                              {user.completed_forms && user.completed_forms.length > 0 && (
+                                <details className="mt-1">
+                                  <summary className="text-xs text-indigo-600 cursor-pointer hover:text-indigo-800">
+                                    View all {user.completed_forms.length} completed forms
+                                  </summary>
+                                  <ul className="mt-1 text-xs text-gray-500 pl-2 space-y-0.5 max-h-32 overflow-y-auto">
+                                    {user.completed_forms.map((formName, idx) => (
+                                      <li key={idx} className="truncate" title={formName}>
+                                        • {formName.replace(/^[a-z]{2}-/, '').replace(/-/g, ' ')}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              )}
                             </>
                           ) : (
                             <>

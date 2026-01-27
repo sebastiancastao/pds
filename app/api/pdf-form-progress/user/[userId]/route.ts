@@ -747,24 +747,179 @@ export async function GET(
               });
             }
 
-            // Update field appearances to ensure all fields have visual representation
-            try {
-              const helveticaFont = await formPdf.embedFont(StandardFonts.Helvetica);
-              // Force every field to regenerate its appearance even if the existing
-              // streams look up-to-date so nothing gets skipped.
-              fields.forEach((field) => {
-                try {
-                  pdfForm.markFieldAsDirty(field.ref);
-                } catch {
-                  // ignore if marking fails for a widgetless field
+            // For employee handbook, manually draw text field values because
+            // the standard flatten() doesn't render them properly
+            if (isHandbook) {
+              try {
+                // Custom offset mapping for each field (in points)
+                // Adjust these values to position each field correctly
+                const fieldOffsets: Record<string, number> = {
+                  'employee_name1': 7000,
+                  'employee_initialsprev': 7000,
+                  'employee_initials2prev': 7000,
+                  'employee_initials3prev': 7000,
+                  'acknowledgment_date1': 7000,
+                  'printedName1': 7000,
+                  'employee_name': 5450,
+                  'employee_initials': 5450,
+                  'employee_initials2': 5450,
+                  'employee_initials3': 5450,
+                  'acknowledgment_date': 5450,
+                  'printedName': 5450,
+                  'date3': 3000,
+                  'printedName3': 3000,
+                  'date4': 7000,
+                  'date5': 7000,
+                  'printedName4': 7000,
+                  'date6': 7000,
+                };
+
+                const helveticaFont = await formPdf.embedFont(StandardFonts.Helvetica);
+                const pages = formPdf.getPages();
+                let drawnCount = 0;
+
+                console.log(`[PDF_FORMS] Handbook has ${pages.length} pages, attempting to draw ${fields.length} fields`);
+
+                for (const field of fields) {
+                  try {
+                    const fieldType = field.constructor.name;
+                    const fieldName = field.getName();
+
+                    if (fieldType === 'PDFTextField') {
+                      const textField = field as any;
+                      const currentValue = textField.getText();
+
+                      if (currentValue) {
+                        const widgets = textField.acroField?.getWidgets?.() || [];
+                        console.log(`[PDF_FORMS] Field "${fieldName}": value="${currentValue}", widgets=${widgets.length}`);
+
+                        for (const widget of widgets) {
+                          try {
+                            const rect = widget.getRectangle();
+                            if (!rect) continue;
+
+                            const widgetPageRef = widget.P?.();
+                            let pageIndex = 0;
+                            if (widgetPageRef) {
+                              pageIndex = pages.findIndex((p: any) => p.ref === widgetPageRef);
+                              if (pageIndex === -1) pageIndex = 0;
+                            }
+
+                            const page = pages[pageIndex];
+                            if (!page) continue;
+
+                            const { x, y, width, height } = rect;
+                            const pageSize = page.getSize();
+
+                            // Normalize Y coordinate if it exceeds page height
+                            let normalizedY = y;
+                            if (y > pageSize.height) {
+                              normalizedY = y % pageSize.height;
+                            }
+
+                            const fontSize = Math.min(Math.max(height * 0.6, 8), 12);
+                            const fieldOffset = fieldOffsets[fieldName] || 7000; // Use custom offset or default to 7000
+                            let finalY = normalizedY + (height - fontSize) / 2 + fieldOffset;
+                            let targetPage = page;
+                            let targetPageIndex = pageIndex;
+
+                            // Handle page overflow - move to previous page if Y exceeds page height
+                            while (finalY > pageSize.height && targetPageIndex > 0) {
+                              finalY -= pageSize.height;
+                              targetPageIndex--;
+                              targetPage = pages[targetPageIndex];
+                            }
+
+                            console.log(`[PDF_FORMS]   Drawing "${currentValue}" at page ${pageIndex} -> ${targetPageIndex}, x=${x}, y=${y} -> finalY=${finalY}, pageHeight=${pageSize.height}`);
+
+                            targetPage.drawText(currentValue, {
+                              x: x + 2,
+                              y: finalY,
+                              size: fontSize,
+                              font: helveticaFont,
+                              color: rgb(0, 0, 0),
+                              maxWidth: width - 4,
+                            });
+                            drawnCount++;
+                          } catch {
+                            // Skip widget errors
+                          }
+                        }
+                      }
+                    }
+
+                    if (fieldType === 'PDFCheckBox') {
+                      const checkBox = field as any;
+                      if (checkBox.isChecked()) {
+                        const widgets = checkBox.acroField?.getWidgets?.() || [];
+                        for (const widget of widgets) {
+                          try {
+                            const rect = widget.getRectangle();
+                            if (!rect) continue;
+
+                            const widgetPageRef = widget.P?.();
+                            let pageIndex = 0;
+                            if (widgetPageRef) {
+                              pageIndex = pages.findIndex((p: any) => p.ref === widgetPageRef);
+                              if (pageIndex === -1) pageIndex = 0;
+                            }
+
+                            const page = pages[pageIndex];
+                            if (!page) continue;
+
+                            const { x, y, width, height } = rect;
+                            const pageSize = page.getSize();
+
+                            let normalizedY = y;
+                            if (y > pageSize.height) {
+                              normalizedY = y % pageSize.height;
+                            }
+
+                            const checkSize = Math.min(width, height) * 0.7;
+                            const fieldOffset = fieldOffsets[fieldName] || 7000; // Use custom offset or default to 7000
+                            let finalY = normalizedY + (height - checkSize) / 2 + fieldOffset;
+                            let targetPage = page;
+                            let targetPageIndex = pageIndex;
+
+                            // Handle page overflow - move to previous page if Y exceeds page height
+                            while (finalY > pageSize.height && targetPageIndex > 0) {
+                              finalY -= pageSize.height;
+                              targetPageIndex--;
+                              targetPage = pages[targetPageIndex];
+                            }
+
+                            targetPage.drawText('✓', {
+                              x: x + (width - checkSize) / 2,
+                              y: finalY,
+                              size: checkSize,
+                              font: helveticaFont,
+                              color: rgb(0, 0, 0),
+                            });
+                            drawnCount++;
+                          } catch {
+                            // Skip
+                          }
+                        }
+                      }
+                    }
+                  } catch {
+                    // Ignore field errors
+                  }
                 }
-              });
-              pdfForm.updateFieldAppearances(helveticaFont);
-            } catch (fontError) {
-              console.log('[PDF_FORMS] Could not update field appearances:', form.form_name);
+
+                console.log(`[PDF_FORMS] Manually drew ${drawnCount} field values for employee handbook`);
+              } catch (drawError) {
+                console.log('[PDF_FORMS] Could not draw field values:', form.form_name, (drawError as Error).message);
+              }
             }
 
-            pdfForm.flatten();
+            // Flatten form fields - for handbook this removes fields after manual draw,
+            // for other forms this renders the values normally
+            try {
+              pdfForm.flatten();
+            } catch {
+              // Flatten may fail but continue
+            }
             console.log('[PDF_FORMS] Flattened', fields.length, 'form fields for:', form.form_name);
           } else {
             console.log('[PDF_FORMS] No form fields found in:', form.form_name);
