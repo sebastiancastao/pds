@@ -718,7 +718,7 @@ export async function GET(
     console.log('[PDF_FORMS] Retrieved', forms.length, 'forms');
 
     const latestFormUpdate = forms.reduce((max, form) => {
-      const candidate = form.updated_at || form.created_at;
+      const candidate = form.updated_at;
       if (!candidate) return max;
       return !max || candidate > max ? candidate : max;
     }, null as string | null);
