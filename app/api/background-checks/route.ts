@@ -335,22 +335,6 @@ export async function POST(req: NextRequest) {
         if (email && firstName && lastName) {
           console.log('[Background Checks API] Sending approval email to:', email);
 
-          // Send the approval email to the vendor asynchronously (don't wait for it)
-          sendBackgroundCheckApprovalEmail({
-            email,
-            firstName,
-            lastName
-          }).then(result => {
-            if (result.success) {
-              console.log('[Background Checks API] Approval email sent successfully to vendor');
-            } else {
-              console.error('[Background Checks API] Failed to send approval email to vendor:', result.error);
-            }
-          }).catch(err => {
-            console.error('[Background Checks API] Error sending approval email to vendor:', err);
-          });
-
-          // Send notification email to admin (sebastiancastao379@gmail.com) asynchronously
           const approvedAt = new Date().toLocaleString('en-US', {
             year: 'numeric',
             month: 'long',
@@ -360,20 +344,37 @@ export async function POST(req: NextRequest) {
             timeZone: 'America/New_York'
           });
 
-          sendBackgroundCheckApprovalNotificationToAdmin({
-            vendorEmail: email,
-            vendorFirstName: firstName,
-            vendorLastName: lastName,
-            approvedAt
-          }).then(result => {
-            if (result.success) {
+          // Wait for BOTH emails to complete before returning response
+          // This prevents serverless functions from terminating before emails are sent
+          try {
+            const [vendorResult, adminResult] = await Promise.all([
+              sendBackgroundCheckApprovalEmail({
+                email,
+                firstName,
+                lastName
+              }),
+              sendBackgroundCheckApprovalNotificationToAdmin({
+                vendorEmail: email,
+                vendorFirstName: firstName,
+                vendorLastName: lastName,
+                approvedAt
+              })
+            ]);
+
+            if (vendorResult.success) {
+              console.log('[Background Checks API] Approval email sent successfully to vendor');
+            } else {
+              console.error('[Background Checks API] Failed to send approval email to vendor:', vendorResult.error);
+            }
+
+            if (adminResult.success) {
               console.log('[Background Checks API] Admin notification sent successfully');
             } else {
-              console.error('[Background Checks API] Failed to send admin notification:', result.error);
+              console.error('[Background Checks API] Failed to send admin notification:', adminResult.error);
             }
-          }).catch(err => {
-            console.error('[Background Checks API] Error sending admin notification:', err);
-          });
+          } catch (err) {
+            console.error('[Background Checks API] Error sending approval emails:', err);
+          }
         } else {
           console.warn('[Background Checks API] Missing email or name, skipping approval emails');
         }
