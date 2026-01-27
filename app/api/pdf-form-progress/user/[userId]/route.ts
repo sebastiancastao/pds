@@ -427,10 +427,10 @@ async function ensureFormFieldsVisible(doc: PDFDocument, label?: string) {
 
     for (const field of fields) {
       const widgets = field?.acroField?.getWidgets?.() ?? [];
-      const isText = typeof field.getText === 'function';
-      const isCheckbox = typeof field.isChecked === 'function';
-      const textValue = isText ? String(field.getText?.() ?? '').trim() : '';
-      const checked = isCheckbox ? !!field.isChecked?.() : false;
+      const isText = typeof (field as any).getText === 'function';
+      const isCheckbox = typeof (field as any).isChecked === 'function';
+      const textValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
+      const checked = isCheckbox ? !!(field as any).isChecked?.() : false;
 
       for (const widget of widgets) {
         const rect = widget?.getRectangle?.();
