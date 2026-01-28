@@ -50,10 +50,10 @@ export default function ResetPasswordPage() {
     setErrorMessage('');
 
     try {
-      const { error } = await supabase.auth.setSession({
-        access_token: tokens.access_token!,
-        refresh_token: tokens.refresh_token,
-      });
+        const { error } = await supabase.auth.setSession({
+          access_token: tokens.access_token!,
+          refresh_token: tokens.refresh_token ?? tokens.access_token!,
+        });
 
       if (error) {
         throw error;
