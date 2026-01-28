@@ -8,8 +8,8 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 import { supabase } from '@/lib/supabase';
 
 const NV_FORMS: FormSpec[] = [
-  { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
-  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/employee-handbook' },
+  { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
   { id: 'nv-state-supplements', formId: 'nv-state-supplements', display: 'NV State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/nv-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
@@ -154,7 +154,7 @@ function EmployeeInformationNVForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       alert('Please enter both first and last name.');
       return false;
@@ -167,18 +167,44 @@ function EmployeeInformationNVForm() {
       alert('Please provide a phone number and email.');
       return false;
     }
-    if (form.ssn.trim().length !== 9) {
-      alert('Please enter your full nine-digit SSN.');
+    if (!form.ssn.trim()) {
+      alert('Please provide your Social Security Number.');
       return false;
     }
 
     setSaving(true);
     const updatedForm = { ...form, startDate: getTodayDate() };
     try {
-      setForm(updatedForm);
-      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(updatedForm));
-      setTimeout(() => setSaving(false), 300);
-      alert('Employee information saved.');
+      // Save to localStorage as backup
+      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
+
+      // Save to database with encrypted SSN
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('You must be logged in to save employee information.');
+        setSaving(false);
+        return false;
+      }
+
+      const response = await fetch('/api/employee-information/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(form)
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Save error:', error);
+        alert('Failed to save employee information to database.');
+        setSaving(false);
+        return false;
+      }
+
+      setSaving(false);
+      alert('Employee information saved successfully.');
       return true;
     } catch (e) {
       console.error('Save error:', e);
@@ -189,7 +215,7 @@ function EmployeeInformationNVForm() {
   };
 
   const handleContinue = async () => {
-    const ok = handleSave();
+    const ok = await handleSave();
     if (ok) {
       router.push('/payroll-packet-nv/form-viewer?form=fw4');
     }
@@ -295,14 +321,11 @@ function EmployeeInformationNVForm() {
             </label>
             <input
               style={inputStyle}
-              type="password"
-              inputMode="numeric"
-              pattern="[0-9]*"
-              maxLength={9}
+              type="text"
+              maxLength={11}
               value={form.ssn}
-              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9]/g, '').slice(0, 9))}
-              placeholder="#########"
-              autoComplete="off"
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
             <p style={{ marginTop: '8px', fontSize: '12px', color: '#666' }}>
               We only store the digits locally; enter the full nine-digit SSN.

@@ -1014,7 +1014,7 @@ function HRDashboardContent() {
                                                       p.status === 'confirmed' ? 'bg-green-100 text-green-700' :
                                                       p.status === 'pending_confirmation' ? 'bg-yellow-100 text-yellow-700' :
                                                       'bg-gray-100 text-gray-600'
-                                                    }`} title="Team member assigned, awaiting time keeping">
+                                                    }`} title="Team member assigned, awaiting Time Keeping ">
                                                       {p.status === 'confirmed' ? 'Confirmed' : p.status === 'pending_confirmation' ? 'Pending' : p.status}
                                                     </span>
                                                   )}

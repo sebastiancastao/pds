@@ -27,7 +27,10 @@ export async function POST(request: NextRequest) {
     console.log('[FORGOT PASSWORD] Processing reset request for:', normalizedEmail);
 
     // Step 1: Check if user exists in auth.users
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers();
+    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({
+      limit: 100,
+      query: normalizedEmail
+    });
 
     if (authError) {
       console.error('[FORGOT PASSWORD] Error fetching auth users:', authError);
@@ -37,7 +40,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const authUser = authData.users.find(u => u.email?.toLowerCase() === normalizedEmail);
+    const authUser = authData?.users?.find(
+      (user) => user.email?.toLowerCase() === normalizedEmail
+    );
 
     if (!authUser) {
       console.log('[FORGOT PASSWORD] User not found in auth:', normalizedEmail);

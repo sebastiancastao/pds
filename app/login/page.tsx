@@ -331,8 +331,8 @@ export default function LoginPage() {
           } else if (onboardingApproved) {
             // Onboarding approved
             console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding approved');
-            console.log('[LOGIN DEBUG] No redirect - user will go to /time-keeping after MFA');
-            // No redirect needed - proceed to time keeping after MFA
+            console.log('[LOGIN DEBUG] No redirect - user will go to /time-keepingafter MFA');
+            // No redirect needed - proceed to Time Keeping after MFA
           }
 
           // Store redirect if needed
@@ -539,10 +539,10 @@ export default function LoginPage() {
           
           <div className="mt-16">
             <h1 className="text-4xl font-bold text-white mb-4">
-              PDS Time keeping System
+              PDS Time Keeping System
             </h1>
             <p className="text-primary-100 text-lg">
-              Secure, compliant employee time keeping and workforce management
+              Secure, compliant employee Time Keeping and workforce management
             </p>
           </div>
         </div>

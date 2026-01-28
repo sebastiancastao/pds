@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourAZPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12AZPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
+import { supabase } from '@/lib/supabase';
 
 const AZ_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
@@ -13,9 +14,9 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', formId: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
-  { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true },
-  { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
-  { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
+  { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fw4' },
+  { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-az/i9' },
+  { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-az/notice-to-employee' },
   { id: 'temp-employment-agreement', formId: 'az-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-az/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', formId: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', formId: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
@@ -61,7 +62,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -84,7 +85,7 @@ function EmployeeInformationAZForm() {
     position: '',
     startDate: '',
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
@@ -145,6 +146,16 @@ function EmployeeInformationAZForm() {
     router.push('/payroll-packet-az/form-viewer?form=time-of-hire');
   };
 
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+  };
+
   const inputStyle = {
     width: '100%',
     padding: '12px',
@@ -172,6 +183,26 @@ function EmployeeInformationAZForm() {
           padding: '32px',
         }}
       >
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+          <button
+            type="button"
+            onClick={handleLogout}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f5f5f5',
+              color: '#333',
+              border: '1px solid #ddd',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+          >
+            Logout
+          </button>
+        </div>
         <div style={{ marginBottom: '32px', textAlign: 'center' }}>
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#1a1a1a', marginBottom: '8px' }}>
             Employee Information
@@ -236,14 +267,16 @@ function EmployeeInformationAZForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
+              Social Security Number <span style={{ color: '#d32f2f' }}>*</span>
+            </label>
             <input
               style={inputStyle}
               type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              maxLength={11}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
           </div>
         </div>

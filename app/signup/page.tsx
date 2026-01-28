@@ -634,7 +634,7 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
             </div>
             <h1 className="text-3xl font-bold text-gray-900">Create New Users</h1>
             <p className="text-gray-600 mt-2">
-              Add one or multiple users to the PDS Time keeping System
+              Add one or multiple users to the PDS Time Keeping System
             </p>
             <p className="text-sm text-gray-500 mt-1">
               Create accounts first, then send credentials via email when ready

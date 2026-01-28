@@ -116,6 +116,89 @@ export async function GET(req: NextRequest) {
       console.error('Error fetching onboarding data:', onboardingError);
     }
 
+    // Fetch latest form progress for each user
+    // Get all form progress entries and we'll pick the latest per user
+    const { data: formProgressData, error: formProgressError } = await adminClient
+      .from('pdf_form_progress')
+      .select('user_id, form_name, updated_at')
+      .order('updated_at', { ascending: false });
+
+    if (formProgressError) {
+      console.error('Error fetching form progress data:', formProgressError);
+    }
+
+    // Form order from DEFAULT_FORMS in StatePayrollFormViewer
+    const FORM_ORDER = [
+      { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+      { id: 'marketplace', display: 'Marketplace Notice' },
+      { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+      { id: 'time-of-hire', display: 'Time of Hire Notice' },
+      { id: 'employee-information', display: 'Employee Information' },
+      { id: 'fw4', display: 'Federal W-4' },
+      { id: 'i9', display: 'I-9 Employment Verification' },
+      { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+      { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+      { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+      { id: 'state-tax', display: 'State Tax Form' },
+      { id: 'handbook', display: 'Employee Handbook' },
+    ];
+    const TOTAL_FORMS = FORM_ORDER.length;
+
+    // Helper to extract form ID from stored form_name (e.g., "ca-adp-deposit" -> "adp-deposit")
+    const extractFormId = (formName: string): string => {
+      // form_name format is "{stateCode}-{formId}" e.g., "ca-adp-deposit", "az-fw4"
+      const parts = formName.split('-');
+      if (parts.length > 1) {
+        // Remove first part (state code) and rejoin the rest
+        return parts.slice(1).join('-');
+      }
+      return formName;
+    };
+
+    // Get form position (1-indexed) in the sequence
+    const getFormPosition = (formName: string): number => {
+      const formId = extractFormId(formName);
+      const index = FORM_ORDER.findIndex(f => f.id === formId);
+      return index >= 0 ? index + 1 : 0;
+    };
+
+    // Get display name for a form
+    const getFormDisplayName = (formName: string): string => {
+      const formId = extractFormId(formName);
+      const form = FORM_ORDER.find(f => f.id === formId);
+      return form?.display || formName;
+    };
+
+    // Create a map of user_id to their furthest form progress (highest position) and count of completed forms
+    const furthestFormProgressByUser = new Map<string, { form_name: string; updated_at: string; position: number; display_name: string }>();
+    const formCountByUser = new Map<string, number>();
+    const completedFormsByUser = new Map<string, string[]>();
+
+    if (formProgressData) {
+      for (const progress of formProgressData) {
+        const position = getFormPosition(progress.form_name);
+
+        // Track the form with the highest position (furthest in the sequence)
+        const existing = furthestFormProgressByUser.get(progress.user_id);
+        if (!existing || position > existing.position) {
+          furthestFormProgressByUser.set(progress.user_id, {
+            form_name: progress.form_name,
+            updated_at: progress.updated_at,
+            position: position,
+            display_name: getFormDisplayName(progress.form_name)
+          });
+        }
+
+        // Count forms per user
+        formCountByUser.set(progress.user_id, (formCountByUser.get(progress.user_id) || 0) + 1);
+        // Track completed form names
+        if (!completedFormsByUser.has(progress.user_id)) {
+          completedFormsByUser.set(progress.user_id, []);
+        }
+        completedFormsByUser.get(progress.user_id)!.push(progress.form_name);
+      }
+    }
+
     // Transform the data
     const users = (profiles || []).map((profile: any) => {
       const userObj = profile?.users ? (Array.isArray(profile.users) ? profile.users[0] : profile.users) : null;
@@ -131,6 +214,11 @@ export async function GET(req: NextRequest) {
       // Determine if PDF was submitted based on onboarding_completed_at field
       const hasSubmittedPdf = !!profile?.onboarding_completed_at;
       const pdfSubmittedAt = profile?.onboarding_completed_at || null;
+
+      // Get furthest form progress for this user (highest position in sequence)
+      const latestFormProgress = furthestFormProgressByUser.get(profile.user_id) || null;
+      const formsCompleted = formCountByUser.get(profile.user_id) || 0;
+      const completedForms = completedFormsByUser.get(profile.user_id) || [];
 
       return {
         id: profile.id,
@@ -155,6 +243,10 @@ export async function GET(req: NextRequest) {
         has_submitted_pdf: hasSubmittedPdf,
         pdf_submitted_at: pdfSubmittedAt,
         pdf_latest_update: pdfSubmittedAt,
+        latest_form_progress: latestFormProgress,
+        forms_completed: formsCompleted,
+        total_forms: TOTAL_FORMS,
+        completed_forms: completedForms,
       };
     });
 
@@ -377,7 +469,7 @@ export async function POST(req: NextRequest) {
             <tr>
               <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
                 <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                  This email was sent by PDS Time keeping System
+                  This email was sent by PDS Time Keeping System
                 </p>
                 <p style="color: #999999; font-size: 11px; margin: 0;">
                   © ${new Date().getFullYear()} PDS. All rights reserved.

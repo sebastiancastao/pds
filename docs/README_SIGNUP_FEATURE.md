@@ -2,7 +2,7 @@
 
 ## Overview
 
-A secure user signup system for PDS Time keeping that allows administrators to create one or multiple users with temporary passwords sent via email.
+A secure user signup system for PDS Time Keeping that allows administrators to create one or multiple users with temporary passwords sent via email.
 
 ---
 

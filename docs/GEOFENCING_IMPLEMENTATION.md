@@ -7,7 +7,7 @@
 
 ## Overview
 
-This implementation adds **location-based access control (geofencing)** to the PDS Time keeping System. Users can only log in when they are physically located within authorized geographic zones.
+This implementation adds **location-based access control (geofencing)** to the PDS Time Keeping System. Users can only log in when they are physically located within authorized geographic zones.
 
 ### Key Features
 

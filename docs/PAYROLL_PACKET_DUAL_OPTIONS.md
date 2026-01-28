@@ -243,7 +243,7 @@ database/migrations/008_add_payroll_packets_ny_table.sql
 ### For HR:
 - ✅ Automated processing from web form
 - ✅ Reduced data entry workload
-- ✅ Better keeping and reporting
+- ✅ Better keepingand reporting
 - ✅ Still accepts PDF submissions if needed
 
 ### For Compliance:
@@ -278,7 +278,7 @@ Track which option users prefer:
 -- Web form submissions
 SELECT COUNT(*) FROM payroll_packets_ny;
 
--- PDF downloads (implement keeping endpoint)
+-- PDF downloads (implement keepingendpoint)
 SELECT COUNT(*) FROM pdf_downloads 
 WHERE pdf_name = 'payroll_packet_ny';
 ```

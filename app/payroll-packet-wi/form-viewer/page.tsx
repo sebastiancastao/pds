@@ -5,12 +5,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourWIPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12WIPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
+import { supabase } from '@/lib/supabase';
 
 const WI_FORMS: FormSpec[] = [
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/fw4' },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/i9' },
-  { id: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
+  { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
   { id: 'wi-state-supplements', formId: 'wi-state-supplements', display: 'WI State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/wi-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
@@ -61,7 +62,7 @@ type EmployeeInfoState = {
   position: string;
   startDate: string;
   dob: string;
-  ssnLast4: string;
+  ssn: string;
   emergencyName: string;
   emergencyRelationship: string;
   emergencyPhone: string;
@@ -85,7 +86,7 @@ function EmployeeInformationWIForm() {
     position: '',
     startDate: getToday(),
     dob: '',
-    ssnLast4: '',
+    ssn: '',
     emergencyName: '',
     emergencyRelationship: '',
     emergencyPhone: '',
@@ -110,7 +111,7 @@ function EmployeeInformationWIForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       alert('Please enter both first and last name.');
       return false;
@@ -123,14 +124,46 @@ function EmployeeInformationWIForm() {
       alert('Please provide a phone number and email.');
       return false;
     }
+    if (!form.ssn.trim()) {
+      alert('Please provide your Social Security Number.');
+      return false;
+    }
 
     setSaving(true);
     try {
       const nextForm = { ...form, startDate: getToday() };
       setForm(nextForm);
+
+      // Save to localStorage as backup
       localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(nextForm));
-      setTimeout(() => setSaving(false), 300);
-      alert('Employee information saved.');
+
+      // Save to database with encrypted SSN
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('You must be logged in to save employee information.');
+        setSaving(false);
+        return false;
+      }
+
+      const response = await fetch('/api/employee-information/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify(nextForm)
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Save error:', error);
+        alert('Failed to save employee information to database.');
+        setSaving(false);
+        return false;
+      }
+
+      setSaving(false);
+      alert('Employee information saved successfully.');
       return true;
     } catch (e) {
       console.error('Save error:', e);
@@ -141,7 +174,7 @@ function EmployeeInformationWIForm() {
   };
 
   const handleContinue = async () => {
-    const ok = handleSave();
+    const ok = await handleSave();
     if (ok) {
       router.push('/payroll-packet-wi/form-viewer?form=notice-to-employee');
     }
@@ -149,6 +182,16 @@ function EmployeeInformationWIForm() {
 
   const handleBack = () => {
     router.push('/payroll-packet-wi/form-viewer?form=time-of-hire');
+  };
+
+  const handleLogout = async () => {
+    try {
+      await supabase.auth.signOut();
+      sessionStorage.clear();
+      router.push('/login');
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
   const inputStyle = {
@@ -178,6 +221,26 @@ function EmployeeInformationWIForm() {
           padding: '32px',
         }}
       >
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '16px' }}>
+          <button
+            type="button"
+            onClick={handleLogout}
+            style={{
+              padding: '8px 16px',
+              backgroundColor: '#f5f5f5',
+              color: '#333',
+              border: '1px solid #ddd',
+              borderRadius: '6px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              fontSize: '14px',
+            }}
+            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+          >
+            Logout
+          </button>
+        </div>
         <div style={{ marginBottom: '32px', textAlign: 'center' }}>
           <h1 style={{ fontSize: '28px', fontWeight: 'bold', color: '#1a1a1a', marginBottom: '8px' }}>
             Employee Information
@@ -242,14 +305,14 @@ function EmployeeInformationWIForm() {
             />
           </div>
           <div>
-            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Last 4 of SSN</label>
+            <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>Social Security Number <span style={{ color: '#d32f2f' }}>*</span></label>
             <input
               style={inputStyle}
               type="text"
-              maxLength={4}
-              value={form.ssnLast4}
-              onChange={(e) => updateField('ssnLast4', e.target.value.replace(/[^0-9]/g, ''))}
-              placeholder="####"
+              maxLength={11}
+              value={form.ssn}
+              onChange={(e) => updateField('ssn', e.target.value.replace(/[^0-9-]/g, ''))}
+              placeholder="XXX-XX-XXXX"
             />
           </div>
         </div>

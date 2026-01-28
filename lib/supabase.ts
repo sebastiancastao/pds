@@ -1,4 +1,4 @@
-// PDS Time keeping System - Supabase Client Configuration
+// PDS Time Keeping System - Supabase Client Configuration
 // Secure database connection with Row Level Security (RLS)
 // SQL Injection Prevention & Security Hardening
 
@@ -57,7 +57,7 @@ export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
   },
   global: {
     headers: {
-      'x-application-name': 'PDS Time keeping',
+      'x-application-name': 'PDS Time Keeping ',
       'x-client-info': 'pds-web-client',
     },
   },
@@ -140,7 +140,7 @@ export const createServerClient = (): SupabaseClient<Database> => {
     },
     global: {
       headers: {
-        'x-application-name': 'PDS Time keeping Server',
+        'x-application-name': 'PDS Time Keeping Server',
         'x-client-info': 'pds-server-client',
       },
     },

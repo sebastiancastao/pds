@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time keeping System now supports temporary passwords for secure user onboarding and password resets. This feature ensures users change their passwords on first login and provides time-based password expiration.
+The PDS Time Keeping System now supports temporary passwords for secure user onboarding and password resets. This feature ensures users change their passwords on first login and provides time-based password expiration.
 
 ---
 

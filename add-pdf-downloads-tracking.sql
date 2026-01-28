@@ -1,5 +1,5 @@
 -- =====================================================
--- CREATE PDF DOWNLOADS keeping TABLE
+-- CREATE PDF DOWNLOADS keepingTABLE
 -- =====================================================
 -- This table tracks when background check PDFs are downloaded
 

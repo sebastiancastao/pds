@@ -68,7 +68,7 @@ profiles table:
 
 1. **You're at Step 1** - You see a QR code and a secret
 2. **Open your authenticator app** (Google Authenticator, Authy, etc.)
-3. **If you already have a "PDS Time keeping" entry:**
+3. **If you already have a "PDS Time Keeping " entry:**
    - ❌ Delete it (it's old and won't work)
    - ✅ Scan the NEW QR code shown on the screen
 4. **If you don't have an entry yet:**

@@ -167,7 +167,7 @@ If you encounter issues:
 
 ## 🎉 You're All Set!
 
-Once you complete the steps above, your PDS Time keeping System will be:
+Once you complete the steps above, your PDS Time Keeping System will be:
 - ✅ Securely connected to Supabase
 - ✅ Protected with enterprise-grade security
 - ✅ Compliant with SOC2 standards

@@ -9,6 +9,26 @@ export async function GET() {
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     const form = pdfDoc.getForm();
+    const firstPage = pdfDoc.getPages()[0];
+
+    try {
+      const dateFieldName = 'Employee Date';
+      let dateField;
+      try {
+        dateField = form.getTextField(dateFieldName);
+      } catch {
+        dateField = form.createTextField(dateFieldName);
+      }
+      dateField.addToPage(firstPage, {
+        x: 460,
+        y: 120,
+        width: 120,
+        height: 14,
+        borderWidth: 0,
+      });
+    } catch (error) {
+      console.warn('[FW4 WI] Failed to add Employee Date field', error);
+    }
 
     const fieldsToRemove = [
       'topmostSubform[0].Page1[0].f1_13[0]', // Employer's name and address

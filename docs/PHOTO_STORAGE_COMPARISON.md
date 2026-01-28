@@ -1,7 +1,7 @@
 # Profile Photo Storage Approaches Comparison
 
 ## Overview
-This document compares two approaches for storing profile photos in the PDS Employee Time keeping System:
+This document compares two approaches for storing profile photos in the PDS Employee Time Keeping System:
 1. **URL Reference Storage** (Cloud Storage)
 2. **Binary Data Storage** (Database Storage)
 
@@ -190,7 +190,7 @@ Total: ~$5/month
 
 ## Final Recommendation
 
-For the PDS Employee Time keeping System, I recommend the **URL Reference Storage** approach because:
+For the PDS Employee Time Keeping System, I recommend the **URL Reference Storage** approach because:
 
 1. **Scalability**: System designed for growth
 2. **Performance**: Maintains fast database queries

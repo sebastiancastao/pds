@@ -1,10 +1,10 @@
-# PDS Time keeping System
+# PDS Time Keeping System
 
-A comprehensive employee time keeping and worker availability management system built with Next.js for PDS Vendor and CWT Trailers divisions.
+A comprehensive employee Time Keeping and worker availability management system built with Next.js for PDS Vendor and CWT Trailers divisions.
 
 ## 🚀 Features
 
-### Module 1 – Onboarding, Availability & Time keeping
+### Module 1 – Onboarding, Availability & Time Keeping 
 - Secure electronic onboarding with encrypted PII storage
 - Employee-driven clock in/out with QR code or PIN
 - Break attestation for CA/state wage law compliance
@@ -32,7 +32,7 @@ A comprehensive employee time keeping and worker availability management system 
 ## 🔐 Security & Compliance
 
 - **SOC2 Compliant** - Hosted on Vercel with enterprise security
-- **FLSA Certified** - Employee self-entry time keeping
+- **FLSA Certified** - Employee self-entry Time Keeping 
 - **PII Encrypted** - AES-256 encryption at rest, TLS 1.2+ in transit
 - **Audit Trails** - Immutable logs for all critical operations
 - **2FA Required** - Two-factor authentication for admin access
@@ -110,7 +110,7 @@ PDS/
 Primary staffing and event services with full access to all 4 modules
 
 ### CWT Trailers
-Trailer rental division with Module 1 (time keeping) access only
+Trailer rental division with Module 1 (Time Keeping ) access only
 
 ## 📅 Development Timeline
 

@@ -11,7 +11,7 @@ Date: 2025-10-28
 - **Features**:
   - Tracks: created, viewed, edited, signed, reviewed, certified actions
   - Stores: user ID, IP address, user agent, device fingerprint, session ID
-  - Field-level change keeping (old value → new value)
+  - Field-level change keeping(old value → new value)
   - Immutable records (no updates or deletes allowed)
   - RLS policies for secure access
   - Indexed for fast queries

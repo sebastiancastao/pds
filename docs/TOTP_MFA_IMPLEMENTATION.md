@@ -2,7 +2,7 @@
 
 ## Overview
 
-The PDS Time keeping System now uses **TOTP (Time-based One-Time Password)** via authenticator apps as the primary MFA method, with **email verification codes** as a fallback option and **backup codes** for emergency access.
+The PDS Time Keeping System now uses **TOTP (Time-based One-Time Password)** via authenticator apps as the primary MFA method, with **email verification codes** as a fallback option and **backup codes** for emergency access.
 
 ## Architecture
 
@@ -137,7 +137,7 @@ mfa_login_code_expires_at   TIMESTAMP -- Email code expiration
 
 ### Compliance
 - **SOC2 Ready**: Meets enterprise security requirements
-- **FLSA Compliant**: Maintains employee-driven time keeping
+- **FLSA Compliant**: Maintains employee-driven Time Keeping 
 - **Audit Trail**: All MFA events are logged
 - **PII Protection**: Secure handling of authentication data
 

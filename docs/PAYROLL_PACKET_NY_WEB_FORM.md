@@ -97,7 +97,7 @@ The web form includes **all** fields from the PDF plus additional operational da
 **`database/migrations/008_add_payroll_packets_ny_table.sql`**
 - Complete schema for all form fields
 - Row Level Security (RLS) policies
-- Status keeping (pending_review, approved, needs_revision)
+- Status keeping(pending_review, approved, needs_revision)
 - HR review workflow support
 - Indexes for performance
 

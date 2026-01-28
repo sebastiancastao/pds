@@ -26,7 +26,7 @@ This document summarizes all the changes made to the Background Checks page and 
 
 ---
 
-## 3. PDF Download keeping ✅
+## 3. PDF Download keeping✅
 **What Changed**: System now tracks when PDFs are downloaded and shows visual indicators.
 
 **New Files**:
@@ -98,7 +98,7 @@ All features respect existing role-based access:
   - View the Background Checks page
   - Download PDFs
   - Export to Excel
-  - See download keeping data
+  - See download keepingdata
 
 RLS policies are in place to ensure data security.
 

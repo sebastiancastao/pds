@@ -14,6 +14,7 @@ export default function OnboardingPendingPage() {
   const [userId, setUserId] = useState<string>('');
   const [requestingEdit, setRequestingEdit] = useState(false);
   const [editRequestSent, setEditRequestSent] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
     checkOnboardingStatus();
@@ -71,8 +72,8 @@ export default function OnboardingPendingPage() {
         }
 
         if (onboardingResult.approved) {
-          // Onboarding has been approved! Redirect to time keeping
-          console.log('[Onboarding Pending] Onboarding approved, redirecting to time keeping');
+          // Onboarding has been approved! Redirect to Time Keeping 
+          console.log('[Onboarding Pending] Onboarding approved, redirecting to Time Keeping ');
           router.replace('/time-keeping');
           return;
         }
@@ -139,6 +140,128 @@ export default function OnboardingPendingPage() {
       alert('An error occurred while sending your request. Please try again.');
     } finally {
       setRequestingEdit(false);
+    }
+  };
+
+  const downloadFromUrl = (url: string, filename: string) => {
+    try {
+      const anchor = document.createElement('a');
+      anchor.style.display = 'none';
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.rel = 'noopener';
+      document.body.appendChild(anchor);
+
+      requestAnimationFrame(() => {
+        anchor.click();
+        setTimeout(() => {
+          if (anchor.parentNode) {
+            document.body.removeChild(anchor);
+          }
+          window.URL.revokeObjectURL(url);
+        }, 100);
+      });
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    try {
+      const nav: any = typeof window !== 'undefined' ? window.navigator : null;
+      if (nav?.msSaveOrOpenBlob) {
+        nav.msSaveOrOpenBlob(blob, filename);
+        return;
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      downloadFromUrl(url, filename);
+    } catch (error) {
+      console.error('Error downloading blob:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!userId) {
+      alert('Unable to determine your account right now. Please refresh and try again.');
+      return;
+    }
+
+    if (isDownloading) {
+      return;
+    }
+
+    setIsDownloading(true);
+
+    const fallbackNameParts = [userFirstName, userLastName].filter(Boolean);
+    const fallbackName =
+      (fallbackNameParts.join(' ') || userEmail || 'onboarding_user').replace(/\s+/g, '_');
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
+
+      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+        },
+        signal: controller.signal,
+        cache: 'no-store',
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        const text = await response.text();
+        let message = 'Failed to download onboarding documents';
+        try {
+          const parsed = JSON.parse(text);
+          message = parsed.error || message;
+        } catch {
+          if (text) {
+            message = text;
+          }
+        }
+        throw new Error(message);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+
+      if (!blob || blob.size === 0) {
+        throw new Error('Received an empty PDF file');
+      }
+
+      let filename = `${fallbackName}_Onboarding_Documents.pdf`;
+
+      const contentDisposition = response.headers.get('Content-Disposition');
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename\*=([^;]+)/i) ||
+                      contentDisposition.match(/filename="?([^"]+)"?/i);
+
+        if (match && match[1]) {
+          filename = match[1].trim().replace(/['"]/g, '');
+        }
+      }
+
+      if (!filename.toLowerCase().endsWith('.pdf')) {
+        filename = `${filename}.pdf`;
+      }
+
+      downloadBlob(blob, filename);
+      alert('Your onboarding documents are downloading. This may take a few moments for large submissions.');
+    } catch (err: any) {
+      console.error('Error downloading PDF:', err);
+      if (err?.name === 'AbortError') {
+        alert('Download timed out after 5 minutes. Please try again or contact support if the issue persists.');
+      } else {
+        alert(`Failed to download onboarding documents: ${err?.message || 'Unknown error'}`);
+      }
+    } finally {
+      setIsDownloading(false);
     }
   };
 
@@ -233,7 +356,7 @@ export default function OnboardingPendingPage() {
                 <svg className="w-5 h-5 mr-2 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                 </svg>
-                Once approved, you can access the time keeping system
+                Once approved, you can access the Time Keeping system
               </li>
             </ul>
           </div>
@@ -282,6 +405,30 @@ export default function OnboardingPendingPage() {
               </button>
             </div>
           )}
+
+          <div className="mb-6">
+            <button
+              onClick={handleDownloadPdf}
+              disabled={isDownloading}
+              className="w-full bg-white border border-gray-200 text-gray-900 hover:bg-gray-50 disabled:opacity-60 focus:outline-none focus:ring-2 focus:ring-indigo-500 rounded-lg py-3 px-4 transition duration-150 flex items-center justify-center gap-2"
+            >
+              {isDownloading ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                  Preparing download...
+                </>
+              ) : (
+                <>
+                  <svg className="w-5 h-5 text-gray-700" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="7 10 12 15 17 10" />
+                    <line x1="12" y1="15" x2="12" y2="3" />
+                  </svg>
+                  Download my onboarding documents
+                </>
+              )}
+            </button>
+          </div>
 
           {/* Actions */}
           <div className="flex flex-col sm:flex-row gap-3">

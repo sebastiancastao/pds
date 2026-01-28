@@ -12,6 +12,13 @@ interface OnboardingStatus {
   updated_at: string;
 }
 
+interface FormProgress {
+  form_name: string;
+  updated_at: string;
+  position: number;
+  display_name: string;
+}
+
 interface User {
   id: string;
   user_id: string;
@@ -31,16 +38,23 @@ interface User {
   pdf_latest_update?: string | null;
   pdf_downloaded: boolean;
   pdf_downloaded_at: string | null;
+  latest_form_progress: FormProgress | null;
+  forms_completed: number;
+  total_forms: number;
+  completed_forms: string[];
 }
 
 export default function OnboardingPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
+  const [filterForm, setFilterForm] = useState<string>('all');
+  const [showOnlyWithProgress, setShowOnlyWithProgress] = useState(false);
 
   // Current user's role (from users table)
   const [myRole, setMyRole] = useState<string | null>(null);
@@ -172,22 +186,46 @@ export default function OnboardingPage() {
     }
   };
 
-  const downloadBlob = (blob: Blob, filename: string) => {
-    const nav: any = typeof window !== 'undefined' ? window.navigator : null;
-    if (nav?.msSaveOrOpenBlob) {
-      nav.msSaveOrOpenBlob(blob, filename);
-      return;
+  const downloadFromUrl = (url: string, filename: string) => {
+    try {
+      const a = document.createElement('a');
+      a.style.display = 'none';
+      a.href = url;
+      a.download = filename;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+
+      requestAnimationFrame(() => {
+        a.click();
+        setTimeout(() => {
+          if (a.parentNode) {
+            document.body.removeChild(a);
+          }
+          window.URL.revokeObjectURL(url);
+        }, 100);
+      });
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
+  };
 
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadBlob = (blob: Blob, filename: string) => {
+    try {
+      // Handle IE/Edge legacy
+      const nav: any = typeof window !== 'undefined' ? window.navigator : null;
+      if (nav?.msSaveOrOpenBlob) {
+        nav.msSaveOrOpenBlob(blob, filename);
+        return;
+      }
 
-    setTimeout(() => window.URL.revokeObjectURL(url), 1000);
+      // Create object URL and download
+      const url = window.URL.createObjectURL(blob);
+      downloadFromUrl(url, filename);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
   };
 
 const sanitizeFilename = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
@@ -263,33 +301,78 @@ const handleExportToExcel = async () => {
   };
 
   const handleDownloadPDF = async (userId: string, userName: string) => {
-    const downloadStart = Date.now();
-    const elapsedSeconds = () => ((Date.now() - downloadStart) / 1000).toFixed(1);
-    let longWaitTimer: ReturnType<typeof setTimeout> | null = null;
+    // Prevent multiple simultaneous downloads
+    if (downloadingPdf) {
+      alert('Another download is in progress. Please wait.');
+      return;
+    }
+
+    setDownloadingPdf(userId);
 
     try {
-      console.log(`[PDF_DOWNLOAD] Starting download for ${userName} (${userId})`);
-      longWaitTimer = setTimeout(() => {
-        console.warn(`[PDF_DOWNLOAD] Still waiting for PDF generation after ${elapsedSeconds()}s`);
-      }, 30000);
-
+      console.log('[PDF Download] Starting download for user:', userId);
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=form_signatures`, {
+
+      // Create AbortController with a 5-minute timeout to match server maxDuration
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        console.log('[PDF Download] Request timed out after 5 minutes');
+        controller.abort();
+      }, 300000); // 5 minutes
+
+      console.log('[PDF Download] Fetching PDF from API...');
+      const startTime = Date.now();
+
+      const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
+        },
+        signal: controller.signal,
+        cache: 'no-store'
       });
 
-      console.log(`[PDF_DOWNLOAD] Response received after ${elapsedSeconds()}s (status ${response.status})`);
+      clearTimeout(timeoutId);
+      const fetchTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`[PDF Download] Response received in ${fetchTime}s, status:`, response.status);
 
       if (!response.ok) {
-        const data = await response.json();
-        console.error('[PDF_DOWNLOAD] Error payload:', data);
-        throw new Error(data.error || 'Failed to download PDF');
+        const errorText = await response.text();
+        let errorMessage = 'Failed to download PDF';
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        throw new Error(errorMessage);
       }
 
-      const blob = await response.blob();
-      console.log(`[PDF_DOWNLOAD] Blob ready (${blob.size} bytes) after ${elapsedSeconds()}s`);
+      // Get the merged PDF data
+      console.log('[PDF Download] Reading response data...');
+      console.log('[PDF Download] Content-Type:', response.headers.get('Content-Type'));
+      const contentLength = response.headers.get('Content-Length');
+      console.log('[PDF Download] Content-Length:', contentLength, contentLength ? `(${(parseInt(contentLength) / 1024 / 1024).toFixed(2)} MB)` : '');
+
+      let blob;
+      try {
+        // Try using arrayBuffer which can be more memory-efficient for large files
+        console.log('[PDF Download] Reading as ArrayBuffer...');
+        const arrayBuffer = await response.arrayBuffer();
+        console.log('[PDF Download] ArrayBuffer size:', arrayBuffer.byteLength, 'bytes', `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+
+        // Convert ArrayBuffer to Blob
+        blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      } catch (dataError) {
+        console.error('[PDF Download] Error reading response data:', dataError);
+        throw new Error(`Failed to read PDF data: ${dataError instanceof Error ? dataError.message : 'Unknown error'}. The PDF might be too large for your browser to handle.`);
+      }
+
+      // Validate blob
+      if (!blob || blob.size === 0) {
+        throw new Error('Received empty PDF file');
+      }
+
+      console.log('[PDF Download] PDF blob created, size:', blob.size, 'bytes', `(${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
 
       const contentDisposition =
         response.headers.get('Content-Disposition') || response.headers.get('content-disposition');
@@ -297,6 +380,27 @@ const handleExportToExcel = async () => {
       const headerFilename = extractFilenameFromContentDisposition(contentDisposition);
       const filename = ensurePdfExtension(headerFilename || fallbackFilename);
 
+      if (contentDisposition) {
+        console.log('[PDF Download] Content-Disposition:', contentDisposition);
+
+        // Try to extract filename from Content-Disposition header
+        // Handles both quoted and unquoted filenames
+        const filenameMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) ||
+                              contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].trim();
+          console.log('[PDF Download] Extracted filename:', filename);
+        }
+      }
+
+      // Ensure the filename has .pdf extension
+      if (!filename.toLowerCase().endsWith('.pdf')) {
+        console.warn('[PDF Download] Filename missing .pdf extension, adding it:', filename);
+        filename = filename + '.pdf';
+      }
+
+      // Download the merged PDF
       downloadBlob(blob, filename);
       console.log(`[PDF_DOWNLOAD] Download completed in ${elapsedSeconds()}s`);
 
@@ -310,12 +414,15 @@ const handleExportToExcel = async () => {
 
       alert(`Successfully downloaded onboarding documents for ${userName}`);
     } catch (err: any) {
-      console.error(`[PDF_DOWNLOAD] Failed after ${elapsedSeconds()}s`, err);
-      alert(`Failed to download PDF: ${err.message}`);
-    } finally {
-      if (longWaitTimer) {
-        clearTimeout(longWaitTimer);
+      console.error('Error downloading PDF:', err);
+
+      if (err.name === 'AbortError') {
+        alert(`Download timed out after 5 minutes. The PDF may be too large or the server is taking too long to process it. Please try again or contact support.`);
+      } else {
+        alert(`Failed to download PDF: ${err.message}`);
       }
+    } finally {
+      setDownloadingPdf(null);
     }
   };
 
@@ -337,6 +444,19 @@ const handleExportToExcel = async () => {
         if (!user.has_temporary_password) return false;
       } else if (filterPassword === 'permanent') {
         if (user.has_temporary_password) return false;
+      }
+
+      if (filterForm === 'no_progress') {
+        if (user.latest_form_progress) return false;
+      } else if (filterForm !== 'all') {
+        if (!user.latest_form_progress || user.latest_form_progress.form_name !== filterForm) return false;
+      }
+
+      // Filter to show only users with progress (must have form progress with position > 0)
+      if (showOnlyWithProgress) {
+        if (!user.latest_form_progress || user.latest_form_progress.position === 0) {
+          return false;
+        }
       }
 
       return true;
@@ -380,6 +500,15 @@ const handleExportToExcel = async () => {
   const temporaryPasswordCount = users.filter(u => u.has_temporary_password).length;
   const backgroundCompletedCount = users.filter(u => u.background_check_completed).length;
   const pdfSubmittedCount = users.filter(u => u.has_submitted_pdf).length;
+
+  // Get unique form names for the filter dropdown
+  const uniqueFormNames = Array.from(
+    new Set(
+      users
+        .filter(u => u.latest_form_progress?.form_name)
+        .map(u => u.latest_form_progress!.form_name)
+    )
+  ).sort();
 
   // Allow editing only for HR or Exec
   const canEditOnboarding = (myRole?.trim().toLowerCase() === 'hr') || (myRole?.trim().toLowerCase() === 'exec');
@@ -457,7 +586,7 @@ const handleExportToExcel = async () => {
 
         {/* Filters */}
         <div className="bg-white rounded-lg shadow mb-6 p-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label htmlFor="search" className="block text-sm font-medium text-gray-700 mb-1">
                 Search Users
@@ -501,6 +630,37 @@ const handleExportToExcel = async () => {
                 <option value="permanent">Permanent</option>
               </select>
             </div>
+            <div>
+              <label htmlFor="filterForm" className="block text-sm font-medium text-gray-700 mb-1">
+                Form Progress
+              </label>
+              <select
+                id="filterForm"
+                value={filterForm}
+                onChange={(e) => setFilterForm(e.target.value)}
+                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="all">All Forms</option>
+                <option value="no_progress">No Progress</option>
+                {uniqueFormNames.map((formName) => (
+                  <option key={formName} value={formName}>
+                    {formName.replace(/_/g, ' ').replace(/\.pdf$/i, '')}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center">
+            <input
+              type="checkbox"
+              id="showOnlyWithProgress"
+              checked={showOnlyWithProgress}
+              onChange={(e) => setShowOnlyWithProgress(e.target.checked)}
+              className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded cursor-pointer"
+            />
+            <label htmlFor="showOnlyWithProgress" className="ml-2 text-sm text-gray-700 cursor-pointer">
+              Show only users with form progress
+            </label>
           </div>
         </div>
 
@@ -519,7 +679,7 @@ const handleExportToExcel = async () => {
                 <tr>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">User Name</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Email</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Role</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Form Progress</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Password Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Onboarding Status</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">PDF Submitted</th>
@@ -545,9 +705,67 @@ const handleExportToExcel = async () => {
                         <div className="text-sm text-gray-500">{user.email}</div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
-                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-purple-100 text-purple-800 capitalize">
-                          {user.role}
-                        </span>
+                        <div className="min-w-[180px]">
+                          {user.latest_form_progress ? (
+                            <>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium text-gray-700">
+                                  Step {user.latest_form_progress.position}/{user.total_forms}
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {Math.round((user.latest_form_progress.position / user.total_forms) * 100)}%
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div
+                                  className={`h-2 rounded-full transition-all ${
+                                    user.latest_form_progress.position === user.total_forms
+                                      ? 'bg-green-500'
+                                      : 'bg-indigo-500'
+                                  }`}
+                                  style={{ width: `${(user.latest_form_progress.position / user.total_forms) * 100}%` }}
+                                />
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1 truncate" title={user.latest_form_progress.display_name}>
+                                {user.latest_form_progress.display_name}
+                              </div>
+                              <div className="text-xs text-gray-400">
+                                {new Date(user.latest_form_progress.updated_at).toLocaleDateString()}
+                              </div>
+                              {user.completed_forms && user.completed_forms.length > 0 && (
+                                <details className="mt-1">
+                                  <summary className="text-xs text-indigo-600 cursor-pointer hover:text-indigo-800">
+                                    View all {user.completed_forms.length} completed forms
+                                  </summary>
+                                  <ul className="mt-1 text-xs text-gray-500 pl-2 space-y-0.5 max-h-32 overflow-y-auto">
+                                    {user.completed_forms.map((formName, idx) => (
+                                      <li key={idx} className="truncate" title={formName}>
+                                        • {formName.replace(/^[a-z]{2}-/, '').replace(/-/g, ' ')}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium text-gray-500">
+                                  Not started
+                                </span>
+                                <span className="text-xs text-gray-400">
+                                  0%
+                                </span>
+                              </div>
+                              <div className="w-full bg-gray-200 rounded-full h-2">
+                                <div className="h-2 rounded-full bg-gray-300" style={{ width: '0%' }} />
+                              </div>
+                              <div className="text-xs text-gray-400 mt-1">
+                                No forms completed
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap">
                         {user.has_temporary_password ? (
@@ -616,14 +834,27 @@ const handleExportToExcel = async () => {
                           {user.has_submitted_pdf && (
                             <button
                               onClick={() => handleDownloadPDF(user.user_id, user.full_name)}
+                              disabled={downloadingPdf === user.user_id}
                               className={`px-2 py-1 text-xs font-medium rounded border ${
-                                user.pdf_downloaded
+                                downloadingPdf === user.user_id
+                                  ? 'text-gray-400 bg-gray-50 border-gray-300 cursor-wait'
+                                  : user.pdf_downloaded
                                   ? 'text-purple-600 hover:text-purple-800 hover:bg-purple-50 border-purple-300 bg-purple-50'
                                   : 'text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300'
-                              }`}
-                              title={user.pdf_downloaded ? 'Downloaded - Click to download again' : 'Download onboarding documents'}
+                              } disabled:opacity-50`}
+                              title={
+                                downloadingPdf === user.user_id
+                                  ? 'Generating PDF... This may take up to 5 minutes for large documents'
+                                  : user.pdf_downloaded
+                                  ? 'Downloaded - Click to download again'
+                                  : 'Download onboarding documents'
+                              }
                             >
-                              {user.pdf_downloaded ? 'Downloaded ✓' : 'Download Docs'}
+                              {downloadingPdf === user.user_id
+                                ? 'Generating PDF...'
+                                : user.pdf_downloaded
+                                ? 'Downloaded ✓'
+                                : 'Download Docs'}
                             </button>
                           )}
                         </div>

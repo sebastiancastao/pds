@@ -114,6 +114,7 @@ export default function Home() {
       console.log('[DEBUG] Home - Background Checker role detected, redirecting to /background-checks');
       router.push('/background-checks');
       return;
+      
     }
 
     console.log('[DEBUG] Home - All checks passed, showing authenticated home page');

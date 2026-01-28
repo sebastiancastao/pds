@@ -6,7 +6,7 @@
 -- Add New Columns to users Table
 -- ============================================
 
--- Add failed login keeping (if not exists)
+-- Add failed login keeping(if not exists)
 DO $$ 
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
@@ -226,7 +226,7 @@ WHERE failed_login_attempts IS NULL;
 -- ALTER TABLE public.users DROP COLUMN IF EXISTS account_locked_until;
 
 COMMENT ON TABLE public.sessions IS 'User session management with secure token storage';
-COMMENT ON TABLE public.password_resets IS 'Password reset token keeping with expiration';
+COMMENT ON TABLE public.password_resets IS 'Password reset token keepingwith expiration';
 COMMENT ON COLUMN public.profiles.password_hash IS 'Bcrypt hashed password (12 rounds)';
 COMMENT ON COLUMN public.profiles.mfa_secret IS 'TOTP secret for multi-factor authentication';
 COMMENT ON COLUMN public.profiles.backup_codes IS 'Array of hashed backup codes for MFA recovery';

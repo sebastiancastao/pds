@@ -1,4 +1,4 @@
-# 🔐 PDS Time keeping System - Security Implementation Summary
+# 🔐 PDS Time Keeping System - Security Implementation Summary
 
 ## Status: ⚠️ Development in Progress
 

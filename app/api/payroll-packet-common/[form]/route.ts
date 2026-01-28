@@ -130,7 +130,7 @@ async function createPlaceholderPdf(formKey: FormKey, stateCode: string) {
 }
 
 function readStaticPdf(fileName: string) {
-  const pdfPath = join(process.cwd(), fileName);
+  const pdfPath = join(process.cwd(), 'pdfs', fileName);
   return readFileSync(pdfPath);
 }
 

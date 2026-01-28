@@ -2,8 +2,8 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'PDS Time keeping System',
-  description: 'Employee time keeping and worker availability management system for PDS',
+  title: 'PDS Time Keeping System',
+  description: 'Employee Time Keeping and worker availability management system for PDS',
 };
 
 export default function RootLayout({

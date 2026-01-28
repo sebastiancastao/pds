@@ -1,6 +1,6 @@
 # Vendor Background Check System Setup
 
-This guide will help you set up and use the vendor background check keeping system.
+This guide will help you set up and use the vendor background check keepingsystem.
 
 ## Overview
 

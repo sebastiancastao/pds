@@ -1,4 +1,4 @@
--- PDS Time keeping System - Database Schema
+-- PDS Time Keeping System - Database Schema
 -- Supabase PostgreSQL with Row Level Security (RLS)
 -- AES-256 Encryption for PII fields
 
@@ -154,7 +154,7 @@ CREATE INDEX idx_audit_logs_resource ON public.audit_logs(resource_type, resourc
 CREATE INDEX idx_audit_logs_created_at ON public.audit_logs(created_at DESC);
 
 -- ============================================
--- Time keeping Table
+-- Time Keeping Table
 -- ============================================
 
 CREATE TABLE public.time_entries (

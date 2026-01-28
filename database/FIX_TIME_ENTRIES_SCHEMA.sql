@@ -3,8 +3,8 @@
 -- RUN THIS IN SUPABASE SQL EDITOR
 -- =====================================================
 -- This migration fixes the time_entries schema to support:
--- 1. Event keeping (event_id column)
--- 2. Meal break keeping (meal_start, meal_end actions)
+-- 1. Event keeping(event_id column)
+-- 2. Meal break keeping(meal_start, meal_end actions)
 -- 3. Proper column names for event timesheet queries
 
 -- ============================================================

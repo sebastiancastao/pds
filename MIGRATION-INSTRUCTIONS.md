@@ -1,4 +1,4 @@
-# PDF Download keeping Migration Instructions
+# PDF Download keepingMigration Instructions
 
 ## Overview
 This migration adds functionality to track when background check PDFs are downloaded and changes the download button color from green to purple once downloaded.
@@ -55,7 +55,7 @@ After running the migration, verify that the table was created:
 - ✅ Visual indicator (purple button) for downloaded PDFs
 - ✅ Persists across page refreshes
 - ✅ RLS policies ensure only admin/HR/exec can track downloads
-- ✅ Download keeping doesn't break if migration fails
+- ✅ Download keepingdoesn't break if migration fails
 - ✅ **Excel Export**: Export all background check data to Excel with submission status
 
 ## Excel Export Feature:

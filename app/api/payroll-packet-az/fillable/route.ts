@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, PDFTextField, PDFCheckBox, rgb, degrees, PDFName, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFTextField, PDFCheckBox, rgb, degrees, PDFName, PDFNumber, PDFRef } from 'pdf-lib';
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -47,6 +47,57 @@ export async function GET() {
       if (widgets.length > 0) {
         const widget = widgets[widgets.length - 1];
         widget.dict.set(PDFName.of('R'), PDFNumber.of(90));
+      }
+    };
+
+    const removeFieldFromPdf = (fieldName: string) => {
+      try {
+        const field = form.getField(fieldName) as any;
+        const acroField = field?.acroField;
+        const widgets = acroField?.getWidgets?.() || [];
+        const pagesWithWidgets = new Set<any>();
+
+        for (const widget of widgets) {
+          const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+          let page = undefined;
+          const pageRef = widget.P?.();
+          if (pageRef) {
+            page = pdfDoc.getPages().find((p) => p.ref === pageRef);
+          }
+          if (!page && widgetRef && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+            page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+          }
+          if (page && widgetRef) {
+            page.node.removeAnnot(widgetRef);
+            pagesWithWidgets.add(page);
+          }
+          if (widgetRef) {
+            (pdfDoc as any).context.delete(widgetRef);
+          }
+        }
+
+        const acroForm = (form as any).acroForm;
+        if (acroForm?.removeField && acroField) {
+          acroForm.removeField(acroField);
+        }
+
+        const fieldKids = acroField?.normalizedEntries?.().Kids;
+        if (fieldKids) {
+          const kidsCount = fieldKids.size();
+          for (let i = 0; i < kidsCount; i++) {
+            const kid = fieldKids.get(i);
+            if (kid instanceof PDFRef) {
+              (pdfDoc as any).context.delete(kid);
+            }
+          }
+        }
+
+        if (field?.ref) {
+          pagesWithWidgets.forEach((page: any) => page.node.removeAnnot(field.ref));
+          (pdfDoc as any).context.delete(field.ref);
+        }
+      } catch (error) {
+        console.warn(`[PAYROLL-PACKET-AZ] Field not found or removal failed: ${fieldName}`, error);
       }
     };
 
@@ -126,10 +177,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    OneCheckBox.enableRequired();
 
     const pointFiveCheckBox = form.createCheckBox('pointFiveCheckBox ');
-    addRotatedField(pointFiveCheckBox , {
+    addRotatedField(pointFiveCheckBox, {
       x: 64,
       y: height - 220,
       width: 10,
@@ -137,10 +187,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    pointFiveCheckBox.enableRequired();
 
     const onePercentCheckBox = form.createCheckBox('onePercentCheckBox');
-    addRotatedField(onePercentCheckBox , {
+    addRotatedField(onePercentCheckBox, {
       x: 136,
       y: height - 220,
       width: 10,
@@ -148,10 +197,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    onePercentCheckBox.enableRequired();
 
     const onePointFiveCheckBox = form.createCheckBox('onePointFiveCheckBox');
-    addRotatedField(onePointFiveCheckBox , {
+    addRotatedField(onePointFiveCheckBox, {
       x: 208,
       y: height - 220,
       width: 10,
@@ -159,10 +207,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    onePointFiveCheckBox.enableRequired();
 
     const twoPercentCheckBox = form.createCheckBox('twoPercentCheckBox');
-    addRotatedField(twoPercentCheckBox , {
+    addRotatedField(twoPercentCheckBox, {
       x: 280,
       y: height - 220,
       width: 10,
@@ -170,10 +217,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    twoPercentCheckBox.enableRequired();
 
     const twoPointFiveCheckBox = form.createCheckBox('twoPointFiveCheckBox');
-    addRotatedField(twoPointFiveCheckBox , {
+    addRotatedField(twoPointFiveCheckBox, {
       x: 352,
       y: height - 220,
       width: 10,
@@ -181,10 +227,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    twoPointFiveCheckBox.enableRequired();
 
     const threePercentCheckBox = form.createCheckBox('threePercentCheckBox');
-    addRotatedField(threePercentCheckBox , {
+    addRotatedField(threePercentCheckBox, {
       x: 424,
       y: height - 220,
       width: 10,
@@ -192,10 +237,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    threePercentCheckBox.enableRequired();
 
     const threePointFiveCheckBox = form.createCheckBox('threePointFiveCheckBox');
-    addRotatedField(threePointFiveCheckBox , {
+    addRotatedField(threePointFiveCheckBox, {
       x: 496,
       y: height - 220,
       width: 10,
@@ -203,10 +247,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    threePointFiveCheckBox.enableRequired();
 
     const extraAmmountCheckBox = form.createCheckBox('extraAmmountCheckBox');
-    addRotatedField(extraAmmountCheckBox , {
+    addRotatedField(extraAmmountCheckBox, {
       x: 64,
       y: height - 240,
       width: 10,
@@ -214,10 +257,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    extraAmmountCheckBox.enableRequired();
 
     const extraAmmount = form.createTextField('extraAmmount');
-    addRotatedField(extraAmmount , {
+    addRotatedField(extraAmmount, {
       x: 490,
       y: height - 240,
       width: 90,
@@ -225,21 +267,9 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    extraAmmount.enableRequired();
-
-    const signature= form.createTextField('signature');
-    addRotatedField(signature , {
-      x: 40,
-      y: height - 330,
-      width: 200,
-      height: 15,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
-    signature.enableRequired();
 
     const date = form.createTextField('date');
-    addRotatedField(date , {
+    addRotatedField(date, {
       x: 440,
       y: height - 330,
       width: 100,
@@ -258,8 +288,8 @@ export async function GET() {
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });
-    twoCheckBox.enableRequired();
 
+    removeFieldFromPdf('signature');
 
     // Save and return the PDF with editable fields
     const pdfBytes = await pdfDoc.save();

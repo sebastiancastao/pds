@@ -2,7 +2,7 @@
 
 ## 🔐 Your Credentials (Securely Configured)
 
-Your Supabase credentials have been integrated into the PDS Time keeping System:
+Your Supabase credentials have been integrated into the PDS Time Keeping System:
 
 - **Supabase URL**: `https://bwvnvzlmqqcdemkpecjw.supabase.co`
 - **Project ID**: `bwvnvzlmqqcdemkpecjw`
@@ -270,5 +270,5 @@ If you encounter issues:
 - ✅ Account lockout mechanism ready
 - ✅ MFA flow prepared
 
-**Your PDS Time keeping System is now securely connected to Supabase!** 🎉
+**Your PDS Time Keeping System is now securely connected to Supabase!** 🎉
 

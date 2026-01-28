@@ -405,7 +405,7 @@ If still experiencing issues:
 2. Try remote debugging to see exact error
 3. Verify HTTPS is being used
 4. Test on multiple devices/browsers
-5. Check `login_locations` table for keeping data
+5. Check `login_locations` table for keepingdata
 
 ---
 
