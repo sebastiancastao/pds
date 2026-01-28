@@ -927,7 +927,7 @@ export default function StatePayrollFormViewer({
     }
 
     // Validate required fields for WI Notice to Employee
-    if (selectedForm === 'notice-to-employee' && stateCode === 'wi' && pdfBytesRef.current) {
+    if (selectedForm === 'notice-to-employee' && (stateCode === 'wi' || stateCode === 'nv') && pdfBytesRef.current) {
       try {
         const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -948,31 +948,38 @@ export default function StatePayrollFormViewer({
           }
         };
 
-        const requiredField = { name: 'Employee Name', friendly: 'Employee Name' };
+        const requiredFields = [
+          { name: 'Employee Name', friendly: 'Employee Name' },
+          { name: 'PRINT NAME of Employee', friendly: 'Printed Name (Employee)' },
+          { name: 'Date', friendly: 'Date (Employee)' },
+          { name: 'Date_2', friendly: 'Date (Employee)' },
+        ];
 
-        try {
-          const field = form.getTextField(requiredField.name);
-          const value = field.getText();
-          if (!value || value.trim() === '') {
-            const page = getFieldPage(field);
-            const message = `Please fill in the required field: "${requiredField.friendly}" on page ${page} of the PDF`;
-            setMissingRequiredFields([requiredField.name]);
-            setValidationError(message);
-            setEmptyFieldPage(page);
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
 
-            setTimeout(() => {
-              const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-              if (canvas) {
-                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              } else {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }, 100);
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
 
-            return;
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
           }
-        } catch (err) {
-          console.warn(`Field ${requiredField.name} not found or error checking:`, err);
         }
 
         setValidationError(null);
@@ -1475,6 +1482,67 @@ export default function StatePayrollFormViewer({
         setEmptyFieldPage(null);
       } catch (err) {
         console.error('Error validating AZ/NY W-4 fields:', err);
+      }
+    }
+
+    // Validate required dates for NV W-4
+    if (selectedForm === 'fw4' && stateCode === 'nv' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredDateFields = [
+          { name: 'Employee Date', friendly: 'Employee date' },
+          { name: 'First Date of Employment', friendly: 'First date of employment' },
+        ];
+
+        for (const fieldInfo of requiredDateFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating NV W-4 dates:', err);
       }
     }
 
