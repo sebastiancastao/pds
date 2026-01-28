@@ -741,6 +741,12 @@ export async function GET(
       );
     }
 
+    const { data: targetUserData } = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', userId)
+      .maybeSingle();
+
     const latestFormTimestamp = maxTimestamp(forms.map((form) => form.updated_at));
     let mealWaiverLatestUpdate: string | null = null;
 
