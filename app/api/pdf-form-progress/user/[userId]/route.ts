@@ -741,6 +741,9 @@ export async function GET(
       );
     }
 
+    const latestFormTimestamp = maxTimestamp(forms.map((form) => form.updated_at));
+    let mealWaiverLatestUpdate: string | null = null;
+
     const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase() || '';
     const useFormSignatures = signatureSource === 'form_signatures' || signatureSource === 'forms_signature';
     const signatureByForm = new Map<string, SignatureEntry>();
@@ -1202,7 +1205,8 @@ export async function GET(
     // Add meal waivers to the merged PDF
     const mealWaiverStart = Date.now();
     console.log('[PDF_FORMS] Adding meal waivers for user:', userId);
-    const { waivers: mealWaivers } = await fetchMealWaiversForUser(userId);
+    const { waivers: mealWaivers, latestUpdate } = await fetchMealWaiversForUser(userId);
+    mealWaiverLatestUpdate = latestUpdate;
     await addMealWaiversToMergedPdf(mergedPdf, mealWaivers);
     console.log(`[PDF_FORMS] ⏱️ Meal waivers took ${Date.now() - mealWaiverStart}ms`);
 
@@ -1213,6 +1217,9 @@ export async function GET(
     console.log(`[PDF_FORMS] ⏱️ I-9 documents took ${Date.now() - i9Start}ms`);
 
     // Save the merged PDF
+    const latestSourceTimestamp =
+      maxTimestamp([latestFormTimestamp, mealWaiverLatestUpdate, latestSignatureTimestamp]) ||
+      new Date().toISOString();
     const saveStart = Date.now();
     const mergedPdfBytes = await mergedPdf.save();
     console.log(`[PDF_FORMS] ⏱️ PDF save took ${Date.now() - saveStart}ms, size: ${(mergedPdfBytes.length / 1024 / 1024).toFixed(2)} MB`);
