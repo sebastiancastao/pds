@@ -436,7 +436,7 @@ export default function StatePayrollFormViewer({
     console.log('[VALIDATION] currentForm:', currentForm);
     console.log('[VALIDATION] currentSignature:', currentSignature);
     setMissingRequiredFields([]);
-    const shouldSaveOnMissing = stateCode === 'ny';
+    const shouldSaveOnMissing = stateCode === 'ny' || stateCode === 'nv';
 
     // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
@@ -505,6 +505,10 @@ export default function StatePayrollFormViewer({
               setValidationError(message);
               setEmptyFieldPage(page);
 
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
+
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
                 if (canvas) {
@@ -572,6 +576,10 @@ export default function StatePayrollFormViewer({
               setMissingRequiredFields([fieldInfo.name]);
               setValidationError(message);
               setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
@@ -966,6 +974,10 @@ export default function StatePayrollFormViewer({
               setValidationError(message);
               setEmptyFieldPage(page);
 
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
+
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
                 if (canvas) {
@@ -1056,7 +1068,7 @@ export default function StatePayrollFormViewer({
     }
 
     // Validate required fields for WI Temporary Employment Agreement
-    if (selectedForm === 'temp-employment-agreement' && stateCode === 'wi' && pdfBytesRef.current) {
+    if (selectedForm === 'temp-employment-agreement' && (stateCode === 'wi' || stateCode === 'nv') && pdfBytesRef.current) {
       try {
         const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
