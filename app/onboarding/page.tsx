@@ -159,6 +159,7 @@ export default function OnboardingPage() {
 
       const response = await fetch('/api/onboarding', {
         method: 'POST',
+        
         headers: {
           'Content-Type': 'application/json',
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
