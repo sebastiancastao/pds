@@ -1274,6 +1274,7 @@ export default function StatePayrollFormViewer({
           setValidationError(message);
           setEmptyFieldPage(page);
 
+          
           setTimeout(() => {
             const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
             if (canvas) {
