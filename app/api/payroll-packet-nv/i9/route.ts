@@ -1,13 +1,9 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
 import { PDFDocument, PDFRef } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-<<<<<<< HEAD
 export async function GET() {
-=======
-export async function GET(request: NextRequest) {
->>>>>>> testing
   try {
     const pdfPath = join(process.cwd(), 'i-9.pdf');
     const existingPdfBytes = readFileSync(pdfPath);

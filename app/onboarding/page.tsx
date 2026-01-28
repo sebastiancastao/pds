@@ -378,7 +378,7 @@ const handleExportToExcel = async () => {
         response.headers.get('Content-Disposition') || response.headers.get('content-disposition');
       const fallbackFilename = buildOnboardingFilename(userName);
       const headerFilename = extractFilenameFromContentDisposition(contentDisposition);
-      const filename = ensurePdfExtension(headerFilename || fallbackFilename);
+      let filename = ensurePdfExtension(headerFilename || fallbackFilename);
 
       if (contentDisposition) {
         console.log('[PDF Download] Content-Disposition:', contentDisposition);

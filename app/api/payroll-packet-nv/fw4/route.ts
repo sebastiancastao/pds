@@ -30,8 +30,6 @@ export async function GET() {
       console.warn('[FW4 NV] Failed to add Employee Date field', error);
     }
 
-<<<<<<< HEAD
-=======
     try {
       const firstEmploymentFieldName = 'First Date of Employment';
       let firstEmploymentField;
@@ -51,7 +49,6 @@ export async function GET() {
       console.warn('[FW4 NV] Failed to add First Date of Employment field', error);
     }
 
->>>>>>> testing
     const fieldsToRemove = [
       'topmostSubform[0].Page1[0].f1_13[0]', // Employer's name and address
       'topmostSubform[0].Page1[0].f1_14[0]', // First date of employment
@@ -124,11 +121,7 @@ export async function GET() {
       },
     });
   } catch (error: any) {
-<<<<<<< HEAD
-    console.error('FW4 PDF generation error (NV):', error);
-=======
     console.error('FW4 NV PDF generation error:', error);
->>>>>>> testing
     return NextResponse.json(
       { error: 'Failed to generate FW4 PDF', details: error.message },
       { status: 500 },
