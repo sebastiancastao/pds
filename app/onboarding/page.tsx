@@ -323,6 +323,7 @@ const handleExportToExcel = async () => {
 
       console.log('[PDF Download] Fetching PDF from API...');
       const startTime = Date.now();
+      const elapsedSeconds = () => ((Date.now() - startTime) / 1000).toFixed(2);
 
       const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
         headers: {
