@@ -6,6 +6,38 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+const USERS_PER_PAGE = 100;
+
+const findAuthUserByEmail = async (email: string) => {
+  let page = 1;
+
+  while (true) {
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
+      page,
+      perPage: USERS_PER_PAGE
+    });
+
+    if (error) {
+      return { user: null, error };
+    }
+
+    const authUser = data?.users?.find(
+      (user) => user.email?.toLowerCase() === email
+    );
+
+    if (authUser) {
+      return { user: authUser, error: null };
+    }
+
+    const nextPage = data?.nextPage;
+    if (!nextPage || nextPage === page) {
+      return { user: null, error: null };
+    }
+
+    page = nextPage;
+  }
+};
+
 /**
  * POST /api/auth/forgot-password
  * Send password reset email (only for users without temporary passwords)
@@ -27,10 +59,9 @@ export async function POST(request: NextRequest) {
     console.log('[FORGOT PASSWORD] Processing reset request for:', normalizedEmail);
 
     // Step 1: Check if user exists in auth.users
-    const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({
-      limit: 100,
-      query: normalizedEmail
-    });
+    const { user: authUser, error: authError } = await findAuthUserByEmail(
+      normalizedEmail
+    );
 
     if (authError) {
       console.error('[FORGOT PASSWORD] Error fetching auth users:', authError);
@@ -39,10 +70,6 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
-
-    const authUser = authData?.users?.find(
-      (user) => user.email?.toLowerCase() === normalizedEmail
-    );
 
     if (!authUser) {
       console.log('[FORGOT PASSWORD] User not found in auth:', normalizedEmail);
