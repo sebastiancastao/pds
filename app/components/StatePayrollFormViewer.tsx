@@ -54,6 +54,20 @@ interface StatePayrollFormViewerProps {
   startFormId?: string;
 }
 
+const escapeFieldNameForSelector = (fieldName: string) => {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(fieldName);
+  }
+  return fieldName.replace(/([^\w-])/g, '\\\\$1');
+};
+
+const isCheckboxCheckedInDom = (fieldName: string) => {
+  if (typeof document === 'undefined') return false;
+  const selector = `input[data-field-name="${escapeFieldNameForSelector(fieldName)}"]`;
+  const input = document.querySelector<HTMLInputElement>(selector);
+  return Boolean(input?.checked);
+};
+
 function buildFormConfig(stateCode: string, forms?: FormSpec[]) {
   const sequence = forms && forms.length > 0 ? forms : DEFAULT_FORMS;
   const formOrder = sequence.map((f) => f.id);
@@ -1248,16 +1262,21 @@ export default function StatePayrollFormViewer({
           'topmostSubform[0].Page1[0].c1_1[2]',
         ];
 
-        let hasFilingStatus = false;
-        for (const fieldName of step1cFilingStatusFields) {
-          try {
-            const field = form.getCheckBox(fieldName);
-            if (field.isChecked()) {
-              hasFilingStatus = true;
-              break;
+        let hasFilingStatus = step1cFilingStatusFields.some((fieldName) =>
+          isCheckboxCheckedInDom(fieldName)
+        );
+
+        if (!hasFilingStatus) {
+          for (const fieldName of step1cFilingStatusFields) {
+            try {
+              const field = form.getCheckBox(fieldName);
+              if (field.isChecked()) {
+                hasFilingStatus = true;
+                break;
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldName} not found or error checking:`, err);
             }
-          } catch (err) {
-            console.warn(`Field ${fieldName} not found or error checking:`, err);
           }
         }
 
@@ -1403,16 +1422,21 @@ export default function StatePayrollFormViewer({
           'topmostSubform[0].Page1[0].c1_1[2]',
         ];
 
-        let hasFilingStatus = false;
-        for (const fieldName of filingStatusFields) {
-          try {
-            const field = form.getCheckBox(fieldName);
-            if (field.isChecked()) {
-              hasFilingStatus = true;
-              break;
+        let hasFilingStatus = filingStatusFields.some((fieldName) =>
+          isCheckboxCheckedInDom(fieldName)
+        );
+
+        if (!hasFilingStatus) {
+          for (const fieldName of filingStatusFields) {
+            try {
+              const field = form.getCheckBox(fieldName);
+              if (field.isChecked()) {
+                hasFilingStatus = true;
+                break;
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldName} not found or error checking:`, err);
             }
-          } catch (err) {
-            console.warn(`Field ${fieldName} not found or error checking:`, err);
           }
         }
 
