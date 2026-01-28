@@ -1202,7 +1202,8 @@ export async function GET(
     // Add meal waivers to the merged PDF
     const mealWaiverStart = Date.now();
     console.log('[PDF_FORMS] Adding meal waivers for user:', userId);
-    await addMealWaiversToMergedPdf(mergedPdf, userId);
+    const { waivers: mealWaivers } = await fetchMealWaiversForUser(userId);
+    await addMealWaiversToMergedPdf(mergedPdf, mealWaivers);
     console.log(`[PDF_FORMS] ⏱️ Meal waivers took ${Date.now() - mealWaiverStart}ms`);
 
     // Add I-9 supporting documents (List A, B, C) to the merged PDF
