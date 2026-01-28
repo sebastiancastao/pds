@@ -7,55 +7,79 @@ import { supabase } from '@/lib/supabase';
 
 type ResetState = 'loading' | 'success' | 'error' | 'missing-token';
 
+type TokenPayload = {
+  access_token?: string;
+  refresh_token?: string;
+};
+
+const parseTokens = (input: string): TokenPayload => {
+  const params = new URLSearchParams(input);
+  return {
+    access_token: params.get('access_token') || undefined,
+    refresh_token: params.get('refresh_token') || undefined,
+  };
+};
+
 export default function ResetPasswordPage() {
   const router = useRouter();
   const [status, setStatus] = useState<ResetState>('loading');
   const [errorMessage, setErrorMessage] = useState('');
+  const [rawTokenString, setRawTokenString] = useState('');
+  const [tokensReady, setTokensReady] = useState(false);
 
-  const runLinkHandler = useCallback(async () => {
+  const tokens = useMemo(() => parseTokens(rawTokenString), [rawTokenString]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const hash = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : window.location.hash;
+    const search = window.location.search.startsWith('?') ? window.location.search.slice(1) : window.location.search;
+
+    setRawTokenString([hash, search].filter(Boolean).join('&'));
+    setTokensReady(true);
+  }, []);
+
+  const processLink = useCallback(async () => {
+    if (!tokens.access_token) {
+      return;
+    }
+
     setStatus('loading');
     setErrorMessage('');
 
     try {
-      const { data, error } = await supabase.auth.getSessionFromUrl({ storeSession: true });
+      const { error } = await supabase.auth.setSession({
+        access_token: tokens.access_token!,
+        refresh_token: tokens.refresh_token,
+      });
 
       if (error) {
         throw error;
       }
 
-      if (!data?.session) {
-        throw new Error('Unable to verify the reset link. Please request a new one.');
-      }
-
       setStatus('success');
-
-      setTimeout(() => {
-        router.replace('/password');
-      }, 1800);
+      setTimeout(() => router.replace('/password'), 1800);
     } catch (err: any) {
-      console.error('[RESET-PASSWORD] Link processing failed:', err);
+      console.error('[RESET-PASSWORD] Session setup failed:', err);
       setErrorMessage(err?.message || 'Unable to process the password reset link.');
       setStatus('error');
     }
-  }, [router]);
-
-  const containsToken = useMemo(() => {
-    if (typeof window === 'undefined') {
-      return false;
-    }
-    const hash = window.location.hash || '';
-    const search = window.location.search || '';
-    return /access_token=/.test(hash + search) || /token=/.test(hash + search);
-  }, []);
+  }, [router, tokens]);
 
   useEffect(() => {
-    if (!containsToken) {
+    if (!tokensReady) {
+      return;
+    }
+
+    if (!tokens.access_token) {
       setStatus('missing-token');
       return;
     }
 
-    runLinkHandler();
-  }, [containsToken, runLinkHandler]);
+    processLink();
+  }, [tokensReady, tokens.access_token, processLink]);
 
   const renderContent = () => {
     switch (status) {
@@ -134,20 +158,20 @@ export default function ResetPasswordPage() {
           <div className="space-y-4 text-center">
             <h1 className="text-2xl font-bold text-gray-900">Unable to process reset</h1>
             <p className="text-sm text-gray-500">{errorMessage}</p>
-            <div className="flex gap-3 justify-center">
-              <button
-                onClick={runLinkHandler}
-                className="px-6 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors"
-              >
-                Try again
-              </button>
-              <Link
-                href="/forgot-password"
-                className="px-6 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
-              >
-                Request new link
-              </Link>
-            </div>
+              <div className="flex gap-3 justify-center">
+                <button
+                  onClick={processLink}
+                  className="px-6 py-3 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors"
+                >
+                  Try again
+                </button>
+                <Link
+                  href="/forgot-password"
+                  className="px-6 py-3 border border-gray-300 rounded-lg font-medium text-gray-700 hover:bg-gray-50"
+                >
+                  Request new link
+                </Link>
+              </div>
           </div>
         );
       default:
