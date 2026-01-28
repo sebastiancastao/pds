@@ -1740,13 +1740,12 @@ export default function StatePayrollFormViewer({
             }
           };
 
-          const requireFirstPageOnly = stateCode === 'nv';
+          const requireFirstPageOnly = stateCode === 'nv' || stateCode === 'wi';
           const requiredFields = [
             { name: 'Last Name Family Name from Section 1', friendly: 'Last Name', type: 'text' },
             { name: 'First Name Given Name from Section 1', friendly: 'First Name', type: 'text' },
             { name: 'Address Street Number and Name', friendly: 'Address', type: 'text' },
             { name: 'City or Town', friendly: 'City or Town', type: 'text' },
-            { name: 'State', friendly: 'State', type: 'dropdown' },
             { name: 'ZIP Code', friendly: 'ZIP Code', type: 'text' },
             { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth', type: 'text' },
             { name: 'US Social Security Number', friendly: 'U.S. Social Security Number', type: 'text' },

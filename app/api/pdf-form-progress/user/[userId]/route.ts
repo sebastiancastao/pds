@@ -2,6 +2,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { existsSync, promises as fsPromises } from 'fs';
+import { join } from 'path';
 
 // Disable caching and increase body size limit for large PDFs
 export const dynamic = 'force-dynamic';
@@ -11,8 +13,6 @@ const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
-
-const I9_DOCUMENTS_BUCKET = 'i9-documents';
 
 const formDisplayNames: Record<string, string> = {
   // California
@@ -134,6 +134,7 @@ const MEAL_WAIVER_TITLES: Record<string, string> = {
   '10_hour': 'Meal Period Waiver (10 Hour)',
   '12_hour': 'Meal Period Waiver (12 Hour)',
 };
+const CACHE_FORMAT_VERSION = 'v2';
 
 const isBackgroundCheckFormName = (value?: string | null) => {
   if (!value) return false;
@@ -195,10 +196,7 @@ const formatDateLabel = (value?: string | null) => {
   return parsed.toLocaleDateString('en-US');
 };
 
-async function addMealWaiversToMergedPdf(
-  mergedPdf: PDFDocument,
-  userId: string
-): Promise<void> {
+async function fetchMealWaiversForUser(userId: string) {
   try {
     const { data: waivers, error } = await supabaseAdmin
       .from('meal_waivers')
@@ -208,14 +206,31 @@ async function addMealWaiversToMergedPdf(
 
     if (error) {
       console.error('[PDF_FORMS] Error fetching meal waivers:', error);
-      return;
+      return { waivers: [], latestUpdate: null };
     }
 
     if (!waivers || waivers.length === 0) {
       console.log('[PDF_FORMS] No meal waivers found for user:', userId);
-      return;
+      return { waivers: [], latestUpdate: null };
     }
 
+    const latestUpdate = waivers.reduce((max, waiver) => {
+      const candidates = [waiver.updated_at, waiver.created_at, waiver.signature_date];
+      const candidate = candidates.find(Boolean);
+      if (!candidate) return max;
+      return !max || candidate > max ? candidate : max;
+    }, null as string | null);
+
+    return { waivers, latestUpdate };
+  } catch (error) {
+    console.error('[PDF_FORMS] Error fetching meal waivers:', error);
+    return { waivers: [], latestUpdate: null };
+  }
+}
+
+async function addMealWaiversToMergedPdf(mergedPdf: PDFDocument, waivers: any[]) {
+  if (!waivers || waivers.length === 0) return;
+  try {
     const titleFont = await mergedPdf.embedFont(StandardFonts.HelveticaBold);
     const bodyFont = await mergedPdf.embedFont(StandardFonts.Helvetica);
 
@@ -322,187 +337,295 @@ async function addMealWaiversToMergedPdf(
   }
 }
 
-// Fetch I-9 documents for a user and add them to the merged PDF
-async function addI9DocumentsToMergedPdf(
-  mergedPdf: PDFDocument,
-  userId: string
-): Promise<void> {
+async function addI9DocumentsToMergedPdf(mergedPdf: PDFDocument, userId: string) {
+  let i9Docs: any | null = null;
+
   try {
-    // Fetch I-9 documents from database
-    const { data: i9Docs, error: i9Error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('i9_documents')
       .select('*')
       .eq('user_id', userId)
       .maybeSingle();
 
-    if (i9Error || !i9Docs) {
+    if (error || !data) {
       console.log('[PDF_FORMS] No I-9 documents found for user:', userId);
       return;
     }
 
-    console.log('[PDF_FORMS] Found I-9 documents:', {
-      hasListA: !!i9Docs.additional_doc_url,
-      hasListB: !!i9Docs.drivers_license_url,
-      hasListC: !!i9Docs.ssn_document_url,
-    });
+    i9Docs = data;
+  } catch (error) {
+    console.error('[PDF_FORMS] Error fetching I-9 documents for user:', userId, error);
+    return;
+  }
 
-    // Define the documents to process
-    const documentsToProcess = [
-      {
-        url: i9Docs.additional_doc_url,
-        filename: i9Docs.additional_doc_filename,
-        label: 'I-9 List A Document',
-      },
-      {
-        url: i9Docs.drivers_license_url,
-        filename: i9Docs.drivers_license_filename,
-        label: 'I-9 List B Document',
-      },
-      {
-        url: i9Docs.ssn_document_url,
-        filename: i9Docs.ssn_document_filename,
-        label: 'I-9 List C Document',
-      },
-    ].filter((doc) => doc.url);
+  const documentsToProcess = [
+    {
+      url: i9Docs.additional_doc_url,
+      filename: i9Docs.additional_doc_filename,
+      label: 'I-9 List A Document',
+    },
+    {
+      url: i9Docs.drivers_license_url,
+      filename: i9Docs.drivers_license_filename,
+      label: 'I-9 List B Document',
+    },
+    {
+      url: i9Docs.ssn_document_url,
+      filename: i9Docs.ssn_document_filename,
+      label: 'I-9 List C Document',
+    },
+  ].filter((doc) => doc.url);
 
-    // Fetch all I-9 documents in parallel for better performance
-    console.log('[PDF_FORMS] Fetching', documentsToProcess.length, 'I-9 documents in parallel...');
-    const fetchPromises = documentsToProcess.map(async (doc) => {
-      try {
-        const response = await fetch(doc.url);
-        if (!response.ok) {
-          console.error('[PDF_FORMS] Failed to fetch I-9 document:', doc.url, response.status);
-          return null;
-        }
-        const contentType = response.headers.get('content-type') || '';
-        const docBytes = await response.arrayBuffer();
-        return { doc, contentType, docBytes };
-      } catch (error) {
-        console.error('[PDF_FORMS] Error fetching I-9 document:', doc.label, error);
-        return null;
+  for (const doc of documentsToProcess) {
+    try {
+      console.log('[PDF_FORMS] Processing I-9 document:', doc.label, doc.filename);
+
+      const response = await fetch(doc.url!);
+      if (!response.ok) {
+        console.error('[PDF_FORMS] Failed to fetch I-9 document:', doc.url, response.status);
+        continue;
       }
-    });
 
-    const fetchedDocuments = await Promise.all(fetchPromises);
-    console.log('[PDF_FORMS] Fetched', fetchedDocuments.filter(d => d !== null).length, 'I-9 documents');
+      const contentType = response.headers.get('content-type') || '';
+      const docBytes = await response.arrayBuffer();
 
-    // Process fetched documents
-    for (const fetchedDoc of fetchedDocuments) {
-      if (!fetchedDoc) continue;
+      if (contentType.includes('pdf')) {
+        try {
+          const docPdf = await PDFDocument.load(docBytes);
+          const copiedPages = await mergedPdf.copyPages(docPdf, docPdf.getPageIndices());
 
-      const { doc, contentType, docBytes } = fetchedDoc;
-      try {
-        console.log('[PDF_FORMS] Processing I-9 document:', doc.label, doc.filename);
-
-        if (contentType.includes('pdf')) {
-          // If it's a PDF, copy its pages to the merged PDF
-          try {
-            const docPdf = await PDFDocument.load(docBytes);
-            const copiedPages = await mergedPdf.copyPages(docPdf, docPdf.getPageIndices());
-
-            // Add a header page before the document
-            const headerPage = mergedPdf.addPage([612, 792]); // Letter size
-            headerPage.drawText(doc.label, {
+          const headerPage = mergedPdf.addPage([612, 792]);
+          headerPage.drawText(doc.label, {
+            x: 50,
+            y: 700,
+            size: 24,
+            color: rgb(0, 0, 0),
+          });
+          if (doc.filename) {
+            headerPage.drawText(`Filename: ${doc.filename}`, {
               x: 50,
-              y: 700,
-              size: 24,
-              color: rgb(0, 0, 0),
+              y: 660,
+              size: 14,
+              color: rgb(0.3, 0.3, 0.3),
             });
-            if (doc.filename) {
-              headerPage.drawText(`Filename: ${doc.filename}`, {
-                x: 50,
-                y: 660,
-                size: 14,
-                color: rgb(0.3, 0.3, 0.3),
-              });
-            }
-
-            copiedPages.forEach((page) => {
-              mergedPdf.addPage(page);
-            });
-            console.log('[PDF_FORMS] ✅ Added I-9 PDF document:', doc.label);
-          } catch (pdfError) {
-            console.error('[PDF_FORMS] Error processing I-9 PDF:', pdfError);
           }
-        } else if (contentType.includes('image')) {
-          // If it's an image, embed it on a new page
-          try {
-            const imageBytes = Buffer.from(docBytes);
-            let image;
 
-            if (contentType.includes('jpeg') || contentType.includes('jpg')) {
-              image = await mergedPdf.embedJpg(imageBytes);
-            } else if (contentType.includes('png')) {
-              image = await mergedPdf.embedPng(imageBytes);
-            } else {
-              // Try PNG as fallback
-              try {
-                image = await mergedPdf.embedPng(imageBytes);
-              } catch {
-                image = await mergedPdf.embedJpg(imageBytes);
-              }
-            }
-
-            // Create a new page for the image
-            const page = mergedPdf.addPage([612, 792]); // Letter size
-
-            // Add header
-            page.drawText(doc.label, {
-              x: 50,
-              y: 750,
-              size: 18,
-              color: rgb(0, 0, 0),
-            });
-            if (doc.filename) {
-              page.drawText(`Filename: ${doc.filename}`, {
-                x: 50,
-                y: 725,
-                size: 12,
-                color: rgb(0.3, 0.3, 0.3),
-              });
-            }
-
-            // Calculate image dimensions to fit on page
-            const maxWidth = 512; // Leave margins
-            const maxHeight = 650; // Leave space for header
-            const imgWidth = image.width;
-            const imgHeight = image.height;
-
-            let drawWidth = imgWidth;
-            let drawHeight = imgHeight;
-
-            // Scale down if necessary
-            if (imgWidth > maxWidth || imgHeight > maxHeight) {
-              const widthRatio = maxWidth / imgWidth;
-              const heightRatio = maxHeight / imgHeight;
-              const scale = Math.min(widthRatio, heightRatio);
-              drawWidth = imgWidth * scale;
-              drawHeight = imgHeight * scale;
-            }
-
-            // Center the image horizontally
-            const x = (612 - drawWidth) / 2;
-            const y = 700 - drawHeight; // Position below the header
-
-            page.drawImage(image, {
-              x,
-              y,
-              width: drawWidth,
-              height: drawHeight,
-            });
-
-            console.log('[PDF_FORMS] ✅ Added I-9 image document:', doc.label);
-          } catch (imgError) {
-            console.error('[PDF_FORMS] Error embedding I-9 image:', imgError);
-          }
+          copiedPages.forEach((page) => {
+            mergedPdf.addPage(page);
+          });
+          console.log('[PDF_FORMS] ✅ Added I-9 PDF document:', doc.label);
+        } catch (pdfError) {
+          console.error('[PDF_FORMS] Error processing I-9 PDF:', pdfError);
         }
-      } catch (docError) {
-        console.error('[PDF_FORMS] Error processing I-9 document:', doc.label, docError);
+      } else if (contentType.includes('image')) {
+        try {
+          const imageBytes = Buffer.from(docBytes);
+          let image;
+
+          if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+            image = await mergedPdf.embedJpg(imageBytes);
+          } else if (contentType.includes('png')) {
+            image = await mergedPdf.embedPng(imageBytes);
+          } else {
+            try {
+              image = await mergedPdf.embedPng(imageBytes);
+            } catch {
+              image = await mergedPdf.embedJpg(imageBytes);
+            }
+          }
+
+          const page = mergedPdf.addPage([612, 792]);
+          page.drawText(doc.label, {
+            x: 50,
+            y: 750,
+            size: 18,
+            color: rgb(0, 0, 0),
+          });
+          if (doc.filename) {
+            page.drawText(`Filename: ${doc.filename}`, {
+              x: 50,
+              y: 725,
+              size: 12,
+              color: rgb(0.3, 0.3, 0.3),
+            });
+          }
+
+          const maxWidth = 512;
+          const maxHeight = 650;
+          const imgWidth = image.width;
+          const imgHeight = image.height;
+
+          let drawWidth = imgWidth;
+          let drawHeight = imgHeight;
+
+          if (imgWidth > maxWidth || imgHeight > maxHeight) {
+            const widthRatio = maxWidth / imgWidth;
+            const heightRatio = maxHeight / imgHeight;
+            const scale = Math.min(widthRatio, heightRatio);
+            drawWidth = imgWidth * scale;
+            drawHeight = imgHeight * scale;
+          }
+
+          const x = (612 - drawWidth) / 2;
+          const y = 700 - drawHeight;
+
+          page.drawImage(image, {
+            x,
+            y,
+            width: drawWidth,
+            height: drawHeight,
+          });
+
+          console.log('[PDF_FORMS] ✅ Added I-9 image document:', doc.label);
+        } catch (imgError) {
+          console.error('[PDF_FORMS] Error embedding I-9 image:', imgError);
+        }
+      }
+    } catch (docError) {
+      console.error('[PDF_FORMS] Error processing I-9 document:', doc.label, docError);
+    }
+  }
+}
+
+async function ensureFormFieldsVisible(doc: PDFDocument, label?: string) {
+  try {
+    const form = doc.getForm();
+    const fields = form.getFields();
+    if (fields.length === 0) return;
+
+    const pages = doc.getPages();
+    let embeddedFont: any = null;
+    try {
+      embeddedFont = await doc.embedFont(StandardFonts.Helvetica);
+    } catch (fontError) {
+      console.warn('[PDF_FORMS] Could not embed Helvetica font for', label, fontError);
+    }
+
+    let renderedValues = 0;
+
+    for (const field of fields) {
+      const widgets = field?.acroField?.getWidgets?.() ?? [];
+      const isText = typeof (field as any).getText === 'function';
+      const isCheckbox = typeof (field as any).isChecked === 'function';
+      const textValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
+      const checked = isCheckbox ? !!(field as any).isChecked?.() : false;
+
+      for (const widget of widgets) {
+        const rect = widget?.getRectangle?.();
+        if (!rect) continue;
+
+        const widgetPageRef = widget?.P?.()?.toString?.();
+        const targetPage =
+          pages.find((page) => page.ref?.toString?.() === widgetPageRef) ?? pages[0];
+        if (!targetPage) continue;
+
+        const width = typeof rect.width === 'number' ? rect.width : 0;
+        const height = typeof rect.height === 'number' ? rect.height : 12;
+        const fontSize = Math.max(6, Math.min(12, Math.max(6, height - 2)));
+        const drawX = (typeof rect.x === 'number' ? rect.x : 0) + 2;
+        const drawY =
+          (typeof rect.y === 'number' ? rect.y : 0) +
+          Math.max(1, (height - fontSize) / 2);
+
+        if (isText && textValue) {
+          const widthForText = Math.max(1, width - 4);
+          const maxChars = widthForText > 0 ? Math.max(1, Math.floor(widthForText / (fontSize * 0.55))) : textValue.length;
+          const clipped = textValue.replace(/\s+/g, ' ').slice(0, maxChars);
+          targetPage.drawText(clipped, {
+            x: drawX,
+            y: drawY,
+            size: fontSize,
+            font: embeddedFont ?? undefined,
+            color: rgb(0, 0, 0),
+          });
+          renderedValues++;
+        } else if (isCheckbox && checked) {
+          const checkSize = Math.max(8, Math.min(14, height));
+          const checkX = drawX + Math.max(1, (width - checkSize) / 2);
+          const checkY = drawY + Math.max(0, (height - checkSize) / 2);
+          targetPage.drawText('X', {
+            x: checkX,
+            y: checkY,
+            size: checkSize,
+            font: embeddedFont ?? undefined,
+            color: rgb(0, 0, 0),
+          });
+          renderedValues++;
+        }
       }
     }
+
+    try {
+      form.flatten();
+    } catch (flattenError) {
+      console.warn(`[PDF_FORMS] Could not flatten form ${label ?? 'document'}:`, flattenError);
+    }
+
+    if (renderedValues === 0 && process.env.NODE_ENV !== 'production') {
+      console.log(`[PDF_FORMS] No interactive field values rendered for ${label ?? 'form'}`);
+    }
   } catch (error) {
-    console.error('[PDF_FORMS] Error fetching I-9 documents:', error);
+    console.error('[PDF_FORMS] Failed to render form fields for', label, error);
   }
+}
+
+const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
+
+async function ensureCacheDirectory() {
+  try {
+    await fsPromises.mkdir(CACHE_DIR, { recursive: true });
+  } catch (error) {
+    console.warn('[PDF_FORMS] Could not ensure cache directory', error);
+  }
+}
+
+async function tryServeCachedPdf(userId: string, sourceTimestamp: string) {
+  const cachePath = join(CACHE_DIR, `${userId}.pdf`);
+  const metaPath = join(CACHE_DIR, `${userId}.json`);
+
+  if (!existsSync(cachePath) || !existsSync(metaPath)) return null;
+
+  try {
+    const metaRaw = await fsPromises.readFile(metaPath, 'utf-8');
+    const meta = JSON.parse(metaRaw);
+    if (meta.sourceTimestamp !== sourceTimestamp) return null;
+    console.log('[PDF_FORMS] Cache hit for user:', userId, 'timestamp:', sourceTimestamp);
+    return await fsPromises.readFile(cachePath);
+  } catch (error) {
+    console.warn('[PDF_FORMS] Failed to read cached PDF', error);
+    return null;
+  }
+}
+
+async function cacheMergedPdf(userId: string, pdfBytes: Uint8Array, sourceTimestamp: string) {
+  const cachePath = join(CACHE_DIR, `${userId}.pdf`);
+  const metaPath = join(CACHE_DIR, `${userId}.json`);
+
+  try {
+    console.log('[PDF_FORMS] Caching merged PDF for user:', userId, 'timestamp:', sourceTimestamp);
+    await fsPromises.writeFile(cachePath, pdfBytes);
+    await fsPromises.writeFile(
+      metaPath,
+      JSON.stringify({
+        sourceTimestamp,
+        generatedAt: new Date().toISOString(),
+      })
+    );
+  } catch (error) {
+    console.warn('[PDF_FORMS] Failed to write merged PDF cache', error);
+  }
+}
+
+function maxTimestamp(values: Array<string | null | undefined>): string | null {
+  return values.reduce((max: string | null, value): string | null => {
+    if (!value) return max;
+    return !max || value > max ? value : max;
+  }, null as string | null);
+}
+
+function logElapsed(label: string, startTime: number) {
+  const elapsedSeconds = ((Date.now() - startTime) / 1000).toFixed(2);
+  console.log(`[PDF_FORMS] ${label} completed in ${elapsedSeconds}s`);
 }
 
 export async function GET(
@@ -553,8 +676,11 @@ export async function GET(
       );
     }
 
+    const requestStart = Date.now();
     console.log('[PDF_FORMS] Fetching forms for user:', userId);
     const startTime = Date.now();
+
+    const formsFetchStart = Date.now();
 
     // Retrieve all form progress for the user
     const { data: forms, error } = await supabaseAdmin
@@ -571,6 +697,33 @@ export async function GET(
         { error: 'Failed to retrieve forms', details: error.message },
         { status: 500 }
       );
+    }
+
+    logElapsed('Fetched saved PDF progress', formsFetchStart);
+
+    const formCounts = forms.reduce<Record<string, number>>((acc, form) => {
+      const key = form.form_name || 'unknown';
+      acc[key] = (acc[key] || 0) + 1;
+      return acc;
+    }, {});
+
+    const duplicateForms = Object.entries(formCounts)
+      .filter(([, count]) => count > 1)
+      .map(([formName, count]) => `${formName} (${count}x)`);
+
+    if (duplicateForms.length > 0) {
+      console.log('[PDF_FORMS] Duplicate form entries detected:', duplicateForms);
+    }
+
+    const missingFormData = forms
+      .filter((form) => {
+        const data = toBase64(form.form_data);
+        return !data;
+      })
+      .map((form) => form.form_name);
+
+    if (missingFormData.length > 0) {
+      console.log('[PDF_FORMS] Skipping forms with no saved progress:', missingFormData);
     }
 
     if (!forms || forms.length === 0) {
@@ -591,6 +744,7 @@ export async function GET(
     const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase() || '';
     const useFormSignatures = signatureSource === 'form_signatures' || signatureSource === 'forms_signature';
     const signatureByForm = new Map<string, SignatureEntry>();
+    let latestSignatureTimestamp: string | null = null;
     let legacySignature: SignatureEntry | null = null;
 
     if (useFormSignatures) {
@@ -707,13 +861,11 @@ export async function GET(
         const base64Data = toBase64(form.form_data);
         if (!base64Data) {
           console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
+          logElapsed(`Skipped empty form ${form.form_name || 'unknown'}`, formProcessStart);
           continue;
         }
 
-        // Convert base64 to buffer
         const pdfBytes = Buffer.from(base64Data, 'base64');
-
-        // Load the PDF
         const formPdf = await PDFDocument.load(pdfBytes);
 
         // Flatten form fields to ensure they render consistently across all browsers
@@ -961,8 +1113,6 @@ export async function GET(
           }
 
           try {
-            let signatureImage;
-
             const signatureValue = signatureForForm.signature_data;
             const signatureKind = (signatureForForm.signature_type || '').toString().toLowerCase();
             const isTyped = signatureKind === 'typed' || signatureKind === 'type';
@@ -972,7 +1122,7 @@ export async function GET(
             if (!isTyped) {
               const { format, base64 } = normalizeSignatureImage(signatureValue);
               const imageBytes = Buffer.from(base64, 'base64');
-              signatureImage =
+              const signatureImage =
                 format === 'jpg' || format === 'jpeg'
                   ? await formPdf.embedJpg(imageBytes)
                   : await formPdf.embedPng(imageBytes);
@@ -1023,7 +1173,7 @@ export async function GET(
               });
             }
           } catch (imgError) {
-            console.error('[PDF_FORMS] ❌ Error embedding signature on form:', form.form_name, imgError);
+            console.error('[PDF_FORMS] ? Error embedding signature on form:', form.form_name, imgError);
           }
           totalSignatureTime += (Date.now() - sigStart);
         }
@@ -1042,6 +1192,7 @@ export async function GET(
 
       } catch (formError) {
         console.error('[PDF_FORMS] Error processing form:', form.form_name, formError);
+        logElapsed(`Failed processing form ${form.form_name || 'unknown'}`, formProcessStart);
       }
     }
 
@@ -1064,12 +1215,9 @@ export async function GET(
     const mergedPdfBytes = await mergedPdf.save();
     console.log(`[PDF_FORMS] ⏱️ PDF save took ${Date.now() - saveStart}ms, size: ${(mergedPdfBytes.length / 1024 / 1024).toFixed(2)} MB`);
 
-    // Get user name for filename
-    const { data: targetUserData } = await supabaseAdmin
-      .from('users')
-      .select('full_name')
-      .eq('id', userId)
-      .maybeSingle();
+    const cacheStart = Date.now();
+    await cacheMergedPdf(userId, mergedPdfBytes, latestSourceTimestamp);
+    logElapsed('Cached merged PDF', cacheStart);
 
     const userName = targetUserData?.full_name || 'User';
     const fileName = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
