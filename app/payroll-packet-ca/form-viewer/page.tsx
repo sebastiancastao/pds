@@ -23,6 +23,20 @@ function FormViewerContent() {
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
 
+  const escapeFieldNameForSelector = (fieldName: string) => {
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+      return CSS.escape(fieldName);
+    }
+    return fieldName.replace(/([^\w-])/g, '\\\\$1');
+  };
+
+  const isCheckboxCheckedInDom = (fieldName: string) => {
+    if (typeof document === 'undefined') return false;
+    const selector = `input[data-field-name=\"${escapeFieldNameForSelector(fieldName)}\"]`;
+    const input = document.querySelector<HTMLInputElement>(selector);
+    return Boolean(input?.checked);
+  };
+
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -660,16 +674,21 @@ function FormViewerContent() {
           'topmostSubform[0].Page1[0].c1_2[0]'
         ];
 
-        let hasFilingStatus = false;
-        for (const fieldName of filingStatusFields) {
-          try {
-            const field = form.getCheckBox(fieldName);
-            if (field.isChecked()) {
-              hasFilingStatus = true;
-              break;
+        let hasFilingStatus = filingStatusFields.some((fieldName) =>
+          isCheckboxCheckedInDom(fieldName)
+        );
+
+        if (!hasFilingStatus) {
+          for (const fieldName of filingStatusFields) {
+            try {
+              const field = form.getCheckBox(fieldName);
+              if (field.isChecked()) {
+                hasFilingStatus = true;
+                break;
+              }
+            } catch (err) {
+              console.warn(`Field ${fieldName} not found or error checking:`, err);
             }
-          } catch (err) {
-            console.warn(`Field ${fieldName} not found or error checking:`, err);
           }
         }
 
