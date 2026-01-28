@@ -34,6 +34,10 @@ interface FormField {
 }
 
 const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
+  fw4: {
+    'Employee Date': 'First Date of Employment',
+    'First Date of Employment': 'Employee Date',
+  },
   'employee-handbook': {
     date5: 'date6',
     date6: 'date5',
@@ -61,6 +65,9 @@ const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
 const getMirroringKey = (formId: string) => {
   if (MIRRORED_FIELDS[formId]) {
     return formId;
+  }
+  if (formId.endsWith('-fw4')) {
+    return 'fw4';
   }
   if (formId.endsWith('-notice-to-employee')) {
     return 'notice-to-employee';
@@ -960,14 +967,14 @@ export default function PDFFormEditor({
       const mirrorFieldName = getMirroredFieldName(formId, fieldName);
 
       setFieldValues((prev) => {
-        const newValues = new Map(prev);
-        newValues.set(fieldId, value);
-        if (mirrorFieldName && mirrorFieldName !== fieldName) {
-          const mirrorField = formFields.find((f) => f.baseName === mirrorFieldName);
-          if (mirrorField) {
-            newValues.set(mirrorField.id, value);
-          }
+      const newValues = new Map(prev);
+      newValues.set(fieldId, value);
+      if (mirrorFieldName && mirrorFieldName !== fieldName) {
+        const mirrorFields = formFields.filter((f) => f.baseName === mirrorFieldName);
+        for (const mirrorField of mirrorFields) {
+          newValues.set(mirrorField.id, value);
         }
+      }
         return newValues;
       });
 
