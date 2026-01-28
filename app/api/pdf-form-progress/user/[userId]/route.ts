@@ -1,7 +1,7 @@
 // app/api/pdf-form-progress/user/[userId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, PDFImage, StandardFonts, rgb } from 'pdf-lib';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 
@@ -1119,10 +1119,11 @@ export async function GET(
             const isDataUrl = signatureValue.startsWith('data:image/');
 
             // Embed signature image once before the loop (more efficient for multi-page signatures like employee handbook)
+            let signatureImage: PDFImage | null = null;
             if (!isTyped) {
               const { format, base64 } = normalizeSignatureImage(signatureValue);
               const imageBytes = Buffer.from(base64, 'base64');
-              const signatureImage =
+              signatureImage =
                 format === 'jpg' || format === 'jpeg'
                   ? await formPdf.embedJpg(imageBytes)
                   : await formPdf.embedPng(imageBytes);
