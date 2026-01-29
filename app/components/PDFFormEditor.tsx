@@ -494,7 +494,7 @@ export default function PDFFormEditor({
         return false;
       };
 
-      const shouldUseSavedPdf = formId === 'adp-deposit';
+      const shouldUseSavedPdf = formId === 'adp-deposit' || formId === 'employee-handbook';
 
       if (savedPdfBytes) {
         console.log('Step 2c: Parsing saved PDF with pdf-lib...');

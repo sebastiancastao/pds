@@ -118,31 +118,108 @@ export async function GET(req: NextRequest) {
 
     // Fetch latest form progress for each user
     // Get all form progress entries and we'll pick the latest per user
+    // Only include entries that have actual form data (non-empty)
     const { data: formProgressData, error: formProgressError } = await adminClient
       .from('pdf_form_progress')
-      .select('user_id, form_name, updated_at')
+      .select('user_id, form_name, form_data, updated_at')
+      .not('form_data', 'eq', '')
+      .not('form_data', 'is', null)
       .order('updated_at', { ascending: false });
 
     if (formProgressError) {
       console.error('Error fetching form progress data:', formProgressError);
     }
 
-    // Form order from DEFAULT_FORMS in StatePayrollFormViewer
-    const FORM_ORDER = [
-      { id: 'adp-deposit', display: 'ADP Direct Deposit' },
-      { id: 'marketplace', display: 'Marketplace Notice' },
-      { id: 'health-insurance', display: 'Health Insurance Marketplace' },
-      { id: 'time-of-hire', display: 'Time of Hire Notice' },
-      { id: 'employee-information', display: 'Employee Information' },
-      { id: 'fw4', display: 'Federal W-4' },
-      { id: 'i9', display: 'I-9 Employment Verification' },
-      { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
-      { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
-      { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
-      { id: 'state-tax', display: 'State Tax Form' },
-      { id: 'handbook', display: 'Employee Handbook' },
-    ];
-    const TOTAL_FORMS = FORM_ORDER.length;
+    // Onboarding stage markers to exclude (these are not actual forms)
+    const STAGE_MARKERS = ['onboarding-mfa-setup', 'onboarding-register'];
+
+    // State-specific form configurations
+    const STATE_FORMS: Record<string, { id: string; display: string }[]> = {
+      ca: [
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'marketplace', display: 'Marketplace Notice' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
+        { id: 'employee-information', display: 'Employee Information' },
+        { id: 'fw4', display: 'Federal W-4' },
+        { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+        { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+        { id: 'state-tax', display: 'State Tax Form' },
+        { id: 'handbook', display: 'Employee Handbook' },
+      ],
+      wi: [
+        { id: 'state-tax', display: 'State Tax Form' },
+        { id: 'fw4', display: 'Federal W-4' },
+        { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'employee-handbook', display: 'PDS Employee Handbook 2026' },
+        { id: 'wi-state-supplements', display: 'WI State Supplements' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
+        { id: 'employee-information', display: 'Employee Information' },
+        { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temp Employment Agreement' },
+        { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+        { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+      ],
+      ny: [
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'employee-handbook', display: 'PDS Employee Handbook 2026' },
+        { id: 'ny-state-supplements', display: 'NY State Supplements' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
+        { id: 'employee-information', display: 'Employee Information' },
+        { id: 'fw4', display: 'Federal W-4' },
+        { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temp Employment Agreement' },
+        { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+        { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+        { id: 'state-tax', display: 'State Tax Form' },
+      ],
+      nv: [
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'employee-handbook', display: 'PDS Employee Handbook 2026' },
+        { id: 'nv-state-supplements', display: 'NV State Supplements' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
+        { id: 'employee-information', display: 'Employee Information' },
+        { id: 'fw4', display: 'Federal W-4' },
+        { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temp Employment Agreement' },
+        { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+        { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+      ],
+      az: [
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'employee-handbook', display: 'PDS Employee Handbook 2026' },
+        { id: 'az-state-supplements', display: 'AZ State Supplements' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
+        { id: 'employee-information', display: 'Employee Information' },
+        { id: 'fw4', display: 'Federal W-4' },
+        { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temp Employment Agreement' },
+        { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
+        { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
+        { id: 'state-tax', display: 'State Tax Form' },
+      ],
+    };
+
+    // Default forms (CA) for fallback
+    const DEFAULT_FORMS = STATE_FORMS.ca;
+    // Helper to extract state code from form_name (e.g., "wi-i9" -> "wi")
+    const extractStateCode = (formName: string): string => {
+      const parts = formName.split('-');
+      if (parts.length > 1) {
+        return parts[0].toLowerCase();
+      }
+      return 'ca'; // Default to CA
+    };
 
     // Helper to extract form ID from stored form_name (e.g., "ca-adp-deposit" -> "adp-deposit")
     const extractFormId = (formName: string): string => {
@@ -155,28 +232,65 @@ export async function GET(req: NextRequest) {
       return formName;
     };
 
-    // Get form position (1-indexed) in the sequence
+    // Get forms list for a specific state
+    const getStateFormList = (stateCode: string): { id: string; display: string }[] => {
+      return STATE_FORMS[stateCode] || DEFAULT_FORMS;
+    };
+
+    // Get form position (1-indexed) in the state's sequence
     const getFormPosition = (formName: string): number => {
+      const stateCode = extractStateCode(formName);
       const formId = extractFormId(formName);
-      const index = FORM_ORDER.findIndex(f => f.id === formId);
+      const stateFormList = getStateFormList(stateCode);
+      const index = stateFormList.findIndex((f: { id: string; display: string }) => f.id === formId);
       return index >= 0 ? index + 1 : 0;
     };
 
     // Get display name for a form
     const getFormDisplayName = (formName: string): string => {
+      const stateCode = extractStateCode(formName);
       const formId = extractFormId(formName);
-      const form = FORM_ORDER.find(f => f.id === formId);
+      const stateFormList = getStateFormList(stateCode);
+      const form = stateFormList.find((f: { id: string; display: string }) => f.id === formId);
       return form?.display || formName;
     };
 
+    // Get total forms count for a state
+    const getTotalFormsForState = (stateCode: string): number => {
+      return getStateFormList(stateCode).length;
+    };
+
     // Create a map of user_id to their furthest form progress (highest position) and count of completed forms
-    const furthestFormProgressByUser = new Map<string, { form_name: string; updated_at: string; position: number; display_name: string }>();
-    const formCountByUser = new Map<string, number>();
-    const completedFormsByUser = new Map<string, string[]>();
+    const furthestFormProgressByUser = new Map<string, { form_name: string; updated_at: string; position: number; display_name: string; state_code: string }>();
+    // Track unique form IDs per user (e.g., "i9", "fw4") to prevent duplicates across states
+    const completedFormIdsByUser = new Map<string, Set<string>>();
+    // Track full form names for display (e.g., "wi-i9")
+    const completedFormNamesByUser = new Map<string, Set<string>>();
+    // Track detected state per user
+    const userStateCode = new Map<string, string>();
 
     if (formProgressData) {
       for (const progress of formProgressData) {
+        // Skip stage markers (not actual forms)
+        if (STAGE_MARKERS.includes(progress.form_name)) {
+          continue;
+        }
+
+        // Skip entries with no actual form data or very small data (likely empty/template PDFs)
+        // Minimum threshold: 1000 chars of base64 data (~750 bytes of PDF data)
+        const formDataLength = progress.form_data?.length || 0;
+        if (formDataLength < 1000) {
+          continue;
+        }
+
+        const stateCode = extractStateCode(progress.form_name);
+        const formId = extractFormId(progress.form_name);
         const position = getFormPosition(progress.form_name);
+
+        // Track user's state (use the most recent form's state)
+        if (!userStateCode.has(progress.user_id)) {
+          userStateCode.set(progress.user_id, stateCode);
+        }
 
         // Track the form with the highest position (furthest in the sequence)
         const existing = furthestFormProgressByUser.get(progress.user_id);
@@ -185,17 +299,22 @@ export async function GET(req: NextRequest) {
             form_name: progress.form_name,
             updated_at: progress.updated_at,
             position: position,
-            display_name: getFormDisplayName(progress.form_name)
+            display_name: getFormDisplayName(progress.form_name),
+            state_code: stateCode
           });
         }
 
-        // Count forms per user
-        formCountByUser.set(progress.user_id, (formCountByUser.get(progress.user_id) || 0) + 1);
-        // Track completed form names
-        if (!completedFormsByUser.has(progress.user_id)) {
-          completedFormsByUser.set(progress.user_id, []);
+        // Track unique form IDs (prevents counting "wi-i9" and "ca-i9" as two separate forms)
+        if (!completedFormIdsByUser.has(progress.user_id)) {
+          completedFormIdsByUser.set(progress.user_id, new Set<string>());
         }
-        completedFormsByUser.get(progress.user_id)!.push(progress.form_name);
+        completedFormIdsByUser.get(progress.user_id)!.add(formId);
+
+        // Track form names for display
+        if (!completedFormNamesByUser.has(progress.user_id)) {
+          completedFormNamesByUser.set(progress.user_id, new Set<string>());
+        }
+        completedFormNamesByUser.get(progress.user_id)!.add(progress.form_name);
       }
     }
 
@@ -217,8 +336,14 @@ export async function GET(req: NextRequest) {
 
       // Get furthest form progress for this user (highest position in sequence)
       const latestFormProgress = furthestFormProgressByUser.get(profile.user_id) || null;
-      const formsCompleted = formCountByUser.get(profile.user_id) || 0;
-      const completedForms = completedFormsByUser.get(profile.user_id) || [];
+      const completedFormIdsSet = completedFormIdsByUser.get(profile.user_id);
+      const completedFormNamesSet = completedFormNamesByUser.get(profile.user_id);
+      const formsCompleted = completedFormIdsSet?.size || 0;
+      const completedForms = completedFormNamesSet ? Array.from(completedFormNamesSet) : [];
+
+      // Get state-specific total forms count
+      const detectedState = userStateCode.get(profile.user_id) || 'ca';
+      const totalFormsForUser = getTotalFormsForState(detectedState);
 
       return {
         id: profile.id,
@@ -245,7 +370,7 @@ export async function GET(req: NextRequest) {
         pdf_latest_update: pdfSubmittedAt,
         latest_form_progress: latestFormProgress,
         forms_completed: formsCompleted,
-        total_forms: TOTAL_FORMS,
+        total_forms: totalFormsForUser,
         completed_forms: completedForms,
       };
     });

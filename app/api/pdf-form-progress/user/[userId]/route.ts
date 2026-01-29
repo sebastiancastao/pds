@@ -683,11 +683,11 @@ export async function GET(
     const formsFetchStart = Date.now();
 
     // Retrieve all form progress for the user
-    const { data: forms, error } = await supabaseAdmin
+    const { data: allForms, error } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('form_name, form_data, updated_at')
       .eq('user_id', userId)
-      .order('updated_at', { ascending: true });
+      .order('updated_at', { ascending: false }); // Most recent first
 
     console.log(`[PDF_FORMS] ⏱️ Forms fetch took ${Date.now() - startTime}ms`);
 
@@ -701,39 +701,124 @@ export async function GET(
 
     logElapsed('Fetched saved PDF progress', formsFetchStart);
 
-    const formCounts = forms.reduce<Record<string, number>>((acc, form) => {
-      const key = form.form_name || 'unknown';
-      acc[key] = (acc[key] || 0) + 1;
-      return acc;
-    }, {});
-
-    const duplicateForms = Object.entries(formCounts)
-      .filter(([, count]) => count > 1)
-      .map(([formName, count]) => `${formName} (${count}x)`);
-
-    if (duplicateForms.length > 0) {
-      console.log('[PDF_FORMS] Duplicate form entries detected:', duplicateForms);
-    }
-
-    const missingFormData = forms
-      .filter((form) => {
-        const data = toBase64(form.form_data);
-        return !data;
-      })
-      .map((form) => form.form_name);
-
-    if (missingFormData.length > 0) {
-      console.log('[PDF_FORMS] Skipping forms with no saved progress:', missingFormData);
-    }
-
-    if (!forms || forms.length === 0) {
+    if (!allForms || allForms.length === 0) {
       return NextResponse.json(
         { error: 'No forms found for this user' },
         { status: 404 }
       );
     }
 
-    const formsToProcess = (forms || []).filter((form) => !isBackgroundCheckFormName(form.form_name));
+    // Minimum data threshold: forms with less data are considered empty/template
+    const MIN_FORM_DATA_LENGTH = 1000;
+
+    // Normalize form key to handle both naming conventions (with and without state prefix)
+    // e.g., "wi-employee-handbook" and "employee-handbook" should be treated as the same form type
+    const normalizeFormKeyForDedup = (formName: string): string => {
+      const lower = formName.toLowerCase();
+      const parts = lower.split('-');
+      // If starts with a state code, extract the base form name
+      if (parts.length > 1 && STATE_CODE_PREFIXES.has(parts[0])) {
+        return parts.slice(1).join('-');
+      }
+      return lower;
+    };
+
+    // DEBUG: Track all handbook and i9 forms for WI state debugging
+    const debugForms = allForms.filter((f) => {
+      const name = (f.form_name || '').toLowerCase();
+      return name.includes('handbook') || name.includes('i9') || name.startsWith('wi-');
+    });
+
+    if (debugForms.length > 0) {
+      console.log('[PDF_FORMS] 🔍 DEBUG - Found', debugForms.length, 'WI/handbook/i9 forms:');
+      debugForms.forEach((form, idx) => {
+        const formDataStr = toBase64(form.form_data);
+        const dataLength = formDataStr?.length || 0;
+        const dataSizeKB = (dataLength / 1024).toFixed(2);
+        const isEmpty = dataLength < MIN_FORM_DATA_LENGTH;
+        const normalizedKey = normalizeFormKeyForDedup(form.form_name || '');
+        console.log(`[PDF_FORMS]   ${idx + 1}. "${form.form_name}" (normalized: "${normalizedKey}") | Size: ${dataSizeKB} KB | Updated: ${form.updated_at} | Empty: ${isEmpty}`);
+      });
+    }
+
+    // Deduplicate forms: keep only the most recent non-empty version of each form type
+    // Use normalized key to merge forms with/without state prefix (e.g., "employee-handbook" and "wi-employee-handbook")
+    const formsByNormalizedKey = new Map<string, typeof allForms[0]>();
+    const skippedEmpty: string[] = [];
+    const skippedDuplicates: string[] = [];
+
+    for (const form of allForms) {
+      const formKey = form.form_name || 'unknown';
+      const normalizedKey = normalizeFormKeyForDedup(formKey);
+      const formDataStr = toBase64(form.form_data);
+      const formDataLength = formDataStr?.length || 0;
+      const isHandbookOrI9 = normalizedKey.includes('handbook') || normalizedKey.includes('i9');
+
+      // Skip forms with empty or very small data (likely empty/template PDFs)
+      if (formDataLength < MIN_FORM_DATA_LENGTH) {
+        if (isHandbookOrI9) {
+          console.log(`[PDF_FORMS] 🔍 DEBUG - Skipping EMPTY "${formKey}" (${(formDataLength / 1024).toFixed(2)} KB < ${(MIN_FORM_DATA_LENGTH / 1024).toFixed(2)} KB threshold)`);
+        }
+        skippedEmpty.push(formKey);
+        continue;
+      }
+
+      // Skip background check forms
+      if (isBackgroundCheckFormName(formKey)) {
+        continue;
+      }
+
+      // Keep only the first (most recent) non-empty entry for each normalized form type
+      // This handles both "employee-handbook" and "wi-employee-handbook" as the same form
+      if (!formsByNormalizedKey.has(normalizedKey)) {
+        if (isHandbookOrI9) {
+          console.log(`[PDF_FORMS] 🔍 DEBUG - KEEPING "${formKey}" (normalized: "${normalizedKey}") (${(formDataLength / 1024).toFixed(2)} KB, updated: ${form.updated_at})`);
+        }
+        formsByNormalizedKey.set(normalizedKey, form);
+      } else {
+        if (isHandbookOrI9) {
+          const keptForm = formsByNormalizedKey.get(normalizedKey);
+          console.log(`[PDF_FORMS] 🔍 DEBUG - Skipping DUPLICATE "${formKey}" (normalized: "${normalizedKey}") (${(formDataLength / 1024).toFixed(2)} KB, updated: ${form.updated_at}) - Already have "${keptForm?.form_name}" from ${keptForm?.updated_at}`);
+        }
+        skippedDuplicates.push(formKey);
+      }
+    }
+
+    if (skippedEmpty.length > 0) {
+      console.log('[PDF_FORMS] Skipped empty/small forms:', [...new Set(skippedEmpty)]);
+    }
+
+    if (skippedDuplicates.length > 0) {
+      console.log('[PDF_FORMS] Skipped duplicate forms (kept most recent):', skippedDuplicates);
+    }
+
+    // DEBUG: Show final selected handbook/i9 forms
+    const selectedDebugForms = Array.from(formsByNormalizedKey.values()).filter((f) => {
+      const name = (f.form_name || '').toLowerCase();
+      return name.includes('handbook') || name.includes('i9');
+    });
+    if (selectedDebugForms.length > 0) {
+      console.log('[PDF_FORMS] 🔍 DEBUG - FINAL selected handbook/i9 forms:');
+      selectedDebugForms.forEach((form) => {
+        const formDataStr = toBase64(form.form_data);
+        const dataSizeKB = ((formDataStr?.length || 0) / 1024).toFixed(2);
+        console.log(`[PDF_FORMS]   ✅ "${form.form_name}" | Size: ${dataSizeKB} KB | Updated: ${form.updated_at}`);
+      });
+    }
+
+    // Convert map back to array, maintaining order by form type
+    const forms = Array.from(formsByNormalizedKey.values());
+
+    if (forms.length === 0) {
+      return NextResponse.json(
+        { error: 'No valid forms found for this user (all forms were empty or duplicates)' },
+        { status: 404 }
+      );
+    }
+
+    console.log('[PDF_FORMS] Processing', forms.length, 'unique non-empty forms');
+
+    const formsToProcess = forms;
     if (formsToProcess.length === 0) {
       return NextResponse.json(
         { error: 'No onboarding forms available for download' },
