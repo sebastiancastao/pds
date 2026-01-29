@@ -209,11 +209,16 @@ export default function BackgroundChecksFormPage() {
         throw new Error('Unable to determine current user.');
       }
 
-      const { data: userRow, error: userError } = await supabase
+      type UserSecurityFlags = {
+        is_temporary_password: boolean | null;
+        must_change_password: boolean | null;
+      };
+
+      const { data: userRow, error: userError } = (await supabase
         .from('users')
         .select('is_temporary_password, must_change_password')
         .eq('id', userId)
-        .single();
+        .single()) as { data: UserSecurityFlags | null; error: any };
       if (userError || !userRow) {
         throw new Error('Unable to load user profile.');
       }
