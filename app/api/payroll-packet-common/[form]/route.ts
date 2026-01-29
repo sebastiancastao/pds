@@ -226,7 +226,7 @@ function readStaticPdf(fileName: string) {
 }
 
 function bufferToBodyInit(buffer: Buffer) {
-  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
 }
 
 export async function GET(request: NextRequest, { params }: { params: { form: string } }) {
