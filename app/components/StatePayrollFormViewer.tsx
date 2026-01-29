@@ -1121,6 +1121,7 @@ export default function StatePayrollFormViewer({
           }
         };
 
+        
         const requiredFields = [
           { name: 'Employee Name', friendly: 'Employee Name' },
           { name: 'PRINT NAME of Employee', friendly: 'Printed Name (Employee)' },
