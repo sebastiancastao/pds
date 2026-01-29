@@ -225,6 +225,10 @@ function readStaticPdf(fileName: string) {
   return readFileSync(pdfPath);
 }
 
+function bufferToBodyInit(buffer: Buffer) {
+  return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}
+
 export async function GET(request: NextRequest, { params }: { params: { form: string } }) {
   const formKey = params.form as FormKey;
   const state = new URL(request.url).searchParams.get('state') || 'general';
@@ -233,7 +237,7 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
   if (formKey === 'fw4') {
     try {
       const buffer = await buildFw4WithEmployeeDate();
-      return new NextResponse(buffer, {
+      return new NextResponse(bufferToBodyInit(buffer), {
         status: 200,
         headers: {
           ...PDF_HEADERS,
@@ -266,7 +270,7 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
     if (normalizedState === 'ca') {
       try {
         const buffer = readStaticPdf(CA_STATE_TAX_FILE.file);
-        return new NextResponse(buffer, {
+        return new NextResponse(bufferToBodyInit(buffer), {
           status: 200,
           headers: {
             ...PDF_HEADERS,
@@ -290,7 +294,7 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
 
     if (fileConfig?.file) {
       const buffer = readStaticPdf(fileConfig.file);
-      return new NextResponse(buffer, {
+      return new NextResponse(bufferToBodyInit(buffer), {
         status: 200,
         headers: {
           ...PDF_HEADERS,
@@ -300,7 +304,7 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
     }
 
     const placeholderBuffer = await createPlaceholderPdf(formKey, state);
-    return new NextResponse(placeholderBuffer, {
+    return new NextResponse(bufferToBodyInit(placeholderBuffer), {
       status: 200,
       headers: {
         ...PDF_HEADERS,
