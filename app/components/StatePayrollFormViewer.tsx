@@ -1310,6 +1310,7 @@ export default function StatePayrollFormViewer({
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', friendly: 'Step 1(c) Address (employee)' },
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', friendly: 'Step 1(d) City or town, state, and ZIP code (employee)' },
           { name: 'topmostSubform[0].Page1[0].f1_05[0]', friendly: 'Social Security number (employee)' },
+          { name: 'Employee Date', friendly: 'Employee date' },
         ];
 
         for (const fieldInfo of requiredFields) {

@@ -964,24 +964,27 @@ export default function PDFFormEditor({
 
   const handleFieldChange = useCallback(
     (fieldId: string, fieldName: string, value: string, widgetValue?: string) => {
-      const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+    const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+    const mirrorFields =
+      mirrorFieldName && mirrorFieldName !== fieldName
+        ? formFields.filter((f) => f.baseName === mirrorFieldName)
+        : [];
 
-      setFieldValues((prev) => {
+    setFieldValues((prev) => {
       const newValues = new Map(prev);
       newValues.set(fieldId, value);
-      if (mirrorFieldName && mirrorFieldName !== fieldName) {
-        const mirrorFields = formFields.filter((f) => f.baseName === mirrorFieldName);
+      if (mirrorFields.length > 0) {
         for (const mirrorField of mirrorFields) {
           newValues.set(mirrorField.id, value);
         }
       }
-        return newValues;
-      });
+      return newValues;
+    });
 
-      const updates: FieldUpdate[] = [{ fieldName, value, widgetValue }];
-      if (mirrorFieldName && mirrorFieldName !== fieldName) {
-        updates.push({ fieldName: mirrorFieldName, value });
-      }
+    const updates: FieldUpdate[] = [{ fieldName, value, widgetValue }];
+    if (mirrorFields.length > 0 && mirrorFieldName) {
+      updates.push({ fieldName: mirrorFieldName, value });
+    }
       updatePDFFields(updates);
 
       if (onFieldChange) {
