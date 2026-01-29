@@ -310,6 +310,7 @@ export default function StatePayrollFormViewer({
       clearTimeout(autoSaveTimerRef.current);
     }
     autoSaveTimerRef.current = setTimeout(() => {
+      //@ts-ignore
       handleManualSave(currentForm?.formId);
     }, 30000); // Auto-save 30 seconds after user stops typing
   };
@@ -1121,7 +1122,7 @@ export default function StatePayrollFormViewer({
           }
         };
 
-        
+
         const requiredFields = [
           { name: 'Employee Name', friendly: 'Employee Name' },
           { name: 'PRINT NAME of Employee', friendly: 'Printed Name (Employee)' },
