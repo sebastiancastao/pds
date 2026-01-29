@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
+import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { createServerClient } from '@/lib/supabase';
 
 /**
@@ -8,24 +10,37 @@ import { createServerClient } from '@/lib/supabase';
  */
 export async function POST(request: NextRequest) {
   try {
-    const authHeader = request.headers.get('authorization');
-    if (!authHeader) {
-      return NextResponse.json({ error: 'No authorization header' }, { status: 401 });
-    }
-
-    const token = authHeader.replace('Bearer ', '');
-
-    // Initialize Supabase with service role (bypasses RLS)
     const supabase = createServerClient();
 
-    // Get user from token
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
+    // Try to authenticate using the Supabase cookie (app router automatically includes it)
+    const cookieStore = await cookies();
+    const cookieClient = createRouteHandlerClient({ cookies: () => cookieStore });
+    const { data: { user: cookieUser }, error: cookieError } = await cookieClient.auth.getUser();
 
-    if (userError || !user) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+    if (cookieError) {
+      console.warn('[BG CHECK API] Cookie auth error:', cookieError);
     }
 
-    console.log('[BG CHECK API] Checking background check for user:', user.id);
+    let authenticatedUser = cookieUser;
+
+    if (!authenticatedUser) {
+      const authHeader = request.headers.get('authorization');
+      if (!authHeader) {
+        return NextResponse.json({ error: 'No authorization header' }, { status: 401 });
+      }
+
+      const token = authHeader.replace('Bearer ', '');
+
+      const { data: { user: tokenUser }, error: userError } = await supabase.auth.getUser(token);
+
+      if (userError || !tokenUser) {
+        return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+      }
+
+      authenticatedUser = tokenUser;
+    }
+
+    console.log('[BG CHECK API] Checking background check for user:', authenticatedUser.id);
 
     // Get profile data including onboarding status (bypasses RLS since we're using service role)
     type ProfileData = {
@@ -38,7 +53,7 @@ export async function POST(request: NextRequest) {
     const { data: profileData, error: profileError } = await supabase
       .from('profiles')
       .select('id, onboarding_completed_at, state, address')
-      .eq('user_id', user.id)
+      .eq('user_id', authenticatedUser.id)
       .single<ProfileData>();
 
     if (profileError || !profileData) {
@@ -108,7 +123,7 @@ export async function POST(request: NextRequest) {
     const { data: submittedForms, error: formsError } = await supabase
       .from('background_check_pdfs')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', authenticatedUser.id)
       .limit(1);
 
     const hasSubmittedForms = !formsError && submittedForms && submittedForms.length > 0;
