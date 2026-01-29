@@ -42,6 +42,16 @@ type Venue = {
 
 type TabType = "edit" | "sales" | "merchandise" | "team" | "timesheet" | "hr";
 
+type StateRateData = {
+  state_code: string;
+  state_name: string;
+  base_rate: number;
+  overtime_enabled: boolean;
+  overtime_rate: number;
+  doubletime_enabled: boolean;
+  doubletime_rate: number;
+};
+
 export default function EventDashboardPage() {
   const router = useRouter();
   const params = useParams();
@@ -65,6 +75,7 @@ export default function EventDashboardPage() {
   const [commissionPool, setCommissionPool] = useState<string>(""); // fraction like 0.04
   const [taxRate, setTaxRate] = useState<string>("0");
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
+  const [stateRatesData, setStateRatesData] = useState<StateRateData[]>([]); // Fetched rates from API
   const [tips, setTips] = useState<string>("");
   // Manual tax amount for Sales tab (no auto rate calc)
   const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
@@ -186,6 +197,7 @@ export default function EventDashboardPage() {
           } catch {}
         })();
         loadVenues();
+        loadStateRates(); // Load rates from API for payroll calculations
         loadEvent();
       }
     });
@@ -255,6 +267,62 @@ export default function EventDashboardPage() {
     }
   };
 
+  // Load state rates from API
+  const loadStateRates = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/rates", {
+        method: "GET",
+        headers: {
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
+        },
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        console.log('[RATES] Loaded state rates:', data.rates?.length || 0);
+        setStateRatesData(data.rates || []);
+      }
+    } catch (err: any) {
+      console.log("[DEBUG] Error loading state rates:", err);
+    }
+  };
+
+  // Helper to get base rate for a state from fetched data, with fallback defaults
+  const getBaseRateForState = (stateCode: string): number => {
+    const normalizedState = (stateCode || '').toUpperCase().trim();
+    const rate = stateRatesData.find(r => r.state_code?.toUpperCase() === normalizedState);
+    if (rate) {
+      return rate.base_rate;
+    }
+    // Fallback defaults if API data not loaded yet
+    const fallbackRates: Record<string, number> = {
+      'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
+    };
+    return fallbackRates[normalizedState] || 17.28;
+  };
+
+  // Helper to get overtime/doubletime config for a state
+  const getOvertimeConfigForState = (stateCode: string): { overtimeEnabled: boolean; overtimeRate: number; doubletimeEnabled: boolean; doubletimeRate: number } => {
+    const normalizedState = (stateCode || '').toUpperCase().trim();
+    const rate = stateRatesData.find(r => r.state_code?.toUpperCase() === normalizedState);
+    if (rate) {
+      return {
+        overtimeEnabled: rate.overtime_enabled,
+        overtimeRate: rate.overtime_rate,
+        doubletimeEnabled: rate.doubletime_enabled,
+        doubletimeRate: rate.doubletime_rate,
+      };
+    }
+    // Fallback: CA has OT/DT, others only OT
+    if (normalizedState === 'CA') {
+      return { overtimeEnabled: true, overtimeRate: 1.5, doubletimeEnabled: true, doubletimeRate: 2.0 };
+    }
+    return { overtimeEnabled: true, overtimeRate: 1.5, doubletimeEnabled: false, doubletimeRate: 0 };
+  };
+
   const loadEvent = async () => {
     if (!eventId) return;
 
@@ -300,42 +368,10 @@ export default function EventDashboardPage() {
         setMerchandiseUnits(eventData.merchandise_units?.toString() || "");
         setMerchandiseValue(eventData.merchandise_value?.toString() || "");
 
-        // Fetch tax rate from state_rates table based on venue state (with debug)
-        if (eventData.state) {
-          console.debug('[SALES-DEBUG] Event state detected:', eventData.state);
-          try {
-            const { data: { session: taxSession } } = await supabase.auth.getSession();
-            const headers = {
-              ...(taxSession?.access_token ? { Authorization: `Bearer ${taxSession.access_token}` } : {}),
-            } as Record<string, string>;
-            console.debug('[SALES-DEBUG] Fetching /api/rates with headers:', Object.keys(headers));
-            const taxRes = await fetch('/api/rates', { method: 'GET', headers });
-            if (taxRes.ok) {
-              const taxData = await taxRes.json();
-              console.debug('[SALES-DEBUG] /api/rates ok. Count:', taxData?.rates?.length ?? 0);
-              const stateRate = taxData.rates?.find(
-                (r: any) => r.state_code?.toUpperCase() === eventData.state?.toUpperCase()
-              );
-              console.debug('[SALES-DEBUG] Matched state rate:', stateRate);
-              if (stateRate) {
-                setStateTaxRate(stateRate.tax_rate || 0);
-              } else {
-                console.warn('[SALES-DEBUG] No state rate match. Using event.tax_rate_percent fallback:', eventData.tax_rate_percent);
-                setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
-              }
-            } else {
-              const text = await taxRes.text();
-              console.warn('[SALES-DEBUG] /api/rates failed:', taxRes.status, text);
-              // Fallback to event's stored tax_rate_percent if rates API is not accessible
-              setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
-            }
-          } catch (err) {
-            console.error('[SALES-DEBUG] Error loading state tax rate:', err);
-            setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
-          }
-        } else {
-          console.warn('[SALES-DEBUG] Event has no state; cannot load state tax rate.');
-        }
+        // Tax rate is stored per-event (state_rates table only has base_rate for hourly wages, not tax rates)
+        console.debug('[SALES-DEBUG] Event state detected:', eventData.state);
+        console.debug('[SALES-DEBUG] Using event tax_rate_percent:', eventData.tax_rate_percent);
+        setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
 
         // Load merchandise breakdown if provided
         const m = data.merchandise || null;
@@ -740,12 +776,10 @@ export default function EventDashboardPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
-      // Calculate all payment data
-      const stateRates: Record<string, number> = {
-        'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
-      };
+      // Calculate all payment data using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-      const baseRate = stateRates[eventState] || 17.28;
+      const baseRate = getBaseRateForState(eventState);
+      const otConfig = getOvertimeConfigForState(eventState);
 
       const sharesData = calculateShares();
       const netSales = sharesData?.netSales || 0;
@@ -770,8 +804,8 @@ export default function EventDashboardPage() {
         const actualHours = totalMs / (1000 * 60 * 60);
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
         const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * 1.5);
-        const doubletimePay = doubletimeHours * (baseRate * 2);
+        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
+        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
         totalTeamSalary += regularPay + overtimePay + doubletimePay;
       });
 
@@ -789,8 +823,8 @@ export default function EventDashboardPage() {
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
 
         const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * 1.5);
-        const doubletimePay = doubletimeHours * (baseRate * 2);
+        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
+        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
 
         // Users with division "trailers" should NOT receive commissions or tips
         const isTrailersDivision = memberDivision === 'trailers';
@@ -864,12 +898,10 @@ export default function EventDashboardPage() {
 
     setSubmitting(true);
     try {
-      // Calculate payroll data for each team member
-      const stateRates: Record<string, number> = {
-        'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
-      };
+      // Calculate payroll data for each team member using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-      const baseRate = stateRates[eventState] || 17.28;
+      const baseRate = getBaseRateForState(eventState);
+      const otConfig = getOvertimeConfigForState(eventState);
 
       const sharesData = calculateShares();
       const netSales = sharesData?.netSales || 0;
@@ -894,8 +926,8 @@ export default function EventDashboardPage() {
         const actualHours = totalMs / (1000 * 60 * 60);
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
         const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * 1.5);
-        const doubletimePay = doubletimeHours * (baseRate * 2);
+        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
+        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
         totalTeamSalary += regularPay + overtimePay + doubletimePay;
       });
 
@@ -913,8 +945,8 @@ export default function EventDashboardPage() {
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
 
         const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * 1.5);
-        const doubletimePay = doubletimeHours * (baseRate * 2);
+        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
+        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
 
         // Users with division "trailers" should NOT receive commissions or tips
         const isTrailersDivision = memberDivision === 'trailers';
@@ -2460,16 +2492,9 @@ export default function EventDashboardPage() {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
 
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      // Use rates from database based on venue state
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
@@ -2502,12 +2527,7 @@ export default function EventDashboardPage() {
                   <div className="text-right">
                     <div className="text-sm font-semibold text-blue-700">Base Rate</div>
                     <div className="text-2xl font-bold text-blue-900">
-                      ${(() => {
-                        const stateRates: Record<string, number> = {
-                          'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
-                        };
-                        return stateRates[event?.state?.toUpperCase()?.trim() || 'CA'] || 17.28;
-                      })()}/hr
+                      ${getBaseRateForState(event?.state || 'CA').toFixed(2)}/hr
                     </div>
                   </div>
                 </div>
@@ -2541,16 +2561,16 @@ export default function EventDashboardPage() {
                     <thead className="bg-gray-50 border-b">
                       <tr>
                         <th className="text-left p-4 font-semibold text-gray-700">Employee</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Regular Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Regular Pay</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Overtime Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Overtime Pay</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Double time Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Double time Pay</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Commissions</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Reg Rate</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Loaded Rate</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Ext Amt on Reg Rate</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Commission Amt</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Total Final Commission</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Tips</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Adjustments</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Reimbursements</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Rest Break</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Other</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Total Gross Pay</th>
                         <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
                       </tr>
                     </thead>
@@ -2558,7 +2578,7 @@ export default function EventDashboardPage() {
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
                           <td colSpan={12} className="p-8 text-center text-gray-500">
-                            No staff found
+                            No staff found matching filters
                           </td>
                         </tr>
                       ) : (
@@ -2600,27 +2620,30 @@ export default function EventDashboardPage() {
                             return sum + (mMs / (1000 * 60 * 60));
                           }, 0);
 
-                          // State-specific base rates (2025)
-                          // Based on VENUE location (where event takes place), not vendor address
-                          const stateRates: Record<string, number> = {
-                            'CA': 17.28,  // California
-                            'NY': 17.00,  // New York
-                            'AZ': 14.70,  // Arizona
-                            'WI': 15.00,  // Wisconsin
-                          };
+                          // Use rates from database based on venue state
+                          const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                          const baseRate = getBaseRateForState(eventState);
+                          const otConfig = getOvertimeConfigForState(eventState);
+                          console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', baseRate);
+                          const overtimeRate = baseRate * otConfig.overtimeRate;
+                          const doubletimeRate = baseRate * otConfig.doubletimeRate;
 
-                          const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                          console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', stateRates[eventState]);
-                          const baseRate = stateRates[eventState] || 17.28; // Default to CA rate
-                          const overtimeRate = baseRate * 1.5;
-                          const doubletimeRate = baseRate * 2;
+                          // Determine loaded rate based on total hours worked
+                          // If hours > 12: all hours at doubletime rate
+                          // If hours > 8: all hours at overtime rate
+                          // Otherwise: all hours at regular rate
+                          let loadedRate = baseRate;
+                          if (actualHours > 12) {
+                            loadedRate = doubletimeRate;
+                          } else if (actualHours > 8) {
+                            loadedRate = overtimeRate;
+                          }
 
-                          // Split hours into regular/OT/DT based on state
-                          const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
+                          // Ext Amt on Reg Rate = total hours × base rate
+                          const extAmtOnRegRate = actualHours * baseRate;
 
-                          const regularPay = regularHours * baseRate;
-                          const overtimePay = overtimeHours * overtimeRate;
-                          const doubletimePay = doubletimeHours * doubletimeRate;
+                          // Total pay based on loaded rate
+                          const totalBasePay = actualHours * loadedRate;
 
                           // Commission pool (Net Sales × pool fraction)
                           const sharesData = calculateShares();
@@ -2632,22 +2655,20 @@ export default function EventDashboardPage() {
 
                           const totalCommissionPool = netSales * poolPercent;
 
-                          // Calculate total team salary for this member and all members
-                          const memberBasePay = regularPay + overtimePay + doubletimePay;
-                          
-                          // Calculate total team salary (sum of all members' base pay)
+                          // Calculate total team salary (sum of all members' base pay using loaded rate logic)
                           let totalTeamSalaryAll = 0;
                           teamMembers.forEach((m: any) => {
                             const mUid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
                             const mTotalMs = timesheetTotals[mUid] || 0;
                             const mActualHours = mTotalMs / (1000 * 60 * 60);
-                            const mRegularHours = Math.min(mActualHours, 8);
-                            const mOvertimeHours = Math.max(Math.min(mActualHours, 12) - 8, 0);
-                            const mDoubletimeHours = Math.max(mActualHours - 12, 0);
-                            const mRegularPay = mRegularHours * baseRate;
-                            const mOvertimePay = mOvertimeHours * overtimeRate;
-                            const mDoubletimePay = mDoubletimeHours * doubletimeRate;
-                            totalTeamSalaryAll += mRegularPay + mOvertimePay + mDoubletimePay;
+                            // Use same loaded rate logic
+                            let mLoadedRate = baseRate;
+                            if (mActualHours > 12) {
+                              mLoadedRate = doubletimeRate;
+                            } else if (mActualHours > 8) {
+                              mLoadedRate = overtimeRate;
+                            }
+                            totalTeamSalaryAll += mActualHours * mLoadedRate;
                           });
 
                           // Constraint: If commission pool <= total team salary, set commissions to 0
@@ -2665,8 +2686,14 @@ export default function EventDashboardPage() {
                             ? (totalTips * actualHours) / totalEligibleHours
                             : 0;
 
+                          // Calculate total gross pay
+                          const restBreak = 0; // Placeholder for rest break amount
+                          const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
+                          const totalGrossPay = totalBasePay + proratedCommission + proratedTips + restBreak + otherAmount;
+
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
+                              {/* Employee */}
                               <td className="p-4">
                                 <div className="flex items-center gap-3">
                                   <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
@@ -2684,95 +2711,115 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
+                              {/* Reg Rate */}
                               <td className="p-4">
                                 <div className="font-medium text-gray-900">
-                                  {regularHours > 0 ? `${regularHours.toFixed(2)}h` : "0h"}
+                                  ${baseRate.toFixed(2)}/hr
                                 </div>
-                                <div className="text-xs text-gray-500 mt-1">actual worked</div>
                               </td>
 
+                              {/* Loaded Rate */}
                               <td className="p-4">
-                                <div className="text-sm font-medium text-green-600 mt-1">
-                                  ${regularPay.toFixed(2)}
+                                <div className={`font-medium ${loadedRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
+                                  ${loadedRate.toFixed(2)}/hr
                                 </div>
+                                {loadedRate > baseRate && (
+                                  <div className="text-[10px] text-orange-500 mt-1">
+                                    {actualHours > 12 ? 'DT' : 'OT'} rate applied
+                                  </div>
+                                )}
                               </td>
 
-                              <td className="p-4">
-                                <div className="font-medium text-gray-900">
-                                  {overtimeHours > 0 ? `${overtimeHours.toFixed(2)}h` : "0h"}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1">actual worked</div>
-                              </td>
-
-                              <td className="p-4">
-                                <div className="text-sm font-medium text-green-600 mt-1">
-                                  ${overtimePay.toFixed(2)}
-                                </div>
-                              </td>
-
+                              {/* Hours */}
                               <td className="p-4">
                                 <div className="font-medium text-gray-900">
-                                  {doubletimeHours > 0 ? `${doubletimeHours.toFixed(2)}h` : "0h"}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1">actual worked</div>
-                              </td>
-
-                              <td className="p-4">
-                                <div className="text-sm font-medium text-green-600 mt-1">
-                                  ${doubletimePay.toFixed(2)}
+                                  {actualHours > 0 ? `${actualHours.toFixed(2)}h` : "0h"}
                                 </div>
                               </td>
 
-                              {/* Commission prorated */}
+                              {/* Ext Amt on Reg Rate */}
                               <td className="p-4">
-                                <div className="text-sm font-medium text-green-600 mt-1">
+                                <div className="text-sm font-medium text-green-600">
+                                  ${extAmtOnRegRate.toFixed(2)}
+                                </div>
+                                <div className="text-[10px] text-gray-500 mt-1">
+                                  {actualHours.toFixed(2)}h × ${baseRate.toFixed(2)}
+                                </div>
+                              </td>
+
+                              {/* Commission Amt */}
+                              <td className="p-4">
+                                <div className="text-sm font-medium text-green-600">
                                   ${proratedCommission.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-500">
-                                  Pool {(poolPercent * 100).toFixed(2)}% on Net
+                                  Pool {(poolPercent * 100).toFixed(2)}%
                                 </div>
                               </td>
 
-                              {/* Tips prorated */}
+                              {/* Total Final Commission */}
                               <td className="p-4">
-                                <div className="text-sm font-medium text-green-600 mt-1">
+                                <div className="text-sm font-medium text-green-600">
+                                  ${proratedCommission.toFixed(2)}
+                                </div>
+                              </td>
+
+                              {/* Tips */}
+                              <td className="p-4">
+                                <div className="text-sm font-medium text-green-600">
                                   ${proratedTips.toFixed(2)}
                                 </div>
-                                <div className="text-[10px] text-gray-500">Prorated by hours</div>
                               </td>
 
-                              {/* Adjustments - Editable */}
+                              {/* Rest Break - Editable */}
+                              <td className="p-4">
+                                <div className="text-sm font-medium text-gray-500">
+                                  $0.00
+                                </div>
+                              </td>
+
+                              {/* Other (Adjustments + Reimbursements) - Editable */}
                               <td className="p-4">
                                 {editingMemberId === member.id ? (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-gray-500">$</span>
-                                    <input
-                                      type="number"
-                                      value={adjustments[uid] || 0}
-                                      onChange={(e) => {
-                                        const value = Number(e.target.value) || 0;
-                                        setAdjustments(prev => ({ ...prev, [uid]: value }));
-                                      }}
-                                      className="w-24 px-2 py-1 border border-blue-500 rounded focus:ring-2 focus:ring-blue-500 text-sm"
-                                      placeholder="0"
-                                      step="1"
-                                      autoFocus
-                                    />
-                                    <button
-                                      onClick={() => setEditingMemberId(null)}
-                                      className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                    >
-                                      ✓
-                                    </button>
+                                  <div className="flex flex-col gap-1">
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] text-gray-500">Adj:</span>
+                                      <input
+                                        type="number"
+                                        value={adjustments[uid] || 0}
+                                        onChange={(e) => {
+                                          const value = Number(e.target.value) || 0;
+                                          setAdjustments(prev => ({ ...prev, [uid]: value }));
+                                        }}
+                                        className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                        placeholder="0"
+                                        step="1"
+                                        autoFocus
+                                      />
+                                    </div>
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-[10px] text-gray-500">Reimb:</span>
+                                      <input
+                                        type="number"
+                                        value={reimbursements[uid] || 0}
+                                        onChange={(e) => {
+                                          const value = Number(e.target.value) || 0;
+                                          setReimbursements(prev => ({ ...prev, [uid]: value }));
+                                        }}
+                                        className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                        placeholder="0"
+                                        step="1"
+                                      />
+                                    </div>
                                   </div>
                                 ) : (
                                   <div
                                     onClick={() => setEditingMemberId(member.id)}
                                     className="cursor-pointer hover:bg-gray-100 rounded px-2 py-1 text-sm font-medium"
                                   >
-                                    {adjustments[uid] ? (
-                                      <span className={adjustments[uid] >= 0 ? "text-green-600" : "text-red-600"}>
-                                        ${adjustments[uid] >= 0 ? '+' : ''}{adjustments[uid].toFixed(2)}
+                                    {otherAmount !== 0 ? (
+                                      <span className={otherAmount >= 0 ? "text-green-600" : "text-red-600"}>
+                                        ${otherAmount >= 0 ? '+' : ''}{otherAmount.toFixed(2)}
                                       </span>
                                     ) : (
                                       <span className="text-gray-400">$0.00</span>
@@ -2782,40 +2829,14 @@ export default function EventDashboardPage() {
                                 <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
                               </td>
 
-                              {/* Reimbursements - Editable */}
+                              {/* Total Gross Pay */}
                               <td className="p-4">
-                                {editingMemberId === member.id ? (
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-gray-500">$</span>
-                                    <input
-                                      type="number"
-                                      value={reimbursements[uid] || 0}
-                                      onChange={(e) => {
-                                        const value = Number(e.target.value) || 0;
-                                        setReimbursements(prev => ({ ...prev, [uid]: value }));
-                                      }}
-                                      className="w-24 px-2 py-1 border border-blue-500 rounded focus:ring-2 focus:ring-blue-500 text-sm"
-                                      placeholder="0"
-                                      step="1"
-                                    />
-                                  </div>
-                                ) : (
-                                  <div
-                                    onClick={() => setEditingMemberId(member.id)}
-                                    className="cursor-pointer hover:bg-gray-100 rounded px-2 py-1 text-sm font-medium"
-                                  >
-                                    {reimbursements[uid] ? (
-                                      <span className={reimbursements[uid] >= 0 ? "text-green-600" : "text-red-600"}>
-                                        ${reimbursements[uid] >= 0 ? '+' : ''}{reimbursements[uid].toFixed(2)}
-                                      </span>
-                                    ) : (
-                                      <span className="text-gray-400">$0.00</span>
-                                    )}
-                                  </div>
-                                )}
-                                <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
+                                <div className="text-sm font-bold text-green-700">
+                                  ${totalGrossPay.toFixed(2)}
+                                </div>
                               </td>
 
+                              {/* Actions */}
                               <td className="p-4 text-right">
                                 <button
                                   onClick={() => {
@@ -2878,16 +2899,9 @@ export default function EventDashboardPage() {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
 
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      // Use rates from database based on venue state
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
@@ -2931,16 +2945,9 @@ export default function EventDashboardPage() {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
 
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      // Use rates from database based on venue state
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const basePay = totalHours * baseRate;
                       const tipsAmount = Number(tips) || 0;
