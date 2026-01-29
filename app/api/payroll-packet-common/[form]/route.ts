@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, PDFRef } from 'pdf-lib';
 import { GET as getAzStateTaxFillable } from '../../payroll-packet-az/fillable/route';
 import { GET as getNyStateTaxFillable } from '../../payroll-packet-ny/fillable/route';
 import { GET as getWiStateTaxFillable } from '../../payroll-packet-wi/fillable/route';
@@ -79,6 +79,97 @@ const PDF_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
 };
 
+const FW4_FIELDS_TO_REMOVE = [
+  'topmostSubform[0].Page1[0].f1_13[0]', // Employer's name and address
+  'topmostSubform[0].Page1[0].f1_14[0]', // First date of employment
+  'topmostSubform[0].Page1[0].f1_15[0]', // Employer identification number (EIN)
+];
+
+const FW4_EMPLOYEE_DATE_FIELD = 'Employee Date';
+
+async function buildFw4WithEmployeeDate(): Promise<Buffer> {
+  const pdfBytes = readStaticPdf('fw4.pdf');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const form = pdfDoc.getForm();
+  const firstPage = pdfDoc.getPages()[0];
+
+  try {
+    let dateField;
+    try {
+      dateField = form.getTextField(FW4_EMPLOYEE_DATE_FIELD);
+    } catch {
+      dateField = form.createTextField(FW4_EMPLOYEE_DATE_FIELD);
+    }
+    dateField.addToPage(firstPage, {
+      x: 460,
+      y: 120,
+      width: 120,
+      height: 14,
+      borderWidth: 0,
+    });
+  } catch (error) {
+    console.warn('[FW4 COMMON] Failed to add Employee Date field', error);
+  }
+
+  const removeFieldFromPdf = (fieldName: string) => {
+    try {
+      const field = form.getField(fieldName) as any;
+      const acroField = field?.acroField;
+      const widgets = acroField?.getWidgets?.() || [];
+      const pagesWithWidgets = new Set<any>();
+
+      for (const widget of widgets) {
+        const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+        let page = undefined;
+        const pageRef = widget.P?.();
+        if (pageRef) {
+          page = pdfDoc.getPages().find((p) => p.ref === pageRef);
+        }
+        if (!page && widgetRef && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+          page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+        }
+        if (page && widgetRef) {
+          page.node.removeAnnot(widgetRef);
+          pagesWithWidgets.add(page);
+        }
+        if (widgetRef) {
+          (pdfDoc as any).context.delete(widgetRef);
+        }
+      }
+
+      const acroForm = (form as any).acroForm;
+      if (acroForm?.removeField && acroField) {
+        acroForm.removeField(acroField);
+      }
+
+      const fieldKids = acroField?.normalizedEntries?.().Kids;
+      if (fieldKids) {
+        const kidsCount = fieldKids.size();
+        for (let i = 0; i < kidsCount; i++) {
+          const kid = fieldKids.get(i);
+          if (kid instanceof PDFRef) {
+            (pdfDoc as any).context.delete(kid);
+          }
+        }
+      }
+
+      if (field?.ref) {
+        pagesWithWidgets.forEach((page: any) => page.node.removeAnnot(field.ref));
+        (pdfDoc as any).context.delete(field.ref);
+      }
+    } catch (error) {
+      console.warn(`[FW4 COMMON] Field not found or removal failed: ${fieldName}`, error);
+    }
+  };
+
+  for (const fieldName of FW4_FIELDS_TO_REMOVE) {
+    removeFieldFromPdf(fieldName);
+  }
+
+  const updatedBytes = await pdfDoc.save();
+  return Buffer.from(updatedBytes);
+}
+
 async function createPlaceholderPdf(formKey: FormKey, stateCode: string) {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
@@ -138,6 +229,25 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
   const formKey = params.form as FormKey;
   const state = new URL(request.url).searchParams.get('state') || 'general';
   const normalizedState = state.toLowerCase();
+
+  if (formKey === 'fw4') {
+    try {
+      const buffer = await buildFw4WithEmployeeDate();
+      return new NextResponse(buffer, {
+        status: 200,
+        headers: {
+          ...PDF_HEADERS,
+          'Content-Disposition': 'inline; filename="Federal_W4.pdf"',
+        },
+      });
+    } catch (error: any) {
+      console.error('[PAYROLL-PACKET-COMMON FW4] PDF generation error:', error);
+      return NextResponse.json(
+        { error: 'Failed to generate FW4 PDF', details: error.message },
+        { status: 500 },
+      );
+    }
+  }
 
   if (!PLACEHOLDER_TITLES[formKey]) {
     return NextResponse.json({ error: 'Unknown form requested' }, { status: 404 });
