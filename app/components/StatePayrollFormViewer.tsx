@@ -61,11 +61,23 @@ const escapeFieldNameForSelector = (fieldName: string) => {
   return fieldName.replace(/([^\w-])/g, '\\\\$1');
 };
 
+const getCheckboxInputsForField = (fieldName: string) => {
+  if (typeof document === 'undefined') return [];
+  const escaped = escapeFieldNameForSelector(fieldName);
+  const containers = Array.from(
+    document.querySelectorAll<HTMLDivElement>(`div[data-field-name="${escaped}"]`)
+  );
+  const inputs: HTMLInputElement[] = [];
+  containers.forEach((container) => {
+    inputs.push(...Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')));
+  });
+  return inputs;
+};
+
 const isCheckboxCheckedInDom = (fieldName: string) => {
-  if (typeof document === 'undefined') return false;
-  const selector = `input[data-field-name="${escapeFieldNameForSelector(fieldName)}"]`;
-  const input = document.querySelector<HTMLInputElement>(selector);
-  return Boolean(input?.checked);
+  const inputs = getCheckboxInputsForField(fieldName);
+  if (inputs.length === 0) return false;
+  return inputs.some((input) => input.checked);
 };
 
 function buildFormConfig(stateCode: string, forms?: FormSpec[]) {
@@ -127,6 +139,7 @@ export default function StatePayrollFormViewer({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  const fieldChangeValuesRef = useRef<Map<string, boolean>>(new Map());
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
   const [isDrawing, setIsDrawing] = useState(false);
@@ -153,6 +166,10 @@ export default function StatePayrollFormViewer({
       router.replace(`${basePath}/form-viewer?form=${firstFormId}`);
     }
   }, [basePath, firstFormId, formConfig, router, selectedForm]);
+
+  useEffect(() => {
+    fieldChangeValuesRef.current.clear();
+  }, [currentForm?.formId, selectedForm]);
 
   useEffect(() => {
     return () => {
@@ -285,12 +302,15 @@ export default function StatePayrollFormViewer({
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
-  const handleFieldChange = () => {
+  const handleFieldChange = (fieldId: string, fieldName: string, value: string) => {
+    const isChecked = value !== 'false' && value !== '';
+    fieldChangeValuesRef.current.set(fieldName, isChecked);
+
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
     autoSaveTimerRef.current = setTimeout(() => {
-      handleManualSave();
+      handleManualSave(currentForm?.formId);
     }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
@@ -451,6 +471,70 @@ export default function StatePayrollFormViewer({
     console.log('[VALIDATION] currentSignature:', currentSignature);
     setMissingRequiredFields([]);
     const shouldSaveOnMissing = stateCode === 'ny' || stateCode === 'nv';
+
+    const ensureFilingStatusSelected = (form: any, getFieldPage: (field: any) => number) => {
+      const filingStatusFields = [
+        'topmostSubform[0].Page1[0].c1_1[0]',
+        'topmostSubform[0].Page1[0].c1_1[1]',
+        'topmostSubform[0].Page1[0].c1_1[2]',
+      ];
+
+      let hasFilingStatus = filingStatusFields.some((fieldName) =>
+        fieldChangeValuesRef.current.get(fieldName)
+      );
+
+      if (!hasFilingStatus) {
+        hasFilingStatus = filingStatusFields.some((fieldName) =>
+          isCheckboxCheckedInDom(fieldName)
+        );
+      }
+
+      if (!hasFilingStatus) {
+        for (const fieldName of filingStatusFields) {
+          try {
+            const field = form.getCheckBox(fieldName);
+            if (field.isChecked()) {
+              hasFilingStatus = true;
+              break;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldName} not found or error checking:`, err);
+          }
+        }
+      }
+
+      if (!hasFilingStatus) {
+        let page = 1;
+        try {
+          const field = form.getCheckBox(filingStatusFields[0]);
+          page = getFieldPage(field);
+        } catch {
+          page = 1;
+        }
+        const message =
+          'Please select at least one filing status option in Step 1(c) on page 1 of the PDF';
+        setMissingRequiredFields(filingStatusFields);
+        setValidationError(message);
+        setEmptyFieldPage(page);
+
+        if (shouldSaveOnMissing) {
+          void handleManualSave();
+        }
+
+        setTimeout(() => {
+          const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+          if (canvas) {
+            canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } else {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+          }
+        }, 100);
+
+        return false;
+      }
+
+      return true;
+    };
 
     // Check if signature is required but not provided
     if (currentForm?.requiresSignature && !currentSignature) {
@@ -1226,7 +1310,6 @@ export default function StatePayrollFormViewer({
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_03[0]', friendly: 'Step 1(c) Address (employee)' },
           { name: 'topmostSubform[0].Page1[0].Step1a[0].f1_04[0]', friendly: 'Step 1(d) City or town, state, and ZIP code (employee)' },
           { name: 'topmostSubform[0].Page1[0].f1_05[0]', friendly: 'Social Security number (employee)' },
-          { name: 'Employee Date', friendly: 'Employee date' },
         ];
 
         for (const fieldInfo of requiredFields) {
@@ -1256,53 +1339,7 @@ export default function StatePayrollFormViewer({
           }
         }
 
-        const step1cFilingStatusFields = [
-          'topmostSubform[0].Page1[0].c1_1[0]',
-          'topmostSubform[0].Page1[0].c1_1[1]',
-          'topmostSubform[0].Page1[0].c1_1[2]',
-        ];
-
-        let hasFilingStatus = step1cFilingStatusFields.some((fieldName) =>
-          isCheckboxCheckedInDom(fieldName)
-        );
-
-        if (!hasFilingStatus) {
-          for (const fieldName of step1cFilingStatusFields) {
-            try {
-              const field = form.getCheckBox(fieldName);
-              if (field.isChecked()) {
-                hasFilingStatus = true;
-                break;
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldName} not found or error checking:`, err);
-            }
-          }
-        }
-
-        if (!hasFilingStatus) {
-          let page = 1;
-          try {
-            const field = form.getCheckBox(step1cFilingStatusFields[0]);
-            page = getFieldPage(field);
-          } catch {
-            page = 1;
-          }
-          const message = 'Please select at least one filing status option in Step 1(c) on page 1 of the PDF';
-          setMissingRequiredFields(step1cFilingStatusFields);
-          setValidationError(message);
-          setEmptyFieldPage(page);
-
-          
-          setTimeout(() => {
-            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-            if (canvas) {
-              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            } else {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }, 100);
-
+        if (!ensureFilingStatusSelected(form, getFieldPage)) {
           return;
         }
 
@@ -1416,57 +1453,7 @@ export default function StatePayrollFormViewer({
           }
         }
 
-        const filingStatusFields = [
-          'topmostSubform[0].Page1[0].c1_1[0]',
-          'topmostSubform[0].Page1[0].c1_1[1]',
-          'topmostSubform[0].Page1[0].c1_1[2]',
-        ];
-
-        let hasFilingStatus = filingStatusFields.some((fieldName) =>
-          isCheckboxCheckedInDom(fieldName)
-        );
-
-        if (!hasFilingStatus) {
-          for (const fieldName of filingStatusFields) {
-            try {
-              const field = form.getCheckBox(fieldName);
-              if (field.isChecked()) {
-                hasFilingStatus = true;
-                break;
-              }
-            } catch (err) {
-              console.warn(`Field ${fieldName} not found or error checking:`, err);
-            }
-          }
-        }
-
-        if (!hasFilingStatus) {
-          let page = 1;
-          try {
-            const field = form.getCheckBox(filingStatusFields[0]);
-            page = getFieldPage(field);
-          } catch {
-            page = 1;
-          }
-          const message =
-            'Please select at least one filing status option in Step 1(c) on page 1 of the PDF';
-          setMissingRequiredFields(filingStatusFields);
-          setValidationError(message);
-          setEmptyFieldPage(page);
-
-          if (shouldSaveOnMissing) {
-            void handleManualSave();
-          }
-
-          setTimeout(() => {
-            const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
-            if (canvas) {
-              canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-            } else {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          }, 100);
-
+        if (!ensureFilingStatusSelected(form, getFieldPage)) {
           return;
         }
 
@@ -1574,6 +1561,10 @@ export default function StatePayrollFormViewer({
           } catch (err) {
             console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
           }
+        }
+
+        if (!ensureFilingStatusSelected(form, getFieldPage)) {
+          return;
         }
 
         setValidationError(null);

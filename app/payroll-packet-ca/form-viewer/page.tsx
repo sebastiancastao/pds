@@ -636,8 +636,7 @@ function FormViewerContent() {
           { name: 'topmostSubform[0].Page1[0].f1_05[0]', page: 1, friendly: 'Social Security number' },
           { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_06[0]', page: 1, friendly: 'Step 3: Qualifying children (under 17) amount' },
           { name: 'topmostSubform[0].Page1[0].Step3_ReadOrder[0].f1_07[0]', page: 1, friendly: 'Step 3: Other dependents amount' },
-          { name: 'topmostSubform[0].Page1[0].f1_09[0]', page: 1, friendly: 'Step 3: Total dependents amount' },
-          { name: 'Employee Date', page: 1, friendly: 'Employee date' }
+          { name: 'topmostSubform[0].Page1[0].f1_09[0]', page: 1, friendly: 'Step 3: Total dependents amount' }
         ];
 
         for (const fieldInfo of requiredFields) {
@@ -670,8 +669,7 @@ function FormViewerContent() {
         const filingStatusFields = [
           'topmostSubform[0].Page1[0].c1_1[0]',
           'topmostSubform[0].Page1[0].c1_1[1]',
-          'topmostSubform[0].Page1[0].c1_1[2]',
-          'topmostSubform[0].Page1[0].c1_2[0]'
+          'topmostSubform[0].Page1[0].c1_1[2]'
         ];
 
         let hasFilingStatus = filingStatusFields.some((fieldName) =>
@@ -694,7 +692,7 @@ function FormViewerContent() {
 
         if (!hasFilingStatus) {
           setMissingRequiredFields(filingStatusFields);
-          setValidationError('Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household / Exempt');
+          setValidationError('Please select a filing status on page 1 of the PDF: Filing Status: Single / Married / Head of Household');
           setEmptyFieldPage(1);
           void handleManualSave();
 
