@@ -2322,6 +2322,7 @@ export default function StatePayrollFormViewer({
             pdfUrl={currentForm.api}
             formId={currentForm.formId}
             onSave={handlePDFSave}
+            //@ts-ignore
             onFieldChange={handleFieldChange}
             onContinue={handleContinue}
             skipButtonDetection={!currentForm.requiresSignature}
