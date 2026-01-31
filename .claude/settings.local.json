@@ -46,7 +46,13 @@
       "Bash(timeout 30 npx next build:*)",
       "Bash(git pull:*)",
       "Bash(git fetch:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(git rev-list:*)",
+      "Bash(git cat-file:*)",
+      "Bash(sort:*)",
+      "Bash(GIT_TRACE=1 git push:*)",
+      "Bash(git repack:*)",
+      "Bash(npx eslint:*)"
     ],
     "deny": [],
     "ask": []

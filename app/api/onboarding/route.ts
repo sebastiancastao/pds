@@ -15,8 +15,6 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
  */
 export async function GET(req: NextRequest) {
   try {
-    console.log('[Onboarding API] GET request received');
-
     // Create auth client
     const cookieStore = await cookies();
     const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
@@ -49,13 +47,6 @@ export async function GET(req: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    console.log('[Onboarding API] User role check:', {
-      userId: user.id,
-      userData,
-      userError,
-      role: userData?.role
-    });
-
     if (userError) {
       console.error('[Onboarding API] Error fetching user role:', userError);
       return NextResponse.json({
@@ -69,35 +60,50 @@ export async function GET(req: NextRequest) {
     const isAdminLike = adminLikeRoles.includes(normalizedRole);
 
     if (!isAdminLike) {
-      console.log('[Onboarding API] Access denied for role:', normalizedRole);
       return NextResponse.json({
         error: 'Access denied. Admin privileges required.',
         currentRole: normalizedRole
       }, { status: 403 });
     }
 
-    console.log('[Onboarding API] Access granted for role:', normalizedRole);
-
-    // Fetch all profiles with their users data
-    const { data: profiles, error: profilesError } = await adminClient
-      .from('profiles')
-      .select(`
-        id,
-        user_id,
-        first_name,
-        last_name,
-        phone,
-        created_at,
-        onboarding_completed_at,
-        users!inner (
+    // Fetch all data in parallel for better performance
+    const [profilesResult, onboardingResult, formProgressResult] = await Promise.all([
+      // Fetch all profiles with their users data
+      adminClient
+        .from('profiles')
+        .select(`
           id,
-          email,
-          role,
-          is_temporary_password,
-          must_change_password,
-          background_check_completed
-        )
-      `);
+          user_id,
+          first_name,
+          last_name,
+          phone,
+          created_at,
+          onboarding_completed_at,
+          users!inner (
+            id,
+            email,
+            role,
+            is_temporary_password,
+            must_change_password,
+            background_check_completed
+          )
+        `),
+      // Fetch all onboarding statuses
+      adminClient
+        .from('vendor_onboarding_status')
+        .select('*'),
+      // Fetch form progress - only user_id, form_name, updated_at (NOT form_data - it's huge!)
+      adminClient
+        .from('pdf_form_progress')
+        .select('user_id, form_name, updated_at')
+        .not('form_data', 'eq', '')
+        .not('form_data', 'is', null)
+        .order('updated_at', { ascending: false })
+    ]);
+
+    const { data: profiles, error: profilesError } = profilesResult;
+    const { data: onboardingData, error: onboardingError } = onboardingResult;
+    const { data: formProgressData, error: formProgressError } = formProgressResult;
 
     if (profilesError) {
       console.error('Error fetching profiles:', profilesError);
@@ -107,24 +113,9 @@ export async function GET(req: NextRequest) {
       }, { status: 500 });
     }
 
-    // Fetch all onboarding statuses
-    const { data: onboardingData, error: onboardingError } = await adminClient
-      .from('vendor_onboarding_status')
-      .select('*');
-
     if (onboardingError) {
       console.error('Error fetching onboarding data:', onboardingError);
     }
-
-    // Fetch latest form progress for each user
-    // Get all form progress entries and we'll pick the latest per user
-    // Only include entries that have actual form data (non-empty)
-    const { data: formProgressData, error: formProgressError } = await adminClient
-      .from('pdf_form_progress')
-      .select('user_id, form_name, form_data, updated_at')
-      .not('form_data', 'eq', '')
-      .not('form_data', 'is', null)
-      .order('updated_at', { ascending: false });
 
     if (formProgressError) {
       console.error('Error fetching form progress data:', formProgressError);
@@ -276,13 +267,7 @@ export async function GET(req: NextRequest) {
           continue;
         }
 
-        // Skip entries with no actual form data or very small data (likely empty/template PDFs)
-        // Minimum threshold: 1000 chars of base64 data (~750 bytes of PDF data)
-        const formDataLength = progress.form_data?.length || 0;
-        if (formDataLength < 1000) {
-          continue;
-        }
-
+        // Note: DB query already filters out empty/null form_data
         const stateCode = extractStateCode(progress.form_name);
         const formId = extractFormId(progress.form_name);
         const position = getFormPosition(progress.form_name);
@@ -318,12 +303,20 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Create a Map for O(1) onboarding status lookups (instead of O(n) .find() in loop)
+    const onboardingStatusByProfileId = new Map<string, any>();
+    if (onboardingData) {
+      for (const status of onboardingData) {
+        onboardingStatusByProfileId.set(status.profile_id, status);
+      }
+    }
+
     // Transform the data
     const users = (profiles || []).map((profile: any) => {
       const userObj = profile?.users ? (Array.isArray(profile.users) ? profile.users[0] : profile.users) : null;
 
-      // Find onboarding status for this profile
-      const onboardingStatus = (onboardingData || []).find((status: any) => status.profile_id === profile.id);
+      // Get onboarding status for this profile (O(1) lookup)
+      const onboardingStatus = onboardingStatusByProfileId.get(profile.id) || null;
 
       // Safely decrypt names
       const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
@@ -374,8 +367,6 @@ export async function GET(req: NextRequest) {
         completed_forms: completedForms,
       };
     });
-
-    console.log('[Onboarding API] Returning', users.length, 'users');
 
     return NextResponse.json({ users }, { status: 200 });
 
