@@ -339,20 +339,22 @@ export default function MealWaiver10to12Page() {
           }}
         >
           <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>
-            California Labor Code Section 512
+            10-12 Hour Break Waiver
           </p>
           <p style={{ marginBottom: '16px' }}>
-            Under California law, non-exempt employees who work more than five (5) hours in a workday are entitled to a thirty (30) minute unpaid meal period. This waiver lets you document that you will voluntarily waive the second (and third, if applicable) meal period for the duration of a long shift.
+            I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
           </p>
-          <p style={{ marginBottom: '16px' }}>By signing this waiver, I acknowledge that:</p>
-          <ul style={{ marginLeft: '24px', marginBottom: '16px' }}>
-            <li style={{ marginBottom: '8px' }}>I understand my right to take an unpaid 30-minute meal period when working more than 5 hours.</li>
-            <li style={{ marginBottom: '8px' }}>I voluntarily choose to waive the second meal period when my workday spans ten hours, or both the second and third meal periods when it spans twelve hours.</li>
-            <li style={{ marginBottom: '8px' }}>I may revoke this waiver at any time by providing written notice to my employer.</li>
-            <li style={{ marginBottom: '8px' }}>This waiver is only in effect for my scheduled shift length.</li>
-          </ul>
-          <p style={{ fontStyle: 'italic', color: '#666' }}>
-            Signing this agreement does not affect other rights you have under California labor law for shifts that exceed twelve hours.
+          <p style={{ marginBottom: '16px' }}>
+            I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.
+          </p>
+          <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>
+            General Terms
+          </p>
+          <p style={{ marginBottom: '16px' }}>
+            I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.
+          </p>
+          <p style={{ marginBottom: '0' }}>
+            I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
           </p>
         </div>
 

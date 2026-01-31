@@ -305,22 +305,22 @@ export default function MealWaiver6HourPage() {
           color: '#333'
         }}>
           <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>
-            California Labor Code Section 512
+            6 Hour Meal Break Waiver
           </p>
           <p style={{ marginBottom: '16px' }}>
-            Under California law, non-exempt employees who work more than five (5) hours in a workday are entitled to a thirty (30) minute unpaid meal period. However, if your total workday is <strong>no more than six (6) hours</strong>, you may voluntarily agree to waive this meal period.
+            I understand that my employer has provided me with an unpaid meal period of at least 30 minutes in length whenever I work more than 5 hours in a workday. Although I am entitled to take this meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 5 hours, but no more than 6 hours, I prefer and choose to voluntarily waive my 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
           </p>
           <p style={{ marginBottom: '16px' }}>
-            By signing this waiver, I acknowledge that:
+            I understand that my waiver of the meal period is only permissible if my shift will be no more than 6 hours. I confirm that my employer has not encouraged me to skip my meal period at any time, and that I have the opportunity to take my uninterrupted 30-minute meal period on any day I wish to take it.
           </p>
-          <ul style={{ marginLeft: '24px', marginBottom: '16px' }}>
-            <li style={{ marginBottom: '8px' }}>I understand my right to take an unpaid 30-minute meal period when working more than 5 hours per day.</li>
-            <li style={{ marginBottom: '8px' }}>I voluntarily choose to waive this meal period when my total work period is 6 hours or less.</li>
-            <li style={{ marginBottom: '8px' }}>I may revoke this waiver at any time by providing written notice to my employer.</li>
-            <li style={{ marginBottom: '8px' }}>This waiver only applies when my total work period does not exceed 6 hours.</li>
-          </ul>
-          <p style={{ fontStyle: 'italic', color: '#666' }}>
-            This agreement is voluntary and does not affect my rights under California labor law for shifts exceeding 6 hours.
+          <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>
+            General Terms
+          </p>
+          <p style={{ marginBottom: '16px' }}>
+            I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.
+          </p>
+          <p style={{ marginBottom: '0' }}>
+            I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
           </p>
         </div>
 

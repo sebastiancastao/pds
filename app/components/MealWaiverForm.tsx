@@ -427,18 +427,33 @@ export default function MealWaiverForm({
             color: '#333',
           }}
         >
-          <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>What this waiver means</p>
+          {allowedTypes.includes('6_hour') && !allowedTypes.includes('10_hour') ? (
+            <>
+              <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>6 Hour Meal Break Waiver</p>
+              <p style={{ marginBottom: '16px' }}>
+                I understand that my employer has provided me with an unpaid meal period of at least 30 minutes in length whenever I work more than 5 hours in a workday. Although I am entitled to take this meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 5 hours, but no more than 6 hours, I prefer and choose to voluntarily waive my 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
+              </p>
+              <p style={{ marginBottom: '16px' }}>
+                I understand that my waiver of the meal period is only permissible if my shift will be no more than 6 hours. I confirm that my employer has not encouraged me to skip my meal period at any time, and that I have the opportunity to take my uninterrupted 30-minute meal period on any day I wish to take it.
+              </p>
+            </>
+          ) : (
+            <>
+              <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>10-12 Hour Break Waiver</p>
+              <p style={{ marginBottom: '16px' }}>
+                I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.
+              </p>
+              <p style={{ marginBottom: '16px' }}>
+                I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.
+              </p>
+            </>
+          )}
+          <p style={{ marginBottom: '16px', fontWeight: 'bold' }}>General Terms</p>
           <p style={{ marginBottom: '16px' }}>
-            You are choosing to waive a meal period for the selected shift length. You may revoke this waiver at any time by notifying your manager and taking your entitled meal period.
+            I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.
           </p>
-          <ul style={{ marginLeft: '24px', marginBottom: '16px' }}>
-            <li style={{ marginBottom: '8px' }}>You understand your right to an unpaid 30-minute meal period.</li>
-            <li style={{ marginBottom: '8px' }}>You are voluntarily waiving that period for the shift length selected above ({typeLabel}).</li>
-            <li style={{ marginBottom: '8px' }}>You can always choose to take a meal period on any day by informing your supervisor.</li>
-            <li style={{ marginBottom: '8px' }}>This waiver may be revoked by you at any time.</li>
-          </ul>
-          <p style={{ fontStyle: 'italic', color: '#666' }}>
-            Signing below records your consent so you can continue through the payroll packet without downloading a separate PDF.
+          <p style={{ marginBottom: '0' }}>
+            I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.
           </p>
         </div>
 
