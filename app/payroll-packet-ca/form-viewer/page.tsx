@@ -184,6 +184,11 @@ function FormViewerContent() {
       autoSaveTimerRef.current = null;
     }
     setMissingRequiredFields([]);
+    // Reset PDF bytes ref for current form to force reload
+    pdfBytesRef.current = null;
+    // Clear validation state
+    setValidationError(null);
+    setEmptyFieldPage(null);
   }, [formName]);
 
   const getPdfBytesForForm = (formIdOverride?: string) => {
@@ -308,7 +313,29 @@ function FormViewerContent() {
       }
 
       // Get session for authentication
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      console.log('[SAVE] Session check:', {
+        hasSession: !!session,
+        hasAccessToken: !!session?.access_token,
+        userId: session?.user?.id,
+        sessionError: sessionError?.message
+      });
+
+      // If no session, try to get user (which triggers refresh)
+      if (!session?.access_token) {
+        console.log('[SAVE] No session, attempting to refresh...');
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        console.log('[SAVE] User refresh result:', { hasUser: !!user, error: userError?.message });
+
+        // Try getting session again after refresh attempt
+        const { data: { session: refreshedSession } } = await supabase.auth.getSession();
+        if (refreshedSession?.access_token) {
+          console.log('[SAVE] Session refreshed successfully');
+        }
+      }
+
+      // Get the latest session
+      const { data: { session: finalSession } } = await supabase.auth.getSession();
 
       // Convert Uint8Array to base64
       const base64 = btoa(
@@ -334,7 +361,7 @@ function FormViewerContent() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          ...(finalSession?.access_token ? { Authorization: `Bearer ${finalSession.access_token}` } : {})
         },
         credentials: 'same-origin',
         body: JSON.stringify(payload),
@@ -348,10 +375,10 @@ function FormViewerContent() {
           setLastSaved(new Date());
           setTimeout(() => setSaveStatus('idle'), 2000);
 
-          if (session?.user?.id && typeof window !== 'undefined') {
+          if (finalSession?.user?.id && typeof window !== 'undefined') {
             const lastPath = `${window.location.pathname}${window.location.search}`;
             localStorage.setItem("onboarding_last_form", JSON.stringify({
-              userId: session.user.id,
+              userId: finalSession.user.id,
               path: lastPath,
               savedAt: new Date().toISOString(),
             }));
@@ -1166,23 +1193,26 @@ function FormViewerContent() {
       }
     }
 
+    // Capture formId at this point to prevent race conditions
+    const formIdToSave = currentForm.formId;
+
     // Save before continuing if we have data
     if (currentPdfBytes) {
       console.log('Saving before continue...');
-      await handleManualSave(currentForm.formId);
+      await handleManualSave(formIdToSave);
       console.log('Save completed');
     } else {
       console.log('No PDF data to save, continuing anyway');
     }
 
     if (currentForm.requiresSignature && currentSignature) {
-      console.log('[CONTINUE] Saving signature for form:', currentForm.formId);
-      await saveSignatureToDatabase(currentSignature);
+      console.log('[CONTINUE] Saving signature for form:', formIdToSave);
+      await saveSignatureToDatabase(currentSignature, formIdToSave);
     } else {
       console.log('[CONTINUE] No signature save needed:', {
         requiresSignature: currentForm.requiresSignature,
         hasSignature: !!currentSignature,
-        formId: currentForm.formId
+        formId: formIdToSave
       });
     }
 
@@ -1201,23 +1231,28 @@ function FormViewerContent() {
   };
 
   const handleBack = async () => {
-    const currentPdfBytes = getPdfBytesForForm();
+    // Capture formId at the start to prevent race conditions during async operations
+    const formIdToSave = currentForm.formId;
+    const currentPdfBytes = getPdfBytesForForm(formIdToSave);
+
     if (currentPdfBytes) {
-      await handleManualSave(currentForm.formId);
+      await handleManualSave(formIdToSave);
     }
 
     if (currentForm.requiresSignature && currentSignature) {
-      await saveSignatureToDatabase(currentSignature);
+      await saveSignatureToDatabase(currentSignature, formIdToSave);
     }
 
-    // Find the previous form
-    const formNames = Object.keys(formConfig);
-    const currentIndex = formNames.indexOf(formName);
+    // Find the previous form by looking for which form has 'next' pointing to current form
+    const prevFormEntry = Object.entries(formConfig).find(
+      ([, config]) => config.next === formName
+    );
 
-    if (currentIndex > 0) {
-      const prevForm = formNames[currentIndex - 1];
-      router.push(`/payroll-packet-ca/form-viewer?form=${prevForm}`);
+    if (prevFormEntry) {
+      const [prevFormName] = prevFormEntry;
+      router.push(`/payroll-packet-ca/form-viewer?form=${prevFormName}`);
     } else {
+      // No previous form found - this is the first form, go to home
       router.push('/');
     }
   };
@@ -1299,9 +1334,15 @@ function FormViewerContent() {
   };
 
   // Function to save signature to database
-  const saveSignatureToDatabase = async (signatureData: string) => {
+  const saveSignatureToDatabase = async (signatureData: string, formIdOverride?: string) => {
+    // Use provided formId or fall back to currentForm.formId
+    const formId = formIdOverride || currentForm.formId;
+    const formDisplay = formIdOverride
+      ? formConfig[Object.keys(formConfig).find(key => formConfig[key].formId === formIdOverride) || '']?.display || currentForm.display
+      : currentForm.display;
+
     // Check if this exact signature was already saved for this form
-    const signatureKey = `${currentForm.formId}_${signatureData}`;
+    const signatureKey = `${formId}_${signatureData}`;
     if (lastSavedSignatureRef.current === signatureKey) {
       console.log('[SIGNATURE] ⏭️ Signature already saved, skipping');
       return;
@@ -1309,9 +1350,9 @@ function FormViewerContent() {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const currentPdfBytes = getPdfBytesForForm(currentForm.formId);
+      const currentPdfBytes = getPdfBytesForForm(formId);
 
-      console.log('[SIGNATURE] 💾 Saving signature for form:', currentForm.formId);
+      console.log('[SIGNATURE] 💾 Saving signature for form:', formId);
 
       const response = await fetch('/api/form-signatures/save', {
         method: 'POST',
@@ -1321,8 +1362,8 @@ function FormViewerContent() {
         },
         credentials: 'same-origin',
         body: JSON.stringify({
-          formId: currentForm.formId,
-          formType: currentForm.display,
+          formId: formId,
+          formType: formDisplay,
           signatureData: signatureData,
           formData: currentPdfBytes ? btoa(
             Array.from(currentPdfBytes)
