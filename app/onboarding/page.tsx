@@ -44,11 +44,28 @@ interface User {
   completed_forms: string[];
 }
 
+interface SignatureAuditEntry {
+  formName: string;
+  normalizedFormName: string;
+  displayName: string;
+  signatureType: string | null;
+  sourceForm: string;
+  hasData: boolean;
+  isDrawing: boolean;
+  isValid: boolean;
+  hasRealDrawing: boolean;
+  reason: string;
+}
+
+const SIGNATURE_AUDIT_HEADER = 'x-signature-audit';
+const SIGNATURE_AUDIT_VERSION_HEADER = 'x-signature-audit-version';
+
 export default function OnboardingPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState<string | null>(null);
   const [downloadingPdf, setDownloadingPdf] = useState<string | null>(null);
+  const [signatureAudits, setSignatureAudits] = useState<Record<string, SignatureAuditEntry[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
@@ -361,6 +378,24 @@ const handleExportToExcel = async () => {
         console.log('[PDF Download] Reading as ArrayBuffer...');
         const arrayBuffer = await response.arrayBuffer();
         console.log('[PDF Download] ArrayBuffer size:', arrayBuffer.byteLength, 'bytes', `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
+
+        const auditHeaderValue =
+          response.headers.get(SIGNATURE_AUDIT_HEADER) ||
+          response.headers.get(SIGNATURE_AUDIT_HEADER.toUpperCase());
+        if (auditHeaderValue) {
+          try {
+            const decodedAudit = atob(auditHeaderValue);
+            const parsedAudit = JSON.parse(decodedAudit) as SignatureAuditEntry[];
+            if (Array.isArray(parsedAudit)) {
+              setSignatureAudits((prev) => ({
+                ...prev,
+                [userId]: parsedAudit,
+              }));
+            }
+          } catch (auditError) {
+            console.error('[PDF Download] Failed to decode signature audit header:', auditError);
+          }
+        }
 
         // Convert ArrayBuffer to Blob
         blob = new Blob([arrayBuffer], { type: 'application/pdf' });
@@ -698,7 +733,11 @@ const handleExportToExcel = async () => {
                     </td>
                   </tr>
                 ) : (
-                  filteredUsers.map((user) => (
+                  filteredUsers.map((user) => {
+                    const auditEntries = signatureAudits[user.user_id];
+                    const realStrokeCount = auditEntries?.filter((entry) => entry.hasRealDrawing).length ?? 0;
+                    const blankCount = auditEntries ? auditEntries.length - realStrokeCount : 0;
+                    return (
                     <tr key={user.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">{user.full_name}</div>
@@ -860,12 +899,41 @@ const handleExportToExcel = async () => {
                             </button>
                           )}
                         </div>
+                        {auditEntries && auditEntries.length > 0 && (
+                          <div className="mt-2 text-left text-[11px] text-gray-500">
+                            <details className="border border-gray-200 rounded-md px-2 py-1 bg-gray-50">
+                              <summary className="flex items-center justify-between text-[11px] font-semibold text-gray-700">
+                                Signature audit
+                                <span className="text-[10px] text-gray-500">
+                                  {realStrokeCount} real strokes · {blankCount} blank
+                                </span>
+                              </summary>
+                              <ul className="mt-1 space-y-0.5 text-[10px] text-gray-600 max-h-32 overflow-y-auto">
+                                {auditEntries.map((entry) => (
+                                  <li key={`${entry.formName}-${entry.sourceForm}`} className="flex flex-col gap-0.5">
+                                    <span
+                                      className={`font-semibold ${
+                                        entry.hasRealDrawing ? 'text-emerald-600' : 'text-rose-600'
+                                      }`}
+                                    >
+                                      {entry.displayName}
+                                    </span>
+                                    <span className="text-[10px] text-gray-500">
+                                      {entry.hasRealDrawing ? 'real strokes' : 'blank/invalid'} · {entry.reason}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </details>
+                          </div>
+                        )}
                         {updating === user.id && (
                           <div className="mt-1 text-xs text-gray-500">Updating...</div>
                         )}
                       </td>
                     </tr>
-                  ))
+                  );
+                  })
                 )}
               </tbody>
             </table>

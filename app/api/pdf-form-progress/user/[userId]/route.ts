@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, StandardFonts, rgb } from 'pdf-lib';
+import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 
@@ -48,6 +49,19 @@ type SignatureEntry = {
   signed_at?: string | null;
 };
 
+type SignatureAuditEntry = {
+  formName: string;
+  normalizedFormName: string;
+  displayName: string;
+  signatureType: string | null;
+  sourceForm: string;
+  hasData: boolean;
+  isDrawing: boolean;
+  isValid: boolean;
+  hasRealDrawing: boolean;
+  reason: string;
+};
+
 const parseSignedAt = (value?: string | null): number | null => {
   if (!value) return null;
   const time = Date.parse(value);
@@ -68,6 +82,74 @@ const hasDrawingSignature = (entry: SignatureEntry) => {
     data.startsWith('data:image/')
   );
 };
+
+const isBlankSignaturePng = (base64: string) => {
+  try {
+    if (!base64) return true;
+    const buffer = Buffer.from(base64, 'base64');
+    if (!buffer.length) return true;
+    const png = PNG.sync.read(buffer);
+    const data = png.data;
+    for (let offset = 0; offset < data.length; offset += 4) {
+      const r = data[offset];
+      const g = data[offset + 1];
+      const b = data[offset + 2];
+      const a = data[offset + 3];
+
+      if (a < 16) {
+        continue;
+      }
+
+      if (r < 240 || g < 240 || b < 240) {
+        return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const getSignatureValidityInfo = (entry?: SignatureEntry | null) => {
+  if (!entry?.signature_data) return { valid: false, reason: 'missing' };
+  const data = entry.signature_data.trim();
+  if (!data) return { valid: false, reason: 'empty/whitespace' };
+  const isImage = data.toLowerCase().startsWith('data:image/');
+  if (isImage) {
+    const { format, base64 } = normalizeSignatureImage(data);
+    if (!base64) return { valid: false, reason: 'missing image data' };
+    if (format === 'png' && isBlankSignaturePng(base64)) {
+      return { valid: false, reason: 'blank image' };
+    }
+    const base64Length = base64.length;
+    if (base64Length <= 50) {
+      return { valid: false, reason: `image too small (${base64Length} chars)` };
+    }
+  } else if (data.length < 2) {
+    return { valid: false, reason: `typed too short (${data.length} chars)` };
+  }
+  return { valid: true, reason: 'valid' };
+};
+
+const isValidSignature = (entry: SignatureEntry | null | undefined): boolean => {
+  return getSignatureValidityInfo(entry).valid;
+};
+
+const SIGNATURE_FALLBACK_PRIORITY = [
+  'employee-handbook',
+  'adp-deposit',
+  'fw4',
+  'i9',
+  'ca-de4',
+  'state-tax',
+  'ny-state-tax',
+  'wi-state-tax',
+  'az-state-tax',
+  'notice-to-employee',
+  'meal-waiver-6hour',
+  'meal-waiver-10-12',
+];
 
 const upsertSignatureEntry = (
   map: Map<string, SignatureEntry>,
@@ -134,6 +216,9 @@ const MEAL_WAIVER_TITLES: Record<string, string> = {
   '12_hour': 'Meal Period Waiver (12 Hour)',
 };
 const CACHE_FORMAT_VERSION = 'v2';
+const SIGNATURE_AUDIT_HEADER = 'x-signature-audit';
+const SIGNATURE_AUDIT_VERSION = '1';
+const SIGNATURE_AUDIT_VERSION_HEADER = 'x-signature-audit-version';
 
 const isBackgroundCheckFormName = (value?: string | null) => {
   if (!value) return false;
@@ -831,6 +916,19 @@ export async function GET(
       .eq('id', userId)
       .maybeSingle();
 
+    const { data: targetProfile, error: profileError } = await supabaseAdmin
+      .from('profiles')
+      .select('state')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (profileError) {
+      console.warn('[PDF_FORMS] Could not fetch profile state for user:', userId, profileError.message);
+    }
+
+    const normalizedUserState = (targetProfile?.state || '').toString().toLowerCase().trim();
+    const isTargetStateWI = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin';
+
     const latestFormTimestamp = maxTimestamp(forms.map((form) => form.updated_at));
     let mealWaiverLatestUpdate: string | null = null;
 
@@ -839,6 +937,7 @@ export async function GET(
     const signatureByForm = new Map<string, SignatureEntry>();
     let latestSignatureTimestamp: string | null = null;
     let legacySignature: SignatureEntry | null = null;
+    const signatureAuditEntries: SignatureAuditEntry[] = [];
 
     if (useFormSignatures) {
       const sigFetchStart = Date.now();
@@ -909,6 +1008,23 @@ export async function GET(
             }
           });
           console.log('[PDF_FORMS] Created signature map with', signatureByForm.size, 'unique form mappings');
+          console.log('[PDF_FORMS] 🔍 SIGNATURE VALIDITY CHECK:');
+          for (const [formKey, sigEntry] of signatureByForm.entries()) {
+            const dataPreview = sigEntry.signature_data?.substring(0, 80) || '(empty)';
+            const isImage = sigEntry.signature_data?.toLowerCase().startsWith('data:image/') || false;
+            const reportedLength = isImage
+              ? sigEntry.signature_data?.split(',')[1]?.length || 0
+              : sigEntry.signature_data?.trim().length || 0;
+            const validityInfo = getSignatureValidityInfo(sigEntry);
+            console.log(
+              `[PDF_FORMS]   "${formKey}": ${validityInfo.valid ? '✅ VALID' : '❌ INVALID'} | Type: ${
+                sigEntry.signature_type || 'unknown'
+              } | ${isImage ? `Image (${reportedLength} chars)` : `Text (${reportedLength} chars)`} | Reason: ${validityInfo.reason}`
+            );
+            if (!validityInfo.valid) {
+              console.log(`[PDF_FORMS]     Preview: ${dataPreview}...`);
+            }
+          }
           console.log(`[PDF_FORMS] ⏱️ Signature fetch & processing took ${Date.now() - sigFetchStart}ms`);
         } else {
           console.log('[PDF_FORMS] No signatures found for user', userId, 'in table', signatureTableUsed);
@@ -1177,18 +1293,70 @@ export async function GET(
         const formPageCount = formPdf.getPageCount();
 
         const normalizedFormName = normalizeFormKey(form.form_name || '');
-        let signatureForForm = useFormSignatures
-          ? signatureByForm.get(form.form_name) || signatureByForm.get(normalizedFormName)
-          : legacySignature;
+        const formNameLower = (form.form_name || '').toLowerCase();
+        const directFormKey = form.form_name || normalizedFormName || 'unknown-form';
+        let signatureForForm: SignatureEntry | null = null;
+        let signatureSourceForm = directFormKey;
 
-        // For employee handbook: if no specific signature found, use any available signature from other forms
-        if (isHandbook && useFormSignatures && !signatureForForm && signatureByForm.size > 0) {
-          const firstAvailableSignature = signatureByForm.values().next().value;
-          if (firstAvailableSignature) {
-            signatureForForm = firstAvailableSignature;
-            console.log('[PDF_FORMS] Employee handbook: using fallback signature from another form');
+        if (useFormSignatures) {
+          signatureForForm =
+            signatureByForm.get(directFormKey) || signatureByForm.get(normalizedFormName) || null;
+          if (signatureForForm) {
+            signatureSourceForm = signatureByForm.has(directFormKey) ? directFormKey : normalizedFormName;
+          }
+        } else if (legacySignature) {
+          signatureForForm = legacySignature;
+          signatureSourceForm = 'legacy-background-check';
+        }
+
+        if (isHandbook && useFormSignatures && signatureByForm.size > 0 && !isValidSignature(signatureForForm)) {
+          console.log('[PDF_FORMS] Employee handbook: signature missing or invalid, searching for fallback...');
+          let foundValidSignature = false;
+
+          for (const fallbackFormKey of SIGNATURE_FALLBACK_PRIORITY) {
+            const candidateSignature = signatureByForm.get(fallbackFormKey);
+            if (isValidSignature(candidateSignature)) {
+              signatureForForm = candidateSignature!;
+              signatureSourceForm = fallbackFormKey;
+              console.log(`[PDF_FORMS] Employee handbook: using valid signature from "${fallbackFormKey}"`);
+              foundValidSignature = true;
+              break;
+            }
+          }
+
+          if (!foundValidSignature) {
+            for (const [formKey, candidateSignature] of signatureByForm.entries()) {
+              if (!SIGNATURE_FALLBACK_PRIORITY.includes(formKey) && isValidSignature(candidateSignature)) {
+                signatureForForm = candidateSignature;
+                signatureSourceForm = formKey;
+                console.log(`[PDF_FORMS] Employee handbook: using valid signature from "${formKey}" (not in priority list)`);
+                foundValidSignature = true;
+                break;
+              }
+            }
+          }
+
+          if (!foundValidSignature) {
+            console.log('[PDF_FORMS] Employee handbook: no valid signature found in any form');
           }
         }
+
+        const auditFormName = form.form_name || normalizedFormName || 'unknown-form';
+        const validityInfo = getSignatureValidityInfo(signatureForForm);
+        const hasData = !!signatureForForm?.signature_data?.trim();
+        const isDrawing = !!signatureForForm && hasDrawingSignature(signatureForForm);
+        signatureAuditEntries.push({
+          formName: auditFormName,
+          normalizedFormName,
+          displayName: displayNameForForm(auditFormName),
+          signatureType: signatureForForm?.signature_type || null,
+          sourceForm: signatureSourceForm,
+          hasData,
+          isDrawing,
+          isValid: validityInfo.valid,
+          hasRealDrawing: validityInfo.valid && isDrawing,
+          reason: validityInfo.reason,
+        });
 
         console.log('[PDF_FORMS] Processing form:', form.form_name, '(', formPageCount, 'pages)');
 
@@ -1236,6 +1404,10 @@ export async function GET(
             const isI9Form = normalizedFormName === 'i9';
             const isFW4Form = normalizedFormName === 'fw4';
             const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
+            const isWIStateTax =
+              normalizedFormName === 'wi-state-tax' ||
+              (normalizedFormName === 'state-tax' && isTargetStateWI) ||
+              formNameLower === 'wi-state-tax';
 
             for (const pageIdx of signaturePageIndexes) {
               const page = pages[pageIdx];
@@ -1249,10 +1421,18 @@ export async function GET(
               const i9OffsetX = isI9Form ? -400 : 0;
               const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 : 0;
               const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 : 0;
-              const x = Math.max(0, baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX);
+              const wiStateTaxOffsetX = isWIStateTax ? -250 : 0;
+              const wiStateTaxOffsetY = isWIStateTax ? 350 : 0;
+              const x = Math.max(
+                0,
+                baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX
+              );
               const y = isI9Form
                 ? Math.max(0, i9DateFieldY - 200)
-                : Math.min(height - signatureHeight, baseY + fw4OffsetY + noticeToEmployeeOffsetY);
+                : Math.min(
+                    height - signatureHeight,
+                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY
+                  );
 
               if (isTyped && !isDataUrl) {
                 page.drawText(signatureValue, {
@@ -1333,6 +1513,17 @@ export async function GET(
     // Return the merged PDF as a downloadable file
     const pdfBuffer = Buffer.from(mergedPdfBytes);
 
+    const auditHeaderValue =
+      signatureAuditEntries.length > 0
+        ? Buffer.from(JSON.stringify(signatureAuditEntries)).toString('base64')
+        : null;
+    const auditHeaders = auditHeaderValue
+      ? {
+          [SIGNATURE_AUDIT_HEADER]: auditHeaderValue,
+          [SIGNATURE_AUDIT_VERSION_HEADER]: SIGNATURE_AUDIT_VERSION,
+        }
+      : {};
+
     const totalTime = Date.now() - startTime;
     console.log(`[PDF_FORMS] ✅ TOTAL TIME: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}s) - Generated ${mergedPdf.getPageCount()} pages`);
 
@@ -1341,6 +1532,7 @@ export async function GET(
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${fileName}"`,
         'Content-Length': pdfBuffer.length.toString(),
+        ...auditHeaders,
         'Cache-Control': 'no-store',
       },
       status: 200,
