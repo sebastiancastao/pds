@@ -1,4 +1,3 @@
-// app/api/pdf-form-progress/user/[userId]/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, StandardFonts, rgb } from 'pdf-lib';
@@ -1178,9 +1177,18 @@ export async function GET(
         const formPageCount = formPdf.getPageCount();
 
         const normalizedFormName = normalizeFormKey(form.form_name || '');
-        const signatureForForm = useFormSignatures
+        let signatureForForm = useFormSignatures
           ? signatureByForm.get(form.form_name) || signatureByForm.get(normalizedFormName)
           : legacySignature;
+
+        // For employee handbook: if no specific signature found, use any available signature from other forms
+        if (isHandbook && useFormSignatures && !signatureForForm && signatureByForm.size > 0) {
+          const firstAvailableSignature = signatureByForm.values().next().value;
+          if (firstAvailableSignature) {
+            signatureForForm = firstAvailableSignature;
+            console.log('[PDF_FORMS] Employee handbook: using fallback signature from another form');
+          }
+        }
 
         console.log('[PDF_FORMS] Processing form:', form.form_name, '(', formPageCount, 'pages)');
 
