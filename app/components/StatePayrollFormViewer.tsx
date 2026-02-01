@@ -139,6 +139,8 @@ export default function StatePayrollFormViewer({
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pdfBytesRef = useRef<Uint8Array | null>(null);
+  // Map to store PDF bytes per form to prevent race conditions during navigation
+  const pdfBytesByFormRef = useRef<Map<string, Uint8Array>>(new Map());
   const fieldChangeValuesRef = useRef<Map<string, boolean>>(new Map());
   const [signatures, setSignatures] = useState<Map<string, string>>(new Map());
   const [currentSignature, setCurrentSignature] = useState<string>('');
@@ -168,7 +170,15 @@ export default function StatePayrollFormViewer({
   }, [basePath, firstFormId, formConfig, router, selectedForm]);
 
   useEffect(() => {
+    // Clear field change values for the new form
     fieldChangeValuesRef.current.clear();
+    // Clear the auto-save timer to prevent saving old form data with new form ID
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    // Reset pdfBytesRef on form change to avoid stale data
+    pdfBytesRef.current = null;
   }, [currentForm?.formId, selectedForm]);
 
   useEffect(() => {
@@ -297,8 +307,12 @@ export default function StatePayrollFormViewer({
   }, [currentForm?.formId, selectedForm, signatures]);
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
-    console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes`);
+    console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes for form: ${currentForm?.formId}`);
     pdfBytesRef.current = pdfBytes;
+    // Also store in the per-form map to prevent race conditions during navigation
+    if (currentForm?.formId) {
+      pdfBytesByFormRef.current.set(currentForm.formId, pdfBytes);
+    }
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
@@ -309,21 +323,36 @@ export default function StatePayrollFormViewer({
     if (autoSaveTimerRef.current) {
       clearTimeout(autoSaveTimerRef.current);
     }
+    // Capture the formId NOW, not when the timer fires, to prevent stale closure issues
+    const formIdAtCreation = currentForm?.formId;
     autoSaveTimerRef.current = setTimeout(() => {
-      //@ts-ignore
-      handleManualSave(currentForm?.formId);
+      handleManualSave(formIdAtCreation);
     }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
-  const handleManualSave = async () => {
-    if (!pdfBytesRef.current) {
-      console.warn('[SAVE] No PDF data to save');
+  const handleManualSave = async (formIdOverride?: string) => {
+    // Use the passed formId if provided (for auto-save timer), otherwise use current form
+    const formId = formIdOverride || currentForm?.formId;
+    if (!formId) {
+      console.warn('[SAVE] No form ID available for save');
       return;
     }
 
+    // Get PDF bytes from the per-form map first, then fall back to current ref
+    const pdfBytes = pdfBytesByFormRef.current.get(formId) || pdfBytesRef.current;
+    if (!pdfBytes) {
+      console.warn('[SAVE] No PDF data to save for form:', formId);
+      return;
+    }
+
+    // Check if we're saving the current form (for UI feedback)
+    const isCurrentForm = formId === currentForm?.formId;
+
     try {
-      console.log(`[SAVE] Starting save process, PDF size: ${pdfBytesRef.current.length} bytes`);
-      setSaveStatus('saving');
+      console.log(`[SAVE] Starting save process for form: ${formId}, PDF size: ${pdfBytes.length} bytes`);
+      if (isCurrentForm) {
+        setSaveStatus('saving');
+      }
 
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
@@ -336,7 +365,7 @@ export default function StatePayrollFormViewer({
 
       // Convert Uint8Array to base64
       const base64 = btoa(
-        Array.from(pdfBytesRef.current)
+        Array.from(pdfBytes)
           .map(byte => String.fromCharCode(byte))
           .join('')
       );
@@ -344,12 +373,13 @@ export default function StatePayrollFormViewer({
       console.log(`[SAVE] Base64 preview: ${base64.substring(0, 50)}...`);
 
       // Save to database (+ optionally persist i9 mode/selections)
-      console.log(`[SAVE] Sending to API for form: ${currentForm.formId}`);
+      console.log(`[SAVE] Sending to API for form: ${formId}`);
       const payload: any = {
-        formName: currentForm.formId,
+        formName: formId,
         formData: base64,
       };
-      if (selectedForm === 'i9') {
+      // Only include i9 data if saving the i9 form
+      if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
         payload.i9Mode = i9Mode;
         payload.i9Selections = i9Selections;
       }
@@ -367,31 +397,38 @@ export default function StatePayrollFormViewer({
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
-        setSaveStatus('saved');
-        setLastSaved(new Date());
-        setTimeout(() => setSaveStatus('idle'), 2000);
+        if (isCurrentForm) {
+          setSaveStatus('saved');
+          setLastSaved(new Date());
+          setTimeout(() => setSaveStatus('idle'), 2000);
 
-        if (session?.user?.id && typeof window !== 'undefined') {
-          const lastPath = `${window.location.pathname}${window.location.search}`;
-          localStorage.setItem("onboarding_last_form", JSON.stringify({
-            userId: session.user.id,
-            path: lastPath,
-            savedAt: new Date().toISOString(),
-          }));
+          if (session?.user?.id && typeof window !== 'undefined') {
+            const lastPath = `${window.location.pathname}${window.location.search}`;
+            localStorage.setItem("onboarding_last_form", JSON.stringify({
+              userId: session.user.id,
+              path: lastPath,
+              savedAt: new Date().toISOString(),
+            }));
+          }
         }
       } else {
         const error = await response.json();
         console.error('[SAVE] ❌ Save failed:', error);
-        setSaveStatus('error');
-        setTimeout(() => setSaveStatus('idle'), 3000);
+        if (isCurrentForm) {
+          setSaveStatus('error');
+          setTimeout(() => setSaveStatus('idle'), 3000);
+        }
       }
     } catch (error) {
       console.error('[SAVE] ❌ Save exception:', error);
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
+      if (isCurrentForm) {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      }
     }
 
-    if (currentForm?.requiresSignature && currentSignature) {
+    // Only save signature if this is the current form
+    if (isCurrentForm && currentForm?.requiresSignature && currentSignature) {
       await saveSignatureToDatabase(currentSignature);
     }
   };
