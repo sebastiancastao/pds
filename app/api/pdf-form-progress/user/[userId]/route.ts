@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument, PDFImage, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, PDFImage, PDFPage, PDFFont, StandardFonts, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
@@ -211,9 +211,69 @@ const BACKGROUND_CHECK_FORM_KEYS = new Set([
   'background-addon',
 ]);
 const MEAL_WAIVER_TITLES: Record<string, string> = {
-  '6_hour': 'Meal Period Waiver (6 Hour)',
-  '10_hour': 'Meal Period Waiver (10 Hour)',
-  '12_hour': 'Meal Period Waiver (12 Hour)',
+  '6_hour': '6 Hour Meal Break Waiver',
+  '10_hour': '10-12 Hour Break Waiver',
+  '12_hour': '10-12 Hour Break Waiver',
+};
+
+const MEAL_WAIVER_NARRATIVES: Record<string, { heading: string; paragraphs: string[] }> = {
+  '6_hour': {
+    heading: '6 Hour Meal Break Waiver',
+    paragraphs: [
+      'I understand that my employer has provided me with an unpaid meal period of at least 30 minutes in length whenever I work more than 5 hours in a workday. Although I am entitled to take this meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 5 hours, but no more than 6 hours, I prefer and choose to voluntarily waive my 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.',
+      'I understand that my waiver of the meal period is only permissible if my shift will be no more than 6 hours. I confirm that my employer has not encouraged me to skip my meal period at any time, and that I have the opportunity to take my uninterrupted 30-minute meal period on any day I wish to take it.',
+    ],
+  },
+  '10_hour': {
+    heading: '10-12 Hour Break Waiver',
+    paragraphs: [
+      'I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.',
+      'I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.',
+    ],
+  },
+  '12_hour': {
+    heading: '10-12 Hour Break Waiver',
+    paragraphs: [
+      'I understand that when I work more than 10 hours in a workday, I am entitled to a second 30-minute unpaid meal period hours. Although I am entitled to take this second meal period on any day I choose, I hereby confirm and request that on any day in which my work schedule lasts for more than 10 hours, but less than 12 hours, I prefer and choose to voluntarily waive the second 30-minute unpaid meal period, rather than taking the meal period and then extending my workday by another thirty minutes.',
+      'I understand that my waiver of the second meal period is only permissible if I have properly taken my first 30-minute meal period of the workday. I understand that my waiver of the second meal period is only permissible if my shift will be less than 12 hours.',
+    ],
+  },
+};
+
+const GENERAL_MEAL_WAIVER_TERMS: string[] = [
+  'I further acknowledge and understand that notwithstanding these waivers, on any day I choose to take a meal period even though my shift will be more than 5 hours but less than 6 hours, or more than 10 hours but no more than 12 hours, I may do so on that day by informing my supervisor of my choice to take a meal period.',
+  'I confirm that my employer has not encouraged me to skip my meals, and that I have the opportunity to take my 30-minute meal period on any day I wish to take it. I also acknowledge that I have read this waiver and understand it, and I am voluntarily agreeing to its provisions without coercion by my employer. I further acknowledge and understand that this meal period waiver may be revoked by me at any time.',
+];
+
+const wrapTextLines = (font: PDFFont, text: string, size: number, maxWidth: number) => {
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    const candidate = currentLine ? `${currentLine} ${word}` : word;
+    const candidateWidth = font.widthOfTextAtSize(candidate, size);
+
+    if (candidateWidth <= maxWidth) {
+      currentLine = candidate;
+      continue;
+    }
+
+    if (currentLine) {
+      lines.push(currentLine);
+      currentLine = word;
+      continue;
+    }
+
+    lines.push(candidate);
+    currentLine = '';
+  }
+
+  if (currentLine) {
+    lines.push(currentLine);
+  }
+
+  return lines;
 };
 const CACHE_FORMAT_VERSION = 'v2';
 const SIGNATURE_AUDIT_HEADER = 'x-signature-audit';
@@ -413,6 +473,64 @@ async function addMealWaiversToMergedPdf(mergedPdf: PDFDocument, waivers: any[])
           size: 12,
           font: bodyFont,
           color: rgb(0.4, 0.4, 0.4),
+        });
+      }
+
+      const narrative = MEAL_WAIVER_NARRATIVES[waiver.waiver_type];
+      if (narrative) {
+        const textStartY = signatureBox.y - 40;
+        let textPage: PDFPage = page;
+        let textCursor = textStartY;
+        const textX = 50;
+        const textMaxWidth = 512;
+        const bodyFontSize = 10;
+        const bodyLineHeight = 14;
+        const headingFontSize = 16;
+        const headingLineHeight = 18;
+        const paragraphSpacing = 10;
+        const minBottomMargin = 60;
+
+        const ensureSpace = (blockHeight: number) => {
+          if (textCursor - blockHeight < minBottomMargin) {
+            textPage = mergedPdf.addPage([612, 792]);
+            textCursor = 720;
+          }
+        };
+
+        const drawWrappedBlock = (
+          content: string,
+          font: PDFFont,
+          fontSize: number,
+          lineHeight: number,
+          spacingAfter: number
+        ) => {
+          const lines = wrapTextLines(font, content, fontSize, textMaxWidth);
+          if (!lines.length) {
+            textCursor -= spacingAfter;
+            return;
+          }
+          const blockHeight = lines.length * lineHeight;
+          ensureSpace(blockHeight + spacingAfter);
+          for (const line of lines) {
+            textPage.drawText(line, {
+              x: textX,
+              y: textCursor,
+              size: fontSize,
+              font,
+              color: rgb(0, 0, 0),
+            });
+            textCursor -= lineHeight;
+          }
+          textCursor -= spacingAfter;
+        };
+
+        drawWrappedBlock(narrative.heading, titleFont, headingFontSize, headingLineHeight, paragraphSpacing);
+        narrative.paragraphs.forEach((paragraph) => {
+          drawWrappedBlock(paragraph, bodyFont, bodyFontSize, bodyLineHeight, paragraphSpacing);
+        });
+        drawWrappedBlock('General Terms', titleFont, 14, 16, paragraphSpacing);
+        GENERAL_MEAL_WAIVER_TERMS.forEach((paragraph) => {
+          drawWrappedBlock(paragraph, bodyFont, bodyFontSize, bodyLineHeight, paragraphSpacing);
         });
       }
     }
@@ -1513,28 +1631,23 @@ export async function GET(
     // Return the merged PDF as a downloadable file
     const pdfBuffer = Buffer.from(mergedPdfBytes);
 
-    const auditHeaderValue =
-      signatureAuditEntries.length > 0
-        ? Buffer.from(JSON.stringify(signatureAuditEntries)).toString('base64')
-        : null;
-    const auditHeaders = auditHeaderValue
-      ? {
-          [SIGNATURE_AUDIT_HEADER]: auditHeaderValue,
-          [SIGNATURE_AUDIT_VERSION_HEADER]: SIGNATURE_AUDIT_VERSION,
-        }
-      : {};
-
     const totalTime = Date.now() - startTime;
     console.log(`[PDF_FORMS] ✅ TOTAL TIME: ${totalTime}ms (${(totalTime / 1000).toFixed(2)}s) - Generated ${mergedPdf.getPageCount()} pages`);
 
+    const responseHeaders: Record<string, string> = {
+      'Content-Type': 'application/pdf',
+      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Length': pdfBuffer.length.toString(),
+      'Cache-Control': 'no-store',
+    };
+
+    if (signatureAuditEntries.length > 0) {
+      responseHeaders[SIGNATURE_AUDIT_HEADER] = Buffer.from(JSON.stringify(signatureAuditEntries)).toString('base64');
+      responseHeaders[SIGNATURE_AUDIT_VERSION_HEADER] = SIGNATURE_AUDIT_VERSION;
+    }
+
     return new NextResponse(pdfBuffer, {
-      headers: {
-        'Content-Type': 'application/pdf',
-        'Content-Disposition': `attachment; filename="${fileName}"`,
-        'Content-Length': pdfBuffer.length.toString(),
-        ...auditHeaders,
-        'Cache-Control': 'no-store',
-      },
+      headers: responseHeaders,
       status: 200,
     });
   } catch (error: any) {
