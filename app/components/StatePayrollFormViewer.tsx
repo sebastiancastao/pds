@@ -2679,7 +2679,7 @@ export default function StatePayrollFormViewer({
 
           <div style={{ display: 'flex', gap: '12px' }}>
             <button
-              onClick={handleManualSave}
+              onClick={() => handleManualSave()}
               disabled={saveStatus === 'saving'}
               style={{
                 padding: '12px 24px',
