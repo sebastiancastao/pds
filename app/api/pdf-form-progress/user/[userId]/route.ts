@@ -33,6 +33,7 @@ const formDisplayNames: Record<string, string> = {
   'military-rights': 'Military Rights',
   'lgbtq-rights': 'LGBTQ Rights',
   'notice-to-employee': 'Notice to Employee',
+  'temp-employment-agreement': 'Temporary Employment Agreement',
   'meal-waiver-6hour': 'Meal Waiver (6 Hour)',
   'meal-waiver-10-12': 'Meal Waiver (10/12 Hour)',
   'employee-information': 'Employee Information',
@@ -147,6 +148,7 @@ const SIGNATURE_FALLBACK_PRIORITY = [
   'wi-state-tax',
   'az-state-tax',
   'notice-to-employee',
+  'temp-employment-agreement',
   'meal-waiver-6hour',
   'meal-waiver-10-12',
 ];
@@ -338,6 +340,103 @@ const formatDateLabel = (value?: string | null) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString('en-US');
+};
+
+/**
+ * Checks if a field name indicates it's a birthdate field.
+ */
+const isBirthdateField = (fieldName: string): boolean => {
+  const lowerName = fieldName.toLowerCase();
+  return /birth|dob|born/.test(lowerName);
+};
+
+/**
+ * Checks if a field name indicates it should NOT be normalized as a date.
+ * Returns true for SSN, phone numbers, zip codes, IDs, etc.
+ * Note: Birthdate fields are handled separately with date_of_birth from employee_information.
+ */
+const isExcludedFromDateNormalization = (fieldName: string): boolean => {
+  const lowerName = fieldName.toLowerCase();
+
+  // SSN / Social Security Number
+  if (/ssn|social.?security|soc.?sec/.test(lowerName)) return true;
+
+  // Phone / Fax numbers
+  if (/phone|fax|tel|mobile|cell/.test(lowerName)) return true;
+
+  // Zip / Postal codes
+  if (/zip|postal/.test(lowerName)) return true;
+
+  // ID numbers (employee ID, etc.)
+  if (/\bid\b|employee.?id|emp.?id|badge|number/.test(lowerName)) return true;
+
+  // Account numbers, routing numbers
+  if (/account|routing|bank/.test(lowerName)) return true;
+
+  // Extension numbers
+  if (/ext|extension/.test(lowerName)) return true;
+
+  return false;
+};
+
+/**
+ * Checks if a value appears to be a date without slashes (e.g., "01012024" or "1012024")
+ * or with dot separators (e.g., "01.02.2024") and returns the formatted date from the database.
+ *
+ * - For birthdate fields: uses dateOfBirth from employee_information
+ * - For other date fields: uses updated_at from pdf_form_progress
+ * - Excludes fields like SSN, phone numbers, etc. based on field name.
+ */
+const normalizeDateFieldValue = (
+  value: string,
+  updatedAt: string | null | undefined,
+  fieldName?: string,
+  dateOfBirth?: string | null
+): string => {
+  if (!value) return value;
+
+  // Check if this field should be excluded from date normalization
+  if (fieldName && isExcludedFromDateNormalization(fieldName)) {
+    return value;
+  }
+
+  const trimmedValue = value.trim();
+
+  // If value already contains slashes or dashes, keep it as-is (properly formatted)
+  if (/[\/\-]/.test(trimmedValue)) {
+    return value;
+  }
+
+  // Check if value needs normalization (no slashes/dashes, looks like a date)
+  const needsNormalization =
+    /^\d{1,2}\.\d{1,2}\.\d{2,4}$/.test(trimmedValue) || // dot separators
+    /^\d{6,8}$/.test(trimmedValue); // digits only
+
+  if (!needsNormalization) {
+    return value;
+  }
+
+  // For birthdate fields, use dateOfBirth from employee_information
+  if (fieldName && isBirthdateField(fieldName)) {
+    if (dateOfBirth) {
+      const parsed = new Date(dateOfBirth);
+      if (!Number.isNaN(parsed.getTime())) {
+        return parsed.toLocaleDateString('en-US');
+      }
+    }
+    // If no dateOfBirth available, keep original value
+    return value;
+  }
+
+  // For other date fields, use updated_at
+  if (updatedAt) {
+    const parsed = new Date(updatedAt);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed.toLocaleDateString('en-US');
+    }
+  }
+
+  return value;
 };
 
 async function fetchMealWaiversForUser(userId: string) {
@@ -689,7 +788,7 @@ async function addI9DocumentsToMergedPdf(mergedPdf: PDFDocument, userId: string)
   }
 }
 
-async function ensureFormFieldsVisible(doc: PDFDocument, label?: string) {
+async function ensureFormFieldsVisible(doc: PDFDocument, label?: string, updatedAt?: string | null, dateOfBirth?: string | null) {
   try {
     const form = doc.getForm();
     const fields = form.getFields();
@@ -707,9 +806,12 @@ async function ensureFormFieldsVisible(doc: PDFDocument, label?: string) {
 
     for (const field of fields) {
       const widgets = field?.acroField?.getWidgets?.() ?? [];
+      const fieldName = field.getName() || '';
       const isText = typeof (field as any).getText === 'function';
       const isCheckbox = typeof (field as any).isChecked === 'function';
-      const textValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
+      const rawTextValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
+      // Normalize date fields: if value has no slashes and looks like a date, use updated_at or dateOfBirth
+      const textValue = rawTextValue ? normalizeDateFieldValue(rawTextValue, updatedAt, fieldName, dateOfBirth) : rawTextValue;
       const checked = isCheckbox ? !!(field as any).isChecked?.() : false;
 
       for (const widget of widgets) {
@@ -1044,6 +1146,15 @@ export async function GET(
       console.warn('[PDF_FORMS] Could not fetch profile state for user:', userId, profileError.message);
     }
 
+    // Fetch date_of_birth from employee_information for birthdate field normalization
+    const { data: employeeInfo } = await supabaseAdmin
+      .from('employee_information')
+      .select('date_of_birth')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const employeeDateOfBirth = employeeInfo?.date_of_birth || null;
+
     const normalizedUserState = (targetProfile?.state || '').toString().toLowerCase().trim();
     const isTargetStateWI = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin';
 
@@ -1266,7 +1377,9 @@ export async function GET(
 
                     if (fieldType === 'PDFTextField') {
                       const textField = field as any;
-                      const currentValue = textField.getText();
+                      const rawValue = textField.getText();
+                      // Normalize date fields: if value has no slashes and looks like a date, use updated_at or dateOfBirth
+                      const currentValue = rawValue ? normalizeDateFieldValue(rawValue, form.updated_at, fieldName, employeeDateOfBirth) : rawValue;
 
                       if (currentValue) {
                         const widgets = textField.acroField?.getWidgets?.() || [];
@@ -1389,6 +1502,31 @@ export async function GET(
                 console.log(`[PDF_FORMS] Manually drew ${drawnCount} field values for employee handbook`);
               } catch (drawError) {
                 console.log('[PDF_FORMS] Could not draw field values:', form.form_name, (drawError as Error).message);
+              }
+            }
+
+            // For non-handbook forms, normalize date fields before flattening
+            // (handbook already has its own special processing above)
+            if (!isHandbook) {
+              for (const field of fields) {
+                try {
+                  const fieldType = field.constructor.name;
+                  if (fieldType === 'PDFTextField') {
+                    const textField = field as any;
+                    const fieldName = field.getName() || '';
+                    const rawValue = textField.getText();
+                    if (rawValue) {
+                      const normalizedValue = normalizeDateFieldValue(rawValue, form.updated_at, fieldName, employeeDateOfBirth);
+                      // If value was normalized, update the field
+                      if (normalizedValue !== rawValue) {
+                        textField.setText(normalizedValue);
+                        console.log(`[PDF_FORMS] Normalized date field "${fieldName}": "${rawValue}" -> "${normalizedValue}"`);
+                      }
+                    }
+                  }
+                } catch {
+                  // Ignore field errors
+                }
               }
             }
 
@@ -1538,6 +1676,10 @@ export async function GET(
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
+            const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
+            // WI and NV use different Y position for temp-employment-agreement (y: 470 vs y: 420)
+            const isWINVState = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin' ||
+              normalizedUserState === 'nv' || normalizedUserState === 'nevada';
 
             for (const pageIdx of signaturePageIndexes) {
               const page = pages[pageIdx];
@@ -1557,15 +1699,21 @@ export async function GET(
               const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
               const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
               const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-              const x = Math.max(
-                0,
-                baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
-              );
+              // temp-employment-agreement: signature on last page, position near date field
+              // CA/NY/AZ: y=420, WI/NV: y=470 - place signature to the left of date field (x ~100)
+              const tempEmploymentOffsetY = isTempEmploymentAgreement ? (isWINVState ? 420 : 370) : 0;
+              // For temp-employment-agreement, use fixed x position (50) to place signature on the left
+              const x = isTempEmploymentAgreement
+                ? 50
+                : Math.max(
+                    0,
+                    baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
+                  );
               const y = isI9Form
                 ? Math.max(0, i9DateFieldY - 200)
                 : Math.min(
                     height - signatureHeight,
-                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
+                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY + tempEmploymentOffsetY
                   );
 
               if (isTyped && !isDataUrl) {
