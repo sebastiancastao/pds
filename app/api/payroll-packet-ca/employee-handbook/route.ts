@@ -6,7 +6,7 @@ import { join } from 'path';
 export async function GET(request: NextRequest) {
   try {
     // Load the PDS Employee Handbook PDF
-    const pdfPath = join(process.cwd(), 'pds-employee-handbook-2026.pdf');
+    const pdfPath = join(process.cwd(), 'PDS Employee Handbook_2026 Final-1.pdf');
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
 

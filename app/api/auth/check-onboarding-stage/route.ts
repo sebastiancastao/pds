@@ -71,35 +71,6 @@ const PRE_REGISTRATION_STAGES: Record<string, string> = {
   'onboarding-register': '/register',
 };
 
-const STATE_PREFIX_PATTERN = /^(ca|ny|wi|az|nv)-/;
-
-function getFormSequenceByPrefix(prefix: string) {
-  switch (prefix) {
-    case 'ny':
-      return NY_ONBOARDING_FORMS;
-    case 'wi':
-      return WI_ONBOARDING_FORMS;
-    case 'az':
-      return AZ_ONBOARDING_FORMS;
-    case 'nv':
-      return NV_ONBOARDING_FORMS;
-    default:
-      return CA_ONBOARDING_FORMS;
-  }
-}
-
-function detectStatePrefixFromForms(forms: Array<{ form_name: string }> = []) {
-  if (!forms.length) return null;
-
-  const mostRecentFormName = forms[0].form_name.toLowerCase();
-  const match = mostRecentFormName.match(STATE_PREFIX_PATTERN);
-  if (match) return match[1];
-
-  // Unprefixed form names map to California.
-  return 'ca';
-}
-
-
 /**
  * POST /api/auth/check-onboarding-stage
  * Determines which onboarding stage a worker is currently at based on their completed forms
@@ -249,16 +220,6 @@ export async function POST(req: NextRequest) {
           isPreRegistration: true
         }, { status: 200 });
       }
-    }
-
-    const detectedPrefix = detectStatePrefixFromForms(completedForms || []);
-    if (detectedPrefix && detectedPrefix !== statePrefix) {
-      console.log('[Check Onboarding Stage API] Overriding state prefix based on completed forms:', {
-        previous: statePrefix,
-        detected: detectedPrefix
-      });
-      statePrefix = detectedPrefix;
-      formSequence = getFormSequenceByPrefix(statePrefix);
     }
 
     // Log each raw form name from database
