@@ -246,41 +246,84 @@ export async function POST(request: NextRequest) {
     }
     console.log("[RESET-PASSWORD] Target user found:", targetUser.id, targetUser.email);
 
-    // 4) Ensure that same UUID exists in Supabase Auth
-    // Use original userId for Auth lookup (may differ if we used email fallback)
+    // 4) Ensure that same UUID exists in Supabase Auth (or create if missing)
     console.log("[RESET-PASSWORD] Step 4: Verifying user exists in Supabase Auth...");
-    // First try with the original userId, then try with targetUser.id if that fails
-    let authUserIdToUse = userId;
-    let { data: authUserData, error: authUserError } = await supabase.auth.admin.getUserById(userId);
-    
-    // If original userId not found in Auth but we have targetUser, try with targetUser.id
-    if (authUserError && targetUser) {
-      console.log("[RESET-PASSWORD] Original userId not found in Auth, trying with targetUser.id...");
-      const authCheckRetry = await supabase.auth.admin.getUserById(targetUser.id);
-      if (authCheckRetry.data?.user) {
-        authUserData = authCheckRetry.data;
-        authUserError = authCheckRetry.error;
-        authUserIdToUse = targetUser.id;
-        console.log("[RESET-PASSWORD] Found user in Auth with targetUser.id");
-      }
-    }
+    let authUserIdToUse = targetUser.id;
+    let { data: authUserData, error: authUserError } = await supabase.auth.admin.getUserById(targetUser.id);
 
-    if (authUserError) {
+    // If user not found in Auth, create them
+    if (authUserError?.code === 'user_not_found' || !authUserData?.user) {
+      console.log("[RESET-PASSWORD] User not found in Supabase Auth, creating auth user...");
+
+      // Generate a temporary password for the new auth user
+      const tempPasswordForCreate = generateTemporaryPassword();
+
+      const { data: createdAuthUser, error: createAuthError } = await supabase.auth.admin.createUser({
+        email: targetUser.email,
+        password: tempPasswordForCreate,
+        email_confirm: true, // Skip email confirmation since admin is creating
+        user_metadata: {
+          created_by_admin_reset: true,
+          created_at: new Date().toISOString(),
+        },
+      });
+
+      if (createAuthError) {
+        console.error("[RESET-PASSWORD] Failed to create auth user:", createAuthError);
+        return NextResponse.json({
+          error: "Failed to create user in auth system",
+          details: createAuthError.message
+        }, { status: 500 });
+      }
+
+      if (!createdAuthUser?.user) {
+        console.error("[RESET-PASSWORD] Created auth user but no user returned");
+        return NextResponse.json({ error: "Failed to create auth user" }, { status: 500 });
+      }
+
+      console.log("[RESET-PASSWORD] Created auth user:", createdAuthUser.user.id, createdAuthUser.user.email);
+
+      // Update the users table to link to the new auth user ID if different
+      if (createdAuthUser.user.id !== targetUser.id) {
+        console.log("[RESET-PASSWORD] Auth user ID differs from DB user ID, updating DB...");
+        console.log("[RESET-PASSWORD] Old DB ID:", targetUser.id);
+        console.log("[RESET-PASSWORD] New Auth ID:", createdAuthUser.user.id);
+
+        // Update the users table with the new auth ID
+        const { error: updateIdError } = await supabase
+          .from("users")
+          .update({ id: createdAuthUser.user.id, updated_at: new Date().toISOString() })
+          .eq("id", targetUser.id);
+
+        if (updateIdError) {
+          console.error("[RESET-PASSWORD] Failed to update user ID in DB:", updateIdError);
+          // Continue anyway - the auth user was created
+        } else {
+          console.log("[RESET-PASSWORD] Updated user ID in DB");
+        }
+
+        // Also update profiles table if it exists
+        const { error: updateProfileIdError } = await supabase
+          .from("profiles")
+          .update({ user_id: createdAuthUser.user.id, updated_at: new Date().toISOString() })
+          .eq("user_id", targetUser.id);
+
+        if (updateProfileIdError) {
+          console.error("[RESET-PASSWORD] Failed to update profile user_id:", updateProfileIdError);
+        } else {
+          console.log("[RESET-PASSWORD] Updated profile user_id");
+        }
+      }
+
+      authUserIdToUse = createdAuthUser.user.id;
+      authUserData = { user: createdAuthUser.user };
+      console.log("[RESET-PASSWORD] Auth user created and linked successfully");
+    } else if (authUserError) {
       console.error("[RESET-PASSWORD] authUserError:", authUserError);
       return NextResponse.json({ error: "Auth lookup failed" }, { status: 500 });
+    } else {
+      console.log("[RESET-PASSWORD] User exists in Supabase Auth:", authUserData.user.id);
     }
-
-    if (!authUserData?.user) {
-      console.log("[RESET-PASSWORD] ERROR: User not found in Supabase Auth");
-      return NextResponse.json(
-        {
-          error: "User not found in Supabase Auth",
-          debug: { receivedUserId: userId },
-        },
-        { status: 404 }
-      );
-    }
-    console.log("[RESET-PASSWORD] User exists in Supabase Auth:", authUserData.user.id);
 
     // 5) Get profile name (using targetUser.id - the database user ID)
     console.log("[RESET-PASSWORD] Step 5: Getting profile info...");
