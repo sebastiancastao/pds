@@ -204,7 +204,7 @@ const isMissingFormsSignatureTableError = (error: any) => {
 };
 
 const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
-const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9']);
+const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9', 'ca-de4', 'de4', 'wi-state-tax', 'state-tax']);
 const BACKGROUND_CHECK_FORM_KEYS = new Set([
   'background-waiver',
   'background-disclosure',
@@ -1487,17 +1487,28 @@ export async function GET(
             ? 0
             : Math.max(pageCount - 1, 0);
           const isEmployeeHandbook = normalizedFormName.includes('handbook');
+          const isStateTaxForm = normalizedFormName === 'state-tax' || formNameLower === 'state-tax';
 
           // For employee handbook, add signatures to the LAST 10 pages
           const handbookPageCount = Math.min(10, pageCount);
           const handbookEndIndex = pageCount - 1; // Last page (0-indexed)
           const handbookStartIndex = Math.max(0, pageCount - handbookPageCount); // 10 pages before the end
+
+          // For state-tax form, place signature on the second-to-last page (previous page up)
+          const stateTaxPageIndex = Math.max(pageCount - 2, 0);
+
           const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
             ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
+            : isStateTaxForm
+            ? [stateTaxPageIndex]
             : [defaultPageIndex];
 
           if (isEmployeeHandbook) {
             console.log(`[PDF_FORMS] Employee handbook (${pageCount} pages): Adding signatures to pages ${handbookStartIndex + 1}-${handbookEndIndex + 1} (last ${signaturePageIndexes.length} pages)`);
+          }
+
+          if (isStateTaxForm) {
+            console.log(`[PDF_FORMS] State tax form (${pageCount} pages): Adding signature to page ${stateTaxPageIndex + 1} (second-to-last page)`);
           }
 
           try {
@@ -1522,6 +1533,7 @@ export async function GET(
             const isI9Form = normalizedFormName === 'i9';
             const isFW4Form = normalizedFormName === 'fw4';
             const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
+            const isCaDE4Form = normalizedFormName === 'ca-de4' || normalizedFormName === 'de4';
             const isWIStateTax =
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
@@ -1533,23 +1545,27 @@ export async function GET(
 
               const baseX = width - signatureWidth - 50;
               const baseY = isI9Form ? 100 : 50;
-            const fw4OffsetX = isFW4Form ? -200 : 0;
-            const fw4OffsetY = isFW4Form ? 70 : 0;
+              const fw4OffsetX = isFW4Form ? -200 : 0;
+              const fw4OffsetY = isFW4Form ? 70 : 0;
+              const caDE4OffsetX = isCaDE4Form ? -300 : 0;
+              const caDE4OffsetY = isCaDE4Form ? 320 : 0;
               const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
               const i9OffsetX = isI9Form ? -400 : 0;
               const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 : 0;
               const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 : 0;
-              const wiStateTaxOffsetX = isWIStateTax ? -250 : 0;
-              const wiStateTaxOffsetY = isWIStateTax ? 350 : 0;
+              const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
+              const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
+              const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
+              const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
               const x = Math.max(
                 0,
-                baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX
+                baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
               );
               const y = isI9Form
                 ? Math.max(0, i9DateFieldY - 200)
                 : Math.min(
                     height - signatureHeight,
-                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY
+                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
                   );
 
               if (isTyped && !isDataUrl) {

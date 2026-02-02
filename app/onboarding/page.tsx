@@ -899,34 +899,6 @@ const handleExportToExcel = async () => {
                             </button>
                           )}
                         </div>
-                        {auditEntries && auditEntries.length > 0 && (
-                          <div className="mt-2 text-left text-[11px] text-gray-500">
-                            <details className="border border-gray-200 rounded-md px-2 py-1 bg-gray-50">
-                              <summary className="flex items-center justify-between text-[11px] font-semibold text-gray-700">
-                                Signature audit
-                                <span className="text-[10px] text-gray-500">
-                                  {realStrokeCount} real strokes · {blankCount} blank
-                                </span>
-                              </summary>
-                              <ul className="mt-1 space-y-0.5 text-[10px] text-gray-600 max-h-32 overflow-y-auto">
-                                {auditEntries.map((entry) => (
-                                  <li key={`${entry.formName}-${entry.sourceForm}`} className="flex flex-col gap-0.5">
-                                    <span
-                                      className={`font-semibold ${
-                                        entry.hasRealDrawing ? 'text-emerald-600' : 'text-rose-600'
-                                      }`}
-                                    >
-                                      {entry.displayName}
-                                    </span>
-                                    <span className="text-[10px] text-gray-500">
-                                      {entry.hasRealDrawing ? 'real strokes' : 'blank/invalid'} · {entry.reason}
-                                    </span>
-                                  </li>
-                                ))}
-                              </ul>
-                            </details>
-                          </div>
-                        )}
                         {updating === user.id && (
                           <div className="mt-1 text-xs text-gray-500">Updating...</div>
                         )}
