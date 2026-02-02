@@ -4,6 +4,21 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
+interface SignatureAuditEntry {
+  formName: string;
+  normalizedFormName: string;
+  displayName: string;
+  signatureType: string | null;
+  sourceForm: string;
+  hasData: boolean;
+  isDrawing: boolean;
+  isValid: boolean;
+  hasRealDrawing: boolean;
+  reason: string;
+}
+
+const SIGNATURE_AUDIT_HEADER = 'x-signature-audit';
+
 export default function OnboardingPendingPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -183,6 +198,66 @@ export default function OnboardingPendingPage() {
     }
   };
 
+
+  const sanitizeFilename = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
+
+  const ensurePdfExtension = (value: string) => {
+    const sanitized = sanitizeFilename(value);
+    return sanitized.toLowerCase().endsWith('.pdf') ? sanitized : `${sanitized}.pdf`;
+  };
+
+  const buildOnboardingFilename = (userName: string) => {
+    const normalized = userName.replace(/\s+/g, '_').trim();
+    return ensurePdfExtension(`${normalized || 'onboarding'}_Onboarding_Documents`);
+  };
+
+  const extractFilenameFromContentDisposition = (header?: string | null) => {
+    if (!header) {
+      return null;
+    }
+
+    const segments = header
+      .split(';')
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const parseValue = (segment: string) => {
+      const index = segment.indexOf('=');
+      if (index === -1) {
+        return '';
+      }
+      return segment.substring(index + 1).trim();
+    };
+
+    const filenameStarSegment = segments.find((segment) =>
+      segment.toLowerCase().startsWith('filename*=')
+    );
+    if (filenameStarSegment) {
+      let value = parseValue(filenameStarSegment);
+      if (/^UTF-8''/i.test(value)) {
+        value = value.replace(/^UTF-8''/i, '');
+      }
+      value = value.replace(/^"(.*)"$/, '$1');
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        // ignore decoding errors
+      }
+      return value ? sanitizeFilename(value) : null;
+    }
+
+    const filenameSegment = segments.find((segment) =>
+      segment.toLowerCase().startsWith('filename=')
+    );
+    if (filenameSegment) {
+      let value = parseValue(filenameSegment);
+      value = value.replace(/^"(.*)"$/, '$1');
+      return value ? sanitizeFilename(value) : null;
+    }
+
+    return null;
+  };
+
   const handleDownloadPdf = async () => {
     if (!userId) {
       alert('Unable to determine your account right now. Please refresh and try again.');
@@ -190,19 +265,26 @@ export default function OnboardingPendingPage() {
     }
 
     if (isDownloading) {
+      alert('Another download is in progress. Please wait before starting a new one.');
       return;
     }
 
     setIsDownloading(true);
 
     const fallbackNameParts = [userFirstName, userLastName].filter(Boolean);
-    const fallbackName =
-      (fallbackNameParts.join(' ') || userEmail || 'onboarding_user').replace(/\s+/g, '_');
+    const fallbackName = (fallbackNameParts.join(' ') || userEmail || 'onboarding_user').trim();
+    const fallbackFilename = buildOnboardingFilename(fallbackName);
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 minutes
+      const timeoutId = setTimeout(() => {
+        console.log('[PDF Download] Request timed out after 5 minutes');
+        controller.abort();
+      }, 300000); // 5 minutes
+
+      const startTime = Date.now();
+      const elapsedSeconds = () => ((Date.now() - startTime) / 1000).toFixed(2);
 
       const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
         headers: {
@@ -213,6 +295,8 @@ export default function OnboardingPendingPage() {
       });
 
       clearTimeout(timeoutId);
+      const fetchTime = ((Date.now() - startTime) / 1000).toFixed(2);
+      console.log(`[PDF Download] Response received in ${fetchTime}s, status:`, response.status);
 
       if (!response.ok) {
         const text = await response.text();
@@ -228,30 +312,85 @@ export default function OnboardingPendingPage() {
         throw new Error(message);
       }
 
-      const arrayBuffer = await response.arrayBuffer();
-      const blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      console.log('[PDF Download] Reading response data...');
+      console.log('[PDF Download] Content-Type:', response.headers.get('Content-Type'));
+      const contentLength = response.headers.get('Content-Length');
+      console.log(
+        '[PDF Download] Content-Length:',
+        contentLength,
+        contentLength ? `(${(parseInt(contentLength) / 1024 / 1024).toFixed(2)} MB)` : ''
+      );
 
-      if (!blob || blob.size === 0) {
-        throw new Error('Received an empty PDF file');
+      let blob: Blob;
+      try {
+        console.log('[PDF Download] Reading as ArrayBuffer...');
+        const arrayBuffer = await response.arrayBuffer();
+        console.log(
+          '[PDF Download] ArrayBuffer size:',
+          arrayBuffer.byteLength,
+          'bytes',
+          `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`
+        );
+        blob = new Blob([arrayBuffer], { type: 'application/pdf' });
+      } catch (dataError) {
+        console.error('[PDF Download] Error reading response data:', dataError);
+        throw new Error(
+          `Failed to read PDF data: ${dataError instanceof Error ? dataError.message : 'Unknown error'}. The PDF might be too large for your browser to handle.`
+        );
       }
 
-      let filename = `${fallbackName}_Onboarding_Documents.pdf`;
+      if (!blob || blob.size === 0) {
+        throw new Error('Received empty PDF file');
+      }
 
-      const contentDisposition = response.headers.get('Content-Disposition');
+      console.log(
+        '[PDF Download] PDF blob created, size:',
+        blob.size,
+        'bytes',
+        `(${(blob.size / 1024 / 1024).toFixed(2)} MB)`
+      );
+
+      const auditHeaderValue =
+        response.headers.get(SIGNATURE_AUDIT_HEADER) ||
+        response.headers.get(SIGNATURE_AUDIT_HEADER.toUpperCase());
+      if (auditHeaderValue) {
+        try {
+          const decodedAudit = atob(auditHeaderValue);
+          const parsedAudit = JSON.parse(decodedAudit) as SignatureAuditEntry[];
+          if (Array.isArray(parsedAudit)) {
+            console.log('[PDF Download] Signature audit entries parsed:', parsedAudit.length);
+          }
+        } catch (auditError) {
+          console.error('[PDF Download] Failed to decode signature audit header:', auditError);
+        }
+      }
+
+      const contentDisposition =
+        response.headers.get('Content-Disposition') ??
+        response.headers.get('content-disposition');
+      const headerFilename = extractFilenameFromContentDisposition(contentDisposition);
+      let filename = ensurePdfExtension(headerFilename || fallbackFilename);
+
       if (contentDisposition) {
-        const match = contentDisposition.match(/filename\*=([^;]+)/i) ||
-                      contentDisposition.match(/filename="?([^"]+)"?/i);
+        console.log('[PDF Download] Content-Disposition:', contentDisposition);
 
-        if (match && match[1]) {
-          filename = match[1].trim().replace(/['"]/g, '');
+        const filenameMatch =
+          contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) ||
+          contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].trim();
+          console.log('[PDF Download] Extracted filename:', filename);
         }
       }
 
       if (!filename.toLowerCase().endsWith('.pdf')) {
+        console.warn('[PDF Download] Filename missing .pdf extension, adding it:', filename);
         filename = `${filename}.pdf`;
       }
 
       downloadBlob(blob, filename);
+      console.log(`[PDF_DOWNLOAD] Download completed in ${elapsedSeconds()}s`);
       alert('Your onboarding documents are downloading. This may take a few moments for large submissions.');
     } catch (err: any) {
       console.error('Error downloading PDF:', err);
@@ -264,17 +403,6 @@ export default function OnboardingPendingPage() {
       setIsDownloading(false);
     }
   };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Checking onboarding status...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
