@@ -106,6 +106,58 @@ export default function Home() {
     }
 
     if (userRole === 'worker') {
+      // Workers should not access Time Keeping until onboarding is approved.
+      // If onboarding isn't approved, route them to the appropriate onboarding stage instead.
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const accessToken = session?.access_token;
+
+        if (accessToken) {
+          const onboardingResponse = await fetch('/api/auth/check-onboarding', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${accessToken}`
+            },
+          });
+
+          if (onboardingResponse.ok) {
+            const onboardingResult = await onboardingResponse.json();
+
+            if (!onboardingResult.approved) {
+              if (onboardingResult.hasSubmittedPDF || onboardingResult.hasOnboardingRecord) {
+                console.log('[DEBUG] Home - Worker onboarding pending, redirecting to /onboarding-pending');
+                router.push('/onboarding-pending');
+                return;
+              }
+
+              const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${accessToken}`
+                },
+              });
+
+              if (stageResponse.ok) {
+                const stageResult = await stageResponse.json();
+                if (stageResult?.nextStage) {
+                  console.log('[DEBUG] Home - Worker onboarding not complete, redirecting to:', stageResult.nextStage);
+                  router.push(stageResult.nextStage);
+                  return;
+                }
+              }
+
+              console.log('[DEBUG] Home - Worker onboarding not complete, redirecting to /register');
+              router.push('/register');
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('[DEBUG] Home - Worker onboarding check failed, falling back to /time-keeping', e);
+      }
+
       console.log('[DEBUG] Home - Worker role detected, redirecting to /time-keeping');
       router.push('/time-keeping');
       return;

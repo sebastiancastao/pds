@@ -324,9 +324,9 @@ function VerifyMFAContent() {
 
         let pendingOnboardingRedirect = null;
 
-        // For workers, check vendor_onboarding_status first
-        if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] 🔍 Worker detected - checking onboarding status...');
+        // For worker/vendor roles, check vendor_onboarding_status first
+        if (userRole === 'worker' || userRole === 'vendor') {
+          console.log('[VERIFY-MFA DEBUG] Worker/Vendor detected - checking onboarding status...');
 
           try {
             const onboardingResponse = await fetch('/api/auth/check-onboarding', {
@@ -421,8 +421,8 @@ function VerifyMFAContent() {
         } else if (userRole === 'backgroundchecker') {
           console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
           router.push('/background-checks');
-        } else if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /time-keeping');
+        } else if (userRole === 'worker' || userRole === 'vendor') {
+          console.log('[VERIFY-MFA DEBUG] Worker/Vendor role - Redirecting to /time-keeping');
           router.push('/time-keeping');
         } else {
           console.log('[VERIFY-MFA DEBUG] Other role - Redirecting to home page');
@@ -821,5 +821,4 @@ export default function VerifyMFAPage() {
     </Suspense>
   );
 }
-
 
