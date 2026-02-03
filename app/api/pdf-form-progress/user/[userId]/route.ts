@@ -14,6 +14,18 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+const NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME = 'Dawn M. Kaplan Lister';
+const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'image001.png';
+// PDF coordinates: larger Y is higher on page. Negative values move content down.
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
+const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA = 0;
+// Positive values move content right.
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
+const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
+const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
+// Negative values move date text down.
+const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
+
 const formDisplayNames: Record<string, string> = {
   // California
   'ca-de4': 'CA DE-4 State Tax Form',
@@ -316,6 +328,33 @@ function normalizeFormKey(formName: string) {
   return lower;
 }
 
+type PdfRect = { x: number; y: number; width: number; height: number };
+type FieldWidgetPlacement = { pageIndex: number; rect: PdfRect };
+
+function tryGetFirstWidgetPlacement(doc: PDFDocument, fieldName: string): FieldWidgetPlacement | null {
+  try {
+    const form = doc.getForm();
+    const field = form.getField(fieldName) as any;
+    const widgets = field?.acroField?.getWidgets?.() ?? [];
+    if (!widgets.length) return null;
+
+    const widget = widgets[0];
+    const rect = widget?.getRectangle?.();
+    if (!rect) return null;
+
+    const pages = doc.getPages();
+    const pageRef = widget?.P?.();
+    const pageIndex = pageRef ? pages.findIndex((p: any) => p.ref === pageRef) : -1;
+
+    return {
+      pageIndex: pageIndex >= 0 ? pageIndex : 0,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    };
+  } catch {
+    return null;
+  }
+}
+
 function normalizeSignatureImage(signatureData: string) {
   const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,/i);
   if (!match) {
@@ -340,6 +379,18 @@ const formatDateLabel = (value?: string | null) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString('en-US');
+};
+
+const formatSignatureDateLine = (signedAt?: string | null, fallbackUpdatedAt?: string | null) => {
+  const formatted = formatDateLabel(signedAt || fallbackUpdatedAt || null);
+  if (!formatted || formatted === 'N/A') return null;
+  return `Date: ${formatted}`;
+};
+
+const formatSignatureDateValue = (signedAt?: string | null, fallbackUpdatedAt?: string | null) => {
+  const formatted = formatDateLabel(signedAt || fallbackUpdatedAt || null);
+  if (!formatted || formatted === 'N/A') return null;
+  return formatted;
 };
 
 /**
@@ -788,7 +839,13 @@ async function addI9DocumentsToMergedPdf(mergedPdf: PDFDocument, userId: string)
   }
 }
 
-async function ensureFormFieldsVisible(doc: PDFDocument, label?: string, updatedAt?: string | null, dateOfBirth?: string | null) {
+async function ensureFormFieldsVisible(
+  doc: PDFDocument,
+  label?: string,
+  updatedAt?: string | null,
+  dateOfBirth?: string | null,
+  options?: { skipFieldNames?: Set<string> }
+) {
   try {
     const form = doc.getForm();
     const fields = form.getFields();
@@ -802,67 +859,165 @@ async function ensureFormFieldsVisible(doc: PDFDocument, label?: string, updated
       console.warn('[PDF_FORMS] Could not embed Helvetica font for', label, fontError);
     }
 
-    let renderedValues = 0;
+    type RenderEntry =
+      | { kind: 'text'; pageIndex: number; rect: PdfRect; value: string }
+      | { kind: 'checkbox'; pageIndex: number; rect: PdfRect; checked: boolean };
+
+    const entries: RenderEntry[] = [];
 
     for (const field of fields) {
       const widgets = field?.acroField?.getWidgets?.() ?? [];
       const fieldName = field.getName() || '';
+      const fieldType = field.constructor.name;
       const isText = typeof (field as any).getText === 'function';
       const isCheckbox = typeof (field as any).isChecked === 'function';
       const rawTextValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
       // Normalize date fields: if value has no slashes and looks like a date, use updated_at or dateOfBirth
       const textValue = rawTextValue ? normalizeDateFieldValue(rawTextValue, updatedAt, fieldName, dateOfBirth) : rawTextValue;
       const checked = isCheckbox ? !!(field as any).isChecked?.() : false;
+      const selectedRadio = fieldType === 'PDFRadioGroup' ? ((field as any).getSelected?.() ?? null) : null;
+      const selectedList =
+        fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList'
+          ? ((field as any).getSelected?.() ?? [])
+          : [];
+      const selectedListText = Array.isArray(selectedList) ? selectedList.filter(Boolean).join(', ').trim() : '';
+
+      const shouldSkip = options?.skipFieldNames?.has(fieldName) ?? false;
 
       for (const widget of widgets) {
         const rect = widget?.getRectangle?.();
         if (!rect) continue;
 
-        const widgetPageRef = widget?.P?.()?.toString?.();
-        const targetPage =
-          pages.find((page) => page.ref?.toString?.() === widgetPageRef) ?? pages[0];
-        if (!targetPage) continue;
+        const widgetPageRef = widget?.P?.();
+        const pageIndex = widgetPageRef ? pages.findIndex((p: any) => p.ref === widgetPageRef) : -1;
+        const resolvedPageIndex = pageIndex >= 0 ? pageIndex : 0;
 
-        const width = typeof rect.width === 'number' ? rect.width : 0;
-        const height = typeof rect.height === 'number' ? rect.height : 12;
-        const fontSize = Math.max(6, Math.min(12, Math.max(6, height - 2)));
-        const drawX = (typeof rect.x === 'number' ? rect.x : 0) + 2;
-        const drawY =
-          (typeof rect.y === 'number' ? rect.y : 0) +
-          Math.max(1, (height - fontSize) / 2);
+        if (shouldSkip) {
+          continue;
+        }
 
         if (isText && textValue) {
+          entries.push({
+            kind: 'text',
+            pageIndex: resolvedPageIndex,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            value: textValue,
+          });
+        } else if ((fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList') && selectedListText) {
+          entries.push({
+            kind: 'text',
+            pageIndex: resolvedPageIndex,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            value: selectedListText,
+          });
+        } else if (isCheckbox && checked) {
+          entries.push({
+            kind: 'checkbox',
+            pageIndex: resolvedPageIndex,
+            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            checked: true,
+          });
+        } else if (fieldType === 'PDFRadioGroup' && selectedRadio) {
+          try {
+            const onValue = widget.getOnValue?.();
+            const encoded =
+              typeof (onValue as any)?.asString === 'function'
+                ? (onValue as any).asString()
+                : (onValue as any)?.toString?.() ?? '';
+            if (encoded === `/${selectedRadio}`) {
+              entries.push({
+                kind: 'checkbox',
+                pageIndex: resolvedPageIndex,
+                rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                checked: true,
+              });
+            }
+          } catch {
+            // Ignore widget mapping errors
+          }
+        }
+      }
+
+      // Clear field values so flatten removes widgets without drawing their (possibly stale) appearance streams.
+      try {
+        if (fieldType === 'PDFTextField') {
+          (field as any).setText('');
+        } else if (fieldType === 'PDFCheckBox') {
+          (field as any).uncheck?.();
+        } else if (fieldType === 'PDFRadioGroup' || fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList') {
+          (field as any).clear?.();
+        }
+      } catch {
+        // Ignore field errors
+      }
+    }
+
+    try {
+      if (embeddedFont) {
+        form.updateFieldAppearances(embeddedFont);
+      }
+      form.flatten({ updateFieldAppearances: false });
+    } catch (flattenError) {
+      console.warn(`[PDF_FORMS] Could not flatten form ${label ?? 'document'}:`, flattenError);
+    }
+
+    let renderedValues = 0;
+
+    for (const entry of entries) {
+      try {
+        const targetPage = pages[entry.pageIndex] ?? pages[0];
+        if (!targetPage) continue;
+
+        const width = typeof entry.rect.width === 'number' ? entry.rect.width : 0;
+        const height = typeof entry.rect.height === 'number' ? entry.rect.height : 12;
+        const drawX = (typeof entry.rect.x === 'number' ? entry.rect.x : 0) + 2;
+
+        if (entry.kind === 'text') {
+          const value = entry.value.replace(/\s+/g, ' ').trim();
+          if (!value) continue;
+
           const widthForText = Math.max(1, width - 4);
-          const maxChars = widthForText > 0 ? Math.max(1, Math.floor(widthForText / (fontSize * 0.55))) : textValue.length;
-          const clipped = textValue.replace(/\s+/g, ' ').slice(0, maxChars);
-          targetPage.drawText(clipped, {
+          let fontSize = Math.max(6, Math.min(12, Math.max(6, height - 2)));
+
+          if (embeddedFont?.widthOfTextAtSize) {
+            while (fontSize > 6 && embeddedFont.widthOfTextAtSize(value, fontSize) > widthForText) {
+              fontSize -= 0.5;
+            }
+          }
+
+          const drawY =
+            (typeof entry.rect.y === 'number' ? entry.rect.y : 0) +
+            Math.max(1, (height - fontSize) / 2);
+
+          targetPage.drawText(value, {
             x: drawX,
             y: drawY,
             size: fontSize,
             font: embeddedFont ?? undefined,
             color: rgb(0, 0, 0),
+            maxWidth: widthForText,
           });
           renderedValues++;
-        } else if (isCheckbox && checked) {
+        }
+
+        if (entry.kind === 'checkbox' && entry.checked) {
           const checkSize = Math.max(8, Math.min(14, height));
+          const drawY =
+            (typeof entry.rect.y === 'number' ? entry.rect.y : 0) +
+            Math.max(0, (height - checkSize) / 2);
           const checkX = drawX + Math.max(1, (width - checkSize) / 2);
-          const checkY = drawY + Math.max(0, (height - checkSize) / 2);
           targetPage.drawText('X', {
             x: checkX,
-            y: checkY,
+            y: drawY,
             size: checkSize,
             font: embeddedFont ?? undefined,
             color: rgb(0, 0, 0),
           });
           renderedValues++;
         }
+      } catch {
+        // Ignore draw errors
       }
-    }
-
-    try {
-      form.flatten();
-    } catch (flattenError) {
-      console.warn(`[PDF_FORMS] Could not flatten form ${label ?? 'document'}:`, flattenError);
     }
 
     if (renderedValues === 0 && process.env.NODE_ENV !== 'production') {
@@ -1136,6 +1291,8 @@ export async function GET(
       .eq('id', userId)
       .maybeSingle();
 
+    const targetUserFullName = (targetUserData?.full_name || '').toString().trim();
+
     const { data: targetProfile, error: profileError } = await supabaseAdmin
       .from('profiles')
       .select('state')
@@ -1284,6 +1441,71 @@ export async function GET(
       'forms (background check documents excluded)'
     );
 
+    let cachedEmployerSignatureBytes: Buffer | null = null;
+    const getEmployerSignatureBytes = async () => {
+      if (cachedEmployerSignatureBytes) return cachedEmployerSignatureBytes;
+      try {
+        const signaturePath = join(process.cwd(), NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME);
+        cachedEmployerSignatureBytes = await fsPromises.readFile(signaturePath);
+        return cachedEmployerSignatureBytes;
+      } catch (error) {
+        console.warn('[PDF_FORMS] Could not read employer signature image:', error);
+        return null;
+      }
+    };
+
+    let cachedNoticeToEmployeeDefaults: Record<string, string> | null = null;
+    const getNoticeToEmployeeDefaults = async () => {
+      if (cachedNoticeToEmployeeDefaults) return cachedNoticeToEmployeeDefaults;
+
+      const templateCandidates = [
+        join(process.cwd(), 'pdfs', 'LC_2810.5_Notice to Employee.pdf'),
+        join(process.cwd(), 'LC_2810.5_Notice to Employee.pdf'),
+      ];
+
+      let templateBytes: Buffer | null = null;
+      for (const candidate of templateCandidates) {
+        try {
+          if (!existsSync(candidate)) continue;
+          templateBytes = await fsPromises.readFile(candidate);
+          break;
+        } catch {
+          // try next candidate
+        }
+      }
+
+      if (!templateBytes) {
+        cachedNoticeToEmployeeDefaults = {};
+        return cachedNoticeToEmployeeDefaults;
+      }
+
+      try {
+        const templateDoc = await PDFDocument.load(templateBytes);
+        const templateForm = templateDoc.getForm();
+        const fieldNames = [
+          'Legal Name of Hiring Employer',
+          'Other names hiring employer is doing business as (if applicable)',
+          'Hiring Employers Telephone Number',
+        ];
+
+        const defaults: Record<string, string> = {};
+        for (const fieldName of fieldNames) {
+          try {
+            defaults[fieldName] = templateForm.getTextField(fieldName).getText()?.trim() ?? '';
+          } catch {
+            defaults[fieldName] = '';
+          }
+        }
+
+        cachedNoticeToEmployeeDefaults = defaults;
+        return defaults;
+      } catch (error) {
+        console.warn('[PDF_FORMS] Could not load notice-to-employee template defaults', error);
+        cachedNoticeToEmployeeDefaults = {};
+        return cachedNoticeToEmployeeDefaults;
+      }
+    };
+
     // Create a new merged PDF document
     const pdfCreateStart = Date.now();
     const mergedPdf = await PDFDocument.create();
@@ -1296,6 +1518,9 @@ export async function GET(
 
     for (const form of formsToProcess) {
       try {
+        const normalizedFormKey = normalizeFormKey(form.form_name || '');
+        const isNoticeToEmployee = normalizedFormKey === 'notice-to-employee';
+
         const base64Data = toBase64(form.form_data);
         if (!base64Data) {
           console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
@@ -1306,14 +1531,141 @@ export async function GET(
         const pdfBytes = Buffer.from(base64Data, 'base64');
         const formPdf = await PDFDocument.load(pdfBytes);
 
+        const normalizedFormName = normalizedFormKey;
+        const formNameLower = (form.form_name || '').toLowerCase();
+        const directFormKey = form.form_name || normalizedFormName || 'unknown-form';
+        let signatureForForm: SignatureEntry | null = null;
+        let signatureSourceForm = directFormKey;
+
+        if (useFormSignatures) {
+          signatureForForm =
+            signatureByForm.get(directFormKey) || signatureByForm.get(normalizedFormName) || null;
+          if (signatureForForm) {
+            signatureSourceForm = signatureByForm.has(directFormKey) ? directFormKey : normalizedFormName;
+          }
+        } else if (legacySignature) {
+          signatureForForm = legacySignature;
+          signatureSourceForm = 'legacy-background-check';
+        }
+
+        let noticeSignatureDateFont: PDFFont | null = null;
+        if (isNoticeToEmployee) {
+          try {
+            noticeSignatureDateFont = await formPdf.embedFont(StandardFonts.Helvetica);
+          } catch {
+            noticeSignatureDateFont = null;
+          }
+        }
+
         // Flatten form fields to ensure they render consistently across all browsers
         // This converts editable form fields to static content
         const isHandbook = (form.form_name || '').toLowerCase().includes('handbook');
+        const employerSignaturePlacement = isNoticeToEmployee
+          ? tryGetFirstWidgetPlacement(formPdf, 'Signature8')
+          : null;
         try {
           const pdfForm = formPdf.getForm();
           const fields = pdfForm.getFields();
 
           if (fields.length > 0) {
+            if (isNoticeToEmployee) {
+              const noticeDefaults = await getNoticeToEmployeeDefaults();
+
+              try {
+                const employerLegalNameField = pdfForm.getTextField('Legal Name of Hiring Employer');
+                const existing = employerLegalNameField.getText()?.trim() ?? '';
+                if (!existing && noticeDefaults['Legal Name of Hiring Employer']) {
+                  employerLegalNameField.setText(noticeDefaults['Legal Name of Hiring Employer']);
+                }
+                employerLegalNameField.enableReadOnly();
+              } catch {
+                // Ignore if field isn't present
+              }
+
+              // Some versions of this PDF have the DBA line mislabeled as "undefined".
+              const dbaValue =
+                noticeDefaults['Other names hiring employer is doing business as (if applicable)']?.trim() ?? '';
+              try {
+                const dbaField = pdfForm.getTextField(
+                  'Other names hiring employer is doing business as (if applicable)'
+                );
+                const existing = dbaField.getText()?.trim() ?? '';
+                if (!existing && dbaValue) {
+                  dbaField.setText(dbaValue);
+                }
+                dbaField.enableReadOnly();
+              } catch {
+                try {
+                  const undefinedField = pdfForm.getTextField('undefined');
+                  const existing = undefinedField.getText()?.trim() ?? '';
+                  const placement = tryGetFirstWidgetPlacement(formPdf, 'undefined');
+                  const looksLikeDbaWidget =
+                    placement?.pageIndex === 0 &&
+                    placement.rect.x >= 60 &&
+                    placement.rect.x <= 90 &&
+                    placement.rect.y >= 440 &&
+                    placement.rect.y <= 475;
+                  if (!existing && dbaValue && looksLikeDbaWidget) {
+                    undefinedField.setText(dbaValue);
+                  }
+                  undefinedField.enableReadOnly();
+                } catch {
+                  // Ignore if field isn't present
+                }
+              }
+
+              try {
+                const employerPhoneField = pdfForm.getTextField('Hiring Employers Telephone Number');
+                const existing = employerPhoneField.getText()?.trim() ?? '';
+                if (!existing && noticeDefaults['Hiring Employers Telephone Number']) {
+                  employerPhoneField.setText(noticeDefaults['Hiring Employers Telephone Number']);
+                }
+                employerPhoneField.enableReadOnly();
+              } catch {
+                // Ignore if field isn't present
+              }
+
+              // Employee section should use "Employee Name" and "Start Date".
+              // Acknowledgement section uses "PRINT NAME of Employee". If empty, backfill it from "Employee Name".
+              try {
+                const printEmployeeField = pdfForm.getTextField('PRINT NAME of Employee');
+                const employeeNameField = pdfForm.getTextField('Employee Name');
+                const printEmployeeName = printEmployeeField.getText()?.trim() ?? '';
+                const employeeName = employeeNameField.getText()?.trim() ?? '';
+
+                const resolvedEmployeeName = employeeName || targetUserFullName;
+
+                if (!printEmployeeName && resolvedEmployeeName) {
+                  printEmployeeField.setText(resolvedEmployeeName);
+                }
+
+                printEmployeeField.enableReadOnly();
+                employeeNameField.enableReadOnly();
+              } catch {
+                // ignore if fields are missing
+              }
+
+              try {
+                const employerRepNameField = pdfForm.getTextField('PRINT NAME of Employer representative');
+                const existing = employerRepNameField.getText()?.trim() ?? '';
+                if (!existing) {
+                  employerRepNameField.setText(NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME);
+                }
+                employerRepNameField.enableReadOnly();
+              } catch {
+                // Ignore if field isn't present
+              }
+
+              try {
+                const commissionField = pdfForm.getCheckBox('Commission');
+                if (!commissionField.isChecked()) {
+                  commissionField.check();
+                }
+              } catch {
+                // Ignore if field isn't present
+              }
+            }
+
             // For employee handbook, log field details with VALUES to debug
             if (isHandbook) {
               console.log(`[PDF_FORMS] Employee handbook has ${fields.length} form fields`);
@@ -1507,7 +1859,7 @@ export async function GET(
 
             // For non-handbook forms, normalize date fields before flattening
             // (handbook already has its own special processing above)
-            if (!isHandbook) {
+            if (!isHandbook && !isNoticeToEmployee) {
               for (const field of fields) {
                 try {
                   const fieldType = field.constructor.name;
@@ -1530,14 +1882,71 @@ export async function GET(
               }
             }
 
-            // Flatten form fields - for handbook this removes fields after manual draw,
-            // for other forms this renders the values normally
-            try {
-              pdfForm.flatten();
-            } catch {
-              // Flatten may fail but continue
+            if (isNoticeToEmployee) {
+              // Render most fields via generic renderer, but handle acknowledgement dates explicitly
+              // so they're always present in the downloaded PDF.
+              const signedDateValue = formatSignatureDateValue(
+                signatureForForm?.signed_at ?? null,
+                form.updated_at ?? null
+              );
+
+              // Capture placements before flattening removes the form widgets.
+              const noticeAcknowledgementDatePlacement = {
+                Date: tryGetFirstWidgetPlacement(formPdf, 'Date'),
+                Date_2: tryGetFirstWidgetPlacement(formPdf, 'Date_2'),
+              };
+
+              await ensureFormFieldsVisible(formPdf, form.form_name, form.updated_at ?? null, employeeDateOfBirth, {
+                skipFieldNames: new Set(['Date', 'Date_2']),
+              });
+
+              if (signedDateValue) {
+                try {
+                  const pages = formPdf.getPages();
+                  const font = noticeSignatureDateFont ?? (await formPdf.embedFont(StandardFonts.Helvetica));
+
+                  const placements = [
+                    { name: 'Date', placement: noticeAcknowledgementDatePlacement.Date },
+                    { name: 'Date_2', placement: noticeAcknowledgementDatePlacement.Date_2 },
+                  ];
+
+                  for (const { placement } of placements) {
+                    if (!placement) continue;
+                    const page = pages[placement.pageIndex] ?? pages[0];
+                    if (!page) continue;
+
+                    const rect = placement.rect;
+                    const widthForText = Math.max(1, rect.width - 4);
+                    let fontSize = Math.max(6, Math.min(12, Math.max(6, rect.height - 2)));
+                    while (fontSize > 6 && font.widthOfTextAtSize(signedDateValue, fontSize) > widthForText) {
+                      fontSize -= 0.5;
+                    }
+
+                    page.drawText(signedDateValue, {
+                      x: rect.x + 2,
+                      y: rect.y + Math.max(1, (rect.height - fontSize) / 2),
+                      size: fontSize,
+                      font,
+                      color: rgb(0, 0, 0),
+                      maxWidth: widthForText,
+                    });
+                  }
+                } catch (dateError) {
+                  console.warn('[PDF_FORMS] Failed to draw notice-to-employee acknowledgement dates', dateError);
+                }
+              }
+
+              console.log('[PDF_FORMS] Rendered notice-to-employee form fields for:', form.form_name);
+            } else {
+              // Flatten form fields - for handbook this removes fields after manual draw,
+              // for other forms this renders the values normally
+              try {
+                pdfForm.flatten();
+              } catch {
+                // Flatten may fail but continue
+              }
+              console.log('[PDF_FORMS] Flattened', fields.length, 'form fields for:', form.form_name);
             }
-            console.log('[PDF_FORMS] Flattened', fields.length, 'form fields for:', form.form_name);
           } else {
             console.log('[PDF_FORMS] No form fields found in:', form.form_name);
           }
@@ -1547,23 +1956,6 @@ export async function GET(
         }
 
         const formPageCount = formPdf.getPageCount();
-
-        const normalizedFormName = normalizeFormKey(form.form_name || '');
-        const formNameLower = (form.form_name || '').toLowerCase();
-        const directFormKey = form.form_name || normalizedFormName || 'unknown-form';
-        let signatureForForm: SignatureEntry | null = null;
-        let signatureSourceForm = directFormKey;
-
-        if (useFormSignatures) {
-          signatureForForm =
-            signatureByForm.get(directFormKey) || signatureByForm.get(normalizedFormName) || null;
-          if (signatureForForm) {
-            signatureSourceForm = signatureByForm.has(directFormKey) ? directFormKey : normalizedFormName;
-          }
-        } else if (legacySignature) {
-          signatureForForm = legacySignature;
-          signatureSourceForm = 'legacy-background-check';
-        }
 
         if (isHandbook && useFormSignatures && signatureByForm.size > 0 && !isValidSignature(signatureForForm)) {
           console.log('[PDF_FORMS] Employee handbook: signature missing or invalid, searching for fallback...');
@@ -1615,6 +2007,30 @@ export async function GET(
         });
 
         console.log('[PDF_FORMS] Processing form:', form.form_name, '(', formPageCount, 'pages)');
+
+        if (isNoticeToEmployee && employerSignaturePlacement) {
+          try {
+            const signatureBytes = await getEmployerSignatureBytes();
+            if (signatureBytes) {
+              const signatureImage = await formPdf.embedPng(signatureBytes);
+              const page =
+                formPdf.getPages()[employerSignaturePlacement.pageIndex] ?? formPdf.getPages()[0];
+              const rect = employerSignaturePlacement.rect;
+
+              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+              const heightScale = 0.8;
+              const drawWidth = signatureImage.width * scale;
+              const drawHeight = signatureImage.height * scale * heightScale;
+              const signatureOffsetX = -56;
+              const x = rect.x + (rect.width - drawWidth) / 2 + signatureOffsetX + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA;
+              const y = rect.y + (rect.height - drawHeight) / 2 + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA;
+
+              page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
+            }
+          } catch (error) {
+            console.warn('[PDF_FORMS] Failed to embed employer signature for notice-to-employee', error);
+          }
+        }
 
         // If signature exists, embed it on the target page(s)
         if (signatureForForm?.signature_data) {
@@ -1693,8 +2109,8 @@ export async function GET(
               const caDE4OffsetY = isCaDE4Form ? 320 : 0;
               const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
               const i9OffsetX = isI9Form ? -400 : 0;
-              const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 : 0;
-              const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 : 0;
+              const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
+              const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
               const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
               const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
               const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
