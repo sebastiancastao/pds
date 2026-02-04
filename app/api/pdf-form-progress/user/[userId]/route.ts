@@ -355,6 +355,25 @@ function tryGetFirstWidgetPlacement(doc: PDFDocument, fieldName: string): FieldW
   }
 }
 
+function hasNonEmptyWidgetNormalAppearance(doc: PDFDocument, fieldName: string, minContentsSize = 40) {
+  try {
+    const form = doc.getForm();
+    const field = form.getField(fieldName) as any;
+    const widgets = field?.acroField?.getWidgets?.() ?? [];
+    if (!widgets.length) return false;
+
+    for (const widget of widgets) {
+      const normal = widget?.getAppearances?.()?.normal;
+      const size = typeof normal?.getContentsSize === 'function' ? normal.getContentsSize() : 0;
+      if (size >= minContentsSize) return true;
+    }
+
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function normalizeSignatureImage(signatureData: string) {
   const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,/i);
   if (!match) {
@@ -993,7 +1012,24 @@ async function ensureFormFieldsVisible(
 
     let renderedValues = 0;
 
+    const uniqueEntries: RenderEntry[] = [];
+    const seen = new Set<string>();
+    const round = (n: number) => Math.round(n * 100) / 100;
+
     for (const entry of entries) {
+      const r = entry.rect;
+      const baseKey = `${entry.kind}|${entry.pageIndex}|${round(r.x)}|${round(r.y)}|${round(r.width)}|${round(r.height)}`;
+      const key =
+        entry.kind === 'text'
+          ? `${baseKey}|${entry.value}`
+          : `${baseKey}|${entry.checked ? 1 : 0}`;
+
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueEntries.push(entry);
+    }
+
+    for (const entry of uniqueEntries) {
       try {
         const targetPage = pages[entry.pageIndex] ?? pages[0];
         if (!targetPage) continue;
@@ -1795,6 +1831,12 @@ export async function GET(
         // Flatten form fields to ensure they render consistently across all browsers
         // This converts editable form fields to static content
         const isHandbook = (form.form_name || '').toLowerCase().includes('handbook');
+        const noticeHasEmployerSignatureAppearance = isNoticeToEmployee
+          ? hasNonEmptyWidgetNormalAppearance(formPdf, 'Signature8', 50)
+          : false;
+        const noticeHasEmployeeSignatureAppearance = isNoticeToEmployee
+          ? hasNonEmptyWidgetNormalAppearance(formPdf, 'Signature9', 50)
+          : false;
         const employerSignaturePlacement = isNoticeToEmployee
           ? tryGetFirstWidgetPlacement(formPdf, 'Signature8')
           : null;
@@ -1932,6 +1974,22 @@ export async function GET(
               );
 
               // Capture placements before flattening removes the form widgets.
+              const noticeAcknowledgementDateExistingText = {
+                Date: (() => {
+                  try {
+                    return pdfForm.getTextField('Date').getText()?.trim() ?? '';
+                  } catch {
+                    return '';
+                  }
+                })(),
+                Date_2: (() => {
+                  try {
+                    return pdfForm.getTextField('Date_2').getText()?.trim() ?? '';
+                  } catch {
+                    return '';
+                  }
+                })(),
+              };
               const noticeAcknowledgementDatePlacement = {
                 Date: tryGetFirstWidgetPlacement(formPdf, 'Date'),
                 Date_2: tryGetFirstWidgetPlacement(formPdf, 'Date_2'),
@@ -1947,12 +2005,23 @@ export async function GET(
                   const font = noticeSignatureDateFont ?? (await formPdf.embedFont(StandardFonts.Helvetica));
 
                   const placements = [
-                    { name: 'Date', placement: noticeAcknowledgementDatePlacement.Date },
-                    { name: 'Date_2', placement: noticeAcknowledgementDatePlacement.Date_2 },
+                    {
+                      name: 'Date',
+                      placement: noticeAcknowledgementDatePlacement.Date,
+                      existingText: noticeAcknowledgementDateExistingText.Date,
+                    },
+                    {
+                      name: 'Date_2',
+                      placement: noticeAcknowledgementDatePlacement.Date_2,
+                      existingText: noticeAcknowledgementDateExistingText.Date_2,
+                    },
                   ];
 
-                  for (const { placement } of placements) {
+                  for (const { placement, existingText } of placements) {
                     if (!placement) continue;
+                    // Only skip if the saved PDF already has the date value as editable text.
+                    // Do not rely on existing appearance streams here (they're often stale/missing after flatten).
+                    if (existingText && existingText.includes(signedDateValue)) continue;
                     const page = pages[placement.pageIndex] ?? pages[0];
                     if (!page) continue;
 
@@ -2087,22 +2156,26 @@ export async function GET(
 
         if (isNoticeToEmployee && employerSignaturePlacement) {
           try {
-            const signatureBytes = await getEmployerSignatureBytes();
-            if (signatureBytes) {
-              const signatureImage = await formPdf.embedPng(signatureBytes);
-              const page =
-                formPdf.getPages()[employerSignaturePlacement.pageIndex] ?? formPdf.getPages()[0];
-              const rect = employerSignaturePlacement.rect;
+            if (noticeHasEmployerSignatureAppearance) {
+              console.log('[PDF_FORMS] notice-to-employee: skipping employer signature embed (already present)');
+            } else {
+              const signatureBytes = await getEmployerSignatureBytes();
+              if (signatureBytes) {
+                const signatureImage = await formPdf.embedPng(signatureBytes);
+                const page =
+                  formPdf.getPages()[employerSignaturePlacement.pageIndex] ?? formPdf.getPages()[0];
+                const rect = employerSignaturePlacement.rect;
 
-              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
-              const heightScale = 0.8;
-              const drawWidth = signatureImage.width * scale;
-              const drawHeight = signatureImage.height * scale * heightScale;
-              const signatureOffsetX = -56;
-              const x = rect.x + (rect.width - drawWidth) / 2 + signatureOffsetX + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA;
-              const y = rect.y + (rect.height - drawHeight) / 2 + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA;
+                const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+                const heightScale = 0.8;
+                const drawWidth = signatureImage.width * scale;
+                const drawHeight = signatureImage.height * scale * heightScale;
+                const signatureOffsetX = -56;
+                const x = rect.x + (rect.width - drawWidth) / 2 + signatureOffsetX + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA;
+                const y = rect.y + (rect.height - drawHeight) / 2 + NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA;
 
-              page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
+                page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
+              }
             }
           } catch (error) {
             console.warn('[PDF_FORMS] Failed to embed employer signature for notice-to-employee', error);
@@ -2169,14 +2242,18 @@ export async function GET(
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
-            const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
-            // WI and NV use different Y position for temp-employment-agreement (y: 470 vs y: 420)
-            const isWINVState = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin' ||
-              normalizedUserState === 'nv' || normalizedUserState === 'nevada';
+          const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
+          // WI and NV use different Y position for temp-employment-agreement (y: 470 vs y: 420)
+          const isWINVState = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin' ||
+            normalizedUserState === 'nv' || normalizedUserState === 'nevada';
 
-            for (const pageIdx of signaturePageIndexes) {
-              const page = pages[pageIdx];
-              const { width, height } = page.getSize();
+          for (const pageIdx of signaturePageIndexes) {
+            if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
+              console.log('[PDF_FORMS] notice-to-employee: skipping employee signature embed (already present)');
+              continue;
+            }
+            const page = pages[pageIdx];
+            const { width, height } = page.getSize();
 
               const baseX = width - signatureWidth - 50;
               const baseY = isI9Form ? 100 : 50;
