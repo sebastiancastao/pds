@@ -98,6 +98,11 @@ export default function TimekeepingPage() {
       if (!user) {
         window.location.href = "/login";
       } else {
+        if (user.id === "95fdb5d7-84eb-4c07-88eb-92063d8e3fb0") {
+          window.location.replace("/register");
+          return;
+        }
+
         const { data } = await supabase.auth.getSession();
         setAccessToken(data.session?.access_token || null);
         let role = '';

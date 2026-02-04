@@ -67,6 +67,17 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
+  const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
+  const isEventDashboardPaymentState = (s?: string | null) => {
+    const st = normalizeState(s);
+    return st === "CA" || st === "NV" || st === "WI";
+  };
+  const getRestBreakAmount = (actualHours: number, stateCode: string) => {
+    const st = normalizeState(stateCode);
+    if (st === "NV" || st === "WI") return 0;
+    if (actualHours <= 0) return 0;
+    return actualHours > 10 ? 12 : 9;
+  };
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
@@ -344,6 +355,7 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
+                  state: eventInfo.state,
                   baseRate: 17.28,
                   eventTotal: 0,
                   eventHours: 0,
@@ -361,6 +373,7 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
+            state: eventInfo.state,
             baseRate: 17.28,
             eventTotal: 0,
             eventHours: 0,
@@ -372,8 +385,18 @@ function HRDashboardContent() {
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
         const eventPaymentSummary = eventPaymentData.eventPayment || {};
-        const baseRate = Number(eventPaymentSummary.base_rate || 17.28);
+        const eventState = normalizeState(eventInfo.state) || "CA";
+        const baseRate = Number(eventPaymentSummary.base_rate || (eventState === "WI" ? 15.0 : 17.28));
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
+
+        const vendorCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
+        const commissionPoolDollars =
+          Number(eventPaymentSummary.commission_pool_dollars || 0) ||
+          (Number(eventPaymentSummary.net_sales || 0) * Number(eventPaymentSummary.commission_pool_percent || 0)) ||
+          0;
+        const perVendorCommissionShare = vendorCount > 0 ? commissionPoolDollars / vendorCount : 0;
+        const totalTips = Number(eventPaymentSummary.total_tips || 0);
+        const totalEligibleHours = (vendorPayments || []).reduce((sum: number, vp: any) => sum + Number(vp.actual_hours || 0), 0);
 
         // Map vendor payments to the normalized shape used in Global Calendar
         const eventPayments = vendorPayments.map((payment: any) => {
@@ -384,13 +407,51 @@ function HRDashboardContent() {
           const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
           const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
           const adjustmentAmount = Number(payment.adjustment_amount || 0);
+          const actualHours = Number(payment.actual_hours || 0);
+
+          if (isEventDashboardPaymentState(eventState)) {
+            const extAmtOnRegRate = actualHours * baseRate * 1.5;
+            const totalFinalCommissionAmt = actualHours > 0 ? Math.max(extAmtOnRegRate, perVendorCommissionShare) : 0;
+            const commissionAmt = actualHours > 0 ? Math.max(0, totalFinalCommissionAmt - extAmtOnRegRate) : 0;
+            const loadedRate = actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate;
+            const tips = totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
+            const restBreak = getRestBreakAmount(actualHours, eventState);
+            const totalPay = totalFinalCommissionAmt + tips + restBreak;
+            const finalPay = totalPay + adjustmentAmount;
+            return {
+              userId: payment.user_id,
+              firstName,
+              lastName,
+              email: user?.email || 'N/A',
+              actualHours,
+              regularHours: actualHours,
+              regularPay: extAmtOnRegRate,
+              overtimeHours: 0,
+              overtimePay: 0,
+              doubletimeHours: 0,
+              doubletimePay: 0,
+              commissions: commissionAmt,
+              tips,
+              totalPay,
+              adjustmentAmount,
+              finalPay,
+              regRate: baseRate,
+              loadedRate,
+              extAmtOnRegRate,
+              commissionAmt,
+              totalFinalCommissionAmt,
+              restBreak,
+              totalGrossPay: finalPay,
+            };
+          }
+
           const totalPay = Number(payment.total_pay || 0);
           return {
             userId: payment.user_id,
             firstName,
             lastName,
             email: user?.email || 'N/A',
-            actualHours: Number(payment.actual_hours || 0),
+            actualHours,
             regularHours: Number(payment.regular_hours || 0),
             regularPay: Number(payment.regular_pay || 0),
             overtimeHours: Number(payment.overtime_hours || 0),
@@ -402,11 +463,12 @@ function HRDashboardContent() {
             totalPay,
             adjustmentAmount,
             finalPay: totalPay + adjustmentAmount,
+            totalGrossPay: totalPay + adjustmentAmount,
           };
         });
         console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map((p: any) => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
 
-        const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
+        const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
 
         byVenue[eventInfo.venue].totalPayment += eventTotal;
@@ -415,6 +477,7 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          state: eventInfo.state,
           baseRate,
           eventTotal,
           eventHours,
@@ -463,20 +526,22 @@ function HRDashboardContent() {
       }
 
       // Update local payments state to reflect saved amount
-      setPaymentsByVenue(prev => prev.map(v => ({
-        ...v,
-        events: v.events.map((ev: any) => {
+      setPaymentsByVenue(prev => prev.map(v => {
+        const events = v.events.map((ev: any) => {
           if (ev.id !== eventId) return ev;
           const payments = (ev.payments || []).map((p: any) => {
             if (p.userId !== userId) return p;
             const newAdj = amount;
-            return { ...p, adjustmentAmount: newAdj, finalPay: Number(p.totalPay || 0) + newAdj };
+            return { ...p, adjustmentAmount: newAdj, finalPay: Number(p.totalPay || 0) + newAdj, totalGrossPay: Number(p.totalPay || 0) + newAdj };
           });
-          const eventTotal = payments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
+          const eventTotal = payments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
           const eventHours = payments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
           return { ...ev, payments, eventTotal, eventHours };
-        })
-      })));
+        });
+        const totalPayment = events.reduce((sum: number, ev: any) => sum + Number(ev.eventTotal || 0), 0);
+        const totalHours = events.reduce((sum: number, ev: any) => sum + Number(ev.eventHours || 0), 0);
+        return { ...v, events, totalPayment, totalHours };
+      }));
     } finally {
       setSavingAdjustment(false);
     }
@@ -986,19 +1051,45 @@ function HRDashboardContent() {
                                     <div className="overflow-x-auto border rounded">
                                       <table className="min-w-full">
                                         <thead className="bg-gray-50">
-                                          <tr>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commissions</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
-                                            <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Adj</th>
-                                            <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                                          </tr>
+                                          {(() => {
+                                            const st = normalizeState(ev.state || v.state);
+                                            const useNew = isEventDashboardPaymentState(st);
+                                            const hideRest = st === "NV" || st === "WI";
+                                            if (!useNew) {
+                                              return (
+                                                <tr>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Hrs</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Pay</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Hrs</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Pay</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Hrs</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Pay</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commissions</th>
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
+                                                  <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Adj</th>
+                                                  <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
+                                                </tr>
+                                              );
+                                            }
+                                            return (
+                                              <tr>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Loaded Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Ext Amt on Reg Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Amt</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Total Final Commission Amt</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
+                                                {!hideRest && (
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                                                )}
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
+                                              </tr>
+                                            );
+                                          })()}
                                         </thead>
                                         <tbody className="divide-y">
                                           {ev.payments.map((p: any, idx: number) => (
@@ -1020,48 +1111,118 @@ function HRDashboardContent() {
                                                   )}
                                                 </div>
                                               </td>
-                                              <td className="p-2 text-sm">{Number(p.regularHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.regularPay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm">{Number(p.overtimeHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.overtimePay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm">{Number(p.doubletimeHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.doubletimePay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-purple-600">${Number(p.commissions || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-orange-600">${Number(p.tips || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-right">
-                                                {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
-                                                  <div className="flex items-center justify-end gap-2">
-                                                    <span className="text-gray-500">$</span>
-                                                    <input
-                                                      type="number"
-                                                      className="w-24 px-2 py-1 border rounded text-sm"
-                                                      value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
-                                                      onChange={(e) => {
-                                                        const val = Number(e.target.value) || 0;
-                                                        setAdjustments(prev => ({
-                                                          ...prev,
-                                                          [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
-                                                        }));
-                                                      }}
-                                                      step="1"
-                                                    />
-                                                    <button
-                                                      onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
-                                                      className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                                    >Save</button>
-                                                    <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
-                                                  </div>
-                                                ) : (
-                                                  <span
-                                                    className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
-                                                    onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
-                                                    title="Click to edit"
-                                                  >
-                                                    {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
-                                                  </span>
-                                                )}
-                                              </td>
-                                              <td className="p-2 text-sm font-semibold text-right">${Number(p.finalPay || 0).toFixed(2)}</td>
+                                              {(() => {
+                                                const st = normalizeState(ev.state || v.state);
+                                                const useNew = isEventDashboardPaymentState(st);
+                                                const hideRest = st === "NV" || st === "WI";
+                                                if (!useNew) {
+                                                  return (
+                                                    <>
+                                                      <td className="p-2 text-sm">{Number(p.regularHours || 0).toFixed(2)}h</td>
+                                                      <td className="p-2 text-sm text-green-600">${Number(p.regularPay || 0).toFixed(2)}</td>
+                                                      <td className="p-2 text-sm">{Number(p.overtimeHours || 0).toFixed(2)}h</td>
+                                                      <td className="p-2 text-sm text-green-600">${Number(p.overtimePay || 0).toFixed(2)}</td>
+                                                      <td className="p-2 text-sm">{Number(p.doubletimeHours || 0).toFixed(2)}h</td>
+                                                      <td className="p-2 text-sm text-green-600">${Number(p.doubletimePay || 0).toFixed(2)}</td>
+                                                      <td className="p-2 text-sm text-purple-600">${Number(p.commissions || 0).toFixed(2)}</td>
+                                                      <td className="p-2 text-sm text-orange-600">${Number(p.tips || 0).toFixed(2)}</td>
+                                                      <td className="p-2 text-sm text-right">
+                                                        {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
+                                                          <div className="flex items-center justify-end gap-2">
+                                                            <span className="text-gray-500">$</span>
+                                                            <input
+                                                              type="number"
+                                                              className="w-24 px-2 py-1 border rounded text-sm"
+                                                              value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
+                                                              onChange={(e) => {
+                                                                const val = Number(e.target.value) || 0;
+                                                                setAdjustments(prev => ({
+                                                                  ...prev,
+                                                                  [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
+                                                                }));
+                                                              }}
+                                                              step="1"
+                                                            />
+                                                            <button
+                                                              onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
+                                                              className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                                            >Save</button>
+                                                            <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                          </div>
+                                                        ) : (
+                                                          <span
+                                                            className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                                                            onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
+                                                            title="Click to edit"
+                                                          >
+                                                            {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
+                                                          </span>
+                                                        )}
+                                                      </td>
+                                                      <td className="p-2 text-sm font-semibold text-right">${Number(p.finalPay || 0).toFixed(2)}</td>
+                                                    </>
+                                                  );
+                                                }
+
+                                                const regRate = Number(p.regRate ?? ev.baseRate ?? 0);
+                                                const loadedRate = Number(p.loadedRate ?? regRate);
+                                                const hours = Number(p.actualHours || 0);
+                                                const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
+                                                const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
+                                                const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
+                                                const tips = Number(p.tips || 0);
+                                                const restBreak = Number(p.restBreak || 0);
+                                                const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+
+                                                return (
+                                                  <>
+                                                    <td className="p-2 text-sm">${regRate.toFixed(2)}/hr</td>
+                                                    <td className="p-2 text-sm">${loadedRate.toFixed(2)}/hr</td>
+                                                    <td className="p-2 text-sm">{hours.toFixed(2)}h</td>
+                                                    <td className="p-2 text-sm text-green-600">${extAmtOnRegRate.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-purple-600">${commissionAmt.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-green-600">${totalFinalCommissionAmt.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-orange-600">${tips.toFixed(2)}</td>
+                                                    {!hideRest && (
+                                                      <td className="p-2 text-sm text-green-600">${restBreak.toFixed(2)}</td>
+                                                    )}
+                                                    <td className="p-2 text-sm text-right">
+                                                      {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
+                                                        <div className="flex items-center justify-end gap-2">
+                                                          <span className="text-gray-500">$</span>
+                                                          <input
+                                                            type="number"
+                                                            className="w-24 px-2 py-1 border rounded text-sm"
+                                                            value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
+                                                            onChange={(e) => {
+                                                              const val = Number(e.target.value) || 0;
+                                                              setAdjustments(prev => ({
+                                                                ...prev,
+                                                                [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
+                                                              }));
+                                                            }}
+                                                            step="1"
+                                                          />
+                                                          <button
+                                                            onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
+                                                            className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                                          >Save</button>
+                                                          <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                        </div>
+                                                      ) : (
+                                                        <span
+                                                          className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                                                          onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
+                                                          title="Click to edit"
+                                                        >
+                                                          {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
+                                                        </span>
+                                                      )}
+                                                    </td>
+                                                    <td className="p-2 text-sm font-semibold text-right">${totalGrossPay.toFixed(2)}</td>
+                                                  </>
+                                                );
+                                              })()}
                                             </tr>
                                           ))}
                                         </tbody>
