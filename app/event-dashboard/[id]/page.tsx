@@ -312,25 +312,6 @@ export default function EventDashboardPage() {
     return fallbackRates[normalizedState] || 17.28;
   };
 
-  // Helper to get overtime/doubletime config for a state
-  const getOvertimeConfigForState = (stateCode: string): { overtimeEnabled: boolean; overtimeRate: number; doubletimeEnabled: boolean; doubletimeRate: number } => {
-    const normalizedState = (stateCode || '').toUpperCase().trim();
-    const rate = stateRatesData.find(r => r.state_code?.toUpperCase() === normalizedState);
-    if (rate) {
-      return {
-        overtimeEnabled: rate.overtime_enabled,
-        overtimeRate: rate.overtime_rate,
-        doubletimeEnabled: rate.doubletime_enabled,
-        doubletimeRate: rate.doubletime_rate,
-      };
-    }
-    // Fallback: CA has OT/DT, others only OT
-    if (normalizedState === 'CA') {
-      return { overtimeEnabled: true, overtimeRate: 1.5, doubletimeEnabled: true, doubletimeRate: 2.0 };
-    }
-    return { overtimeEnabled: true, overtimeRate: 1.5, doubletimeEnabled: false, doubletimeRate: 0 };
-  };
-
   const loadEvent = async () => {
     if (!eventId) return;
 
@@ -751,28 +732,26 @@ export default function EventDashboardPage() {
 
   /**
    * Calculate regular/overtime/doubletime hours based on state labor laws
-   * California: OT after 8hrs/day, DT after 12hrs/day
-   * Other states: All hours at regular rate per event (weekly OT of 40hrs/week calculated at payroll aggregation)
+   * Note: Overtime logic is intentionally disabled in the Payment tab.
+   * All hours are treated as regular hours for all states.
    */
-  const calculateHoursByState = (actualHours: number, state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
-    const normalizedState = (state || '').toUpperCase().trim();
-
-    if (normalizedState === 'CA') {
-      // California: Daily overtime rules
-      const regularHours = Math.min(actualHours, 8);
-      const overtimeHours = Math.max(Math.min(actualHours, 12) - 8, 0);
-      const doubletimeHours = Math.max(actualHours - 12, 0);
-      return { regularHours, overtimeHours, doubletimeHours };
-    } else {
-      // All other states: No daily OT, pay all hours at regular rate
-      // Weekly OT (40hrs/week) must be calculated at payroll aggregation level
-      return {
-        regularHours: actualHours,
-        overtimeHours: 0,
-        doubletimeHours: 0,
-      };
-    }
+  const calculateHoursByState = (actualHours: number, _state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
+    return {
+      regularHours: actualHours,
+      overtimeHours: 0,
+      doubletimeHours: 0,
+    };
   };
+
+  const getRestBreakAmount = (actualHours: number, state: string): number => {
+    const normalizedState = (state || "").toUpperCase().trim();
+    // Nevada & Wisconsin: no rest break amount/column in Payment tab
+    if (normalizedState === "NV" || normalizedState === "WI") return 0;
+    return actualHours > 10 ? 12 : actualHours > 0 ? 9 : 0;
+  };
+
+  const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
+  const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
 
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
@@ -787,7 +766,6 @@ export default function EventDashboardPage() {
       // Calculate all payment data using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
-      const otConfig = getOvertimeConfigForState(eventState);
 
       const sharesData = calculateShares();
       const netSales = sharesData?.netSales || 0;
@@ -804,21 +782,6 @@ export default function EventDashboardPage() {
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
-      // Calculate total team salary first (without commissions)
-      let totalTeamSalary = 0;
-      teamMembers.forEach((member: any) => {
-        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = timesheetTotals[uid] || 0;
-        const actualHours = totalMs / (1000 * 60 * 60);
-        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
-        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
-        totalTeamSalary += regularPay + overtimePay + doubletimePay;
-      });
-
-      // Constraint: If commission pool <= total team salary, set commissions to 0
-      const shouldDistributeCommissions = totalCommissionPool > totalTeamSalary;
       const perVendorCommissionShare =
         vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
@@ -829,33 +792,28 @@ export default function EventDashboardPage() {
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
-        // Split into regular/OT/DT
+        // No OT/DT logic in Payment tab
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-
-        const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
-        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
+        const overtimePay = 0;
+        const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
         const isTrailersDivision = memberDivision === 'trailers';
 
-        // Only distribute commissions if commission pool > total team salary AND not trailers division
-        const extRateForReg =
-          eventState === 'CA'
-            ? actualHours > 12
-              ? doubletimeRate
-              : actualHours > 8
-                ? overtimeRate
-                : baseRate
-            : baseRate;
-        const extAmtOnRegRate = actualHours * extRateForReg;
+        // Ext Amt on Reg Rate = total hours × base rate × 1.5
+        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const restBreak = getRestBreakAmount(actualHours, eventState);
+
+        // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
+        // pay Ext Amt on Reg Rate (otherwise pay the commission share).
+        const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
         const commissionAmount =
-          !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+          !isTrailersDivision && vendorCount > 0
+            ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
             : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
 
-        const totalPay = regularPay + overtimePay + doubletimePay + commissionAmount + proratedTips;
+        const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
 
         return {
           userId: uid,
@@ -863,11 +821,12 @@ export default function EventDashboardPage() {
           regularHours,
           overtimeHours,
           doubletimeHours,
-          regularPay,
+          regularPay: extAmtOnRegRate,
           overtimePay,
           doubletimePay,
           commissions: commissionAmount,
           tips: proratedTips,
+          restBreak,
           totalPay,
         };
       });
@@ -921,7 +880,6 @@ export default function EventDashboardPage() {
       // Calculate payroll data for each team member using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
-      const otConfig = getOvertimeConfigForState(eventState);
 
       const sharesData = calculateShares();
       const netSales = sharesData?.netSales || 0;
@@ -938,21 +896,8 @@ export default function EventDashboardPage() {
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
-      // Calculate total team salary first (without commissions)
-      let totalTeamSalary = 0;
-      teamMembers.forEach((member: any) => {
-        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = timesheetTotals[uid] || 0;
-        const actualHours = totalMs / (1000 * 60 * 60);
-        const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
-        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
-        totalTeamSalary += regularPay + overtimePay + doubletimePay;
-      });
-
-      // Constraint: If commission pool <= total team salary, set commissions to 0
-      const shouldDistributeCommissions = totalCommissionPool > totalTeamSalary;
+      const perVendorCommissionShare =
+        vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
       const payrollData = teamMembers.map((member: any) => {
         const profile = member.users?.profiles;
@@ -963,45 +908,41 @@ export default function EventDashboardPage() {
 
         // Calculate pay
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-
-        const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * (baseRate * otConfig.overtimeRate);
-        const doubletimePay = doubletimeHours * (baseRate * otConfig.doubletimeRate);
+        const overtimePay = 0;
+        const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
         const isTrailersDivision = memberDivision === 'trailers';
 
-        // Only distribute commissions if commission pool > total team salary AND not trailers division
-        const extRateForReg =
-          eventState === 'CA'
-            ? actualHours > 12
-              ? doubletimeRate
-              : actualHours > 8
-                ? overtimeRate
-                : baseRate
-            : baseRate;
-        const extAmtOnRegRate = actualHours * extRateForReg;
+        // Ext Amt on Reg Rate = total hours × base rate × 1.5
+        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const restBreak = getRestBreakAmount(actualHours, eventState);
+
+        // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
+        // pay Ext Amt on Reg Rate (otherwise pay the commission share).
+        const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
         const commissionAmount =
-          !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+          !isTrailersDivision && vendorCount > 0
+            ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
             : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHoursEmail > 0 ? (totalTips * actualHours) / totalEligibleHoursEmail : 0;
         const adjustment = adjustments[uid] || 0;
 
-        const totalPay = regularPay + overtimePay + doubletimePay + commissionAmount + proratedTips + adjustment;
+        const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak + adjustment;
 
         return {
           email: member.users?.email,
           firstName: profile?.first_name || "Team Member",
           lastName: profile?.last_name || "",
           regularHours: regularHours.toFixed(2),
-          regularPay: regularPay.toFixed(2),
+          regularPay: extAmtOnRegRate.toFixed(2),
           overtimeHours: overtimeHours.toFixed(2),
           overtimePay: overtimePay.toFixed(2),
           doubletimeHours: doubletimeHours.toFixed(2),
           doubletimePay: doubletimePay.toFixed(2),
           commission: commissionAmount.toFixed(2),
           tips: proratedTips.toFixed(2),
+          restBreak: restBreak.toFixed(2),
           adjustment: adjustment.toFixed(2),
           totalPay: totalPay.toFixed(2),
           baseRate: baseRate.toFixed(2),
@@ -2598,7 +2539,9 @@ export default function EventDashboardPage() {
                         <th className="text-left p-4 font-semibold text-gray-700">Commission Amt</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Total Final Commission</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Tips</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Rest Break</th>
+                        {!hideRestBreakColumn && (
+                          <th className="text-left p-4 font-semibold text-gray-700">Rest Break</th>
+                        )}
                         <th className="text-left p-4 font-semibold text-gray-700">Other</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Total Gross Pay</th>
                         <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
@@ -2653,35 +2596,13 @@ export default function EventDashboardPage() {
                           // Use rates from database based on venue state
                           const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
                           const baseRate = getBaseRateForState(eventState);
-                          const otConfig = getOvertimeConfigForState(eventState);
                           console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', baseRate);
-                          const overtimeRate = baseRate * otConfig.overtimeRate;
-                          const doubletimeRate = baseRate * otConfig.doubletimeRate;
 
-                          // Determine loaded rate based on total hours worked
-                          // If hours > 12: all hours at doubletime rate
-                          // If hours > 8: all hours at overtime rate
-                          // Otherwise: all hours at regular rate
-                          let loadedRate = baseRate;
-                          if (actualHours > 12) {
-                            loadedRate = doubletimeRate;
-                          } else if (actualHours > 8) {
-                            loadedRate = overtimeRate;
-                          }
+                          // Loaded rate is always the base rate (no OT/DT logic)
+                          const loadedRate = baseRate;
 
-                          // Ext Amt on Reg Rate = total hours × base rate
-                          const extRateForReg =
-                            eventState === 'CA'
-                              ? actualHours > 12
-                                ? doubletimeRate
-                                : actualHours > 8
-                                  ? overtimeRate
-                                  : baseRate
-                              : baseRate;
-                          const extAmtOnRegRate = actualHours * extRateForReg;
-
-                          // Total pay based on loaded rate
-                          const totalBasePay = actualHours * loadedRate;
+                          // Ext Amt on Reg Rate = total hours × base rate × 1.5
+                          const extAmtOnRegRate = actualHours * baseRate * 1.5;
 
                           // Commission pool (Net Sales × pool fraction)
                           const sharesData = calculateShares();
@@ -2693,35 +2614,17 @@ export default function EventDashboardPage() {
 
                           const totalCommissionPool = netSales * poolPercent;
 
-                          // Calculate total team salary (sum of all members' base pay using loaded rate logic)
-                          let totalTeamSalaryAll = 0;
-                          teamMembers.forEach((m: any) => {
-                            const mUid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
-                            const mTotalMs = timesheetTotals[mUid] || 0;
-                            const mActualHours = mTotalMs / (1000 * 60 * 60);
-                            // Use same loaded rate logic
-                            let mLoadedRate = baseRate;
-                            if (mActualHours > 12) {
-                              mLoadedRate = doubletimeRate;
-                            } else if (mActualHours > 8) {
-                              mLoadedRate = overtimeRate;
-                            }
-                            totalTeamSalaryAll += mActualHours * mLoadedRate;
-                          });
-
-                          // Constraint: If commission pool <= total team salary, set commissions to 0
-                          const shouldDistributeCommissions = totalCommissionPool > totalTeamSalaryAll;
-
                           const perVendorCommissionShare =
                             vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
-                          // Pro-rate by hours (excluding trailers) only if commission pool > total salary
                           const isTrailersDivision = member.users?.division === 'trailers';
+                          const totalFinalCommission = isTrailersDivision
+                            ? extAmtOnRegRate
+                            : Math.max(extAmtOnRegRate, perVendorCommissionShare);
                           const commissionAmount =
-                            !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
-                              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+                            !isTrailersDivision && vendorCount > 0
+                              ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
                               : 0;
-                          const totalFinalCommission = commissionAmount + extAmtOnRegRate;
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
                           const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
 
@@ -2731,10 +2634,13 @@ export default function EventDashboardPage() {
                             ? (totalTips * actualHours) / totalEligibleHours
                             : 0;
 
+                          // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
+                          const totalBasePay = totalFinalCommission;
+
                           // Calculate total gross pay
-                          const restBreak = 0; // Placeholder for rest break amount
+                          const restBreak = getRestBreakAmount(actualHours, eventState);
                           const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
-                          const totalGrossPay = totalBasePay + commissionAmount + proratedTips + restBreak + otherAmount;
+                          const totalGrossPay = totalBasePay + proratedTips + restBreak + otherAmount;
 
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
@@ -2768,11 +2674,6 @@ export default function EventDashboardPage() {
                                 <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
                                   ${finalCommissionRate.toFixed(2)}/hr
                                 </div>
-                                {loadedRate > baseRate && (
-                                  <div className="text-[10px] text-orange-500 mt-1">
-                                    {actualHours > 12 ? 'DT' : 'OT'} rate applied
-                                  </div>
-                                )}
                               </td>
 
                               {/* Hours */}
@@ -2788,7 +2689,7 @@ export default function EventDashboardPage() {
                                   ${extAmtOnRegRate.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-500 mt-1">
-                                  {actualHours.toFixed(2)}h × ${baseRate.toFixed(2)}
+                                  {actualHours.toFixed(2)}h × ${baseRate.toFixed(2)} × 1.5
                                 </div>
                               </td>
 
@@ -2816,12 +2717,16 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
-                              {/* Rest Break - Editable */}
-                              <td className="p-4">
-                                <div className="text-sm font-medium text-gray-500">
-                                  $0.00
-                                </div>
-                              </td>
+                              {!hideRestBreakColumn && (
+                                <td className="p-4">
+                                  <div className="text-sm font-medium text-green-600">
+                                    ${restBreak.toFixed(2)}
+                                  </div>
+                                  <div className="text-[10px] text-gray-500 mt-1">
+                                    {actualHours.toFixed(2)}h {actualHours > 10 ? '>' : '≤'} 10h
+                                  </div>
+                                </td>
+                              )}
 
                               {/* Other (Adjustments + Reimbursements) - Editable */}
                               <td className="p-4">
