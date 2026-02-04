@@ -154,6 +154,14 @@ export default function EventDashboardPage() {
       return true;
     }
   });
+  const isVendorDivision = (division?: string | null) => {
+    const normalized = (division || '').toString().toLowerCase();
+    return normalized === 'vendor' || normalized === 'both';
+  };
+
+  const vendorCount = teamMembers.reduce((count: number, member: any) => {
+    return isVendorDivision(member.users?.division) ? count + 1 : count;
+  }, 0);
 
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
@@ -811,6 +819,8 @@ export default function EventDashboardPage() {
 
       // Constraint: If commission pool <= total team salary, set commissions to 0
       const shouldDistributeCommissions = totalCommissionPool > totalTeamSalary;
+      const perVendorCommissionShare =
+        vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
       // Build vendor payments array
       const vendorPayments = teamMembers.map((member: any) => {
@@ -830,12 +840,22 @@ export default function EventDashboardPage() {
         const isTrailersDivision = memberDivision === 'trailers';
 
         // Only distribute commissions if commission pool > total team salary AND not trailers division
-        const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHours > 0
-          ? (totalCommissionPool * actualHours) / totalEligibleHours
-          : 0;
+        const extRateForReg =
+          eventState === 'CA'
+            ? actualHours > 12
+              ? doubletimeRate
+              : actualHours > 8
+                ? overtimeRate
+                : baseRate
+            : baseRate;
+        const extAmtOnRegRate = actualHours * extRateForReg;
+        const commissionAmount =
+          !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
 
-        const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips;
+        const totalPay = regularPay + overtimePay + doubletimePay + commissionAmount + proratedTips;
 
         return {
           userId: uid,
@@ -846,7 +866,7 @@ export default function EventDashboardPage() {
           regularPay,
           overtimePay,
           doubletimePay,
-          commissions: proratedCommission,
+          commissions: commissionAmount,
           tips: proratedTips,
           totalPay,
         };
@@ -952,13 +972,23 @@ export default function EventDashboardPage() {
         const isTrailersDivision = memberDivision === 'trailers';
 
         // Only distribute commissions if commission pool > total team salary AND not trailers division
-        const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHoursEmail > 0
-          ? (totalCommissionPool * actualHours) / totalEligibleHoursEmail
-          : 0;
+        const extRateForReg =
+          eventState === 'CA'
+            ? actualHours > 12
+              ? doubletimeRate
+              : actualHours > 8
+                ? overtimeRate
+                : baseRate
+            : baseRate;
+        const extAmtOnRegRate = actualHours * extRateForReg;
+        const commissionAmount =
+          !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHoursEmail > 0 ? (totalTips * actualHours) / totalEligibleHoursEmail : 0;
         const adjustment = adjustments[uid] || 0;
 
-        const totalPay = regularPay + overtimePay + doubletimePay + proratedCommission + proratedTips + adjustment;
+        const totalPay = regularPay + overtimePay + doubletimePay + commissionAmount + proratedTips + adjustment;
 
         return {
           email: member.users?.email,
@@ -970,7 +1000,7 @@ export default function EventDashboardPage() {
           overtimePay: overtimePay.toFixed(2),
           doubletimeHours: doubletimeHours.toFixed(2),
           doubletimePay: doubletimePay.toFixed(2),
-          commission: proratedCommission.toFixed(2),
+          commission: commissionAmount.toFixed(2),
           tips: proratedTips.toFixed(2),
           adjustment: adjustment.toFixed(2),
           totalPay: totalPay.toFixed(2),
@@ -2640,7 +2670,15 @@ export default function EventDashboardPage() {
                           }
 
                           // Ext Amt on Reg Rate = total hours × base rate
-                          const extAmtOnRegRate = actualHours * baseRate;
+                          const extRateForReg =
+                            eventState === 'CA'
+                              ? actualHours > 12
+                                ? doubletimeRate
+                                : actualHours > 8
+                                  ? overtimeRate
+                                  : baseRate
+                              : baseRate;
+                          const extAmtOnRegRate = actualHours * extRateForReg;
 
                           // Total pay based on loaded rate
                           const totalBasePay = actualHours * loadedRate;
@@ -2674,11 +2712,18 @@ export default function EventDashboardPage() {
                           // Constraint: If commission pool <= total team salary, set commissions to 0
                           const shouldDistributeCommissions = totalCommissionPool > totalTeamSalaryAll;
 
+                          const perVendorCommissionShare =
+                            vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
+
                           // Pro-rate by hours (excluding trailers) only if commission pool > total salary
                           const isTrailersDivision = member.users?.division === 'trailers';
-                          const proratedCommission = !isTrailersDivision && shouldDistributeCommissions && totalEligibleHours > 0
-                            ? (totalCommissionPool * actualHours) / totalEligibleHours
-                            : 0;
+                          const commissionAmount =
+                            !isTrailersDivision && shouldDistributeCommissions && vendorCount > 0
+                              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+                              : 0;
+                          const totalFinalCommission = commissionAmount + extAmtOnRegRate;
+                          const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
+                          const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
 
                           // Tips prorated by hours (same method)
                           const totalTips = Number(tips) || 0;
@@ -2689,7 +2734,7 @@ export default function EventDashboardPage() {
                           // Calculate total gross pay
                           const restBreak = 0; // Placeholder for rest break amount
                           const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
-                          const totalGrossPay = totalBasePay + proratedCommission + proratedTips + restBreak + otherAmount;
+                          const totalGrossPay = totalBasePay + commissionAmount + proratedTips + restBreak + otherAmount;
 
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
@@ -2720,8 +2765,8 @@ export default function EventDashboardPage() {
 
                               {/* Loaded Rate */}
                               <td className="p-4">
-                                <div className={`font-medium ${loadedRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
-                                  ${loadedRate.toFixed(2)}/hr
+                                <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
+                                  ${finalCommissionRate.toFixed(2)}/hr
                                 </div>
                                 {loadedRate > baseRate && (
                                   <div className="text-[10px] text-orange-500 mt-1">
@@ -2750,7 +2795,7 @@ export default function EventDashboardPage() {
                               {/* Commission Amt */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${proratedCommission.toFixed(2)}
+                                  ${commissionAmount.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-500">
                                   Pool {(poolPercent * 100).toFixed(2)}%
@@ -2760,7 +2805,7 @@ export default function EventDashboardPage() {
                               {/* Total Final Commission */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${proratedCommission.toFixed(2)}
+                                  ${totalFinalCommission.toFixed(2)}
                                 </div>
                               </td>
 
