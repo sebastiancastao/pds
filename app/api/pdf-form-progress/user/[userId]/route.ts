@@ -911,6 +911,7 @@ async function ensureFormFieldsVisible(
       const widgets = field?.acroField?.getWidgets?.() ?? [];
       const fieldName = field.getName() || '';
       const fieldType = field.constructor.name;
+      const isSignatureField = fieldType === 'PDFSignature' || /^Signature\\d+$/i.test(fieldName);
       const isText = typeof (field as any).getText === 'function';
       const isCheckbox = typeof (field as any).isChecked === 'function';
       const rawTextValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
@@ -929,6 +930,21 @@ async function ensureFormFieldsVisible(
       for (const widget of widgets) {
         const rect = widget?.getRectangle?.();
         if (!rect) continue;
+
+        // Prevent duplicates: remove existing appearance streams so flatten won't draw stale values.
+        // Never touch signature widgets (those appearance streams can contain real signatures).
+        if (!isSignatureField) {
+          try {
+            widget.removeRolloverAppearance?.();
+            widget.removeDownAppearance?.();
+            const emptyNormal = (widget as any).dict?.context?.obj?.({});
+            if (emptyNormal) {
+              widget.setNormalAppearance?.(emptyNormal);
+            }
+          } catch {
+            // ignore
+          }
+        }
 
         const widgetPageRef = widget?.P?.();
         const pageIndex = widgetPageRef ? pages.findIndex((p: any) => p.ref === widgetPageRef) : -1;
@@ -989,6 +1005,7 @@ async function ensureFormFieldsVisible(
 
       // Clear field values so flatten removes widgets without drawing their (possibly stale) appearance streams.
       try {
+        if (isSignatureField) continue;
         if (fieldType === 'PDFTextField') {
           (field as any).setText('');
         } else if (fieldType === 'PDFCheckBox') {
@@ -1002,9 +1019,6 @@ async function ensureFormFieldsVisible(
     }
 
     try {
-      if (embeddedFont) {
-        form.updateFieldAppearances(embeddedFont);
-      }
       form.flatten({ updateFieldAppearances: false });
     } catch (flattenError) {
       console.warn(`[PDF_FORMS] Could not flatten form ${label ?? 'document'}:`, flattenError);
