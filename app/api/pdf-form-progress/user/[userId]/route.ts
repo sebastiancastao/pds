@@ -859,6 +859,29 @@ async function ensureFormFieldsVisible(
       console.warn('[PDF_FORMS] Could not embed Helvetica font for', label, fontError);
     }
 
+    const normalizeCoord = (value: number, pageExtent: number) => {
+      if (!Number.isFinite(value) || pageExtent <= 0) return value;
+      if (value <= pageExtent * 2) return value;
+
+      // Some PDFs (notably the employee handbook generator) create widgets using a
+      // coordinate system scaled by 10x (e.g. y=7910 on a 792pt page). If dividing
+      // by 10 yields an in-bounds coordinate, prefer that.
+      const scaledDown = value / 10;
+      if (scaledDown >= 0 && scaledDown <= pageExtent) return scaledDown;
+
+      // Fallback: modulo into the page extent.
+      const mod = value % pageExtent;
+      return mod < 0 ? mod + pageExtent : mod;
+    };
+
+    const normalizeRectForPage = (rect: PdfRect, pageSize: { width: number; height: number }): PdfRect => {
+      const x = normalizeCoord(rect.x, pageSize.width);
+      const y = normalizeCoord(rect.y, pageSize.height);
+      const width = rect.width;
+      const height = rect.height;
+      return { x, y, width, height };
+    };
+
     type RenderEntry =
       | { kind: 'text'; pageIndex: number; rect: PdfRect; value: string }
       | { kind: 'checkbox'; pageIndex: number; rect: PdfRect; checked: boolean };
@@ -891,6 +914,13 @@ async function ensureFormFieldsVisible(
         const widgetPageRef = widget?.P?.();
         const pageIndex = widgetPageRef ? pages.findIndex((p: any) => p.ref === widgetPageRef) : -1;
         const resolvedPageIndex = pageIndex >= 0 ? pageIndex : 0;
+        const page = pages[resolvedPageIndex] ?? pages[0];
+        const normalizedRect = page
+          ? normalizeRectForPage(
+              { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+              page.getSize()
+            )
+          : { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 
         if (shouldSkip) {
           continue;
@@ -900,21 +930,21 @@ async function ensureFormFieldsVisible(
           entries.push({
             kind: 'text',
             pageIndex: resolvedPageIndex,
-            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            rect: normalizedRect,
             value: textValue,
           });
         } else if ((fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList') && selectedListText) {
           entries.push({
             kind: 'text',
             pageIndex: resolvedPageIndex,
-            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            rect: normalizedRect,
             value: selectedListText,
           });
         } else if (isCheckbox && checked) {
           entries.push({
             kind: 'checkbox',
             pageIndex: resolvedPageIndex,
-            rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            rect: normalizedRect,
             checked: true,
           });
         } else if (fieldType === 'PDFRadioGroup' && selectedRadio) {
@@ -928,7 +958,7 @@ async function ensureFormFieldsVisible(
               entries.push({
                 kind: 'checkbox',
                 pageIndex: resolvedPageIndex,
-                rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                rect: normalizedRect,
                 checked: true,
               });
             }
@@ -1025,6 +1055,211 @@ async function ensureFormFieldsVisible(
     }
   } catch (error) {
     console.error('[PDF_FORMS] Failed to render form fields for', label, error);
+  }
+}
+
+async function ensureEmployeeHandbookFieldsVisible(
+  doc: PDFDocument,
+  label?: string,
+  updatedAt?: string | null,
+  dateOfBirth?: string | null
+) {
+  try {
+    const form = doc.getForm();
+    const fields = form.getFields();
+    if (fields.length === 0) return;
+
+    const pages = doc.getPages();
+    let embeddedFont: any = null;
+    try {
+      embeddedFont = await doc.embedFont(StandardFonts.Helvetica);
+    } catch (fontError) {
+      console.warn('[PDF_FORMS] Could not embed Helvetica font for', label, fontError);
+    }
+
+    const fieldOffsets: Record<string, number> = {
+      employee_name1: 7000,
+      employee_initialsprev: 7000,
+      employee_initials2prev: 7000,
+      employee_initials3prev: 7000,
+      acknowledgment_date1: 7000,
+      printedName1: 7000,
+      employee_name: 5450,
+      employee_initials: 5450,
+      employee_initials2: 5450,
+      employee_initials3: 5450,
+      acknowledgment_date: 5450,
+      printedName: 5450,
+      date3: 2345,
+      printedName3: 2345,
+      date4: 2330,
+      date5: 7000,
+      printedName4: 7000,
+      date6: 7000,
+    };
+
+    type HandbookEntry =
+      | { kind: 'text'; fieldName: string; pageIndex: number; rect: PdfRect; value: string }
+      | { kind: 'checkbox'; fieldName: string; pageIndex: number; rect: PdfRect; checked: boolean };
+
+    const entries: HandbookEntry[] = [];
+
+    for (const field of fields) {
+      const widgets = field?.acroField?.getWidgets?.() ?? [];
+      const fieldName = field.getName() || '';
+      const fieldType = field.constructor.name;
+      const isText = typeof (field as any).getText === 'function';
+      const isCheckbox = typeof (field as any).isChecked === 'function';
+      const rawTextValue = isText ? String((field as any).getText?.() ?? '').trim() : '';
+      const textValue = rawTextValue
+        ? normalizeDateFieldValue(rawTextValue, updatedAt, fieldName, dateOfBirth)
+        : rawTextValue;
+      const checked = isCheckbox ? !!(field as any).isChecked?.() : false;
+
+      for (const widget of widgets) {
+        const rect = widget?.getRectangle?.();
+        if (!rect) continue;
+
+        const widgetPageRef = widget?.P?.();
+        const pageIndex = widgetPageRef ? pages.findIndex((p: any) => p.ref === widgetPageRef) : -1;
+        const resolvedPageIndex = pageIndex >= 0 ? pageIndex : 0;
+
+        const normalizedRect: PdfRect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+
+        if (isText && textValue) {
+          entries.push({
+            kind: 'text',
+            fieldName,
+            pageIndex: resolvedPageIndex,
+            rect: normalizedRect,
+            value: textValue,
+          });
+        } else if (isCheckbox && checked) {
+          entries.push({
+            kind: 'checkbox',
+            fieldName,
+            pageIndex: resolvedPageIndex,
+            rect: normalizedRect,
+            checked: true,
+          });
+        }
+      }
+
+      // Clear field values so flatten removes widgets without drawing their (possibly stale) appearance streams.
+      try {
+        if (fieldType === 'PDFTextField') {
+          (field as any).setText('');
+        } else if (fieldType === 'PDFCheckBox') {
+          (field as any).uncheck?.();
+        } else if (fieldType === 'PDFRadioGroup' || fieldType === 'PDFDropdown' || fieldType === 'PDFOptionList') {
+          (field as any).clear?.();
+        }
+      } catch {
+        // Ignore field errors
+      }
+    }
+
+    try {
+      if (embeddedFont) {
+        form.updateFieldAppearances(embeddedFont);
+      }
+      form.flatten({ updateFieldAppearances: false });
+    } catch (flattenError) {
+      console.warn(`[PDF_FORMS] Could not flatten employee handbook ${label ?? 'document'}:`, flattenError);
+    }
+
+    const normalizeModulo = (value: number, mod: number) => {
+      if (!Number.isFinite(value) || mod <= 0) return value;
+      const m = value % mod;
+      return m < 0 ? m + mod : m;
+    };
+
+    let renderedValues = 0;
+
+    for (const entry of entries) {
+      try {
+        const basePage = pages[entry.pageIndex] ?? pages[0];
+        if (!basePage) continue;
+
+        const baseSize = basePage.getSize();
+        const basePageHeight = baseSize.height;
+        const offset = fieldOffsets[entry.fieldName] ?? 7000;
+
+        const width = typeof entry.rect.width === 'number' ? entry.rect.width : 0;
+        const height = typeof entry.rect.height === 'number' ? entry.rect.height : 12;
+        const rawX = typeof entry.rect.x === 'number' ? entry.rect.x : 0;
+        const rawY = typeof entry.rect.y === 'number' ? entry.rect.y : 0;
+
+        let targetPageIndex = entry.pageIndex;
+        let pageHeight = basePageHeight;
+
+        if (entry.kind === 'text') {
+          const value = entry.value.replace(/\s+/g, ' ').trim();
+          if (!value) continue;
+
+          const widthForText = Math.max(1, width - 4);
+          const fontSize = Math.min(Math.max(height * 0.6, 8), 12);
+          const normalizedY = rawY > pageHeight ? normalizeModulo(rawY, pageHeight) : rawY;
+          let finalY = normalizedY + (height - fontSize) / 2 + offset;
+
+          while (pageHeight > 0 && finalY > pageHeight && targetPageIndex > 0) {
+            finalY -= pageHeight;
+            targetPageIndex -= 1;
+            pageHeight = (pages[targetPageIndex] ?? pages[0])?.getSize?.().height ?? pageHeight;
+          }
+
+          const targetPage = pages[targetPageIndex] ?? pages[0];
+          if (!targetPage) continue;
+
+          targetPage.drawText(value, {
+            x: rawX + 2,
+            y: finalY,
+            size: fontSize,
+            font: embeddedFont ?? undefined,
+            color: rgb(0, 0, 0),
+            maxWidth: widthForText,
+          });
+          renderedValues++;
+
+          if (process.env.NODE_ENV !== 'production' && (entry.fieldName.includes('employee_') || entry.fieldName.includes('printed') || entry.fieldName.includes('date'))) {
+            console.log(
+              `[PDF_FORMS] Handbook draw "${entry.fieldName}" page ${entry.pageIndex} -> ${targetPageIndex} x=${rawX.toFixed?.(2) ?? rawX} y=${rawY.toFixed?.(2) ?? rawY} finalY=${finalY.toFixed?.(2) ?? finalY}`
+            );
+          }
+        } else if (entry.kind === 'checkbox' && entry.checked) {
+          const checkSize = Math.min(width, height) * 0.7;
+          const normalizedY = rawY > pageHeight ? normalizeModulo(rawY, pageHeight) : rawY;
+          let finalY = normalizedY + (height - checkSize) / 2 + offset;
+
+          while (pageHeight > 0 && finalY > pageHeight && targetPageIndex > 0) {
+            finalY -= pageHeight;
+            targetPageIndex -= 1;
+            pageHeight = (pages[targetPageIndex] ?? pages[0])?.getSize?.().height ?? pageHeight;
+          }
+
+          const targetPage = pages[targetPageIndex] ?? pages[0];
+          if (!targetPage) continue;
+
+          const checkX = rawX + (width - checkSize) / 2;
+          targetPage.drawText('X', {
+            x: checkX,
+            y: finalY,
+            size: checkSize,
+            font: embeddedFont ?? undefined,
+            color: rgb(0, 0, 0),
+          });
+          renderedValues++;
+        }
+      } catch {
+        // Ignore draw errors
+      }
+    }
+
+    if (renderedValues === 0 && process.env.NODE_ENV !== 'production') {
+      console.log(`[PDF_FORMS] No employee handbook field values rendered for ${label ?? 'form'}`);
+    }
+  } catch (error) {
+    console.error('[PDF_FORMS] Failed to render employee handbook fields for', label, error);
   }
 }
 
@@ -1666,10 +1901,9 @@ export async function GET(
               }
             }
 
-            // For employee handbook, log field details with VALUES to debug
             if (isHandbook) {
+              // Debugging: Log field details with values to help diagnose missing handbook data.
               console.log(`[PDF_FORMS] Employee handbook has ${fields.length} form fields`);
-              // Log ALL fields with their values
               fields.forEach((f, i) => {
                 const name = f.getName();
                 const type = f.constructor.name;
@@ -1687,199 +1921,6 @@ export async function GET(
                 }
                 console.log(`[PDF_FORMS]   Field ${i + 1}: "${name}" (${type}) = "${value}"`);
               });
-            }
-
-            // For employee handbook, manually draw text field values because
-            // the standard flatten() doesn't render them properly
-            if (isHandbook) {
-              try {
-                // Custom offset mapping for each field (in points)
-                // Adjust these values to position each field correctly
-                const fieldOffsets: Record<string, number> = {
-                  'employee_name1': 7000,
-                  'employee_initialsprev': 7000,
-                  'employee_initials2prev': 7000,
-                  'employee_initials3prev': 7000,
-                  'acknowledgment_date1': 7000,
-                  'printedName1': 7000,
-                  'employee_name': 5450,
-                  'employee_initials': 5450,
-                  'employee_initials2': 5450,
-                  'employee_initials3': 5450,
-                  'acknowledgment_date': 5450,
-                  'printedName': 5450,
-                  'date3': 2345,
-                  'printedName3': 2345,
-                  'date4': 2330,
-                  'date5': 7000,
-                  'printedName4': 7000,
-                  'date6': 7000,
-                };
-
-                const helveticaFont = await formPdf.embedFont(StandardFonts.Helvetica);
-                const pages = formPdf.getPages();
-                let drawnCount = 0;
-
-                console.log(`[PDF_FORMS] Handbook has ${pages.length} pages, attempting to draw ${fields.length} fields`);
-
-                for (const field of fields) {
-                  try {
-                    const fieldType = field.constructor.name;
-                    const fieldName = field.getName();
-
-                    if (fieldType === 'PDFTextField') {
-                      const textField = field as any;
-                      const rawValue = textField.getText();
-                      // Normalize date fields: if value has no slashes and looks like a date, use updated_at or dateOfBirth
-                      const currentValue = rawValue ? normalizeDateFieldValue(rawValue, form.updated_at, fieldName, employeeDateOfBirth) : rawValue;
-
-                      if (currentValue) {
-                        const widgets = textField.acroField?.getWidgets?.() || [];
-                        console.log(`[PDF_FORMS] Field "${fieldName}": value="${currentValue}", widgets=${widgets.length}`);
-
-                        for (const widget of widgets) {
-                          try {
-                            const rect = widget.getRectangle();
-                            if (!rect) continue;
-
-                            const widgetPageRef = widget.P?.();
-                            let pageIndex = 0;
-                            if (widgetPageRef) {
-                              pageIndex = pages.findIndex((p: any) => p.ref === widgetPageRef);
-                              if (pageIndex === -1) pageIndex = 0;
-                            }
-
-                            const page = pages[pageIndex];
-                            if (!page) continue;
-
-                            const { x, y, width, height } = rect;
-                            const pageSize = page.getSize();
-
-                            // Normalize Y coordinate if it exceeds page height
-                            let normalizedY = y;
-                            if (y > pageSize.height) {
-                              normalizedY = y % pageSize.height;
-                            }
-
-                            const fontSize = Math.min(Math.max(height * 0.6, 8), 12);
-                            const fieldOffset = fieldOffsets[fieldName] || 7000; // Use custom offset or default to 7000
-                            let finalY = normalizedY + (height - fontSize) / 2 + fieldOffset;
-                            let targetPage = page;
-                            let targetPageIndex = pageIndex;
-
-                            // Handle page overflow - move to previous page if Y exceeds page height
-                            while (finalY > pageSize.height && targetPageIndex > 0) {
-                              finalY -= pageSize.height;
-                              targetPageIndex--;
-                              targetPage = pages[targetPageIndex];
-                            }
-
-                            console.log(`[PDF_FORMS]   Drawing "${currentValue}" at page ${pageIndex} -> ${targetPageIndex}, x=${x}, y=${y} -> finalY=${finalY}, pageHeight=${pageSize.height}`);
-
-                            targetPage.drawText(currentValue, {
-                              x: x + 2,
-                              y: finalY,
-                              size: fontSize,
-                              font: helveticaFont,
-                              color: rgb(0, 0, 0),
-                              maxWidth: width - 4,
-                            });
-                            drawnCount++;
-                          } catch {
-                            // Skip widget errors
-                          }
-                        }
-                      }
-                    }
-
-                    if (fieldType === 'PDFCheckBox') {
-                      const checkBox = field as any;
-                      if (checkBox.isChecked()) {
-                        const widgets = checkBox.acroField?.getWidgets?.() || [];
-                        for (const widget of widgets) {
-                          try {
-                            const rect = widget.getRectangle();
-                            if (!rect) continue;
-
-                            const widgetPageRef = widget.P?.();
-                            let pageIndex = 0;
-                            if (widgetPageRef) {
-                              pageIndex = pages.findIndex((p: any) => p.ref === widgetPageRef);
-                              if (pageIndex === -1) pageIndex = 0;
-                            }
-
-                            const page = pages[pageIndex];
-                            if (!page) continue;
-
-                            const { x, y, width, height } = rect;
-                            const pageSize = page.getSize();
-
-                            let normalizedY = y;
-                            if (y > pageSize.height) {
-                              normalizedY = y % pageSize.height;
-                            }
-
-                            const checkSize = Math.min(width, height) * 0.7;
-                            const fieldOffset = fieldOffsets[fieldName] || 7000; // Use custom offset or default to 7000
-                            let finalY = normalizedY + (height - checkSize) / 2 + fieldOffset;
-                            let targetPage = page;
-                            let targetPageIndex = pageIndex;
-
-                            // Handle page overflow - move to previous page if Y exceeds page height
-                            while (finalY > pageSize.height && targetPageIndex > 0) {
-                              finalY -= pageSize.height;
-                              targetPageIndex--;
-                              targetPage = pages[targetPageIndex];
-                            }
-
-                            targetPage.drawText('✓', {
-                              x: x + (width - checkSize) / 2,
-                              y: finalY,
-                              size: checkSize,
-                              font: helveticaFont,
-                              color: rgb(0, 0, 0),
-                            });
-                            drawnCount++;
-                          } catch {
-                            // Skip
-                          }
-                        }
-                      }
-                    }
-                  } catch {
-                    // Ignore field errors
-                  }
-                }
-
-                console.log(`[PDF_FORMS] Manually drew ${drawnCount} field values for employee handbook`);
-              } catch (drawError) {
-                console.log('[PDF_FORMS] Could not draw field values:', form.form_name, (drawError as Error).message);
-              }
-            }
-
-            // For non-handbook forms, normalize date fields before flattening
-            // (handbook already has its own special processing above)
-            if (!isHandbook && !isNoticeToEmployee) {
-              for (const field of fields) {
-                try {
-                  const fieldType = field.constructor.name;
-                  if (fieldType === 'PDFTextField') {
-                    const textField = field as any;
-                    const fieldName = field.getName() || '';
-                    const rawValue = textField.getText();
-                    if (rawValue) {
-                      const normalizedValue = normalizeDateFieldValue(rawValue, form.updated_at, fieldName, employeeDateOfBirth);
-                      // If value was normalized, update the field
-                      if (normalizedValue !== rawValue) {
-                        textField.setText(normalizedValue);
-                        console.log(`[PDF_FORMS] Normalized date field "${fieldName}": "${rawValue}" -> "${normalizedValue}"`);
-                      }
-                    }
-                  }
-                } catch {
-                  // Ignore field errors
-                }
-              }
             }
 
             if (isNoticeToEmployee) {
@@ -1937,9 +1978,45 @@ export async function GET(
               }
 
               console.log('[PDF_FORMS] Rendered notice-to-employee form fields for:', form.form_name);
+            } else if (isHandbook) {
+              await ensureEmployeeHandbookFieldsVisible(
+                formPdf,
+                form.form_name,
+                form.updated_at ?? null,
+                employeeDateOfBirth
+              );
+              console.log('[PDF_FORMS] Rendered employee-handbook form fields for:', form.form_name);
             } else {
-              // Flatten form fields - for handbook this removes fields after manual draw,
-              // for other forms this renders the values normally
+              // For non-handbook forms, normalize date fields before flattening
+              for (const field of fields) {
+                try {
+                  const fieldType = field.constructor.name;
+                  if (fieldType === 'PDFTextField') {
+                    const textField = field as any;
+                    const fieldName = field.getName() || '';
+                    const rawValue = textField.getText();
+                    if (rawValue) {
+                      const normalizedValue = normalizeDateFieldValue(
+                        rawValue,
+                        form.updated_at,
+                        fieldName,
+                        employeeDateOfBirth
+                      );
+                      // If value was normalized, update the field
+                      if (normalizedValue !== rawValue) {
+                        textField.setText(normalizedValue);
+                        console.log(
+                          `[PDF_FORMS] Normalized date field "${fieldName}": "${rawValue}" -> "${normalizedValue}"`
+                        );
+                      }
+                    }
+                  }
+                } catch {
+                  // Ignore field errors
+                }
+              }
+
+              // Flatten form fields so values render consistently in the downloaded PDF.
               try {
                 pdfForm.flatten();
               } catch {
