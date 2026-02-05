@@ -422,8 +422,8 @@ function VerifyMFAContent() {
           console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
           router.push('/background-checks');
         } else if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /time-keeping');
-          router.push('/time-keeping');
+          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /workers/' + session.user.id);
+          router.push(`/workers/${session.user.id}`);
         } else {
           console.log('[VERIFY-MFA DEBUG] Other role - Redirecting to home page');
           router.push('/');

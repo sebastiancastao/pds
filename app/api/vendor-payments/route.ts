@@ -178,56 +178,88 @@ export async function GET(req: NextRequest) {
         totalsHours[uid] = ms / (1000 * 60 * 60);
       }
 
-      // 5) Determine rates
+      // 5) Determine rates (matches event-dashboard logic)
       const stateRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const eventState = (eventRow.state || 'CA').toString().toUpperCase().trim();
       const baseRate = Number(eventPaymentSummary?.base_rate || stateRates[eventState] || 17.28);
-      const overtimeRate = baseRate * 1.5;
-      const doubletimeRate = baseRate * 2;
 
       // 6) Commissions/Tips pool to distribute (if summary exists)
       const totalTips = Number(eventPaymentSummary?.total_tips || 0);
-      // Prefer net_sales*commission_pool_percent when present; else total_commissions
       const commissionPool = (Number(eventPaymentSummary?.net_sales || 0) * Number(eventPaymentSummary?.commission_pool_percent || 0))
         || Number(eventPaymentSummary?.commission_pool_dollars || 0)
         || Number(eventPaymentSummary?.total_commissions || 0) || 0;
 
-      const totalHoursAll = Object.values(totalsHours).reduce((a, b) => a + (b || 0), 0);
+      // 7) Load user division data upfront for commission/tips logic
+      const { data: usersForDivision } = await supabaseAdmin
+        .from('users')
+        .select('id, division')
+        .in('id', vendorIds);
+      const divisionById: Record<string, string> = {};
+      (usersForDivision || []).forEach((u: any) => { divisionById[u.id] = (u.division || '').toString().toLowerCase().trim(); });
 
-      // 7) Build per-user vendor payment rows
+      // Count vendor-division members (exclude trailers) — matches event-dashboard vendorCount
+      const vendorCount = vendorIds.reduce((count, uid) => {
+        const div = divisionById[uid] || '';
+        return (div === 'vendor' || div === 'both') ? count + 1 : count;
+      }, 0);
+
+      // Equal split of commission pool among eligible vendors (same as event-dashboard)
+      const perVendorCommissionShare = vendorCount > 0 ? commissionPool / vendorCount : 0;
+
+      // Total eligible hours for tips proration (exclude trailers)
+      const totalEligibleHours = vendorIds.reduce((sum, uid) => {
+        const div = divisionById[uid] || '';
+        if (div === 'trailers') return sum;
+        return sum + Number(totalsHours[uid] || 0);
+      }, 0);
+
+      // Rest break helper (matches event-dashboard)
+      const getRestBreak = (hours: number, st: string) => {
+        if (st === 'NV' || st === 'WI') return 0;
+        if (hours <= 0) return 0;
+        return hours > 10 ? 12 : 9;
+      };
+
+      // 8) Build per-user vendor payment rows (matches event-dashboard logic exactly)
       const rows: any[] = [];
       for (const uid of vendorIds) {
         const hours = Number(totalsHours[uid] || 0);
+        const memberDivision = divisionById[uid] || '';
+        const isTrailers = memberDivision === 'trailers';
 
-        // California: Daily overtime rules (OT after 8hrs, DT after 12hrs)
-        // Other states: All hours regular (weekly OT calculated at payroll aggregation)
-        let regularHours: number, overtimeHours: number, doubletimeHours: number;
-        if (eventState === 'CA') {
-          regularHours = Math.min(hours, 8);
-          overtimeHours = Math.max(Math.min(hours, 12) - 8, 0);
-          doubletimeHours = Math.max(hours - 12, 0);
-        } else {
-          regularHours = hours;
-          overtimeHours = 0;
-          doubletimeHours = 0;
-        }
+        // Ext Amt on Reg Rate = total hours × base rate × 1.5 (same as event-dashboard)
+        const extAmtOnRegRate = hours * baseRate * 1.5;
 
-        const regularPay = regularHours * baseRate;
-        const overtimePay = overtimeHours * overtimeRate;
-        const doubletimePay = doubletimeHours * doubletimeRate;
-        const commissions = totalHoursAll > 0 ? (commissionPool * hours) / totalHoursAll : 0;
-        const tips = totalHoursAll > 0 ? (totalTips * hours) / totalHoursAll : 0;
-        const totalPay = regularPay + overtimePay + doubletimePay + commissions + tips;
+        // Commission from raw values (before $150 floor)
+        let commissions = !isTrailers && vendorCount > 0
+          ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+          : 0;
+        // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+        if (commissions > 0 && commissions < extAmtOnRegRate) commissions = 0;
+
+        // Total Final Commission = Ext Amt + Commission; minimum $150
+        const totalFinalCommission = hours > 0
+          ? Math.max(150, extAmtOnRegRate + commissions)
+          : 0;
+
+        // Tips prorated by hours, excluding trailers (same as event-dashboard)
+        const tips = !isTrailers && totalEligibleHours > 0
+          ? (totalTips * hours) / totalEligibleHours
+          : 0;
+
+        const restBreak = getRestBreak(hours, eventState);
+        const totalPay = totalFinalCommission + tips + restBreak;
+
         rows.push({
           event_id: eventId,
           user_id: uid,
           actual_hours: hours,
-          regular_hours: regularHours,
-          overtime_hours: overtimeHours,
-          doubletime_hours: doubletimeHours,
-          regular_pay: regularPay,
-          overtime_pay: overtimePay,
-          doubletime_pay: doubletimePay,
+          regular_hours: hours,
+          overtime_hours: 0,
+          doubletime_hours: 0,
+          regular_pay: extAmtOnRegRate,
+          overtime_pay: 0,
+          doubletime_pay: 0,
           commissions,
           tips,
           total_pay: totalPay,

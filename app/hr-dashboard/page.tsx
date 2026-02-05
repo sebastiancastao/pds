@@ -392,26 +392,44 @@ function HRDashboardContent() {
         const vendorPayments = eventPaymentData.vendorPayments;
         const eventPaymentSummary = eventPaymentData.eventPayment || {};
         const eventState = normalizeState(eventInfo.state) || "CA";
-        const baseRate = Number(eventPaymentSummary.base_rate || (eventState === "WI" ? 15.0 : 17.28));
+        const stateRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
+        const baseRate = Number(eventPaymentSummary.base_rate || stateRates[eventState] || 17.28);
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
-        const vendorCountRaw = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
-        const vendorCountEligible = (vendorPayments || []).reduce((count: number, vp: any) => {
-          return isVendorDivision(vp?.users?.division) ? count + 1 : count;
-        }, 0);
-        const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : vendorCountRaw;
-        const commissionPoolDollars =
+        // Total team members on this event
+        const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
+
+        // Commission pool in dollars — try event_payments first, then compute from events table
+        let commissionPoolDollars =
           Number(eventPaymentSummary.commission_pool_dollars || 0) ||
           (Number(eventPaymentSummary.net_sales || 0) * Number(eventPaymentSummary.commission_pool_percent || 0)) ||
           0;
-        const perVendorCommissionShare = vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
-        const totalTips = Number(eventPaymentSummary.total_tips || 0);
-        const totalEligibleHours = (vendorPayments || []).reduce((sum: number, vp: any) => {
-          if (isTrailersDivision(vp?.users?.division)) return sum;
-          return sum + Number(vp.actual_hours || 0);
-        }, 0);
+        // Fallback: compute from the events table fields (always available after Sales tab save)
+        if (commissionPoolDollars === 0 && Number(eventInfo.commission_pool || 0) > 0) {
+          const ticketSales = Number(eventInfo.ticket_sales || 0);
+          const eventTips = Number(eventInfo.tips || 0);
+          const taxRate = Number(eventInfo.tax_rate_percent || 0);
+          const totalSales = Math.max(ticketSales - eventTips, 0);
+          const tax = totalSales * (taxRate / 100);
+          const netSales = Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
+          commissionPoolDollars = netSales * Number(eventInfo.commission_pool);
+        }
+        // Commission per member = pool / number of members
+        const perMemberCommission = memberCount > 0 ? commissionPoolDollars / memberCount : 0;
 
-        // Map vendor payments to the normalized shape used in Global Calendar
+        // Tips: try event_payments summary first, then fall back to events table
+        const totalTips = Number(eventPaymentSummary.total_tips || 0) || Number(eventInfo.tips || 0);
+        const tipsPerMember = memberCount > 0 ? totalTips / memberCount : 0;
+
+        console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
+          commissionPoolDollars, perMemberCommission, totalTips, tipsPerMember, memberCount,
+          summaryPool: eventPaymentSummary.commission_pool_dollars,
+          eventCommissionPool: eventInfo.commission_pool,
+          summaryTips: eventPaymentSummary.total_tips,
+          eventTips: eventInfo.tips,
+        });
+
+        // Map vendor payments
         const eventPayments = vendorPayments.map((payment: any) => {
           const user = payment.users;
           const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
@@ -422,69 +440,53 @@ function HRDashboardContent() {
           const adjustmentAmount = Number(payment.adjustment_amount || 0);
           const actualHours = Number(payment.actual_hours || 0);
 
-          if (isEventDashboardPaymentState(eventState)) {
-            const extAmtOnRegRate = actualHours * baseRate * 1.5;
-            const memberDivision = user?.division;
-            const isTrailers = isTrailersDivision(memberDivision);
-            const totalFinalCommissionAmt =
-              actualHours > 0
-                ? (isTrailers ? extAmtOnRegRate : Math.max(extAmtOnRegRate, perVendorCommissionShare))
-                : 0;
-            const commissionAmt =
-              !isTrailers && actualHours > 0 && vendorCountForCommission > 0
-                ? Math.max(0, totalFinalCommissionAmt - extAmtOnRegRate)
-                : 0;
-            const loadedRate = actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate;
-            const tips = !isTrailers && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
-            const restBreak = getRestBreakAmount(actualHours, eventState);
-            const totalPay = totalFinalCommissionAmt + tips + restBreak;
-            const finalPay = totalPay + adjustmentAmount;
-            return {
-              userId: payment.user_id,
-              firstName,
-              lastName,
-              email: user?.email || 'N/A',
-              actualHours,
-              regularHours: actualHours,
-              regularPay: extAmtOnRegRate,
-              overtimeHours: 0,
-              overtimePay: 0,
-              doubletimeHours: 0,
-              doubletimePay: 0,
-              commissions: commissionAmt,
-              tips,
-              totalPay,
-              adjustmentAmount,
-              finalPay,
-              regRate: baseRate,
-              loadedRate,
-              extAmtOnRegRate,
-              commissionAmt,
-              totalFinalCommissionAmt,
-              restBreak,
-              totalGrossPay: finalPay,
-            };
-          }
+          // Ext Amt on Reg Rate
+          const extAmtOnRegRate = actualHours * baseRate * 1.5;
 
-          const totalPay = Number(payment.total_pay || 0);
+          // Commission Amt = (pool / members) - Ext Amt on Reg Rate; floor at 0
+          let commissionAmt = actualHours > 0
+            ? Math.max(0, perMemberCommission - extAmtOnRegRate)
+            : 0;
+          // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+          if (commissionAmt > 0 && commissionAmt < extAmtOnRegRate) commissionAmt = 0;
+
+          // Total Final Commission Amt = Ext Amt + Commission Amt; minimum $150
+          const totalFinalCommissionAmt = actualHours > 0
+            ? Math.max(150, extAmtOnRegRate + commissionAmt)
+            : 0;
+
+          const loadedRate = actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate;
+
+          // Tips: equal split (fall back to stored per-vendor tips if summary missing)
+          const tips = tipsPerMember > 0 ? tipsPerMember : Number(payment.tips || 0);
+
+          const restBreak = getRestBreakAmount(actualHours, eventState);
+          const totalPay = totalFinalCommissionAmt + tips + restBreak;
+          const finalPay = totalPay + adjustmentAmount;
           return {
             userId: payment.user_id,
             firstName,
             lastName,
             email: user?.email || 'N/A',
             actualHours,
-            regularHours: Number(payment.regular_hours || 0),
-            regularPay: Number(payment.regular_pay || 0),
-            overtimeHours: Number(payment.overtime_hours || 0),
-            overtimePay: Number(payment.overtime_pay || 0),
-            doubletimeHours: Number(payment.doubletime_hours || 0),
-            doubletimePay: Number(payment.doubletime_pay || 0),
-            commissions: Number(payment.commissions || 0),
-            tips: Number(payment.tips || 0),
+            regularHours: actualHours,
+            regularPay: extAmtOnRegRate,
+            overtimeHours: 0,
+            overtimePay: 0,
+            doubletimeHours: 0,
+            doubletimePay: 0,
+            commissions: commissionAmt,
+            tips,
             totalPay,
             adjustmentAmount,
-            finalPay: totalPay + adjustmentAmount,
-            totalGrossPay: totalPay + adjustmentAmount,
+            finalPay,
+            regRate: baseRate,
+            loadedRate,
+            extAmtOnRegRate,
+            commissionAmt,
+            totalFinalCommissionAmt,
+            restBreak,
+            totalGrossPay: finalPay,
           };
         });
         console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map((p: any) => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
@@ -1074,25 +1076,7 @@ function HRDashboardContent() {
                                         <thead className="bg-gray-50">
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const useNew = isEventDashboardPaymentState(st);
                                             const hideRest = st === "NV" || st === "WI";
-                                            if (!useNew) {
-                                              return (
-                                                <tr>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Hrs</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Pay</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Hrs</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Pay</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Hrs</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Pay</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commissions</th>
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
-                                                  <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Adj</th>
-                                                  <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                                                </tr>
-                                              );
-                                            }
                                             return (
                                               <tr>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
@@ -1134,56 +1118,7 @@ function HRDashboardContent() {
                                               </td>
                                               {(() => {
                                                 const st = normalizeState(ev.state || v.state);
-                                                const useNew = isEventDashboardPaymentState(st);
                                                 const hideRest = st === "NV" || st === "WI";
-                                                if (!useNew) {
-                                                  return (
-                                                    <>
-                                                      <td className="p-2 text-sm">{Number(p.regularHours || 0).toFixed(2)}h</td>
-                                                      <td className="p-2 text-sm text-green-600">${Number(p.regularPay || 0).toFixed(2)}</td>
-                                                      <td className="p-2 text-sm">{Number(p.overtimeHours || 0).toFixed(2)}h</td>
-                                                      <td className="p-2 text-sm text-green-600">${Number(p.overtimePay || 0).toFixed(2)}</td>
-                                                      <td className="p-2 text-sm">{Number(p.doubletimeHours || 0).toFixed(2)}h</td>
-                                                      <td className="p-2 text-sm text-green-600">${Number(p.doubletimePay || 0).toFixed(2)}</td>
-                                                      <td className="p-2 text-sm text-purple-600">${Number(p.commissions || 0).toFixed(2)}</td>
-                                                      <td className="p-2 text-sm text-orange-600">${Number(p.tips || 0).toFixed(2)}</td>
-                                                      <td className="p-2 text-sm text-right">
-                                                        {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
-                                                          <div className="flex items-center justify-end gap-2">
-                                                            <span className="text-gray-500">$</span>
-                                                            <input
-                                                              type="number"
-                                                              className="w-24 px-2 py-1 border rounded text-sm"
-                                                              value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
-                                                              onChange={(e) => {
-                                                                const val = Number(e.target.value) || 0;
-                                                                setAdjustments(prev => ({
-                                                                  ...prev,
-                                                                  [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
-                                                                }));
-                                                              }}
-                                                              step="1"
-                                                            />
-                                                            <button
-                                                              onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
-                                                              className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                                            >Save</button>
-                                                            <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
-                                                          </div>
-                                                        ) : (
-                                                          <span
-                                                            className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
-                                                            onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
-                                                            title="Click to edit"
-                                                          >
-                                                            {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
-                                                          </span>
-                                                        )}
-                                                      </td>
-                                                      <td className="p-2 text-sm font-semibold text-right">${Number(p.finalPay || 0).toFixed(2)}</td>
-                                                    </>
-                                                  );
-                                                }
 
                                                 const regRate = Number(p.regRate ?? ev.baseRate ?? 0);
                                                 const loadedRate = Number(p.loadedRate ?? regRate);
@@ -1201,7 +1136,7 @@ function HRDashboardContent() {
                                                     <td className="p-2 text-sm">${loadedRate.toFixed(2)}/hr</td>
                                                     <td className="p-2 text-sm">{hours.toFixed(2)}h</td>
                                                     <td className="p-2 text-sm text-green-600">${extAmtOnRegRate.toFixed(2)}</td>
-                                                    <td className="p-2 text-sm text-purple-600">${commissionAmt.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-purple-600">{commissionAmt > 0 ? `$${commissionAmt.toFixed(2)}` : '\u2014'}</td>
                                                     <td className="p-2 text-sm text-green-600">${totalFinalCommissionAmt.toFixed(2)}</td>
                                                     <td className="p-2 text-sm text-orange-600">${tips.toFixed(2)}</td>
                                                     {!hideRest && (
