@@ -16,7 +16,6 @@ const NY_FORMS: FormSpec[] = [
   { id: 'fw4', formId: 'ny-fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/fw4' },
   { id: 'i9', formId: 'ny-i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/notice-to-employee' },
-  { id: 'temp-employment-agreement', formId: 'ny-temp-employment-agreement', display: 'Temporary Employment Services Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
   { id: 'state-tax', display: 'State Tax Form', requiresSignature: true },
