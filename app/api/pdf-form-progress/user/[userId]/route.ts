@@ -1143,9 +1143,9 @@ async function ensureEmployeeHandbookFieldsVisible(
       date3: 2345,
       printedName3: 2345,
       date4: 2330,
-      date5: 7000,
-      printedName4: 7000,
-      date6: 7000,
+      date5: 0,
+      printedName4: 0,
+      date6: 0,
     };
 
     type HandbookEntry =
