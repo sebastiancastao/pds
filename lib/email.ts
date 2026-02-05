@@ -1369,14 +1369,16 @@ export async function sendEmail(data: {
   html: string;
   from?: string;
   cc?: string | string[];
+  bcc?: string | string[];
 }): Promise<EmailResult> {
-  const { to, subject, html, from, cc } = data;
+  const { to, subject, html, from, cc, bcc } = data;
 
   try {
     const { data: resendData, error } = await resend.emails.send({
       from: from || 'PDS Time Keeping <service@pdsportal.site>',
       to,
       cc,
+      bcc,
       subject,
       html,
     });
@@ -1748,4 +1750,3 @@ export async function sendBackgroundCheckApprovalEmail(data: {
     };
   }
 }
-

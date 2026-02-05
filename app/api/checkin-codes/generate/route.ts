@@ -1,0 +1,89 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@supabase/supabase-js";
+import { cookies } from "next/headers";
+import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const supabaseAnon = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+function generate6DigitCode(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const supabase = createRouteHandlerClient({ cookies });
+    let { data: { user } } = await supabase.auth.getUser();
+
+    if (!user || !user.id) {
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+      const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
+      if (token) {
+        const { data: tokenUser } = await supabaseAnon.auth.getUser(token);
+        if (tokenUser?.user?.id) {
+          user = { id: tokenUser.user.id } as any;
+        }
+      }
+    }
+
+    if (!user || !user.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    // Check role
+    const { data: userData } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .single();
+
+    if (!userData || !["manager", "hr", "exec"].includes(userData.role)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const label = body.label?.trim() || null;
+
+    // Generate a unique 6-digit code
+    let code = generate6DigitCode();
+    for (let i = 0; i < 25; i += 1) {
+      const { data: existing } = await supabaseAdmin
+        .from("checkin_codes")
+        .select("id")
+        .eq("code", code)
+        .eq("is_active", true)
+        .limit(1);
+
+      if (!existing || existing.length === 0) break;
+      code = generate6DigitCode();
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("checkin_codes")
+      .insert({
+        code,
+        created_by: user.id,
+        is_active: true,
+        label,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Error creating check-in code:", error);
+      return NextResponse.json({ error: error.message }, { status: 400 });
+    }
+
+    return NextResponse.json(data);
+  } catch (err) {
+    console.error("Error in generate check-in code:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
