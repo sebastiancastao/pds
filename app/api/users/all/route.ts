@@ -78,7 +78,8 @@ export async function GET(request: NextRequest) {
           updated_at
         )
       `)
-      .order('email');
+      .order('email')
+      .limit(10000);
 
     if (usersError) {
       console.error('[USERS-ALL] Error fetching users:', usersError);
