@@ -68,6 +68,12 @@ function HRDashboardContent() {
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
   const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
+  const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
+  const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
+  const isVendorDivision = (d?: string | null) => {
+    const div = normalizeDivision(d);
+    return div === "vendor" || div === "both";
+  };
   const isEventDashboardPaymentState = (s?: string | null) => {
     const st = normalizeState(s);
     return st === "CA" || st === "NV" || st === "WI";
@@ -389,14 +395,21 @@ function HRDashboardContent() {
         const baseRate = Number(eventPaymentSummary.base_rate || (eventState === "WI" ? 15.0 : 17.28));
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
-        const vendorCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
+        const vendorCountRaw = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
+        const vendorCountEligible = (vendorPayments || []).reduce((count: number, vp: any) => {
+          return isVendorDivision(vp?.users?.division) ? count + 1 : count;
+        }, 0);
+        const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : vendorCountRaw;
         const commissionPoolDollars =
           Number(eventPaymentSummary.commission_pool_dollars || 0) ||
           (Number(eventPaymentSummary.net_sales || 0) * Number(eventPaymentSummary.commission_pool_percent || 0)) ||
           0;
-        const perVendorCommissionShare = vendorCount > 0 ? commissionPoolDollars / vendorCount : 0;
+        const perVendorCommissionShare = vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
         const totalTips = Number(eventPaymentSummary.total_tips || 0);
-        const totalEligibleHours = (vendorPayments || []).reduce((sum: number, vp: any) => sum + Number(vp.actual_hours || 0), 0);
+        const totalEligibleHours = (vendorPayments || []).reduce((sum: number, vp: any) => {
+          if (isTrailersDivision(vp?.users?.division)) return sum;
+          return sum + Number(vp.actual_hours || 0);
+        }, 0);
 
         // Map vendor payments to the normalized shape used in Global Calendar
         const eventPayments = vendorPayments.map((payment: any) => {
@@ -411,10 +424,18 @@ function HRDashboardContent() {
 
           if (isEventDashboardPaymentState(eventState)) {
             const extAmtOnRegRate = actualHours * baseRate * 1.5;
-            const totalFinalCommissionAmt = actualHours > 0 ? Math.max(extAmtOnRegRate, perVendorCommissionShare) : 0;
-            const commissionAmt = actualHours > 0 ? Math.max(0, totalFinalCommissionAmt - extAmtOnRegRate) : 0;
+            const memberDivision = user?.division;
+            const isTrailers = isTrailersDivision(memberDivision);
+            const totalFinalCommissionAmt =
+              actualHours > 0
+                ? (isTrailers ? extAmtOnRegRate : Math.max(extAmtOnRegRate, perVendorCommissionShare))
+                : 0;
+            const commissionAmt =
+              !isTrailers && actualHours > 0 && vendorCountForCommission > 0
+                ? Math.max(0, totalFinalCommissionAmt - extAmtOnRegRate)
+                : 0;
             const loadedRate = actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate;
-            const tips = totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
+            const tips = !isTrailers && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
             const restBreak = getRestBreakAmount(actualHours, eventState);
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;

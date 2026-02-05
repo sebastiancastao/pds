@@ -51,6 +51,7 @@ export async function GET(req: NextRequest) {
         users:user_id (
           id,
           email,
+          division,
           profiles (
             first_name,
             last_name,
@@ -237,7 +238,7 @@ export async function GET(req: NextRequest) {
       if (rows.length > 0) {
         const { data: users } = await supabaseAdmin
           .from('users')
-          .select('id, email, profiles ( first_name, last_name, phone )')
+          .select('id, email, division, profiles ( first_name, last_name, phone )')
           .in('id', vendorIds);
         const byId: Record<string, any> = {};
         (users || []).forEach(u => {
