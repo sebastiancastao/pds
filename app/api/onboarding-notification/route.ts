@@ -90,18 +90,24 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Detect state from form parameter
-    let stateName = 'CA';
-    if (form.includes('-ca-') || form.includes('payroll-packet-ca')) {
-      stateName = 'CA';
-    } else if (form.includes('-az-') || form.includes('payroll-packet-az')) {
-      stateName = 'AZ';
-    } else if (form.includes('-nv-') || form.includes('payroll-packet-nv')) {
-      stateName = 'NV';
-    } else if (form.includes('-ny-') || form.includes('payroll-packet-ny')) {
-      stateName = 'NY';
-    } else if (form.includes('-wi-') || form.includes('payroll-packet-wi')) {
-      stateName = 'WI';
+    // Get state from employee_information table
+    let stateName = 'Unknown';
+    if (userId) {
+      console.log('[ONBOARDING-NOTIFICATION] Looking up state for user_id:', userId);
+      const { data: empInfo, error: empErr } = await (supabase
+        .from('employee_information') as any)
+        .select('state')
+        .eq('user_id', userId)
+        .single();
+
+      console.log('[ONBOARDING-NOTIFICATION] employee_information query result:', { empInfo, empErr: empErr?.message });
+
+      if (!empErr && empInfo?.state) {
+        stateName = empInfo.state;
+        console.log('[ONBOARDING-NOTIFICATION] Found state:', stateName);
+      } else {
+        console.log('[ONBOARDING-NOTIFICATION] No state found, using default:', stateName);
+      }
     }
 
     const subject = 'Onboarding Packet Notification — New Onboarding Submitted';
@@ -123,7 +129,7 @@ export async function POST(request: NextRequest) {
     // Send notification to admin
     const result = await sendEmail({
       to: 'sebastiancastao379@gmail.com',
-      cc: 'jenvillar625@gmail.com',
+      cc: 'payroll@1pds.net,hr@1pds.net, jenvillar625@gmail.com',
       subject,
       html,
     });
