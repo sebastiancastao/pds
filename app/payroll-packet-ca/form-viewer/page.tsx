@@ -116,8 +116,7 @@ function FormViewerContent() {
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'temp-employment-agreement' },
-    'temp-employment-agreement': { display: 'Temporary Employment Commission Agreement', api: '/api/payroll-packet-ca/temp-employment-agreement', formId: 'temp-employment-agreement', next: 'meal-waiver-6hour', requiresSignature: true },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'meal-waiver-6hour' },
   };
 
   const currentForm = formConfig[formName];

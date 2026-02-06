@@ -17,7 +17,6 @@ const NV_FORMS: FormSpec[] = [
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/fw4' },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/notice-to-employee' },
-  { id: 'temp-employment-agreement', formId: 'nv-temp-employment-agreement', display: 'Temporary Employment Commission Agreement', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/temp-employment-agreement' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
 ];
