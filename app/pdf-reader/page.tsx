@@ -2321,16 +2321,38 @@ export default function PDFReaderPage() {
             <p className="text-slate-600 mt-2 max-w-2xl">
               Upload a paystub or any PDF to extract text. Automatically performs OCR for image-based PDFs.
             </p>
+            <div className="flex items-center gap-2 mt-3 text-sm text-slate-500">
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 rounded-md">
+                <span className="font-semibold text-blue-600">Step 1:</span> PDF Reader
+              </span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 rounded-md">
+                <span className="font-semibold text-blue-600">Step 2:</span> Paystub Generator
+              </span>
+            </div>
           </div>
-          <Link
-            href="/hr-dashboard"
-            className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-            </svg>
-            Back to dashboard
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/paystub-generator"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-blue-600 border border-blue-600 rounded-lg shadow-sm text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+              Paystub Generator (Step 2)
+            </Link>
+            <Link
+              href="/hr-dashboard"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Back to dashboard
+            </Link>
+          </div>
         </div>
 
         {/* OCR Progress Banner */}

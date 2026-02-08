@@ -92,6 +92,8 @@ export default function EventDashboardPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
+  // AZ/NY OT check needs prior weekly hours per user (Mon..day before event)
+  const [weeklyPriorHours, setWeeklyPriorHours] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
       string,
@@ -201,6 +203,17 @@ export default function EventDashboardPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
+
+  // AZ/NY: load prior weekly hours for OT rate display on HR tab
+  useEffect(() => {
+    if (activeTab !== "hr") return;
+    if (!eventId || !event?.event_date || !event?.state) return;
+    const st = normalizeState(event.state);
+    if (st !== "AZ" && st !== "NY") return;
+    if (!teamMembers || teamMembers.length === 0) return;
+    loadWeeklyPriorHours();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, eventId, event?.event_date, event?.state, teamMembers.length]);
 
   // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
@@ -465,6 +478,30 @@ export default function EventDashboardPage() {
       }
     } catch (err) {
       console.error("Exception in loadTimesheetTotals:", err);
+    }
+  };
+
+  const loadWeeklyPriorHours = async () => {
+    if (!eventId || !event?.event_date || !event?.state) return;
+    const st = normalizeState(event.state);
+    if (st !== "AZ" && st !== "NY") return;
+    const userIds = (teamMembers || [])
+      .map((m: any) => (m.user_id || m.vendor_id || m.users?.id || "").toString())
+      .filter(Boolean);
+    if (userIds.length === 0) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const reqBody = [{ event_id: eventId, event_date: event.event_date, user_ids: userIds }];
+      const res = await fetch(
+        `/api/weekly-hours?events=${encodeURIComponent(JSON.stringify(reqBody))}`,
+        { headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) } }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setWeeklyPriorHours(data[eventId] || {});
+      }
+    } catch (err) {
+      console.error("Failed to load weekly prior hours:", err);
     }
   };
 
@@ -733,14 +770,15 @@ export default function EventDashboardPage() {
 
   const getRestBreakAmount = (actualHours: number, stateCode: string): number => {
     const normalized = normalizeState(stateCode);
-    // Nevada & Wisconsin: no rest break in Payment tab
-    if (normalized === "NV" || normalized === "WI") return 0;
+    // Nevada, Wisconsin, Arizona & New York: no rest break
+    if (normalized === "NV" || normalized === "WI" || normalized === "AZ" || normalized === "NY") return 0;
     if (actualHours <= 0) return 0;
-    return actualHours > 10 ? 12 : 9;
+    return actualHours >= 10 ? 12 : 9;
   };
 
   const payrollState = normalizeState(event?.state) || "CA";
-  const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
+  const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI" || payrollState === "AZ" || payrollState === "NY";
+  const showOTColumn = payrollState === "AZ" || payrollState === "NY";
 
   const isVendorDivision = (division?: string | null) => {
     const normalized = (division || "").toString().toLowerCase().trim();
@@ -751,11 +789,76 @@ export default function EventDashboardPage() {
     return (division || "").toString().toLowerCase().trim() === "trailers";
   };
 
+  type AzNyCommissionCalcItem = {
+    eligible: boolean;
+    actualHours: number;
+    extAmtRegular: number;
+    isWeeklyOT: boolean;
+  };
+
+  const computeAzNyCommissionPerVendor = (
+    items: AzNyCommissionCalcItem[],
+    totalCommissionPool: number
+  ): number => {
+    const eligibleItems = items.filter((i) => i.eligible && i.actualHours > 0);
+    const vendorCount = eligibleItems.length;
+    if (vendorCount <= 0) return 0;
+
+    // Fixed-point iteration because AZ/NY weekly OT Ext Amt depends on commission via Loaded Rate.
+    let commissionPerVendor = 0;
+    for (let iter = 0; iter < 20; iter++) {
+      const sumExtAmtOnRegRate = eligibleItems.reduce((sum, i) => {
+        if (!i.isWeeklyOT) return sum + i.extAmtRegular;
+        const totalFinalCommissionBase = Math.max(150, i.extAmtRegular + commissionPerVendor);
+        // Weekly OT Ext Amt = OT Rate * hours = 1.5 * (regular Loaded Rate) * hours = 1.5 * totalFinalCommissionBase
+        return sum + (1.5 * totalFinalCommissionBase);
+      }, 0);
+
+      const next = (totalCommissionPool - sumExtAmtOnRegRate) / vendorCount;
+      const nextCapped = Math.max(0, next);
+      if (Math.abs(nextCapped - commissionPerVendor) < 0.01) {
+        commissionPerVendor = nextCapped;
+        break;
+      }
+      commissionPerVendor = nextCapped;
+    }
+
+    return commissionPerVendor;
+  };
+
   const vendorCountRaw = teamMembers.length;
   const vendorCountEligible = teamMembers.reduce((count: number, member: any) => {
     return isVendorDivision(member.users?.division) ? count + 1 : count;
   }, 0);
   const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : vendorCountRaw;
+
+  const azNyCommissionPerVendorForHrTable = (() => {
+    if (payrollState !== "AZ" && payrollState !== "NY") return 0;
+    const baseRate = getBaseRateForState(payrollState);
+    const sharesData = calculateShares();
+    const netSales = sharesData?.netSales || 0;
+    const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
+    const totalCommissionPool = netSales * poolPercent;
+
+    const items: AzNyCommissionCalcItem[] = teamMembers.map((member: any) => {
+      const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+      const totalMs = timesheetTotals[uid] || 0;
+      const actualHours = totalMs / (1000 * 60 * 60);
+      const memberDivision = member.users?.division;
+      const isTrailers = isTrailersDivisionCheck(memberDivision);
+      const eligible = !isTrailers && isVendorDivision(memberDivision) && actualHours > 0;
+      const priorWeekly = weeklyPriorHours[uid] || 0;
+      const isWeeklyOT = (priorWeekly + actualHours) > 40;
+      return {
+        eligible,
+        actualHours,
+        extAmtRegular: actualHours * baseRate,
+        isWeeklyOT,
+      };
+    });
+
+    return computeAzNyCommissionPerVendor(items, totalCommissionPool);
+  })();
 
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
@@ -786,8 +889,32 @@ export default function EventDashboardPage() {
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
+      const isAZorNY = eventState === "AZ" || eventState === "NY";
+
       const perVendorCommissionShare =
         vendorCountForCommission > 0 ? totalCommissionPool / vendorCountForCommission : 0;
+
+      const commissionPerVendorAzNy = isAZorNY
+        ? computeAzNyCommissionPerVendor(
+          teamMembers.map((member: any) => {
+            const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+            const totalMs = timesheetTotals[uid] || 0;
+            const actualHours = totalMs / (1000 * 60 * 60);
+            const memberDivision = member.users?.division;
+            const isTrailers = isTrailersDivisionCheck(memberDivision);
+            const eligible = !isTrailers && isVendorDivision(memberDivision) && actualHours > 0;
+            const priorWeekly = isAZorNY ? (weeklyPriorHours[uid] || 0) : 0;
+            const isWeeklyOT = isAZorNY && (priorWeekly + actualHours) > 40;
+            return {
+              eligible,
+              actualHours,
+              extAmtRegular: actualHours * baseRate,
+              isWeeklyOT,
+            } satisfies AzNyCommissionCalcItem;
+          }),
+          totalCommissionPool
+        )
+        : 0;
 
       // Build vendor payments array
       const vendorPayments = teamMembers.map((member: any) => {
@@ -796,22 +923,49 @@ export default function EventDashboardPage() {
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
-        // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const priorWeekly = isAZorNY ? (weeklyPriorHours[uid] || 0) : 0;
+        const isWeeklyOT = isAZorNY && (priorWeekly + actualHours) > 40;
 
         const isTrailers = isTrailersDivisionCheck(memberDivision);
 
-        // Commission Amt from raw values (before $150 floor)
-        let commissionAmount =
-          !isTrailers && actualHours > 0 && vendorCountForCommission > 0
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+        const extAmtRegular = actualHours * baseRate;
+        const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+
+        // Commission Amt: AZ/NY = pool / vendors; others subtract Ext Amt
+        let commissionAmount;
+        if (isAZorNY) {
+          commissionAmount = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
+            ? commissionPerVendorAzNy
             : 0;
-        // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (commissionAmount > 0 && commissionAmount < extAmtOnRegRate) commissionAmount = 0;
+        } else {
+          commissionAmount =
+            !isTrailers && actualHours > 0 && vendorCountForCommission > 0
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              : 0;
+        }
+        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+        if (!isAZorNY && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
+
+        // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate (not 1.5x baseRate).
+        const totalFinalCommissionBase = (isAZorNY && actualHours > 0)
+          ? Math.max(150, extAmtRegular + commissionAmount)
+          : 0;
+        const loadedRateBase = (isAZorNY && actualHours > 0)
+          ? totalFinalCommissionBase / actualHours
+          : baseRate;
+        const otRate = (isAZorNY && isWeeklyOT) ? loadedRateBase * 1.5 : 0;
+
+        // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours; others = baseRate x 1.5 x hours
+        const extAmtOnRegRate = isAZorNY
+          ? (isWeeklyOT ? (otRate * actualHours) : extAmtRegular)
+          : extAmtOnRegRateNonAzNy;
+
         // Total Final Commission = Ext Amt + Commission Amt; minimum $150
         const totalFinalCommission =
           actualHours > 0
-            ? Math.max(150, extAmtOnRegRate + commissionAmount)
+            ? isAZorNY
+              ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+              : Math.max(150, extAmtOnRegRate + commissionAmount)
             : 0;
         const proratedTips = !isTrailers && totalEligibleHours > 0
           ? (totalTips * actualHours) / totalEligibleHours
@@ -901,8 +1055,32 @@ export default function EventDashboardPage() {
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
+      const isAZorNYEmail = eventState === "AZ" || eventState === "NY";
+
       const perVendorCommissionShare =
         vendorCountForCommission > 0 ? totalCommissionPool / vendorCountForCommission : 0;
+
+      const commissionPerVendorAzNy = isAZorNYEmail
+        ? computeAzNyCommissionPerVendor(
+          teamMembers.map((member: any) => {
+            const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+            const totalMs = timesheetTotals[uid] || 0;
+            const actualHours = totalMs / (1000 * 60 * 60);
+            const memberDivision = member.users?.division;
+            const isTrailers = isTrailersDivisionCheck(memberDivision);
+            const eligible = !isTrailers && isVendorDivision(memberDivision) && actualHours > 0;
+            const priorWeekly = isAZorNYEmail ? (weeklyPriorHours[uid] || 0) : 0;
+            const isWeeklyOT = isAZorNYEmail && (priorWeekly + actualHours) > 40;
+            return {
+              eligible,
+              actualHours,
+              extAmtRegular: actualHours * baseRate,
+              isWeeklyOT,
+            } satisfies AzNyCommissionCalcItem;
+          }),
+          totalCommissionPool
+        )
+        : 0;
 
       const payrollData = teamMembers.map((member: any) => {
         const profile = member.users?.profiles;
@@ -911,22 +1089,49 @@ export default function EventDashboardPage() {
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
-        // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const priorWeekly = isAZorNYEmail ? (weeklyPriorHours[uid] || 0) : 0;
+        const isWeeklyOT = isAZorNYEmail && (priorWeekly + actualHours) > 40;
 
         const isTrailers = isTrailersDivisionCheck(memberDivision);
 
-        // Commission Amt from raw values (before $150 floor)
-        let commissionAmount =
-          !isTrailers && actualHours > 0 && vendorCountForCommission > 0
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+        const extAmtRegular = actualHours * baseRate;
+        const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+
+        // Commission Amt: AZ/NY = pool / vendors; others subtract Ext Amt
+        let commissionAmount;
+        if (isAZorNYEmail) {
+          commissionAmount = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
+            ? commissionPerVendorAzNy
             : 0;
-        // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (commissionAmount > 0 && commissionAmount < extAmtOnRegRate) commissionAmount = 0;
+        } else {
+          commissionAmount =
+            !isTrailers && actualHours > 0 && vendorCountForCommission > 0
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              : 0;
+        }
+        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+        if (!isAZorNYEmail && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
+
+        // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
+        const totalFinalCommissionBase = (isAZorNYEmail && actualHours > 0)
+          ? Math.max(150, extAmtRegular + commissionAmount)
+          : 0;
+        const loadedRateBase = (isAZorNYEmail && actualHours > 0)
+          ? totalFinalCommissionBase / actualHours
+          : baseRate;
+        const otRate = (isAZorNYEmail && isWeeklyOT) ? loadedRateBase * 1.5 : 0;
+
+        // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours; others = baseRate x 1.5 x hours
+        const extAmtOnRegRate = isAZorNYEmail
+          ? (isWeeklyOT ? (otRate * actualHours) : extAmtRegular)
+          : extAmtOnRegRateNonAzNy;
+
         // Total Final Commission = Ext Amt + Commission Amt; minimum $150
         const totalFinalCommission =
           actualHours > 0
-            ? Math.max(150, extAmtOnRegRate + commissionAmount)
+            ? isAZorNYEmail
+              ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+              : Math.max(150, extAmtOnRegRate + commissionAmount)
             : 0;
         const proratedTips = !isTrailers && totalEligibleHoursEmail > 0
           ? (totalTips * actualHours) / totalEligibleHoursEmail
@@ -2552,6 +2757,9 @@ export default function EventDashboardPage() {
                         <th className="text-left p-4 font-semibold text-gray-700">Reg Rate</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Loaded Rate</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
+                        {showOTColumn && (
+                          <th className="text-left p-4 font-semibold text-gray-700">OT Rate</th>
+                        )}
                         <th className="text-left p-4 font-semibold text-gray-700">Ext Amt on Reg Rate</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Commission Amt</th>
                         <th className="text-left p-4 font-semibold text-gray-700">Total Final Commission Amt</th>
@@ -2567,7 +2775,10 @@ export default function EventDashboardPage() {
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={hideRestBreakColumn ? 11 : 12} className="p-8 text-center text-gray-500">
+                          <td
+                            colSpan={(hideRestBreakColumn ? 11 : 12) + (showOTColumn ? 1 : 0)}
+                            className="p-8 text-center text-gray-500"
+                          >
                             No staff found
                           </td>
                         </tr>
@@ -2610,8 +2821,13 @@ export default function EventDashboardPage() {
                           const eventState = normalizeState(event?.state) || "CA";
                           const baseRate = getBaseRateForState(eventState);
 
-                          // Ext Amt on Reg Rate = total hours × base rate × 1.5
-                          const extAmtOnRegRate = actualHours * baseRate * 1.5;
+                          // AZ & NY use different commission logic
+                          const isAZorNY = eventState === "AZ" || eventState === "NY";
+
+                          const priorWeekly = isAZorNY ? (weeklyPriorHours[uid] || 0) : 0;
+                          const isWeeklyOT = isAZorNY && (priorWeekly + actualHours) > 40;
+                          const extAmtRegular = actualHours * baseRate;
+                          const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
 
                           // Commission pool (Net Sales × pool fraction)
                           const sharesData = calculateShares();
@@ -2627,20 +2843,47 @@ export default function EventDashboardPage() {
 
                           const isTrailers = isTrailersDivisionCheck(member.users?.division);
 
-                          // Commission Amt from raw values (before $150 floor)
-                          let commissionAmount =
-                            !isTrailers && actualHours > 0 && vendorCountForCommission > 0
-                              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+                          // Commission Amt: AZ/NY = pool / vendors; others subtract Ext Amt
+                          let commissionAmount;
+                          if (isAZorNY) {
+                            commissionAmount = (!isTrailers && isVendorDivision(member.users?.division) && actualHours > 0)
+                              ? azNyCommissionPerVendorForHrTable
                               : 0;
-                          // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-                          if (commissionAmount > 0 && commissionAmount < extAmtOnRegRate) commissionAmount = 0;
+                          } else {
+                            commissionAmount =
+                              !isTrailers && actualHours > 0 && vendorCountForCommission > 0
+                                ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+                                : 0;
+                          }
+                          // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+                          if (!isAZorNY && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
+
+                          // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
+                          const totalFinalCommissionBase = (isAZorNY && actualHours > 0)
+                            ? Math.max(150, extAmtRegular + commissionAmount)
+                            : 0;
+                          const loadedRateBase = (isAZorNY && actualHours > 0)
+                            ? totalFinalCommissionBase / actualHours
+                            : baseRate;
+                          const otRate = (isAZorNY && isWeeklyOT) ? loadedRateBase * 1.5 : 0;
+
+                          // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours; others = baseRate x 1.5 x hours
+                          const extAmtOnRegRate = isAZorNY
+                            ? (isWeeklyOT ? (otRate * actualHours) : extAmtRegular)
+                            : extAmtOnRegRateNonAzNy;
+
                           // Total Final Commission = Ext Amt + Commission Amt; minimum $150
                           const totalFinalCommission =
                             actualHours > 0
-                              ? Math.max(150, extAmtOnRegRate + commissionAmount)
+                              ? isAZorNY
+                                ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+                                : Math.max(150, extAmtOnRegRate + commissionAmount)
                               : 0;
 
-                          const loadedRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
+                          // Loaded Rate should remain the "regular" loaded rate for AZ/NY, since OT Rate is 1.5x Loaded Rate.
+                          const loadedRate = isAZorNY
+                            ? loadedRateBase
+                            : (actualHours > 0 ? totalFinalCommission / actualHours : baseRate);
 
                           // Tips prorated by hours (same method)
                           const totalTips = Number(tips) || 0;
@@ -2692,13 +2935,27 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
+                              {/* OT Rate (AZ/NY only) */}
+                              {showOTColumn && (
+                                <td className="p-4">
+                                  <div className="font-medium text-gray-900">
+                                    {isWeeklyOT ? `$${otRate.toFixed(2)}/hr` : '\u2014'}
+                                  </div>
+                                  {isWeeklyOT && (
+                                    <div className="text-[10px] text-gray-500 mt-1">
+                                      Weekly &gt; 40h
+                                    </div>
+                                  )}
+                                </td>
+                              )}
+
                               {/* Ext Amt on Reg Rate */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
                                   ${extAmtOnRegRate.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-500 mt-1">
-                                  {actualHours.toFixed(2)}h × ${baseRate.toFixed(2)} × 1.5
+                                  {actualHours.toFixed(2)}h x {'$' + (isAZorNY && isWeeklyOT ? otRate.toFixed(2) : baseRate.toFixed(2))}{isAZorNY ? '' : ' x 1.5'}
                                 </div>
                               </td>
 

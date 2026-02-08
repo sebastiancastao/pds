@@ -331,7 +331,7 @@ export default function LoginPage() {
           } else if (onboardingApproved) {
             // Onboarding approved
             console.log('[LOGIN DEBUG] ✅ SCENARIO B: Onboarding approved');
-            console.log('[LOGIN DEBUG] No redirect - user will go to /workers/[id] after MFA');
+            console.log('[LOGIN DEBUG] No redirect - user will go to /employees/[id] after MFA');
             // No redirect needed - proceed to Time Keeping after MFA
           }
 

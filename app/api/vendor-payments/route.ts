@@ -198,13 +198,14 @@ export async function GET(req: NextRequest) {
       (usersForDivision || []).forEach((u: any) => { divisionById[u.id] = (u.division || '').toString().toLowerCase().trim(); });
 
       // Count vendor-division members (exclude trailers) — matches event-dashboard vendorCount
-      const vendorCount = vendorIds.reduce((count, uid) => {
+      const vendorCountEligible = vendorIds.reduce((count, uid) => {
         const div = divisionById[uid] || '';
         return (div === 'vendor' || div === 'both') ? count + 1 : count;
       }, 0);
+      const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : vendorIds.length;
 
       // Equal split of commission pool among eligible vendors (same as event-dashboard)
-      const perVendorCommissionShare = vendorCount > 0 ? commissionPool / vendorCount : 0;
+      const perVendorCommissionShare = vendorCountForCommission > 0 ? commissionPool / vendorCountForCommission : 0;
 
       // Total eligible hours for tips proration (exclude trailers)
       const totalEligibleHours = vendorIds.reduce((sum, uid) => {
@@ -215,27 +216,40 @@ export async function GET(req: NextRequest) {
 
       // Rest break helper (matches event-dashboard)
       const getRestBreak = (hours: number, st: string) => {
-        if (st === 'NV' || st === 'WI') return 0;
+        if (st === 'NV' || st === 'WI' || st === 'AZ' || st === 'NY') return 0;
         if (hours <= 0) return 0;
-        return hours > 10 ? 12 : 9;
+        return hours >= 10 ? 12 : 9;
       };
 
-      // 8) Build per-user vendor payment rows (matches event-dashboard logic exactly)
+      // 8) AZ/NY has different commission logic
+      const isAZorNY = eventState === 'AZ' || eventState === 'NY';
+
+      // 10) Build per-user vendor payment rows (matches event-dashboard logic exactly)
       const rows: any[] = [];
       for (const uid of vendorIds) {
         const hours = Number(totalsHours[uid] || 0);
         const memberDivision = divisionById[uid] || '';
         const isTrailers = memberDivision === 'trailers';
 
-        // Ext Amt on Reg Rate = total hours × base rate × 1.5 (same as event-dashboard)
-        const extAmtOnRegRate = hours * baseRate * 1.5;
 
-        // Commission from raw values (before $150 floor)
-        let commissions = !isTrailers && vendorCount > 0
-          ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
-          : 0;
-        // Rule: if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (commissions > 0 && commissions < extAmtOnRegRate) commissions = 0;
+        // Ext Amt on Reg Rate: AZ/NY = baseRate * hours (never 1.5x); others = baseRate * 1.5 * hours
+        const extAmtOnRegRate = isAZorNY
+          ? hours * baseRate
+          : hours * baseRate * 1.5;
+
+        // Commission: AZ/NY = pool / vendors; others subtract Ext Amt
+        let commissions;
+        if (isAZorNY) {
+          commissions = !isTrailers && vendorCountForCommission > 0 && hours > 0
+            ? perVendorCommissionShare
+            : 0;
+        } else {
+          commissions = !isTrailers && vendorCountForCommission > 0
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            : 0;
+        }
+        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
+        if (!isAZorNY && commissions > 0 && commissions < extAmtOnRegRate) commissions = 0;
 
         // Total Final Commission = Ext Amt + Commission; minimum $150
         const totalFinalCommission = hours > 0
