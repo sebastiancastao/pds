@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { createHash } from "crypto";
 
 export const runtime = "nodejs";
 
@@ -63,6 +64,11 @@ export async function POST(req: NextRequest) {
     const action: ActionType = body.action;
     const offlineTimestamp = body.timestamp; // ISO string from offline queue
     const signature = body.signature; // base64 signature for clock_out
+    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
+
+    const isValidUuid = (id: unknown) =>
+      typeof id === "string" &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
     if (!code || !/^\d{6}$/.test(code)) {
       return jsonError("Invalid code format", 400);
@@ -85,7 +91,16 @@ export async function POST(req: NextRequest) {
       return jsonError("Invalid or expired code", 404);
     }
 
-    const workerId = codeRecord.target_user_id || kioskUser.id;
+    // Kiosk flow must always resolve to a specific worker via a personal code.
+    // Falling back to the kiosk operator user causes every code to act on the same account.
+    if (!codeRecord.target_user_id) {
+      return jsonError(
+        "This code is not assigned to a worker. Generate a personal check-in code for the worker and try again.",
+        400
+      );
+    }
+
+    const workerId = codeRecord.target_user_id;
 
     // Validate the action against the worker's current state
     const { data: lastEntry, error: lastErr } = await supabaseAdmin
@@ -134,7 +149,13 @@ export async function POST(req: NextRequest) {
         const division = await getUserDivision(workerId);
         await supabaseAdmin
           .from("time_entries")
-          .insert({ user_id: workerId, action: "meal_end", division, notes: "Auto-ended on clock out" });
+          .insert({
+            user_id: workerId,
+            action: "meal_end",
+            division,
+            notes: "Auto-ended on clock out",
+            ...(isValidUuid(eventId) ? { event_id: eventId } : {}),
+          });
       }
     } else if (action === "meal_start") {
       if (!lastAction || (lastAction !== "clock_in" && lastAction !== "meal_end")) {
@@ -159,6 +180,9 @@ export async function POST(req: NextRequest) {
     if (offlineTimestamp) {
       insertData.timestamp = offlineTimestamp;
     }
+    if (isValidUuid(eventId)) {
+      insertData.event_id = eventId;
+    }
 
     const { data, error } = await supabaseAdmin
       .from("time_entries")
@@ -173,6 +197,54 @@ export async function POST(req: NextRequest) {
       await supabaseAdmin
         .from("checkin_logs")
         .insert({ code_id: codeRecord.id, user_id: workerId });
+    }
+
+    // Save attestation signature to form_signatures on clock_out
+    if (action === "clock_out" && signature) {
+      try {
+        const ipAddress =
+          req.headers.get("x-forwarded-for") ||
+          req.headers.get("x-real-ip") ||
+          "unknown";
+        const userAgent = req.headers.get("user-agent") || "unknown";
+        const signedAt = data.timestamp || new Date().toISOString();
+
+        const formId = `clock-out-${data.id}`;
+        const formType = "clock_out_attestation";
+
+        const formDataString = JSON.stringify({
+          entryId: data.id,
+          workerId,
+          action: "clock_out",
+          timestamp: signedAt,
+        });
+
+        const formDataHash = createHash("sha256").update(formDataString).digest("hex");
+        const signatureHash = createHash("sha256")
+          .update(`${signature}${signedAt}${workerId}${ipAddress}`)
+          .digest("hex");
+        const bindingHash = createHash("sha256")
+          .update(`${formDataHash}${signatureHash}${workerId}`)
+          .digest("hex");
+
+        await supabaseAdmin.from("form_signatures").insert({
+          form_id: formId,
+          form_type: formType,
+          user_id: workerId,
+          signature_role: "employee",
+          signature_data: signature,
+          signature_type: "drawn",
+          form_data_hash: formDataHash,
+          signature_hash: signatureHash,
+          binding_hash: bindingHash,
+          ip_address: ipAddress,
+          user_agent: userAgent,
+          signed_at: signedAt,
+          is_valid: true,
+        });
+      } catch (sigErr) {
+        console.error("Failed to save clock-out attestation signature:", sigErr);
+      }
     }
 
     return NextResponse.json({

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, MouseEvent, TouchEvent } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -15,6 +15,7 @@ type QueuedAction = {
   timestamp: string;
   userName: string;
   signature?: string;
+  eventId?: string;
 };
 
 type ValidatedWorker = {
@@ -92,6 +93,8 @@ function generateId(): string {
 // ─── Component ──────────────────────────────────────────────────────
 export default function CheckInKioskPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const eventIdFromUrl = searchParams.get("eventId");
 
   // Auth
   const [isAuthed, setIsAuthed] = useState(false);
@@ -122,6 +125,7 @@ export default function CheckInKioskPage() {
   const [isOnline, setIsOnline] = useState(true);
   const [queueCount, setQueueCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
+  const isSyncingRef = useRef(false);
 
   // Inactivity reset (back to code entry after 30s of no interaction)
   const inactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -131,6 +135,14 @@ export default function CheckInKioskPage() {
   const [recentActions, setRecentActions] = useState<
     Array<{ name: string; action: string; time: string; offline?: boolean }>
   >([]);
+
+  const [checkedInUsers, setCheckedInUsers] = useState<
+    Array<{ user_id: string; name: string; firstClockInAt: string; isClockedIn: boolean; lastClockAt?: string | null }>
+  >([]);
+
+  const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string } | null>(
+    null
+  );
 
   // ─── Auth & session keep-alive ──────────────────────────────────
   useEffect(() => {
@@ -181,11 +193,67 @@ export default function CheckInKioskPage() {
     setLoading(false);
   };
 
+  const fetchRecentActivity = useCallback(async () => {
+    try {
+      if (!isAuthed) return;
+      if (!isOnline) return;
+      const token = accessTokenRef.current;
+      if (!token) return;
+
+      const qs = eventIdFromUrl ? `?eventId=${encodeURIComponent(eventIdFromUrl)}` : "";
+      const res = await fetch(`/api/check-in/recent${qs}`, {
+        method: "GET",
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) return;
+
+      const event = data?.event;
+      if (event?.id && event?.startIso && event?.endIso) {
+        setActiveEvent({
+          id: String(event.id),
+          name: typeof event.name === "string" ? event.name : null,
+          startIso: String(event.startIso),
+          endIso: String(event.endIso),
+        });
+      } else {
+        setActiveEvent(null);
+      }
+
+      const entries = Array.isArray(data?.entries) ? data.entries : [];
+      const mapped = entries
+        .slice(0, 8)
+        .map((e: any) => ({
+          name: String(e?.name || "User"),
+          action: String(e?.action || ""),
+          time: e?.timestamp ? new Date(String(e.timestamp)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "",
+          offline: Boolean(e?.offline),
+        }))
+        .filter((e: any) => Boolean(e.time));
+
+      setRecentActions(mapped);
+
+      const checked = Array.isArray(data?.checkedInUsers) ? data.checkedInUsers : [];
+      setCheckedInUsers(
+        checked.map((u: any) => ({
+          user_id: String(u?.user_id || ""),
+          name: String(u?.name || "User"),
+          firstClockInAt: String(u?.firstClockInAt || ""),
+          isClockedIn: Boolean(u?.isClockedIn),
+          lastClockAt: u?.lastClockAt ? String(u.lastClockAt) : null,
+        })).filter((u: any) => Boolean(u.user_id) && Boolean(u.firstClockInAt))
+      );
+    } catch (err) {
+      console.error("Failed to fetch recent activity:", err);
+    }
+  }, [eventIdFromUrl, isAuthed, isOnline]);
+
   // ─── Online / offline handling ──────────────────────────────────
   useEffect(() => {
     const handleOnline = () => {
       setIsOnline(true);
-      syncOfflineQueue();
     };
     const handleOffline = () => {
       setIsOnline(false);
@@ -204,26 +272,57 @@ export default function CheckInKioskPage() {
     refreshQueueCount();
   }, []);
 
-  const refreshQueueCount = async () => {
+  // Load recent activity on mount and refresh periodically while online.
+  useEffect(() => {
+    if (!isAuthed) return;
+    if (!isOnline) return;
+    fetchRecentActivity();
+    const interval = setInterval(fetchRecentActivity, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchRecentActivity, isAuthed, isOnline]);
+
+  // Kiosk heartbeat — lets the admin monitor know this kiosk page is open.
+  useEffect(() => {
+    if (!isAuthed || !isOnline) return;
+    const sendHeartbeat = async () => {
+      try {
+        const token = accessTokenRef.current;
+        if (!token) return;
+        await fetch("/api/admin/check-in-monitor", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ eventId: eventIdFromUrl || activeEvent?.id || null }),
+        });
+      } catch {}
+    };
+    sendHeartbeat();
+    const interval = setInterval(sendHeartbeat, 20_000);
+    return () => clearInterval(interval);
+  }, [isAuthed, isOnline, eventIdFromUrl, activeEvent?.id]);
+
+  const refreshQueueCount = useCallback(async () => {
     try {
       const items = await getAllQueued();
       setQueueCount(items.length);
     } catch {}
-  };
+  }, []);
 
   const syncOfflineQueue = async () => {
-    if (isSyncing) return;
+    if (isSyncingRef.current) return;
+    isSyncingRef.current = true;
     setIsSyncing(true);
     try {
       const items = await getAllQueued();
       if (items.length === 0) {
         setIsSyncing(false);
+        isSyncingRef.current = false;
         return;
       }
 
       const token = accessTokenRef.current;
       if (!token) {
         setIsSyncing(false);
+        isSyncingRef.current = false;
         return;
       }
 
@@ -247,12 +346,14 @@ export default function CheckInKioskPage() {
         await refreshQueueCount();
         if (data.synced > 0) {
           showSuccessMessage(`Synced ${data.synced} offline action${data.synced > 1 ? "s" : ""}`);
+          fetchRecentActivity();
         }
       }
     } catch (err) {
       console.error("Sync failed:", err);
     } finally {
       setIsSyncing(false);
+      isSyncingRef.current = false;
     }
   };
 
@@ -493,6 +594,7 @@ export default function CheckInKioskPage() {
         timestamp: new Date().toISOString(),
         userName: worker.name,
         signature: sig,
+        eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
       try {
         await addToQueue(queuedItem);
@@ -525,6 +627,7 @@ export default function CheckInKioskPage() {
           code: worker.code,
           action,
           signature: sig,
+          eventId: activeEvent?.id || (eventIdFromUrl || undefined),
         }),
       });
 
@@ -539,6 +642,7 @@ export default function CheckInKioskPage() {
             timestamp: new Date().toISOString(),
             userName: worker.name,
             signature: sig,
+            eventId: activeEvent?.id || (eventIdFromUrl || undefined),
           };
           await addToQueue(queuedItem);
           await refreshQueueCount();
@@ -555,6 +659,7 @@ export default function CheckInKioskPage() {
 
       addRecentAction(worker.name, actionLabels[action]);
       showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
+      fetchRecentActivity();
       setTimeout(resetToCodeEntry, 1500);
     } catch {
       // Network error - queue offline
@@ -565,6 +670,7 @@ export default function CheckInKioskPage() {
         timestamp: new Date().toISOString(),
         userName: worker.name,
         signature: sig,
+        eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
       try {
         await addToQueue(queuedItem);
@@ -938,6 +1044,61 @@ export default function CheckInKioskPage() {
               </>
             )}
           </div>
+
+          {/* Checked-in users for the active event (persists across refresh until event ends) */}
+          {activeEvent && (
+            <div className="mt-4 bg-white/80 backdrop-blur-sm rounded-xl border border-gray-200 p-4">
+              <div className="flex items-start justify-between gap-3 mb-3">
+                <div className="min-w-0">
+                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Event Check-Ins</h3>
+                  <div className="mt-1 text-sm font-semibold text-gray-900 truncate">
+                    {activeEvent.name || "Active Event"}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[11px] text-gray-500">Ends</div>
+                  <div className="text-xs font-semibold text-gray-700">
+                    {new Date(activeEvent.endIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+              </div>
+
+              {checkedInUsers.length === 0 ? (
+                <div className="text-sm text-gray-600">No one has checked in yet.</div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                    <span>{checkedInUsers.length} checked in</span>
+                    <span>Status</span>
+                  </div>
+                  <div className="space-y-2">
+                    {checkedInUsers.map((u) => {
+                      const firstTime = u.firstClockInAt
+                        ? new Date(u.firstClockInAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                        : "--";
+                      return (
+                        <div key={u.user_id} className="flex items-center justify-between text-sm">
+                          <div className="min-w-0">
+                            <div className="font-medium text-gray-800 truncate">{u.name}</div>
+                            <div className="text-xs text-gray-500">First check-in: {firstTime}</div>
+                          </div>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
+                              u.isClockedIn
+                                ? "bg-green-100 text-green-800 border border-green-200"
+                                : "bg-slate-100 text-slate-700 border border-slate-200"
+                            }`}
+                          >
+                            {u.isClockedIn ? "In" : "Out"}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {/* ── Recent activity log ── */}
           {recentActions.length > 0 && (

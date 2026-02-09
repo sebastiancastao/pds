@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { createHash } from "crypto";
 
 export const runtime = "nodejs";
 
@@ -49,6 +50,7 @@ type QueuedAction = {
   timestamp: string;
   userName: string;
   signature?: string;
+  eventId?: string;
 };
 
 /**
@@ -98,11 +100,26 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const workerId = codeRecord.target_user_id || kioskUser.id;
+        // Kiosk offline sync must always resolve to a specific worker via a personal code.
+        if (!codeRecord.target_user_id) {
+          results.push({
+            id: item.id,
+            success: false,
+            error:
+              "This code is not assigned to a worker. Generate a personal check-in code for the worker and try again.",
+          });
+          continue;
+        }
+
+        const workerId = codeRecord.target_user_id;
         const division = await getUserDivision(workerId);
 
+        const isValidUuid = (id: unknown) =>
+          typeof id === "string" &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
         // Insert the time entry with the original offline timestamp
-        const { error: insertErr } = await supabaseAdmin
+        const { data: entryData, error: insertErr } = await supabaseAdmin
           .from("time_entries")
           .insert({
             user_id: workerId,
@@ -110,7 +127,10 @@ export async function POST(req: NextRequest) {
             division,
             timestamp: item.timestamp,
             notes: `Offline kiosk sync (original: ${item.timestamp})`,
-          });
+            ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
+          })
+          .select("id, timestamp")
+          .single();
 
         if (insertErr) {
           results.push({ id: item.id, success: false, error: insertErr.message });
@@ -122,6 +142,54 @@ export async function POST(req: NextRequest) {
           await supabaseAdmin
             .from("checkin_logs")
             .insert({ code_id: codeRecord.id, user_id: workerId });
+        }
+
+        // Save attestation signature to form_signatures on clock_out
+        if (item.action === "clock_out" && item.signature && entryData?.id) {
+          try {
+            const ipAddress =
+              req.headers.get("x-forwarded-for") ||
+              req.headers.get("x-real-ip") ||
+              "unknown";
+            const userAgent = req.headers.get("user-agent") || "unknown";
+            const signedAt = item.timestamp;
+
+            const formId = `clock-out-${entryData.id}`;
+            const formType = "clock_out_attestation";
+
+            const formDataString = JSON.stringify({
+              entryId: entryData.id,
+              workerId,
+              action: "clock_out",
+              timestamp: signedAt,
+            });
+
+            const formDataHash = createHash("sha256").update(formDataString).digest("hex");
+            const signatureHash = createHash("sha256")
+              .update(`${item.signature}${signedAt}${workerId}${ipAddress}`)
+              .digest("hex");
+            const bindingHash = createHash("sha256")
+              .update(`${formDataHash}${signatureHash}${workerId}`)
+              .digest("hex");
+
+            await supabaseAdmin.from("form_signatures").insert({
+              form_id: formId,
+              form_type: formType,
+              user_id: workerId,
+              signature_role: "employee",
+              signature_data: item.signature,
+              signature_type: "drawn",
+              form_data_hash: formDataHash,
+              signature_hash: signatureHash,
+              binding_hash: bindingHash,
+              ip_address: ipAddress,
+              user_agent: userAgent,
+              signed_at: signedAt,
+              is_valid: true,
+            });
+          } catch (sigErr) {
+            console.error("Failed to save offline clock-out attestation signature:", sigErr);
+          }
         }
 
         results.push({ id: item.id, success: true });

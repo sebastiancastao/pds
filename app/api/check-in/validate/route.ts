@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, isEncrypted } from "@/lib/encryption";
 
 export const runtime = "nodejs";
 
@@ -31,6 +31,24 @@ async function getAuthedUser(req: Request) {
     if (!error && tokenUser?.user?.id) return tokenUser.user as any;
   }
   return null;
+}
+
+function decryptProfileNamePart(value: unknown, workerIdForLog: string): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  // If it's plain text, keep it.
+  if (!isEncrypted(trimmed)) return trimmed;
+
+  // If it's encrypted but we cannot decrypt (missing/wrong key, bad data), don't fail the request.
+  // Returning an empty string avoids showing ciphertext in the kiosk UI.
+  try {
+    return decrypt(trimmed);
+  } catch (err) {
+    console.warn("Profile name decryption failed for worker", workerIdForLog);
+    return "";
+  }
 }
 
 /**
@@ -66,8 +84,16 @@ export async function POST(req: NextRequest) {
       return jsonError("Invalid or expired code", 404);
     }
 
-    // Determine the worker: use target_user_id if set, otherwise fall back to kiosk user
-    const workerId = codeRecord.target_user_id || kioskUser.id;
+    // Kiosk flow must always resolve to a specific worker via a personal code.
+    // Falling back to the kiosk operator user causes every code to act on the same account.
+    if (!codeRecord.target_user_id) {
+      return jsonError(
+        "This code is not assigned to a worker. Generate a personal check-in code for the worker and try again.",
+        400
+      );
+    }
+
+    const workerId = codeRecord.target_user_id;
 
     // Get worker profile name
     const { data: profile } = await supabaseAdmin
@@ -79,8 +105,8 @@ export async function POST(req: NextRequest) {
     let firstName = "";
     let lastName = "";
     if (profile) {
-      firstName = profile.first_name ? decrypt(profile.first_name) : "";
-      lastName = profile.last_name ? decrypt(profile.last_name) : "";
+      firstName = decryptProfileNamePart(profile.first_name, workerId);
+      lastName = decryptProfileNamePart(profile.last_name, workerId);
     }
     const displayName = [firstName, lastName].filter(Boolean).join(" ") || "User";
 

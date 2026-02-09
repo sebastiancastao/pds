@@ -733,10 +733,113 @@ export default function EventDashboardPage() {
     return s.netSales * pool;
   })();
 
+  const getVenueTimeZone = (stateCode?: string | null): string | null => {
+    const st = (stateCode || "").toUpperCase().trim();
+    if (!st) return null;
+
+    // Best-effort mapping. If you need per-city accuracy (states with multiple timezones),
+    // store an IANA timezone on the venue/event and use that instead.
+    const tzByState: Record<string, string> = {
+      // Pacific
+      CA: "America/Los_Angeles",
+      NV: "America/Los_Angeles",
+      OR: "America/Los_Angeles",
+      WA: "America/Los_Angeles",
+      // Mountain (no DST)
+      AZ: "America/Phoenix",
+      // Central
+      WI: "America/Chicago",
+      IL: "America/Chicago",
+      TX: "America/Chicago",
+      // Eastern
+      NY: "America/New_York",
+      NJ: "America/New_York",
+      CT: "America/New_York",
+      MA: "America/New_York",
+      PA: "America/New_York",
+      FL: "America/New_York",
+    };
+
+    return tzByState[st] || null;
+  };
+
+  const venueTimeZone = getVenueTimeZone(event?.state);
+  const venueTimeZoneLabel =
+    venueTimeZone === "America/Los_Angeles" ? "PT" :
+    venueTimeZone === "America/New_York" ? "ET" :
+    venueTimeZone === "America/Chicago" ? "CT" :
+    venueTimeZone === "America/Phoenix" ? "AZ" :
+    null;
+
+  const addDaysUtc = (yyyyMmDd: string, days: number): string => {
+    const d = new Date(`${yyyyMmDd}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + days);
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(d.getUTCDate()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  const isoToLocalParts = (iso: string | null): { hhmm: string; yyyyMmDd: string } | null => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
+
+    if (venueTimeZone) {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone: venueTimeZone,
+          year: "numeric",
+          month: "2-digit",
+          day: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(d);
+
+        const yyyy = parts.find((p) => p.type === "year")?.value;
+        const mm = parts.find((p) => p.type === "month")?.value;
+        const dd = parts.find((p) => p.type === "day")?.value;
+        const hh = parts.find((p) => p.type === "hour")?.value;
+        const mi = parts.find((p) => p.type === "minute")?.value;
+        if (yyyy && mm && dd && hh && mi) {
+          return { hhmm: `${hh.padStart(2, "0")}:${mi.padStart(2, "0")}`, yyyyMmDd: `${yyyy}-${mm}-${dd}` };
+        }
+      } catch {
+        // fall back to browser-local
+      }
+    }
+
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mi = String(d.getMinutes()).padStart(2, "0");
+    return { hhmm: `${hh}:${mi}`, yyyyMmDd: `${yyyy}-${mm}-${dd}` };
+  };
+
   // Helper to format ISO -> "HH:mm" for inputs
   const isoToHHMM = (iso: string | null): string => {
     if (!iso) return "";
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+
+    if (venueTimeZone) {
+      try {
+        const parts = new Intl.DateTimeFormat("en-US", {
+          timeZone: venueTimeZone,
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        }).formatToParts(d);
+        const hh = parts.find((p) => p.type === "hour")?.value;
+        const mm = parts.find((p) => p.type === "minute")?.value;
+        if (hh && mm) return `${hh.padStart(2, "0")}:${mm.padStart(2, "0")}`;
+      } catch {
+        // fall back to browser-local
+      }
+    }
+
     const hh = String(d.getHours()).padStart(2, "0");
     const mm = String(d.getMinutes()).padStart(2, "0");
     return `${hh}:${mm}`;
@@ -2456,7 +2559,7 @@ export default function EventDashboardPage() {
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold">TimeSheet</h2>
                 <div className="text-sm text-gray-500">
-                  Event window: {event?.start_time?.slice(0, 5)} – {event?.end_time?.slice(0, 5)}
+                  Event window: {event?.start_time?.slice(0, 5)} – {event?.end_time?.slice(0, 5)}{venueTimeZone ? ` (${venueTimeZoneLabel || venueTimeZone})` : ""}
                 </div>
               </div>
 
@@ -2538,7 +2641,17 @@ export default function EventDashboardPage() {
                           secondMealEnd: null,
                         };
                         const firstClockIn = isoToHHMM(span.firstIn);
-                        const lastClockOut = isoToHHMM(span.lastOut);
+
+                        const eventBaseDate = (event?.event_date || "").toString().split("T")[0] || "";
+                        const nextDayDate = eventBaseDate ? addDaysUtc(eventBaseDate, 1) : "";
+                        const outParts = isoToLocalParts(span.lastOut);
+                        const lastClockOut = outParts?.hhmm || "";
+                        const isClockOutNextDay = Boolean(
+                          eventBaseDate &&
+                          nextDayDate &&
+                          outParts?.yyyyMmDd &&
+                          outParts.yyyyMmDd === nextDayDate
+                        );
                         const firstMealStart = isoToHHMM(span.firstMealStart);
                         const lastMealEnd = isoToHHMM(span.lastMealEnd);
                         const secondMealStart = isoToHHMM(span.secondMealStart);
@@ -2570,6 +2683,11 @@ export default function EventDashboardPage() {
                                 readOnly
                                 className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
                               />
+                              {isClockOutNextDay && (
+                                <div className="mt-1 text-[10px] font-semibold text-amber-700">
+                                  +1 day
+                                </div>
+                              )}
                             </td>
                             <td className="px-3 py-3">
                               <input

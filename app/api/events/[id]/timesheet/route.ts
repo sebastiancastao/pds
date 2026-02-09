@@ -13,6 +13,22 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+function timeToSeconds(t: unknown): number | null {
+  if (typeof t !== "string") return null;
+  const s = t.trim();
+  if (!s) return null;
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const ss = m[3] ? Number(m[3]) : 0;
+  if (![hh, mm, ss].every((n) => Number.isFinite(n))) return null;
+  if (hh < 0 || hh > 23) return null;
+  if (mm < 0 || mm > 59) return null;
+  if (ss < 0 || ss > 59) return null;
+  return hh * 3600 + mm * 60 + ss;
+}
+
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -51,7 +67,7 @@ export async function GET(
     console.log('🔍 Querying event:', { eventId, userId: user.id });
     const { data: event, error: evtErr } = await supabaseAdmin
       .from('events')
-      .select('id, event_date, start_time, end_time, created_by')
+      .select('id, event_date, start_time, end_time, ends_next_day, created_by')
       .eq('id', eventId)
       .maybeSingle();
 
@@ -110,23 +126,61 @@ export async function GET(
       event_date: event.event_date,
       normalized_date: date,
       start_time: event.start_time,
-      end_time: event.end_time
+      end_time: event.end_time,
+      ends_next_day: (event as any).ends_next_day
     });
 
-    // Query for ENTIRE DAY - workers might clock in/out outside scheduled hours
-    const startIso = new Date(`${date}T00:00:00Z`).toISOString();
-    const endIso = new Date(`${date}T23:59:59.999Z`).toISOString();
+    const startSec = timeToSeconds((event as any).start_time);
+    const endSec = timeToSeconds((event as any).end_time);
+    const endsNextDay =
+      Boolean((event as any).ends_next_day) ||
+      (startSec !== null && endSec !== null && endSec <= startSec);
+
+    // Query for ENTIRE DAY (and include the next day if the event crosses midnight).
+    // This is only used for the timestamp-range fallbacks when entries are missing event_id.
+    const startDate = new Date(`${date}T00:00:00Z`);
+    const endDate = new Date(`${date}T23:59:59.999Z`);
+    if (endsNextDay) {
+      endDate.setUTCDate(endDate.getUTCDate() + 1);
+    }
+    const startIso = startDate.toISOString();
+    const endIso = endDate.toISOString();
 
     console.log('⏰ Query window (FULL DAY):', { startIso, endIso });
 
     // Fetch all time entries for these users for this event (prefer event_id over date window)
     let { data: entries, error: teErr } = await supabaseAdmin
       .from('time_entries')
-      .select('user_id, action, timestamp, started_at, event_id')
+      .select('id, user_id, action, timestamp, started_at, event_id')
       .in('user_id', userIds)
       .eq('event_id', eventId)
       .order('timestamp', { ascending: true });
     if (teErr) return NextResponse.json({ error: teErr.message }, { status: 500 });
+
+    // If the event crosses midnight, also pull any untagged entries in the extended window and merge them in.
+    // This fixes cases where clock_out happens after midnight but the entry wasn't written with event_id.
+    if (endsNextDay) {
+      const { data: byTimestamp, error: tsErr } = await supabaseAdmin
+        .from('time_entries')
+        .select('id, user_id, action, timestamp, started_at, event_id')
+        .in('user_id', userIds)
+        .gte('timestamp', startIso)
+        .lte('timestamp', endIso)
+        .order('timestamp', { ascending: true });
+      if (tsErr) return NextResponse.json({ error: tsErr.message }, { status: 500 });
+
+      const merged: any[] = [];
+      const seen = new Set<string>();
+      for (const row of [...(entries || []), ...(byTimestamp || [])]) {
+        // Drop entries that are explicitly tied to a different event.
+        if (row?.event_id && row.event_id !== eventId) continue;
+        const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        merged.push(row);
+      }
+      entries = merged;
+    }
 
     console.log('🔍 DEBUG - Timesheet query:', {
       eventId,
@@ -144,7 +198,7 @@ export async function GET(
       console.log('[TIMESHEET] No entries with event_id, trying timestamp range fallback');
       const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
-        .select('user_id, action, timestamp, started_at, event_id')
+        .select('id, user_id, action, timestamp, started_at, event_id')
         .in('user_id', userIds)
         .gte('timestamp', startIso)
         .lte('timestamp', endIso)
@@ -167,7 +221,7 @@ export async function GET(
         console.log('[TIMESHEET] Trying started_at range fallback');
         const { data: byStarted } = await supabaseAdmin
           .from('time_entries')
-          .select('user_id, action, timestamp, started_at, event_id')
+          .select('id, user_id, action, timestamp, started_at, event_id')
           .in('user_id', userIds)
           .gte('started_at', startIso)
           .lte('started_at', endIso)
