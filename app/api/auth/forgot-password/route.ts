@@ -116,7 +116,8 @@ export async function POST(request: NextRequest) {
     // Step 3: Send password reset email using Supabase
     console.log('[FORGOT PASSWORD] ✅ Sending password reset email...');
 
-    const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/reset-password`;
+    // Dedicated recovery page: user sets a new password without knowing the old one.
+    const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/recover-password`;
 
     // Create a regular (non-admin) client to send the email
     const supabaseClient = createClient(
