@@ -68,7 +68,7 @@ export default function OnboardingPage() {
   const [signatureAudits, setSignatureAudits] = useState<Record<string, SignatureAuditEntry[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending' | 'not_submitted'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
   const [filterForm, setFilterForm] = useState<string>('all');
   const [showOnlyWithProgress, setShowOnlyWithProgress] = useState(false);
@@ -499,7 +499,12 @@ export default function OnboardingPage() {
       if (filterStatus === 'completed') {
         if (!user.onboarding_status?.onboarding_completed) return false;
       } else if (filterStatus === 'pending') {
-        if (user.onboarding_status?.onboarding_completed) return false;
+        // Pending = row exists but not approved yet
+        if (!user.onboarding_status) return false;
+        if (user.onboarding_status.onboarding_completed) return false;
+      } else if (filterStatus === 'not_submitted') {
+        // Not submitted = no vendor_onboarding_status row yet
+        if (user.onboarding_status) return false;
       }
 
       if (filterPassword === 'temporary') {
@@ -558,7 +563,9 @@ export default function OnboardingPage() {
     });
 
   const completedCount = users.filter(u => u.onboarding_status?.onboarding_completed).length;
-  const pendingCount = users.length - completedCount;
+  // Pending = vendor_onboarding_status row exists but onboarding_completed is false
+  const pendingCount = users.filter(u => u.onboarding_status && !u.onboarding_status.onboarding_completed).length;
+  const notSubmittedCount = users.filter(u => !u.onboarding_status).length;
   const temporaryPasswordCount = users.filter(u => u.has_temporary_password).length;
   const backgroundCompletedCount = users.filter(u => u.background_check_completed).length;
   const pdfSubmittedCount = users.filter(u => u.has_submitted_pdf).length;
@@ -625,7 +632,7 @@ export default function OnboardingPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">Total Users</div>
             <div className="mt-2 text-3xl font-semibold text-gray-900">{users.length}</div>
@@ -635,8 +642,12 @@ export default function OnboardingPage() {
             <div className="mt-2 text-3xl font-semibold text-green-600">{completedCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-sm font-medium text-gray-500">Onboarding Pending</div>
+            <div className="text-sm font-medium text-gray-500">Form Submitted</div>
             <div className="mt-2 text-3xl font-semibold text-orange-600">{pendingCount}</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="text-sm font-medium text-gray-500">Not Submitted</div>
+            <div className="mt-2 text-3xl font-semibold text-gray-700">{notSubmittedCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">PDF Submitted</div>
@@ -668,17 +679,20 @@ export default function OnboardingPage() {
               <label htmlFor="filterStatus" className="block text-sm font-medium text-gray-700 mb-1">
                 Onboarding Status
               </label>
-              <select
-                id="filterStatus"
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value as 'all' | 'completed' | 'pending')}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="completed">Completed</option>
-                <option value="pending">Pending</option>
-              </select>
-            </div>
+                <select
+                  id="filterStatus"
+                  value={filterStatus}
+                  onChange={(e) =>
+                    setFilterStatus(e.target.value as 'all' | 'completed' | 'pending' | 'not_submitted')
+                  }
+                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="completed">Completed</option>
+                  <option value="pending">Form Submitted</option>
+                  <option value="not_submitted">Not Submitted</option>
+                </select>
+              </div>
             <div>
               <label htmlFor="filterPassword" className="block text-sm font-medium text-gray-700 mb-1">
                 Password Status
@@ -858,9 +872,13 @@ export default function OnboardingPage() {
                               </div>
                             )}
                           </div>
-                        ) : (
+                        ) : user.onboarding_status ? (
                           <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-orange-100 text-orange-800">
-                            Pending
+                            Form Submitted
+                          </span>
+                        ) : (
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                            Not Submitted
                           </span>
                         )}
                       </td>

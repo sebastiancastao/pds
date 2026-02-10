@@ -76,6 +76,7 @@ export async function GET(req: NextRequest) {
           user_id,
           first_name,
           last_name,
+          state,
           phone,
           created_at,
           onboarding_completed_at,
@@ -331,8 +332,37 @@ export async function GET(req: NextRequest) {
       const completedForms = completedFormNamesSet ? Array.from(completedFormNamesSet) : [];
 
       // Get state-specific total forms count
-      const detectedState = userStateCode.get(profile.user_id) || 'ca';
+      const profileState = (profile?.state || '').toString().trim().toLowerCase();
+      const detectedStateRaw = userStateCode.get(profile.user_id) || profileState || 'ca';
+      const detectedState =
+        detectedStateRaw === 'xx' || detectedStateRaw.length !== 2 ? 'ca' : detectedStateRaw;
       const totalFormsForUser = getTotalFormsForState(detectedState);
+
+      // Some legacy submissions may not have per-form progress rows. If the user has a
+      // vendor_onboarding_status record, treat progress as fully submitted so the UI
+      // doesn't show "Not started" for already-submitted onboarding.
+      let effectiveLatestFormProgress = latestFormProgress;
+      let effectiveFormsCompleted = formsCompleted;
+      if (!effectiveLatestFormProgress && onboardingStatus) {
+        const stateFormList = getStateFormList(detectedState);
+        const lastForm = stateFormList[stateFormList.length - 1];
+        const updatedAt =
+          pdfSubmittedAt ||
+          onboardingStatus?.updated_at ||
+          onboardingStatus?.completed_date ||
+          profile?.onboarding_completed_at ||
+          profile?.created_at ||
+          new Date().toISOString();
+
+        effectiveLatestFormProgress = {
+          form_name: `${detectedState}-${lastForm?.id || 'submitted'}`,
+          updated_at: updatedAt,
+          position: totalFormsForUser,
+          display_name: lastForm?.display || 'Form Submitted',
+          state_code: detectedState,
+        };
+        effectiveFormsCompleted = totalFormsForUser;
+      }
 
       return {
         id: profile.id,
@@ -357,8 +387,8 @@ export async function GET(req: NextRequest) {
         has_submitted_pdf: hasSubmittedPdf,
         pdf_submitted_at: pdfSubmittedAt,
         pdf_latest_update: pdfSubmittedAt,
-        latest_form_progress: latestFormProgress,
-        forms_completed: formsCompleted,
+        latest_form_progress: effectiveLatestFormProgress,
+        forms_completed: effectiveFormsCompleted,
         total_forms: totalFormsForUser,
         completed_forms: completedForms,
       };
