@@ -68,7 +68,7 @@ export default function OnboardingPage() {
   const [signatureAudits, setSignatureAudits] = useState<Record<string, SignatureAuditEntry[]>>({});
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'completed' | 'pending' | 'not_submitted'>('all');
   const [filterPassword, setFilterPassword] = useState<'all' | 'temporary' | 'permanent'>('all');
   const [filterForm, setFilterForm] = useState<string>('all');
   const [showOnlyWithProgress, setShowOnlyWithProgress] = useState(false);
@@ -206,18 +206,18 @@ export default function OnboardingPage() {
 
   const downloadFromUrl = (url: string, filename: string) => {
     try {
-      const a = document.createElement('a');
-      a.style.display = 'none';
-      a.href = url;
-      a.download = filename;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
+      const anchor = document.createElement('a');
+      anchor.style.display = 'none';
+      anchor.href = url;
+      anchor.download = filename;
+      anchor.rel = 'noopener';
+      document.body.appendChild(anchor);
 
       requestAnimationFrame(() => {
-        a.click();
+        anchor.click();
         setTimeout(() => {
-          if (a.parentNode) {
-            document.body.removeChild(a);
+          if (anchor.parentNode) {
+            document.body.removeChild(anchor);
           }
           window.URL.revokeObjectURL(url);
         }, 100);
@@ -230,78 +230,88 @@ export default function OnboardingPage() {
 
   const downloadBlob = (blob: Blob, filename: string) => {
     try {
-      // Handle IE/Edge legacy
       const nav: any = typeof window !== 'undefined' ? window.navigator : null;
       if (nav?.msSaveOrOpenBlob) {
         nav.msSaveOrOpenBlob(blob, filename);
         return;
       }
 
-      // Create object URL and download
       const url = window.URL.createObjectURL(blob);
       downloadFromUrl(url, filename);
     } catch (error) {
-      console.error('Error downloading file:', error);
+      console.error('Error downloading blob:', error);
       alert(`Failed to download file: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
-const sanitizeFilename = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
 
-const ensurePdfExtension = (value: string) => {
-  const sanitized = sanitizeFilename(value);
-  return sanitized.toLowerCase().endsWith('.pdf') ? sanitized : `${sanitized}.pdf`;
-};
+  const sanitizeFilename = (value: string) => value.replace(/[\r\n]+/g, ' ').trim();
 
-const buildOnboardingFilename = (userName: string) => {
-  const normalized = userName.replace(/\s+/g, '_').trim();
-  return ensurePdfExtension(`${normalized || 'onboarding'}_Onboarding_Documents`);
-};
-
-const extractFilenameFromContentDisposition = (header?: string | null) => {
-  if (!header) return null;
-  const segments = header.split(';').map((segment) => segment.trim()).filter(Boolean);
-  const parseValue = (segment: string) => {
-    const index = segment.indexOf('=');
-    if (index === -1) return '';
-    return segment.substring(index + 1).trim();
+  const ensurePdfExtension = (value: string) => {
+    const sanitized = sanitizeFilename(value);
+    return sanitized.toLowerCase().endsWith('.pdf') ? sanitized : `${sanitized}.pdf`;
   };
 
-  const filenameStarSegment = segments.find(
-    (segment) => segment.toLowerCase().startsWith('filename*=')
-  );
-  if (filenameStarSegment) {
-    let value = parseValue(filenameStarSegment);
-    if (/^UTF-8''/i.test(value)) {
-      value = value.replace(/^UTF-8''/i, '');
+  const buildOnboardingFilename = (userName: string) => {
+    const normalized = userName.replace(/\s+/g, '_').trim();
+    return ensurePdfExtension(`${normalized || 'onboarding'}_Onboarding_Documents`);
+  };
+
+  const extractFilenameFromContentDisposition = (header?: string | null) => {
+    if (!header) {
+      return null;
     }
-    value = value.replace(/^"(.*)"$/, '$1');
+
+    const segments = header
+      .split(';')
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    const parseValue = (segment: string) => {
+      const index = segment.indexOf('=');
+      if (index === -1) {
+        return '';
+      }
+      return segment.substring(index + 1).trim();
+    };
+
+    const filenameStarSegment = segments.find((segment) =>
+      segment.toLowerCase().startsWith('filename*=')
+    );
+    if (filenameStarSegment) {
+      let value = parseValue(filenameStarSegment);
+      if (/^UTF-8''/i.test(value)) {
+        value = value.replace(/^UTF-8''/i, '');
+      }
+      value = value.replace(/^"(.*)"$/, '$1');
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        // ignore decoding errors
+      }
+      return value ? sanitizeFilename(value) : null;
+    }
+
+    const filenameSegment = segments.find((segment) =>
+      segment.toLowerCase().startsWith('filename=')
+    );
+    if (filenameSegment) {
+      let value = parseValue(filenameSegment);
+      value = value.replace(/^"(.*)"$/, '$1');
+      return value ? sanitizeFilename(value) : null;
+    }
+
+    return null;
+  };
+
+  const handleExportToExcel = async () => {
     try {
-      value = decodeURIComponent(value);
-    } catch {
-      /* ignore */
-    }
-    return value ? sanitizeFilename(value) : null;
-  }
-
-  const filenameSegment = segments.find((segment) => segment.toLowerCase().startsWith('filename='));
-  if (filenameSegment) {
-    let value = parseValue(filenameSegment);
-    value = value.replace(/^"(.*)"$/, '$1');
-    return value ? sanitizeFilename(value) : null;
-  }
-
-  return null;
-};
-
-const handleExportToExcel = async () => {
-  try {
       const { data: { session } } = await supabase.auth.getSession();
       const response = await fetch('/api/onboarding/export', {
         method: 'GET',
         headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
-        }
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
       });
 
       if (!response.ok) {
@@ -319,35 +329,40 @@ const handleExportToExcel = async () => {
   };
 
   const handleDownloadPDF = async (userId: string, userName: string) => {
-    // Prevent multiple simultaneous downloads
+    if (!userId) {
+      alert('Unable to determine the user account right now. Please refresh and try again.');
+      return;
+    }
+
     if (downloadingPdf) {
-      alert('Another download is in progress. Please wait.');
+      alert('Another download is in progress. Please wait before starting a new one.');
       return;
     }
 
     setDownloadingPdf(userId);
 
+    const fallbackName = (userName || 'onboarding_user').trim();
+    const fallbackFilename = buildOnboardingFilename(fallbackName);
+
     try {
       console.log('[PDF Download] Starting download for user:', userId);
-      const { data: { session } } = await supabase.auth.getSession();
 
-      // Create AbortController with a 5-minute timeout to match server maxDuration
+      const { data: { session } } = await supabase.auth.getSession();
       const controller = new AbortController();
       const timeoutId = setTimeout(() => {
         console.log('[PDF Download] Request timed out after 5 minutes');
         controller.abort();
       }, 300000); // 5 minutes
 
-      console.log('[PDF Download] Fetching PDF from API...');
       const startTime = Date.now();
       const elapsedSeconds = () => ((Date.now() - startTime) / 1000).toFixed(2);
 
       const response = await fetch(`/api/pdf-form-progress/user/${userId}?signatureSource=forms_signature`, {
         headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
         signal: controller.signal,
-        cache: 'no-store'
+        cache: 'no-store',
       });
 
       clearTimeout(timeoutId);
@@ -355,75 +370,88 @@ const handleExportToExcel = async () => {
       console.log(`[PDF Download] Response received in ${fetchTime}s, status:`, response.status);
 
       if (!response.ok) {
-        const errorText = await response.text();
-        let errorMessage = 'Failed to download PDF';
+        const text = await response.text();
+        let message = 'Failed to download onboarding documents';
         try {
-          const errorData = JSON.parse(errorText);
-          errorMessage = errorData.error || errorMessage;
+          const parsed = JSON.parse(text);
+          message = parsed.error || message;
         } catch {
-          errorMessage = errorText || errorMessage;
+          if (text) {
+            message = text;
+          }
         }
-        throw new Error(errorMessage);
+        throw new Error(message);
       }
 
-      // Get the merged PDF data
       console.log('[PDF Download] Reading response data...');
       console.log('[PDF Download] Content-Type:', response.headers.get('Content-Type'));
       const contentLength = response.headers.get('Content-Length');
-      console.log('[PDF Download] Content-Length:', contentLength, contentLength ? `(${(parseInt(contentLength) / 1024 / 1024).toFixed(2)} MB)` : '');
+      console.log(
+        '[PDF Download] Content-Length:',
+        contentLength,
+        contentLength ? `(${(parseInt(contentLength) / 1024 / 1024).toFixed(2)} MB)` : ''
+      );
 
-      let blob;
+      let blob: Blob;
       try {
-        // Try using arrayBuffer which can be more memory-efficient for large files
         console.log('[PDF Download] Reading as ArrayBuffer...');
         const arrayBuffer = await response.arrayBuffer();
-        console.log('[PDF Download] ArrayBuffer size:', arrayBuffer.byteLength, 'bytes', `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`);
-
-        const auditHeaderValue =
-          response.headers.get(SIGNATURE_AUDIT_HEADER) ||
-          response.headers.get(SIGNATURE_AUDIT_HEADER.toUpperCase());
-        if (auditHeaderValue) {
-          try {
-            const decodedAudit = atob(auditHeaderValue);
-            const parsedAudit = JSON.parse(decodedAudit) as SignatureAuditEntry[];
-            if (Array.isArray(parsedAudit)) {
-              setSignatureAudits((prev) => ({
-                ...prev,
-                [userId]: parsedAudit,
-              }));
-            }
-          } catch (auditError) {
-            console.error('[PDF Download] Failed to decode signature audit header:', auditError);
-          }
-        }
-
-        // Convert ArrayBuffer to Blob
+        console.log(
+          '[PDF Download] ArrayBuffer size:',
+          arrayBuffer.byteLength,
+          'bytes',
+          `(${(arrayBuffer.byteLength / 1024 / 1024).toFixed(2)} MB)`
+        );
         blob = new Blob([arrayBuffer], { type: 'application/pdf' });
       } catch (dataError) {
         console.error('[PDF Download] Error reading response data:', dataError);
-        throw new Error(`Failed to read PDF data: ${dataError instanceof Error ? dataError.message : 'Unknown error'}. The PDF might be too large for your browser to handle.`);
+        throw new Error(
+          `Failed to read PDF data: ${dataError instanceof Error ? dataError.message : 'Unknown error'}. The PDF might be too large for your browser to handle.`
+        );
       }
 
-      // Validate blob
       if (!blob || blob.size === 0) {
         throw new Error('Received empty PDF file');
       }
 
-      console.log('[PDF Download] PDF blob created, size:', blob.size, 'bytes', `(${(blob.size / 1024 / 1024).toFixed(2)} MB)`);
+      console.log(
+        '[PDF Download] PDF blob created, size:',
+        blob.size,
+        'bytes',
+        `(${(blob.size / 1024 / 1024).toFixed(2)} MB)`
+      );
+
+      const auditHeaderValue =
+        response.headers.get(SIGNATURE_AUDIT_HEADER) ||
+        response.headers.get(SIGNATURE_AUDIT_HEADER.toUpperCase());
+      if (auditHeaderValue) {
+        try {
+          const decodedAudit = atob(auditHeaderValue);
+          const parsedAudit = JSON.parse(decodedAudit) as SignatureAuditEntry[];
+          if (Array.isArray(parsedAudit)) {
+            console.log('[PDF Download] Signature audit entries parsed:', parsedAudit.length);
+            setSignatureAudits((prev) => ({
+              ...prev,
+              [userId]: parsedAudit,
+            }));
+          }
+        } catch (auditError) {
+          console.error('[PDF Download] Failed to decode signature audit header:', auditError);
+        }
+      }
 
       const contentDisposition =
-        response.headers.get('Content-Disposition') || response.headers.get('content-disposition');
-      const fallbackFilename = buildOnboardingFilename(userName);
+        response.headers.get('Content-Disposition') ??
+        response.headers.get('content-disposition');
       const headerFilename = extractFilenameFromContentDisposition(contentDisposition);
       let filename = ensurePdfExtension(headerFilename || fallbackFilename);
 
       if (contentDisposition) {
         console.log('[PDF Download] Content-Disposition:', contentDisposition);
 
-        // Try to extract filename from Content-Disposition header
-        // Handles both quoted and unquoted filenames
-        const filenameMatch = contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) ||
-                              contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
+        const filenameMatch =
+          contentDisposition.match(/filename\s*=\s*"([^"]+)"/i) ||
+          contentDisposition.match(/filename\s*=\s*([^;\s]+)/i);
 
         if (filenameMatch && filenameMatch[1]) {
           filename = filenameMatch[1].trim();
@@ -431,32 +459,29 @@ const handleExportToExcel = async () => {
         }
       }
 
-      // Ensure the filename has .pdf extension
       if (!filename.toLowerCase().endsWith('.pdf')) {
         console.warn('[PDF Download] Filename missing .pdf extension, adding it:', filename);
-        filename = filename + '.pdf';
+        filename = `${filename}.pdf`;
       }
 
-      // Download the merged PDF
       downloadBlob(blob, filename);
       console.log(`[PDF_DOWNLOAD] Download completed in ${elapsedSeconds()}s`);
 
-      setUsers(prev =>
-        prev.map(u =>
+      setUsers((prev) =>
+        prev.map((u) =>
           u.user_id === userId
             ? { ...u, pdf_downloaded: true, pdf_downloaded_at: new Date().toISOString() }
             : u
         )
       );
 
-      alert(`Successfully downloaded onboarding documents for ${userName}`);
+      alert('Your onboarding documents are downloading. This may take a few moments for large submissions.');
     } catch (err: any) {
       console.error('Error downloading PDF:', err);
-
-      if (err.name === 'AbortError') {
-        alert(`Download timed out after 5 minutes. The PDF may be too large or the server is taking too long to process it. Please try again or contact support.`);
+      if (err?.name === 'AbortError') {
+        alert('Download timed out after 5 minutes. Please try again or contact support if the issue persists.');
       } else {
-        alert(`Failed to download PDF: ${err.message}`);
+        alert(`Failed to download onboarding documents: ${err?.message || 'Unknown error'}`);
       }
     } finally {
       setDownloadingPdf(null);
@@ -474,7 +499,12 @@ const handleExportToExcel = async () => {
       if (filterStatus === 'completed') {
         if (!user.onboarding_status?.onboarding_completed) return false;
       } else if (filterStatus === 'pending') {
-        if (user.onboarding_status?.onboarding_completed) return false;
+        // Pending = row exists but not approved yet
+        if (!user.onboarding_status) return false;
+        if (user.onboarding_status.onboarding_completed) return false;
+      } else if (filterStatus === 'not_submitted') {
+        // Not submitted = no vendor_onboarding_status row yet
+        if (user.onboarding_status) return false;
       }
 
       if (filterPassword === 'temporary') {
@@ -533,7 +563,9 @@ const handleExportToExcel = async () => {
     });
 
   const completedCount = users.filter(u => u.onboarding_status?.onboarding_completed).length;
-  const pendingCount = users.length - completedCount;
+  // Pending = vendor_onboarding_status row exists but onboarding_completed is false
+  const pendingCount = users.filter(u => u.onboarding_status && !u.onboarding_status.onboarding_completed).length;
+  const notSubmittedCount = users.filter(u => !u.onboarding_status).length;
   const temporaryPasswordCount = users.filter(u => u.has_temporary_password).length;
   const backgroundCompletedCount = users.filter(u => u.background_check_completed).length;
   const pdfSubmittedCount = users.filter(u => u.has_submitted_pdf).length;
@@ -547,8 +579,10 @@ const handleExportToExcel = async () => {
     )
   ).sort();
 
+  const normalizedMyRole = (myRole?.trim().toLowerCase() || null);
+
   // Allow editing only for HR or Exec
-  const canEditOnboarding = (myRole?.trim().toLowerCase() === 'hr') || (myRole?.trim().toLowerCase() === 'exec');
+  const canEditOnboarding = normalizedMyRole === 'hr' || normalizedMyRole === 'exec';
 
   if (loading) {
     return (
@@ -598,7 +632,7 @@ const handleExportToExcel = async () => {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">Total Users</div>
             <div className="mt-2 text-3xl font-semibold text-gray-900">{users.length}</div>
@@ -608,8 +642,12 @@ const handleExportToExcel = async () => {
             <div className="mt-2 text-3xl font-semibold text-green-600">{completedCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
-            <div className="text-sm font-medium text-gray-500">Onboarding Pending</div>
+            <div className="text-sm font-medium text-gray-500">Form Submitted</div>
             <div className="mt-2 text-3xl font-semibold text-orange-600">{pendingCount}</div>
+          </div>
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="text-sm font-medium text-gray-500">Not Submitted</div>
+            <div className="mt-2 text-3xl font-semibold text-gray-700">{notSubmittedCount}</div>
           </div>
           <div className="bg-white rounded-lg shadow p-6">
             <div className="text-sm font-medium text-gray-500">PDF Submitted</div>
@@ -641,17 +679,20 @@ const handleExportToExcel = async () => {
               <label htmlFor="filterStatus" className="block text-sm font-medium text-gray-700 mb-1">
                 Onboarding Status
               </label>
-              <select
-                id="filterStatus"
-                value={filterStatus}
-                onChange={(e) => setFilterStatus(e.target.value as 'all' | 'completed' | 'pending')}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="all">All Statuses</option>
-                <option value="completed">Completed</option>
-                <option value="pending">Pending</option>
-              </select>
-            </div>
+                <select
+                  id="filterStatus"
+                  value={filterStatus}
+                  onChange={(e) =>
+                    setFilterStatus(e.target.value as 'all' | 'completed' | 'pending' | 'not_submitted')
+                  }
+                  className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="completed">Completed</option>
+                  <option value="pending">Form Submitted</option>
+                  <option value="not_submitted">Not Submitted</option>
+                </select>
+              </div>
             <div>
               <label htmlFor="filterPassword" className="block text-sm font-medium text-gray-700 mb-1">
                 Password Status
@@ -831,9 +872,13 @@ const handleExportToExcel = async () => {
                               </div>
                             )}
                           </div>
-                        ) : (
+                        ) : user.onboarding_status ? (
                           <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-orange-100 text-orange-800">
-                            Pending
+                            Form Submitted
+                          </span>
+                        ) : (
+                          <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-gray-100 text-gray-800">
+                            Not Submitted
                           </span>
                         )}
                       </td>
@@ -898,6 +943,7 @@ const handleExportToExcel = async () => {
                                 : 'Download Docs'}
                             </button>
                           )}
+
                         </div>
                         {updating === user.id && (
                           <div className="mt-1 text-xs text-gray-500">Updating...</div>
