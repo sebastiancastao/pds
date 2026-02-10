@@ -5,7 +5,8 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const allowedRoles = new Set(['exec', 'admin']);
+// Allow HR to upload filled onboarding PDFs for a specific user.
+const allowedRoles = new Set(['exec', 'admin', 'hr']);
 
 if (!supabaseUrl || !supabaseServiceKey) {
   console.error('[PDF-UPLOAD] Missing Supabase configuration');
@@ -35,8 +36,10 @@ export async function POST(request: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    if (roleError || !userRecord || !allowedRoles.has(userRecord.role)) {
-      return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
+    const normalizedRole = (userRecord?.role || '').toString().trim().toLowerCase();
+
+    if (roleError || !userRecord || !allowedRoles.has(normalizedRole)) {
+      return NextResponse.json({ error: 'Forbidden: HR/Exec/Admin access required' }, { status: 403 });
     }
 
     const payload = await request.json();

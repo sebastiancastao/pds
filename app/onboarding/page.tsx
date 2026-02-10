@@ -572,8 +572,10 @@ export default function OnboardingPage() {
     )
   ).sort();
 
+  const normalizedMyRole = (myRole?.trim().toLowerCase() || null);
+
   // Allow editing only for HR or Exec
-  const canEditOnboarding = (myRole?.trim().toLowerCase() === 'hr') || (myRole?.trim().toLowerCase() === 'exec');
+  const canEditOnboarding = normalizedMyRole === 'hr' || normalizedMyRole === 'exec';
 
   if (loading) {
     return (
@@ -923,6 +925,7 @@ export default function OnboardingPage() {
                                 : 'Download Docs'}
                             </button>
                           )}
+
                         </div>
                         {updating === user.id && (
                           <div className="mt-1 text-xs text-gray-500">Updating...</div>

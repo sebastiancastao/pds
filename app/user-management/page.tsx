@@ -446,6 +446,19 @@ export default function UserManagementPage() {
             Email Sender
           </Link>
           <Link
+            href="/admin/check-in-monitor"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#0ea5e9',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Check-In Monitor
+          </Link>
+          <Link
             href="/global-calendar"
             style={{
               padding: '0.5rem 1rem',

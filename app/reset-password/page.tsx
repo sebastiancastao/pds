@@ -10,6 +10,7 @@ type ResetState = 'loading' | 'success' | 'error' | 'missing-token';
 type TokenPayload = {
   access_token?: string;
   refresh_token?: string;
+  code?: string;
 };
 
 const parseTokens = (input: string): TokenPayload => {
@@ -17,6 +18,7 @@ const parseTokens = (input: string): TokenPayload => {
   return {
     access_token: params.get('access_token') || undefined,
     refresh_token: params.get('refresh_token') || undefined,
+    code: params.get('code') || undefined,
   };
 };
 
@@ -42,7 +44,7 @@ export default function ResetPasswordPage() {
   }, []);
 
   const processLink = useCallback(async () => {
-    if (!tokens.access_token) {
+    if (!tokens.access_token && !tokens.code) {
       return;
     }
 
@@ -50,17 +52,20 @@ export default function ResetPasswordPage() {
     setErrorMessage('');
 
     try {
-        const { error } = await supabase.auth.setSession({
-          access_token: tokens.access_token!,
-          refresh_token: tokens.refresh_token ?? tokens.access_token!,
-        });
+      // Support both PKCE (`code`) and implicit (`access_token`) recovery links.
+      const { error } = tokens.code
+        ? await supabase.auth.exchangeCodeForSession(tokens.code)
+        : await supabase.auth.setSession({
+            access_token: tokens.access_token!,
+            refresh_token: tokens.refresh_token ?? tokens.access_token!,
+          });
 
       if (error) {
         throw error;
       }
 
       setStatus('success');
-      setTimeout(() => router.replace('/password'), 1800);
+      setTimeout(() => router.replace('/recover-password'), 1800);
     } catch (err: any) {
       console.error('[RESET-PASSWORD] Session setup failed:', err);
       setErrorMessage(err?.message || 'Unable to process the password reset link.');
@@ -73,13 +78,13 @@ export default function ResetPasswordPage() {
       return;
     }
 
-    if (!tokens.access_token) {
+    if (!tokens.access_token && !tokens.code) {
       setStatus('missing-token');
       return;
     }
 
     processLink();
-  }, [tokensReady, tokens.access_token, processLink]);
+  }, [tokensReady, tokens.access_token, tokens.code, processLink]);
 
   const renderContent = () => {
     switch (status) {
@@ -122,7 +127,7 @@ export default function ResetPasswordPage() {
             </p>
             <p className="text-xs text-gray-400">
               If you are not redirected automatically,{' '}
-              <Link href="/password" className="text-primary-600 hover:text-primary-700 font-semibold">
+              <Link href="/recover-password" className="text-primary-600 hover:text-primary-700 font-semibold">
                 click here
               </Link>
               .
