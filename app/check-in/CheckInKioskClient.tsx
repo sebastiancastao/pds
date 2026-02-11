@@ -120,6 +120,9 @@ export default function CheckInKioskPage() {
   const [signature, setSignature] = useState("");
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [attestationSummary, setAttestationSummary] = useState<{ clockInAt: string; mealMs: number } | null>(null);
+  const [attestationSummaryLoading, setAttestationSummaryLoading] = useState(false);
+  const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
 
   // Online / offline
   const [isOnline, setIsOnline] = useState(true);
@@ -131,23 +134,67 @@ export default function CheckInKioskPage() {
   const inactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const INACTIVITY_TIMEOUT = 30_000;
 
-  // Recent activity log (shows last few actions on the kiosk)
-  const [recentActions, setRecentActions] = useState<
-    Array<{ name: string; action: string; time: string; offline?: boolean }>
-  >([]);
-
-  const [checkedInUsers, setCheckedInUsers] = useState<
-    Array<{ user_id: string; name: string; firstClockInAt: string; isClockedIn: boolean; lastClockAt?: string | null }>
-  >([]);
-
   const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string } | null>(
     null
   );
+
+  // Briefly show the current user's event check-in after they clock in.
+  const [eventCheckInFlash, setEventCheckInFlash] = useState<{
+    name: string;
+    time: string;
+    offline?: boolean;
+    eventName: string | null;
+    eventEndIso?: string;
+  } | null>(null);
+  const eventCheckInFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── Auth & session keep-alive ──────────────────────────────────
   useEffect(() => {
     checkAuth();
   }, []);
+
+  // Attestation clock (for the displayed "Clock out time")
+  useEffect(() => {
+    if (!showAttestation || !worker) return;
+    setAttestationNowMs(Date.now());
+    const t = setInterval(() => setAttestationNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [showAttestation, worker]);
+
+  // Load shift summary when attestation opens (meal time, etc.)
+  useEffect(() => {
+    if (!showAttestation || !worker) return;
+    if (!isOnline) {
+      setAttestationSummary(null);
+      setAttestationSummaryLoading(false);
+      return;
+    }
+
+    const run = async () => {
+      try {
+        setAttestationSummaryLoading(true);
+        const token = accessTokenRef.current;
+        if (!token) return;
+        const res = await fetch(`/api/check-in/shift-summary?workerId=${encodeURIComponent(worker.workerId)}`, {
+          method: "GET",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        if (data?.active && typeof data?.clockInAt === "string" && typeof data?.mealMs === "number") {
+          setAttestationSummary({ clockInAt: data.clockInAt, mealMs: data.mealMs });
+        } else {
+          setAttestationSummary(null);
+        }
+      } catch (e) {
+        console.error("Failed to load shift summary:", e);
+      } finally {
+        setAttestationSummaryLoading(false);
+      }
+    };
+
+    run();
+  }, [isOnline, showAttestation, worker]);
 
   // Refresh Supabase session every 20 minutes to keep it alive as long as possible
   useEffect(() => {
@@ -222,31 +269,8 @@ export default function CheckInKioskPage() {
         setActiveEvent(null);
       }
 
-      const entries = Array.isArray(data?.entries) ? data.entries : [];
-      const mapped = entries
-        .slice(0, 8)
-        .map((e: any) => ({
-          name: String(e?.name || "User"),
-          action: String(e?.action || ""),
-          time: e?.timestamp ? new Date(String(e.timestamp)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "",
-          offline: Boolean(e?.offline),
-        }))
-        .filter((e: any) => Boolean(e.time));
-
-      setRecentActions(mapped);
-
-      const checked = Array.isArray(data?.checkedInUsers) ? data.checkedInUsers : [];
-      setCheckedInUsers(
-        checked.map((u: any) => ({
-          user_id: String(u?.user_id || ""),
-          name: String(u?.name || "User"),
-          firstClockInAt: String(u?.firstClockInAt || ""),
-          isClockedIn: Boolean(u?.isClockedIn),
-          lastClockAt: u?.lastClockAt ? String(u.lastClockAt) : null,
-        })).filter((u: any) => Boolean(u.user_id) && Boolean(u.firstClockInAt))
-      );
     } catch (err) {
-      console.error("Failed to fetch recent activity:", err);
+      console.error("Failed to fetch kiosk event status:", err);
     }
   }, [eventIdFromUrl, isAuthed, isOnline]);
 
@@ -464,10 +488,30 @@ export default function CheckInKioskPage() {
     successTimeoutRef.current = setTimeout(() => setSuccess(""), 3000);
   };
 
-  const addRecentAction = (name: string, action: string, offline?: boolean) => {
+  const formatDuration = (ms: number) => {
+    if (!Number.isFinite(ms) || ms < 0) return "--";
+    const totalMinutes = Math.floor(ms / 60_000);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  };
+
+  const showEventCheckInFlashMessage = (name: string, offline?: boolean) => {
+    if (!activeEvent && !eventIdFromUrl) return;
+
     const now = new Date();
     const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    setRecentActions((prev) => [{ name, action, time, offline }, ...prev].slice(0, 8));
+
+    setEventCheckInFlash({
+      name,
+      time,
+      offline,
+      eventName: activeEvent?.name ?? null,
+      eventEndIso: activeEvent?.endIso,
+    });
+
+    if (eventCheckInFlashTimeoutRef.current) clearTimeout(eventCheckInFlashTimeoutRef.current);
+    eventCheckInFlashTimeoutRef.current = setTimeout(() => setEventCheckInFlash(null), 3500);
   };
 
   const resetToCodeEntry = () => {
@@ -479,6 +523,10 @@ export default function CheckInKioskPage() {
     setSignature("");
     setIsSubmitting(false);
     setIsActioning(false);
+
+    if (eventCheckInFlashTimeoutRef.current) clearTimeout(eventCheckInFlashTimeoutRef.current);
+    setEventCheckInFlash(null);
+
     setTimeout(() => inputRefs.current[0]?.focus(), 100);
   };
 
@@ -585,26 +633,26 @@ export default function CheckInKioskPage() {
       meal_end: "Meal Ended",
     };
 
-    if (!isOnline) {
-      // Queue in IndexedDB
-      const queuedItem: QueuedAction = {
-        id: generateId(),
-        code: worker.code,
+      if (!isOnline) {
+        // Queue in IndexedDB
+        const queuedItem: QueuedAction = {
+          id: generateId(),
+          code: worker.code,
         action,
         timestamp: new Date().toISOString(),
         userName: worker.name,
         signature: sig,
         eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
-      try {
-        await addToQueue(queuedItem);
-        await refreshQueueCount();
-        addRecentAction(worker.name, actionLabels[action], true);
-        showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-        setTimeout(resetToCodeEntry, 1500);
-      } catch (err) {
-        setError("Failed to save offline. Please try again.");
-      }
+        try {
+          await addToQueue(queuedItem);
+          await refreshQueueCount();
+          if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
+          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+          setTimeout(resetToCodeEntry, 1500);
+        } catch (err) {
+          setError("Failed to save offline. Please try again.");
+        }
       setIsActioning(false);
       return;
     }
@@ -643,25 +691,25 @@ export default function CheckInKioskPage() {
             userName: worker.name,
             signature: sig,
             eventId: activeEvent?.id || (eventIdFromUrl || undefined),
-          };
-          await addToQueue(queuedItem);
-          await refreshQueueCount();
-          addRecentAction(worker.name, actionLabels[action], true);
-          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-          setTimeout(resetToCodeEntry, 1500);
-          setIsActioning(false);
-          return;
-        }
+            };
+            await addToQueue(queuedItem);
+            await refreshQueueCount();
+            if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
+            showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+            setTimeout(resetToCodeEntry, 1500);
+            setIsActioning(false);
+            return;
+          }
         setError(data.error || "Action failed");
         setIsActioning(false);
-        return;
-      }
+          return;
+        }
 
-      addRecentAction(worker.name, actionLabels[action]);
-      showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
-      fetchRecentActivity();
-      setTimeout(resetToCodeEntry, 1500);
-    } catch {
+        if (action === "clock_in") showEventCheckInFlashMessage(worker.name);
+        showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
+        fetchRecentActivity();
+        setTimeout(resetToCodeEntry, 1500);
+      } catch {
       // Network error - queue offline
       const queuedItem: QueuedAction = {
         id: generateId(),
@@ -672,15 +720,15 @@ export default function CheckInKioskPage() {
         signature: sig,
         eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
-      try {
-        await addToQueue(queuedItem);
-        await refreshQueueCount();
-        addRecentAction(worker.name, actionLabels[action], true);
-        showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-        setTimeout(resetToCodeEntry, 1500);
-      } catch {
-        setError("Failed to save. Please try again.");
-      }
+        try {
+          await addToQueue(queuedItem);
+          await refreshQueueCount();
+          if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
+          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+          setTimeout(resetToCodeEntry, 1500);
+        } catch {
+          setError("Failed to save. Please try again.");
+        }
     } finally {
       setIsActioning(false);
     }
@@ -699,10 +747,14 @@ export default function CheckInKioskPage() {
     }
     performAction("clock_out", signature);
     setShowAttestation(false);
+    setAttestationSummary(null);
+    setAttestationSummaryLoading(false);
     setSignature("");
   };
   const handleCancelAttestation = () => {
     setShowAttestation(false);
+    setAttestationSummary(null);
+    setAttestationSummaryLoading(false);
     setSignature("");
     clearSignature();
   };
@@ -753,6 +805,45 @@ export default function CheckInKioskPage() {
                 <li>I have taken all required meal and rest breaks</li>
                 <li>I am clocking out at the correct time</li>
               </ul>
+            </div>
+
+            <div className="bg-white/70 border border-gray-200 rounded-xl p-4 mb-6">
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Check In</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {worker.clockedInAt ? new Date(worker.clockedInAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Check Out</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {new Date(attestationNowMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Meal Time</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {attestationSummaryLoading
+                      ? "Loading..."
+                      : attestationSummary
+                        ? formatDuration(attestationSummary.mealMs)
+                        : "--"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Total Time</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {(() => {
+                      const startMs = worker.clockedInAt ? Date.parse(worker.clockedInAt) : NaN;
+                      if (Number.isNaN(startMs)) return "--";
+                      if (!attestationSummary) return "--";
+                      const netMs = Math.max(0, attestationNowMs - startMs - attestationSummary.mealMs);
+                      return formatDuration(netMs);
+                    })()}
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="mb-4">
@@ -1045,90 +1136,47 @@ export default function CheckInKioskPage() {
             )}
           </div>
 
-          {/* Checked-in users for the active event (persists across refresh until event ends) */}
-          {activeEvent && (
-            <div className="mt-4 bg-white/80 backdrop-blur-sm rounded-xl border border-gray-200 p-4">
-              <div className="flex items-start justify-between gap-3 mb-3">
-                <div className="min-w-0">
-                  <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Event Check-Ins</h3>
-                  <div className="mt-1 text-sm font-semibold text-gray-900 truncate">
-                    {activeEvent.name || "Active Event"}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[11px] text-gray-500">Ends</div>
-                  <div className="text-xs font-semibold text-gray-700">
-                    {new Date(activeEvent.endIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                  </div>
-                </div>
-              </div>
-
-              {checkedInUsers.length === 0 ? (
-                <div className="text-sm text-gray-600">No one has checked in yet.</div>
-              ) : (
-                <>
-                  <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
-                    <span>{checkedInUsers.length} checked in</span>
-                    <span>Status</span>
-                  </div>
-                  <div className="space-y-2">
-                    {checkedInUsers.map((u) => {
-                      const firstTime = u.firstClockInAt
-                        ? new Date(u.firstClockInAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                        : "--";
-                      return (
-                        <div key={u.user_id} className="flex items-center justify-between text-sm">
-                          <div className="min-w-0">
-                            <div className="font-medium text-gray-800 truncate">{u.name}</div>
-                            <div className="text-xs text-gray-500">First check-in: {firstTime}</div>
-                          </div>
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-semibold ${
-                              u.isClockedIn
-                                ? "bg-green-100 text-green-800 border border-green-200"
-                                : "bg-slate-100 text-slate-700 border border-slate-200"
-                            }`}
-                          >
-                            {u.isClockedIn ? "In" : "Out"}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* ── Recent activity log ── */}
-          {recentActions.length > 0 && (
-            <div className="mt-4 bg-white/80 backdrop-blur-sm rounded-xl border border-gray-200 p-4">
-              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Recent Activity</h3>
-              <div className="space-y-2">
-                {recentActions.map((entry, i) => (
-                  <div key={i} className="flex items-center justify-between text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium text-gray-800">{entry.name}</span>
-                      <span className="text-gray-500">{entry.action}</span>
-                      {entry.offline && (
-                        <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full">offline</span>
-                      )}
+            {/* Event check-in flash (only the current user, briefly after clock-in) */}
+            {eventCheckInFlash && (
+              <div className="mt-4 bg-white/80 backdrop-blur-sm rounded-xl border border-gray-200 p-4">
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="min-w-0">
+                    <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Event Check-Ins</h3>
+                    <div className="mt-1 text-sm font-semibold text-gray-900 truncate">
+                      {eventCheckInFlash.eventName || "Active Event"}
                     </div>
-                    <span className="text-gray-400 text-xs">{entry.time}</span>
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
+                  {eventCheckInFlash.eventEndIso && (
+                    <div className="text-right">
+                      <div className="text-[11px] text-gray-500">Ends</div>
+                      <div className="text-xs font-semibold text-gray-700">
+                        {new Date(eventCheckInFlash.eventEndIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </div>
+                    </div>
+                  )}
+                </div>
 
-          {/* Offline indicator at the bottom */}
-          {!isOnline && (
-            <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
-              <p className="text-sm text-amber-800 font-medium">
-                You are offline. Actions will be saved locally and synced when connection is restored.
-              </p>
-            </div>
-          )}
+                <div className="flex items-center justify-between text-sm">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-medium text-gray-800 truncate">{eventCheckInFlash.name}</span>
+                    <span className="text-gray-500">Checked In</span>
+                    {eventCheckInFlash.offline && (
+                      <span className="text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded-full">offline</span>
+                    )}
+                  </div>
+                  <span className="text-gray-400 text-xs">{eventCheckInFlash.time}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Offline indicator at the bottom */}
+            {!isOnline && (
+              <div className="mt-4 bg-amber-50 border border-amber-200 rounded-xl p-4 text-center">
+                <p className="text-sm text-amber-800 font-medium">
+                  You are offline. Actions will be saved locally and synced when connection is restored.
+                </p>
+              </div>
+            )}
         </div>
       </div>
     </div>

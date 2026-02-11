@@ -1,7 +1,7 @@
 // PDS Time Keeping System - Email Utilities
 // Secure email delivery for temporary passwords and notifications via Resend
 
-import { Resend } from 'resend';
+import { Resend, type Attachment } from 'resend';
 
 // Initialize Resend client
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -18,6 +18,7 @@ interface EmailResult {
   success: boolean;
   messageId?: string;
   error?: string;
+  errorName?: string;
 }
 
 /**
@@ -67,6 +68,7 @@ export async function sendTemporaryPasswordEmail(
       console.error('❌ Resend error:', error);
       return {
         success: false,
+        errorName: error.name,
         error: error.message,
       };
     }
@@ -1370,8 +1372,9 @@ export async function sendEmail(data: {
   from?: string;
   cc?: string | string[];
   bcc?: string | string[];
+  attachments?: Attachment[];
 }): Promise<EmailResult> {
-  const { to, subject, html, from, cc, bcc } = data;
+  const { to, subject, html, from, cc, bcc, attachments } = data;
 
   try {
     const { data: resendData, error } = await resend.emails.send({
@@ -1381,6 +1384,7 @@ export async function sendEmail(data: {
       bcc,
       subject,
       html,
+      attachments,
     });
 
     if (error) {

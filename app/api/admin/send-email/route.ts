@@ -7,6 +7,8 @@ import { z } from 'zod';
 import { sendEmail } from '@/lib/email';
 import { isValidEmail } from '@/lib/supabase';
 
+export const runtime = 'nodejs';
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
@@ -23,6 +25,29 @@ const requestSchema = z.object({
   bcc: z.string().optional(),
   confirm: z.boolean().optional(),
 });
+
+const parsedMaxAttachments = Number(process.env.MAX_EMAIL_ATTACHMENTS || 5);
+const MAX_EMAIL_ATTACHMENTS =
+  Number.isFinite(parsedMaxAttachments) && parsedMaxAttachments > 0
+    ? parsedMaxAttachments
+    : 5;
+
+const parsedMaxAttachmentBytes = Number(
+  process.env.MAX_EMAIL_ATTACHMENT_BYTES || 25 * 1024 * 1024
+);
+const MAX_EMAIL_ATTACHMENT_BYTES =
+  Number.isFinite(parsedMaxAttachmentBytes) && parsedMaxAttachmentBytes > 0
+    ? parsedMaxAttachmentBytes
+    : 25 * 1024 * 1024;
+
+const parsedMaxAttachmentFileBytes = Number(
+  process.env.MAX_EMAIL_ATTACHMENT_FILE_BYTES || 10 * 1024 * 1024
+);
+const MAX_EMAIL_ATTACHMENT_FILE_BYTES =
+  Number.isFinite(parsedMaxAttachmentFileBytes) &&
+  parsedMaxAttachmentFileBytes > 0
+    ? parsedMaxAttachmentFileBytes
+    : 10 * 1024 * 1024;
 
 function escapeHtml(input: string): string {
   return input
@@ -50,15 +75,105 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(
         { error: 'RESEND_API_KEY not configured' },
         { status: 500 }
-      );
+        );
     }
 
-    const parsed = requestSchema.safeParse(await req.json());
-    if (!parsed.success) {
-      return NextResponse.json(
-        { error: 'Invalid request', details: parsed.error.flatten() },
-        { status: 400 }
-      );
+    const contentType = (req.headers.get('content-type') || '').toLowerCase();
+
+    let attachments:
+      | { filename: string; content: string; contentType?: string }[]
+      | undefined;
+
+    let parsed: ReturnType<typeof requestSchema.safeParse>;
+
+    if (contentType.includes('multipart/form-data')) {
+      const formData = await req.formData();
+
+      const payload = {
+        audience: String(formData.get('audience') || 'manual'),
+        to: formData.get('to') ? String(formData.get('to')) : undefined,
+        role: formData.get('role') ? String(formData.get('role')) : undefined,
+        subject: String(formData.get('subject') || ''),
+        body: String(formData.get('body') || ''),
+        bodyFormat: String(formData.get('bodyFormat') || 'text'),
+        cc: formData.get('cc') ? String(formData.get('cc')) : undefined,
+        bcc: formData.get('bcc') ? String(formData.get('bcc')) : undefined,
+        confirm:
+          String(formData.get('confirm') || '').toLowerCase() === 'true'
+            ? true
+            : undefined,
+      };
+
+      parsed = requestSchema.safeParse(payload);
+      if (!parsed.success) {
+        return NextResponse.json(
+          { error: 'Invalid request', details: parsed.error.flatten() },
+          { status: 400 }
+        );
+      }
+
+      const files = formData
+        .getAll('attachments')
+        .filter((v): v is File => v instanceof File)
+        .filter((f) => f.size > 0);
+
+      if (files.length > MAX_EMAIL_ATTACHMENTS) {
+        return NextResponse.json(
+          { error: `Too many attachments (max ${MAX_EMAIL_ATTACHMENTS}).` },
+          { status: 400 }
+        );
+      }
+
+      let totalBytes = 0;
+      const parsedAttachments: {
+        filename: string;
+        content: string;
+        contentType?: string;
+      }[] = [];
+
+      for (const file of files) {
+        if (!file.name) continue;
+
+        if (file.size > MAX_EMAIL_ATTACHMENT_FILE_BYTES) {
+          return NextResponse.json(
+            {
+              error: `Attachment "${file.name}" is too large (max ${MAX_EMAIL_ATTACHMENT_FILE_BYTES} bytes).`,
+            },
+            { status: 400 }
+          );
+        }
+
+        totalBytes += file.size;
+        if (totalBytes > MAX_EMAIL_ATTACHMENT_BYTES) {
+          return NextResponse.json(
+            {
+              error: `Total attachment size too large (max ${MAX_EMAIL_ATTACHMENT_BYTES} bytes).`,
+            },
+            { status: 400 }
+          );
+        }
+
+        const ab = await file.arrayBuffer();
+        // Resend expects attachment content to be base64 (string). Passing a Buffer here
+        // would JSON.stringify to a huge `{ type: 'Buffer', data: number[] }` payload,
+        // which is slow and can cause API errors.
+        const base64 = Buffer.from(ab).toString('base64');
+        parsedAttachments.push({
+          filename: file.name,
+          content: base64,
+          contentType: file.type || undefined,
+        });
+      }
+
+      attachments = parsedAttachments.length ? parsedAttachments : undefined;
+    } else {
+      parsed = requestSchema.safeParse(await req.json());
+      if (!parsed.success) {
+        return NextResponse.json(
+          { error: 'Invalid request', details: parsed.error.flatten() },
+          { status: 400 }
+        );
+      }
     }
 
     const { audience, to, role, subject, body, bodyFormat, cc, bcc, confirm } =
@@ -229,6 +344,7 @@ export async function POST(req: NextRequest) {
       from,
       cc: ccList.length ? ccList : undefined,
       bcc: bccList.length ? bccList : undefined,
+      attachments,
     });
 
     try {
@@ -250,6 +366,8 @@ export async function POST(req: NextRequest) {
           bodyFormat,
           ccCount: ccList.length,
           bccCount: bccList.length,
+          attachmentsCount: attachments?.length || 0,
+          attachmentsNames: attachments?.slice(0, 10).map((a) => a.filename),
         },
         success: result.success,
         error_message: result.success ? null : result.error || 'Email send failed',
@@ -260,7 +378,7 @@ export async function POST(req: NextRequest) {
 
     if (!result.success) {
       return NextResponse.json(
-        { error: 'Email sending failed', details: result.error },
+        { error: 'Email sending failed', code: result.errorName, details: result.error },
         { status: 502 }
       );
     }

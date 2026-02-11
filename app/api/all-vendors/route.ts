@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { decrypt, decryptData } from "@/lib/encryption";
+import { decrypt } from "@/lib/encryption";
 import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
 
 export const dynamic = 'force-dynamic';
@@ -82,7 +82,6 @@ export async function GET(req: NextRequest) {
           state,
           latitude,
           longitude,
-          profile_photo_data,
           region_id
         )
       `)
@@ -159,7 +158,6 @@ export async function GET(req: NextRequest) {
         let firstName = '';
         let lastName = '';
         let phone = '';
-        let profilePhotoUrl = null;
 
         try {
           firstName = vendor.profiles.first_name
@@ -179,50 +177,6 @@ export async function GET(req: NextRequest) {
           phone = '';
         }
 
-        // Convert binary profile photo (bytea) to data URL if exists
-        if (vendor.profiles.profile_photo_data) {
-          try {
-            let photoData = vendor.profiles.profile_photo_data;
-
-            // First, convert hex bytea to string if needed
-            if (typeof photoData === 'string' && photoData.startsWith('\\x')) {
-              const hexString = photoData.slice(2); // Remove \x prefix
-              const buffer = Buffer.from(hexString, 'hex');
-              photoData = buffer.toString('utf-8'); // Convert to string for decryption
-            }
-
-            // Check if photo data is encrypted (starts with U2FsdGVk = "Salted__" in base64)
-            if (typeof photoData === 'string' && (photoData.startsWith('U2FsdGVk') || photoData.includes('Salted'))) {
-              try {
-                // Decrypt the binary photo data using decryptData() for binary data
-                const decryptedBytes = decryptData(photoData);
-                // Convert Uint8Array to base64
-                const base64 = Buffer.from(decryptedBytes).toString('base64');
-                profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-              } catch (decryptError) {
-                // Fallback: try treating it as a data URL string instead of binary
-                try {
-                  const decryptedText = decrypt(photoData);
-                  if (decryptedText.startsWith('data:')) {
-                    profilePhotoUrl = decryptedText;
-                  }
-                } catch (fallbackError) {
-                  console.error('❌ Photo decryption failed for vendor:', vendor.id);
-                }
-              }
-            } else if (Buffer.isBuffer(photoData)) {
-              // Raw buffer - convert directly
-              const base64 = photoData.toString('base64');
-              profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-            } else if (typeof photoData === 'string' && photoData.startsWith('data:')) {
-              // Already a data URL
-              profilePhotoUrl = photoData;
-            }
-          } catch (photoError) {
-            console.error('❌ Error processing profile photo for vendor:', vendor.id, photoError);
-          }
-        }
-
         // Explicitly construct the response object to avoid exposing sensitive/encrypted fields
         return {
           id: vendor.id,
@@ -239,7 +193,7 @@ export async function GET(req: NextRequest) {
             state: vendor.profiles.state,
             latitude: vendor.profiles.latitude,
             longitude: vendor.profiles.longitude,
-            profile_photo_url: profilePhotoUrl
+            profile_photo_url: null
           },
           region_id: vendor.profiles.region_id || null
         };

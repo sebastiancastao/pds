@@ -41,6 +41,7 @@ export default function AdminEmailPage() {
   const [bodyFormat, setBodyFormat] = useState<BodyFormat>('text');
   const [body, setBody] = useState('');
   const [confirmBulk, setConfirmBulk] = useState(false);
+  const [attachments, setAttachments] = useState<File[]>([]);
 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
@@ -93,6 +94,22 @@ export default function AdminEmailPage() {
 
   const bulkMode = audience !== 'manual' || manualRecipientCount > 25;
 
+  const attachmentBytes = useMemo(() => {
+    return attachments.reduce((sum, f) => sum + (f?.size || 0), 0);
+  }, [attachments]);
+
+  const formatBytes = (bytes: number) => {
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let idx = 0;
+    while (value >= 1024 && idx < units.length - 1) {
+      value /= 1024;
+      idx += 1;
+    }
+    return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+  };
+
   const insertTemplate = () => {
     setBodyFormat('html');
     setBody(
@@ -141,25 +158,26 @@ export default function AdminEmailPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token;
 
-      const payload = {
-        audience,
-        to: audience === 'manual' ? to : undefined,
-        role: audience === 'role' ? targetRole : undefined,
-        subject: subject.trim(),
-        body,
-        bodyFormat,
-        cc: cc.trim() ? cc : undefined,
-        bcc: bcc.trim() ? bcc : undefined,
-        confirm: bulkMode ? true : undefined,
-      };
+      const form = new FormData();
+      form.set('audience', audience);
+      if (audience === 'manual') form.set('to', to);
+      if (audience === 'role') form.set('role', targetRole);
+      form.set('subject', subject.trim());
+      form.set('body', body);
+      form.set('bodyFormat', bodyFormat);
+      if (cc.trim()) form.set('cc', cc);
+      if (bcc.trim()) form.set('bcc', bcc);
+      if (bulkMode) form.set('confirm', 'true');
+      for (const file of attachments) {
+        form.append('attachments', file, file.name);
+      }
 
       const res = await fetch('/api/admin/send-email', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify(payload),
+        body: form,
       });
 
       const data = await res.json();
@@ -373,6 +391,7 @@ export default function AdminEmailPage() {
                       setCc('');
                       setBcc('');
                       setConfirmBulk(false);
+                      setAttachments([]);
                       setSuccess(null);
                       setError('');
                     }}
@@ -381,6 +400,65 @@ export default function AdminEmailPage() {
                     Clear
                   </button>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Attachments (optional)
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    setAttachments((prev) => [...prev, ...files]);
+                    e.currentTarget.value = '';
+                  }}
+                  className="w-full border rounded px-3 py-2"
+                />
+                <div className="mt-2 flex items-center justify-between">
+                  <div className="text-xs text-gray-500">
+                    {attachments.length} file(s), {formatBytes(attachmentBytes)}
+                  </div>
+                  {attachments.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setAttachments([])}
+                      className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 px-2 py-1 rounded"
+                    >
+                      Clear attachments
+                    </button>
+                  ) : null}
+                </div>
+                {attachments.length > 0 ? (
+                  <div className="mt-2 space-y-2">
+                    {attachments.map((file, idx) => (
+                      <div
+                        key={`${file.name}-${file.size}-${idx}`}
+                        className="flex items-center justify-between border rounded px-3 py-2 bg-gray-50"
+                      >
+                        <div className="text-sm text-gray-800 truncate">
+                          <span className="font-mono">{file.name}</span>{' '}
+                          <span className="text-xs text-gray-500">
+                            ({formatBytes(file.size)})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAttachments((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            )
+                          }
+                          className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               <div>
