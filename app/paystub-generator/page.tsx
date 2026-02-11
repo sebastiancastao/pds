@@ -135,6 +135,45 @@ export default function PaystubGenerator() {
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
+  const normalizeState = (s: any) => (s || '').toString().toUpperCase().trim();
+  const normalizeStateCode = (s: any) => {
+    const st = normalizeState(s);
+    const map: Record<string, string> = {
+      CALIFORNIA: 'CA',
+      NEVADA: 'NV',
+      WISCONSIN: 'WI',
+      'NEW YORK': 'NY',
+      ARIZONA: 'AZ',
+    };
+    return map[st] || st;
+  };
+
+  const fetchEmployeeSummary = async (userId: string): Promise<{
+    sickLeave: SickLeaveBalance | null;
+    profileStateCode: string | null;
+  }> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      throw new Error('Not authenticated');
+    }
+
+    const response = await fetch(`/api/employees/${userId}/summary`, {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || 'Failed to load sick leave data');
+    }
+
+    const data = await response.json();
+    return {
+      sickLeave: data.summary?.sick_leave ?? null,
+      profileStateCode: normalizeStateCode(data?.employee?.state) || null,
+    };
+  };
+
   // Fetch events when pay period dates change
   useEffect(() => {
     const fetchEvents = async () => {
@@ -187,39 +226,15 @@ export default function PaystubGenerator() {
       setSickLeaveLoading(true);
       setSickLeaveError(null);
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        throw new Error('Not authenticated');
-      }
-
-      const response = await fetch(`/api/employees/${matchedUserId}/summary`, {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || 'Failed to load sick leave data');
-        }
-        const data = await response.json();
+      try {
+        const summaryData = await fetchEmployeeSummary(matchedUserId);
         if (isMounted) {
-          setSickLeave(data.summary?.sick_leave ?? null);
-          const normalizeState = (s: any) => (s || '').toString().toUpperCase().trim();
-          const normalizeStateCode = (s: any) => {
-            const st = normalizeState(s);
-            const map: Record<string, string> = {
-              CALIFORNIA: 'CA',
-              NEVADA: 'NV',
-              WISCONSIN: 'WI',
-              'NEW YORK': 'NY',
-              ARIZONA: 'AZ',
-            };
-            return map[st] || st;
-          };
-          const profileStateCode = normalizeStateCode(data?.employee?.state);
+          setSickLeave(summaryData.sickLeave);
+          const profileStateCode = summaryData.profileStateCode;
           if (profileStateCode) {
-            setFormData(prev => (prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }));
+            setFormData(prev => (
+              prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }
+            ));
           }
         }
       } catch (error: any) {
@@ -367,6 +382,23 @@ export default function PaystubGenerator() {
         matchedUserId ||
         (formData.employeeName ? await resolveEmployeeUserIdByOfficialName(formData.employeeName, { debug: debugMode }) : null);
 
+      let sickLeaveForPayload = sickLeave;
+      let stateForPayload = formData.state;
+
+      if (resolvedUserId) {
+        const summaryData = await fetchEmployeeSummary(resolvedUserId);
+        sickLeaveForPayload = summaryData.sickLeave;
+        setSickLeave(summaryData.sickLeave);
+        setSickLeaveError(null);
+        const profileStateCode = summaryData.profileStateCode;
+        if (profileStateCode) {
+          stateForPayload = profileStateCode;
+          setFormData(prev => (
+            prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }
+          ));
+        }
+      }
+
       if (resolvedUserId && resolvedUserId !== matchedUserId) {
         setMatchedUserId(resolvedUserId);
       }
@@ -412,7 +444,7 @@ export default function PaystubGenerator() {
         medicare: formData.medicare,
         stateIncome: formData.stateIncome,
         stateDI: formData.stateDI,
-        state: formData.state,
+        state: stateForPayload,
 
         // Other
         miscDeduction: formData.miscDeduction,
@@ -420,7 +452,7 @@ export default function PaystubGenerator() {
 
         // Events data
         events: filteredEvents,
-        sickLeave,
+        sickLeave: sickLeaveForPayload,
 
         // Used server-side to pick correct worker row per event (hours worked)
         matchedUserId: resolvedUserId,
@@ -506,6 +538,8 @@ export default function PaystubGenerator() {
       const errors: string[] = [];
       const generatedNames: string[] = [];
       let mergedPagesAdded = 0;
+      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
+      const profileStateByUserId: Record<string, string | null> = {};
 
       for (const emp of rows) {
         try {
@@ -536,6 +570,17 @@ export default function PaystubGenerator() {
             continue;
           }
 
+          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, emp.matchedUserId)) {
+            const summaryData = await fetchEmployeeSummary(emp.matchedUserId);
+            sickLeaveByUserId[emp.matchedUserId] = summaryData.sickLeave;
+            profileStateByUserId[emp.matchedUserId] = summaryData.profileStateCode;
+          }
+          const sickLeaveForRow = sickLeaveByUserId[emp.matchedUserId] ?? null;
+          const stateForRow =
+            profileStateByUserId[emp.matchedUserId] ||
+            emp.state ||
+            formData.state;
+
           const payload = {
             // Employee info
             employeeName: employeeName,
@@ -554,7 +599,7 @@ export default function PaystubGenerator() {
             medicare: emp.medicare,
             stateIncome: emp.stateIncome,
             stateDI: emp.stateDI,
-            state: emp.state,
+            state: stateForRow,
 
             // Other
             miscDeduction: emp.miscDeduction,
@@ -562,7 +607,7 @@ export default function PaystubGenerator() {
 
             // Events data
             events: filteredEvents,
-            sickLeave: null,
+            sickLeave: sickLeaveForRow,
 
             matchedUserId: emp.matchedUserId,
             debug: debugMode,

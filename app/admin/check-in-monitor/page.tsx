@@ -107,6 +107,7 @@ export default function CheckInMonitorPage() {
   const [data, setData] = useState<MonitorData | null>(null);
   const [lastRefreshed, setLastRefreshed] = useState<Date | null>(null);
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
 
@@ -172,6 +173,45 @@ export default function CheckInMonitorPage() {
     }
   }, []);
 
+  const downloadPdfReport = useCallback(async () => {
+    try {
+      setIsExportingPdf(true);
+      setError("");
+
+      const token =
+        accessTokenRef.current || (await supabase.auth.getSession()).data.session?.access_token || null;
+      accessTokenRef.current = token;
+      if (!token) {
+        setError("Session expired. Please sign in again.");
+        return;
+      }
+
+      const res = await fetch("/api/admin/check-in-monitor/export", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || "Failed to export PDF");
+      }
+
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+      link.href = objectUrl;
+      link.download = `check-in-monitor-${timestamp}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (err: any) {
+      setError(err.message || "Failed to export PDF");
+    } finally {
+      setIsExportingPdf(false);
+    }
+  }, []);
+
   // Fetch on mount + auto-refresh every 15s
   useEffect(() => {
     if (!isAuthorized) return;
@@ -228,6 +268,22 @@ export default function CheckInMonitorPage() {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            {/* Export PDF */}
+            <button
+              onClick={downloadPdfReport}
+              disabled={isExportingPdf}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border ${
+                isExportingPdf
+                  ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                  : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+              }`}
+              title="Download monitor report as PDF"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v7m0 0l-3-3m3 3l3-3M3 17a4 4 0 014-4h1m4-4h1a4 4 0 014 4v4m-8-8V3m0 0L9 6m3-3l3 3" />
+              </svg>
+              {isExportingPdf ? "Preparing..." : "Export PDF"}
+            </button>
             {/* Auto-refresh toggle */}
             <button
               onClick={() => setAutoRefresh(!autoRefresh)}

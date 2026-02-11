@@ -726,10 +726,8 @@ export default function EventDashboardPage() {
   const calculatedCommission = (() => {
     const s = calculateShares();
     if (!s) return 0;
-    // Use commissionPool state if set, otherwise fallback to event.commission_pool
-    const pool = commissionPool !== "" 
-      ? Number(commissionPool) 
-      : (event?.commission_pool || 0);
+    // Use only the editable sales-tab state so clearing the input behaves correctly.
+    const pool = commissionPool !== "" ? Number(commissionPool) : 0;
     return s.netSales * pool;
   })();
 
@@ -1764,29 +1762,30 @@ export default function EventDashboardPage() {
 
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Commission Pool (%)</label>
-                    <input
-                      type="text"
-                      value={(() => {
-                        // Convert fraction to percentage for display
-                        const poolValue = Number(commissionPool || event?.commission_pool || 0);
-                        return (poolValue * 100).toFixed(2) + '%';
-                      })()}
-                      onChange={(e) => {
-                        const val = e.target.value.replace('%', '').trim();
-                        if (val === '' || val === '0') {
-                          setCommissionPool('');
-                          return;
-                        }
-                        const numVal = Number(val);
-                        if (isNaN(numVal)) return;
-                        // Convert percentage to fraction (4% -> 0.04)
-                        const fraction = numVal / 100;
-                        setCommissionPool(fraction.toString());
-                      }}
-                      placeholder="4%"
-                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
-                    />
-                    <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4% = 0.04 fraction)</p>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="0.01"
+                        value={commissionPool === "" ? "" : (Number(commissionPool) * 100).toString()}
+                        onChange={(e) => {
+                          const percentText = e.target.value;
+                          if (percentText === "") {
+                            setCommissionPool("");
+                            return;
+                          }
+                          const percentValue = Number(percentText);
+                          if (Number.isNaN(percentValue)) return;
+                          // Convert percentage to fraction for persistence (4 -> 0.04)
+                          setCommissionPool((percentValue / 100).toString());
+                        }}
+                        placeholder="4"
+                        className="w-full pr-10 px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">%</span>
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Enter percent (e.g., 4 means 4%).</p>
                   </div>
 
                   <div>
