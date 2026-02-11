@@ -27,6 +27,66 @@ async function getAuthedUser(req: NextRequest) {
   return null;
 }
 
+function getEffectiveHoursFromPaymentRow(row: any): number {
+  const actual = Number(row?.actual_hours ?? 0);
+  if (actual > 0) return actual;
+  const worked = Number(row?.worked_hours ?? 0);
+  if (worked > 0) return worked;
+  const reg = Number(row?.regular_hours ?? 0);
+  const ot = Number(row?.overtime_hours ?? 0);
+  const dt = Number(row?.doubletime_hours ?? 0);
+  const summed = reg + ot + dt;
+  return summed > 0 ? summed : 0;
+}
+
+function normalizePaymentHours(row: any) {
+  const actual = Number(row?.actual_hours ?? 0);
+  if (actual > 0) return row;
+  const effective = getEffectiveHoursFromPaymentRow(row);
+  if (effective <= 0) return row;
+  return {
+    ...row,
+    actual_hours: effective,
+  };
+}
+
+function mergePaymentRowsWithFallback(primary: any, fallback: any) {
+  if (!fallback) return normalizePaymentHours(primary);
+
+  const primaryHours = getEffectiveHoursFromPaymentRow(primary);
+  const fallbackHours = getEffectiveHoursFromPaymentRow(fallback);
+  const shouldBackfillHours = primaryHours <= 0 && fallbackHours > 0;
+
+  const merged = {
+    ...primary,
+    users: primary?.users || fallback?.users || null,
+    ...(shouldBackfillHours
+      ? {
+          actual_hours: Number(fallback?.actual_hours || 0),
+          regular_hours: Number(fallback?.regular_hours || 0),
+          overtime_hours: Number(fallback?.overtime_hours || 0),
+          doubletime_hours: Number(fallback?.doubletime_hours || 0),
+        }
+      : {}),
+  };
+
+  return normalizePaymentHours(merged);
+}
+
+function timeToSeconds(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const s = value.trim();
+  if (!s) return null;
+  const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  const ss = m[3] ? Number(m[3]) : 0;
+  if (![hh, mm, ss].every((n) => Number.isFinite(n))) return null;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return null;
+  return hh * 3600 + mm * 60 + ss;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const user = await getAuthedUser(req);
@@ -66,14 +126,14 @@ export async function GET(req: NextRequest) {
     // Decrypt profile names
     const vendorPaymentsDecrypted = (vendorPayments || []).map((row: any) => {
       const user = row?.users;
-      if (!user || !user.profiles) return row;
+      if (!user || !user.profiles) return normalizePaymentHours(row);
       const prof = Array.isArray(user.profiles) ? user.profiles[0] : user.profiles;
       const newProf: any = { ...prof };
       try { if (newProf.first_name) newProf.first_name = decrypt(newProf.first_name); } catch {}
       try { if (newProf.last_name) newProf.last_name = decrypt(newProf.last_name); } catch {}
       try { if (newProf.phone) newProf.phone = decrypt(newProf.phone); } catch {}
       const newUser = { ...user, profiles: Array.isArray(user.profiles) ? [newProf] : newProf };
-      return { ...row, users: newUser };
+      return normalizePaymentHours({ ...row, users: newUser });
     });
 
     console.log('[VENDOR-PAYMENTS] vendorPayments fetched', {
@@ -92,6 +152,26 @@ export async function GET(req: NextRequest) {
       sample: (eventPayments || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, base_rate: r.base_rate })),
     });
 
+    // Fetch configured state rates (same source as /api/rates).
+    const configuredBaseRatesByState: Record<string, number> = {};
+    const { data: stateRatesRows, error: stateRatesError } = await supabaseAdmin
+      .from('state_rates')
+      .select('state_code, base_rate');
+    if (stateRatesError) {
+      console.warn('[VENDOR-PAYMENTS] state_rates fetch failed; using defaults', stateRatesError.message);
+    } else {
+      for (const row of stateRatesRows || []) {
+        const stateCode = (row?.state_code || '').toString().toUpperCase().trim();
+        const baseRate = Number((row as any)?.base_rate || 0);
+        if (stateCode && baseRate > 0) configuredBaseRatesByState[stateCode] = baseRate;
+      }
+    }
+    const getConfiguredBaseRate = (stateCode?: string | null) => {
+      const st = (stateCode || '').toString().toUpperCase().trim();
+      const configured = Number(configuredBaseRatesByState[st] || 0);
+      return configured > 0 ? configured : 0;
+    };
+
     // Fetch payment adjustments
     let adjustmentsQuery = supabaseAdmin.from('payment_adjustments').select('*');
     if (!fetchAllEvents) adjustmentsQuery = adjustmentsQuery.in('event_id', eventIds);
@@ -108,7 +188,7 @@ export async function GET(req: NextRequest) {
       // 1) Load event for date/state
       const { data: eventRow } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, state')
+        .select('id, event_date, state, start_time, end_time, ends_next_day')
         .eq('id', eventId)
         .maybeSingle();
       if (!eventRow) return [] as any[];
@@ -124,6 +204,13 @@ export async function GET(req: NextRequest) {
 
       // If still empty, infer from time entries on that date (last resort)
       if (vendorIds.length === 0) {
+        const { data: inferredByEventId } = await supabaseAdmin
+          .from('time_entries')
+          .select('user_id')
+          .eq('event_id', eventId);
+        vendorIds = Array.from(new Set((inferredByEventId || []).map((r: any) => r.user_id).filter(Boolean)));
+      }
+      if (vendorIds.length === 0) {
         const dateStr0 = (eventRow.event_date || '').toString().split('T')[0];
         const start0 = new Date(`${dateStr0}T00:00:00Z`).toISOString();
         const end0 = new Date(`${dateStr0}T23:59:59.999Z`).toISOString();
@@ -137,17 +224,59 @@ export async function GET(req: NextRequest) {
       }
       if (vendorIds.length === 0) return [] as any[];
 
-      // 3) Pull time entries for full event day (UTC day window)
+      // 3) Pull time entries using the same strategy as Event Dashboard Time Sheet:
+      // prefer entries linked by event_id, then fall back to date windows.
       const dateStr = (eventRow.event_date || '').toString().split('T')[0];
-      const startIso = new Date(`${dateStr}T00:00:00Z`).toISOString();
-      const endIso = new Date(`${dateStr}T23:59:59.999Z`).toISOString();
-      const { data: entries } = await supabaseAdmin
+      const startSec = timeToSeconds((eventRow as any)?.start_time);
+      const endSec = timeToSeconds((eventRow as any)?.end_time);
+      const endsNextDay =
+        Boolean((eventRow as any)?.ends_next_day) ||
+        (startSec !== null && endSec !== null && endSec <= startSec);
+      const startDate = new Date(`${dateStr}T00:00:00Z`);
+      const endDate = new Date(`${dateStr}T23:59:59.999Z`);
+      if (endsNextDay) endDate.setUTCDate(endDate.getUTCDate() + 1);
+      const startIso = startDate.toISOString();
+      const endIso = endDate.toISOString();
+
+      let entries: any[] = [];
+      const { data: byEventId } = await supabaseAdmin
         .from('time_entries')
-        .select('user_id, action, timestamp')
+        .select('user_id, action, timestamp, started_at, event_id')
         .in('user_id', vendorIds)
-        .gte('timestamp', startIso)
-        .lte('timestamp', endIso)
+        .eq('event_id', eventId)
         .order('timestamp', { ascending: true });
+      entries = byEventId || [];
+
+      if (endsNextDay || entries.length === 0) {
+        const { data: byTimestamp } = await supabaseAdmin
+          .from('time_entries')
+          .select('id, user_id, action, timestamp, started_at, event_id')
+          .in('user_id', vendorIds)
+          .gte('timestamp', startIso)
+          .lte('timestamp', endIso)
+          .order('timestamp', { ascending: true });
+        const merged: any[] = [];
+        const seen = new Set<string>();
+        for (const row of [...entries, ...(byTimestamp || [])]) {
+          if (row?.event_id && row.event_id !== eventId) continue;
+          const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp || row?.started_at || ''}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          merged.push(row);
+        }
+        entries = merged;
+      }
+
+      if (entries.length === 0) {
+        const { data: byStartedAt } = await supabaseAdmin
+          .from('time_entries')
+          .select('user_id, action, timestamp, started_at, event_id')
+          .in('user_id', vendorIds)
+          .gte('started_at', startIso)
+          .lte('started_at', endIso)
+          .order('started_at', { ascending: true });
+        entries = byStartedAt || [];
+      }
 
       // 4) Compute total hours per user by pairing clock_in/out
       const byUser: Record<string, any[]> = {};
@@ -159,16 +288,25 @@ export async function GET(req: NextRequest) {
 
       const totalsHours: Record<string, number> = {};
       for (const uid of vendorIds) {
-        const uEntries = byUser[uid] || [];
+        const uEntries = [...(byUser[uid] || [])].sort((a, b) => {
+          const ta = new Date((a?.timestamp || a?.started_at || '') as any).getTime();
+          const tb = new Date((b?.timestamp || b?.started_at || '') as any).getTime();
+          if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
+          if (!Number.isFinite(ta)) return 1;
+          if (!Number.isFinite(tb)) return -1;
+          return ta - tb;
+        });
         let currentIn: string | null = null;
         let ms = 0;
         for (const row of uEntries) {
+          const ts = row?.timestamp || row?.started_at || null;
+          if (!ts) continue;
           if (row.action === 'clock_in') {
-            if (!currentIn) currentIn = row.timestamp as any;
+            if (!currentIn) currentIn = ts as any;
           } else if (row.action === 'clock_out') {
             if (currentIn) {
               const start = new Date(currentIn).getTime();
-              const end = new Date(row.timestamp as any).getTime();
+              const end = new Date(ts as any).getTime();
               const dur = end - start;
               if (dur > 0) ms += dur;
               currentIn = null;
@@ -179,9 +317,10 @@ export async function GET(req: NextRequest) {
       }
 
       // 5) Determine rates (matches event-dashboard logic)
-      const stateRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const eventState = (eventRow.state || 'CA').toString().toUpperCase().trim();
-      const baseRate = Number(eventPaymentSummary?.base_rate || stateRates[eventState] || 17.28);
+      const configuredBaseRate = getConfiguredBaseRate(eventState);
+      const summaryBaseRate = Number(eventPaymentSummary?.base_rate || 0);
+      const baseRate = configuredBaseRate > 0 ? configuredBaseRate : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
 
       // 6) Commissions/Tips pool to distribute (if summary exists)
       const totalTips = Number(eventPaymentSummary?.total_tips || 0);
@@ -248,8 +387,6 @@ export async function GET(req: NextRequest) {
             ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
             : 0;
         }
-        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (!isAZorNY && commissions > 0 && commissions < extAmtOnRegRate) commissions = 0;
 
         // Total Final Commission = Ext Amt + Commission; minimum $150
         const totalFinalCommission = hours > 0
@@ -336,11 +473,53 @@ export async function GET(req: NextRequest) {
       const eventPaymentSummary = (eventPayments || []).find((ep: any) => ep.event_id === eventId) || null;
       let eventVendorPayments = (vendorPaymentsDecrypted || []).filter((vp: any) => vp.event_id === eventId);
 
-      // Fallback: synthesize from time entries if none persisted
-      if (!eventVendorPayments || eventVendorPayments.length === 0) {
-        console.log('[VENDOR-PAYMENTS] no persisted vendor payments; computing fallback', { eventId });
+      // If persisted rows are missing team members or missing hours, merge fallback rows from time_entries.
+      const persistedByUserId = new Set((eventVendorPayments || []).map((vp: any) => vp?.user_id).filter(Boolean));
+      const rowsMissingHours = (eventVendorPayments || []).some((vp: any) => getEffectiveHoursFromPaymentRow(vp) <= 0);
+      let teamVendorIds: string[] = [];
+      if (eventId) {
+        const { data: teamRows } = await supabaseAdmin
+          .from('event_teams')
+          .select('vendor_id')
+          .eq('event_id', eventId);
+        teamVendorIds = Array.from(new Set((teamRows || []).map((t: any) => t.vendor_id).filter(Boolean)));
+      }
+      const hasMissingTeamRows = teamVendorIds.some((uid) => !persistedByUserId.has(uid));
+      const shouldMergeFallback =
+        !eventVendorPayments ||
+        eventVendorPayments.length === 0 ||
+        rowsMissingHours ||
+        hasMissingTeamRows;
+
+      if (shouldMergeFallback) {
+        const reason =
+          !eventVendorPayments || eventVendorPayments.length === 0
+            ? 'no persisted rows'
+            : rowsMissingHours
+              ? 'persisted rows missing hours'
+              : 'persisted rows missing team members';
+        console.log('[VENDOR-PAYMENTS] computing fallback rows', { eventId, reason });
         try {
-          eventVendorPayments = await computeFallbackVendorPayments(eventId, eventPaymentSummary);
+          const fallbackRows = await computeFallbackVendorPayments(eventId, eventPaymentSummary);
+          const fallbackByUserId: Record<string, any> = {};
+          for (const row of fallbackRows || []) {
+            if (!row?.user_id) continue;
+            fallbackByUserId[row.user_id] = row;
+          }
+
+          const mergedByUserId: Record<string, any> = {};
+          for (const row of eventVendorPayments || []) {
+            if (!row?.user_id) continue;
+            mergedByUserId[row.user_id] = mergePaymentRowsWithFallback(row, fallbackByUserId[row.user_id]);
+          }
+          for (const row of fallbackRows || []) {
+            if (!row?.user_id) continue;
+            if (!mergedByUserId[row.user_id]) {
+              mergedByUserId[row.user_id] = normalizePaymentHours(row);
+            }
+          }
+
+          eventVendorPayments = Object.values(mergedByUserId);
           console.log('[VENDOR-PAYMENTS] fallback computed', {
             eventId,
             count: eventVendorPayments?.length || 0,
@@ -354,11 +533,11 @@ export async function GET(req: NextRequest) {
       const eventAdjustments = (adjustments || []).filter((adj: any) => adj.event_id === eventId);
       const paymentsWithAdjustments = (eventVendorPayments || []).map((vp: any) => {
         const adjustment = eventAdjustments.find((adj: any) => adj.user_id === vp.user_id);
-        return {
+        return normalizePaymentHours({
           ...vp,
           adjustment_amount: adjustment?.adjustment_amount || 0,
           adjustment_note: adjustment?.adjustment_note || '',
-        };
+        });
       });
 
       const adjustedCount = paymentsWithAdjustments.filter((p: any) => Number(p.adjustment_amount || 0) !== 0).length;

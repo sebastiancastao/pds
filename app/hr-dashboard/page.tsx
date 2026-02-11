@@ -85,6 +85,17 @@ function HRDashboardContent() {
     if (actualHours <= 0) return 0;
     return actualHours >= 10 ? 12 : 9;
   };
+  const getEffectiveHours = (payment: any): number => {
+    const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
+    if (actual > 0) return actual;
+    const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
+    if (worked > 0) return worked;
+    const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
+    const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
+    const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
+    const summed = reg + ot + dt;
+    return summed > 0 ? summed : 0;
+  };
 
   type AzNyCommissionCalcItem = {
     eligible: boolean;
@@ -301,10 +312,11 @@ function HRDashboardContent() {
       if (paymentsStartDate) filtered = filtered.filter(e => !e.event_date || e.event_date >= paymentsStartDate);
       if (paymentsEndDate) filtered = filtered.filter(e => !e.event_date || e.event_date <= paymentsEndDate);
       console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate });
-      const eventIds = filtered.map((e: any) => e.id).join(',');
+      const filteredEventIds = filtered.map((e: any) => e.id).filter(Boolean);
+      const eventIds = filteredEventIds.join(',');
       if (!eventIds) { setPaymentsByVenue([]); setLoadingPayments(false); return; }
       // Fetch vendor payments for filtered events (same data model as Global Calendar)
-      const payRes = await fetch(`/api/vendor-payments`, {
+      const payRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}`, {
         method: 'GET',
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
@@ -322,6 +334,31 @@ function HRDashboardContent() {
           totalAdjustments: payJson.totalAdjustments,
         }
       });
+      const configuredBaseRatesByState: Record<string, number> = {};
+      try {
+        const ratesRes = await fetch('/api/rates', {
+          method: 'GET',
+          headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        });
+        if (ratesRes.ok) {
+          const ratesJson = await ratesRes.json();
+          for (const row of ratesJson?.rates || []) {
+            const stateCode = normalizeState(row?.state_code);
+            const baseRate = Number(row?.base_rate || 0);
+            if (stateCode && baseRate > 0) configuredBaseRatesByState[stateCode] = baseRate;
+          }
+        } else {
+          console.warn('[HR PAYMENTS] Failed to load /api/rates for base rates, using fallback values.');
+        }
+      } catch (e) {
+        console.warn('[HR PAYMENTS] Error loading /api/rates for base rates, using fallback values.', e);
+      }
+      const getConfiguredBaseRate = (stateCode?: string | null) => {
+        const st = normalizeState(stateCode);
+        const configured = Number(configuredBaseRatesByState[st] || 0);
+        if (configured > 0) return configured;
+        return 17.28;
+      };
       const byVenue: Record<string, { venue: string; city?: string | null; state?: string | null; totalPayment: number; totalHours: number; events: any[] }> = {};
 
       // Show ALL filtered events, not just those with payment data
@@ -360,6 +397,8 @@ function HRDashboardContent() {
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
+        const eventState = normalizeState(eventInfo.state) || "CA";
+        const configuredBaseRate = getConfiguredBaseRate(eventState);
 
         // Initialize venue entry
         if (!byVenue[eventInfo.venue]) {
@@ -424,7 +463,7 @@ function HRDashboardContent() {
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
                   state: eventInfo.state,
-                  baseRate: 17.28,
+                  baseRate: configuredBaseRate,
                   eventTotal: 0,
                   eventHours: 0,
                   payments: teamPayments
@@ -442,7 +481,7 @@ function HRDashboardContent() {
             name: eventInfo.event_name,
             date: eventInfo.event_date,
             state: eventInfo.state,
-            baseRate: 17.28,
+            baseRate: configuredBaseRate,
             eventTotal: 0,
             eventHours: 0,
             payments: []
@@ -453,9 +492,8 @@ function HRDashboardContent() {
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
         const eventPaymentSummary = eventPaymentData.eventPayment || {};
-        const eventState = normalizeState(eventInfo.state) || "CA";
-        const stateRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
-        const baseRate = Number(eventPaymentSummary.base_rate || stateRates[eventState] || 17.28);
+        const summaryBaseRate = Number(eventPaymentSummary.base_rate || 0);
+        const baseRate = configuredBaseRate > 0 ? configuredBaseRate : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
         // Total team members on this event
@@ -484,13 +522,15 @@ function HRDashboardContent() {
         }, 0);
         const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : memberCount;
 
-        // Commission per member (non-AZ/NY)
-        const perMemberCommission = memberCount > 0 ? commissionPoolDollars / memberCount : 0;
+        // Commission share denominator must match Event Dashboard: eligible vendor count (fallback to member count)
+        const perVendorCommissionShare = vendorCountForCommission > 0
+          ? commissionPoolDollars / vendorCountForCommission
+          : 0;
 
         const commissionPerVendorAzNy = isAZorNY
           ? computeAzNyCommissionPerVendor(
             vendorPayments.map((p: any) => {
-              const actualHours = Number(p.actual_hours || 0);
+              const actualHours = getEffectiveHours(p);
               const div = p?.users?.division;
               const eligible = !isTrailersDivision(div) && isVendorDivision(div) && actualHours > 0;
               const priorWeeklyHours = weeklyHoursMap[eventId]?.[p.user_id] || 0;
@@ -509,10 +549,10 @@ function HRDashboardContent() {
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = Number(eventPaymentSummary.total_tips || 0) || Number(eventInfo.tips || 0);
         // Pro-rate tips by hours worked instead of equal split
-        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + Number(p.actual_hours || 0), 0);
+        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + getEffectiveHours(p), 0);
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
-          commissionPoolDollars, perMemberCommission, totalTips, totalEventHours, memberCount,
+          commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventHours, memberCount, vendorCountForCommission,
           summaryPool: eventPaymentSummary.commission_pool_dollars,
           eventCommissionPool: eventInfo.commission_pool,
           summaryTips: eventPaymentSummary.total_tips,
@@ -528,7 +568,7 @@ function HRDashboardContent() {
           const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
           const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
           const adjustmentAmount = Number(payment.adjustment_amount || 0);
-          const actualHours = Number(payment.actual_hours || 0);
+          const actualHours = getEffectiveHours(payment);
 
           const memberDivision = payment?.users?.division;
           const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
@@ -543,12 +583,11 @@ function HRDashboardContent() {
           if (isAZorNY) {
             commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0) ? commissionPerVendorAzNy : 0;
           } else {
-            commissionAmt = actualHours > 0
-              ? Math.max(0, perMemberCommission - extAmtOnRegRateNonAzNy)
+            // Non-AZ/NY parity with Event Dashboard: trailers are excluded from commission allocation.
+            commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
           }
-          // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-          if (!isAZorNY && commissionAmt > 0 && commissionAmt < extAmtOnRegRateNonAzNy) commissionAmt = 0;
 
           // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
           const totalFinalCommissionBase = (isAZorNY && actualHours > 0)

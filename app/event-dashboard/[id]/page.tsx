@@ -1044,8 +1044,6 @@ export default function EventDashboardPage() {
               ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
         }
-        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (!isAZorNY && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
 
         // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate (not 1.5x baseRate).
         const totalFinalCommissionBase = (isAZorNY && actualHours > 0)
@@ -1210,8 +1208,6 @@ export default function EventDashboardPage() {
               ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
         }
-        // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-        if (!isAZorNYEmail && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
 
         // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
         const totalFinalCommissionBase = (isAZorNYEmail && actualHours > 0)
@@ -2972,8 +2968,6 @@ export default function EventDashboardPage() {
                                 ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
                                 : 0;
                           }
-                          // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-                          if (!isAZorNY && commissionAmount > 0 && commissionAmount < extAmtOnRegRateNonAzNy) commissionAmount = 0;
 
                           // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
                           const totalFinalCommissionBase = (isAZorNY && actualHours > 0)

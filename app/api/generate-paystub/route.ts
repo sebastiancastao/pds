@@ -147,6 +147,10 @@ export async function POST(req: NextRequest) {
 
       const workers = Array.isArray(event?.workers) ? event.workers : [];
       const memberCount = workers.length;
+      const vendorCountEligible = workers.reduce((count: number, w: any) => {
+        return isVendorDivision(w?.division) ? count + 1 : count;
+      }, 0);
+      const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : memberCount;
 
       // Commission pool in dollars: event_payments first, then compute from events table.
       let commissionPoolDollars =
@@ -164,7 +168,8 @@ export async function POST(req: NextRequest) {
         commissionPoolDollars = netSales * Number(event?.commission_pool || 0);
       }
 
-      const perMemberCommission = memberCount > 0 ? commissionPoolDollars / memberCount : 0;
+      const perVendorCommissionShare =
+        vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
       // Pro-rate tips by hours worked
@@ -179,7 +184,8 @@ export async function POST(req: NextRequest) {
         eventState,
         baseRate,
         memberCount,
-        perMemberCommission,
+        vendorCountForCommission,
+        perVendorCommissionShare,
         commissionPoolDollars,
         workers,
         totalTipsEvent,
@@ -468,7 +474,7 @@ export async function POST(req: NextRequest) {
         : !!paymentData;
 
       if (shouldRenderRow) {
-        const { eventState, baseRate, perMemberCommission, commissionPoolDollars, workers: eventWorkers, totalTipsEvent, totalEventHours } = getPayrollInputsForEvent(event);
+        const { eventState, baseRate, vendorCountForCommission, perVendorCommissionShare, commissionPoolDollars, workers: eventWorkers, totalTipsEvent, totalEventHours } = getPayrollInputsForEvent(event);
 
         const regHours = Number(paymentData?.regular_hours || 0);
         const otHours = Number(paymentData?.overtime_hours || 0);
@@ -538,9 +544,10 @@ export async function POST(req: NextRequest) {
           totalFinalCommissionAmt = actualHours > 0 ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase) : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
-          commissionAmt = actualHours > 0 ? Math.max(0, perMemberCommission - extAmtOnRegRateNonAzNy) : 0;
-          // Rule (non-AZ/NY only): if Commission Amt < Ext Amt on Reg Rate, Commission Amt = 0
-          if (commissionAmt > 0 && commissionAmt < extAmtOnRegRateNonAzNy) commissionAmt = 0;
+          commissionAmt =
+            !isTrailersDivision(worker?.division) && actualHours > 0 && vendorCountForCommission > 0
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              : 0;
           totalFinalCommissionAmt = actualHours > 0 ? Math.max(150, extAmtOnRegRateNonAzNy + commissionAmt) : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
           computedOtRate = 0;
@@ -610,7 +617,7 @@ export async function POST(req: NextRequest) {
             paystubState,
             azNyMode,
             baseRate,
-            perMemberCommission,
+            perVendorCommissionShare,
             extAmtOnRegRate,
             commissionAmt,
             totalFinalCommissionAmt,
