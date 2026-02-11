@@ -66,6 +66,38 @@ export async function GET(req: NextRequest) {
       }, { status: 403 });
     }
 
+    // Supabase/PostgREST returns a maximum of 1000 rows per request by default.
+    // Paginate form progress so older saves are still included in onboarding progress.
+    const fetchAllFormProgress = async () => {
+      const PAGE_SIZE = 1000;
+      const allRows: Array<{ user_id: string; form_name: string; updated_at: string }> = [];
+      let from = 0;
+
+      while (true) {
+        const { data, error } = await adminClient
+          .from('pdf_form_progress')
+          .select('user_id, form_name, updated_at')
+          .not('form_data', 'eq', '')
+          .not('form_data', 'is', null)
+          .order('updated_at', { ascending: false })
+          .range(from, from + PAGE_SIZE - 1);
+
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+
+        allRows.push(...data);
+
+        if (data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
+
+      return allRows;
+    };
+
+    const formProgressPromise = fetchAllFormProgress()
+      .then((data) => ({ data, error: null }))
+      .catch((error) => ({ data: null, error }));
+
     // Fetch all data in parallel for better performance
     const [profilesResult, onboardingResult, formProgressResult] = await Promise.all([
       // Fetch all profiles with their users data
@@ -93,13 +125,7 @@ export async function GET(req: NextRequest) {
       adminClient
         .from('vendor_onboarding_status')
         .select('*'),
-      // Fetch form progress - only user_id, form_name, updated_at (NOT form_data - it's huge!)
-      adminClient
-        .from('pdf_form_progress')
-        .select('user_id, form_name, updated_at')
-        .not('form_data', 'eq', '')
-        .not('form_data', 'is', null)
-        .order('updated_at', { ascending: false })
+      formProgressPromise
     ]);
 
     const { data: profiles, error: profilesError } = profilesResult;
@@ -128,18 +154,28 @@ export async function GET(req: NextRequest) {
     // State-specific form configurations
     const STATE_FORMS: Record<string, { id: string; display: string }[]> = {
       ca: [
-        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
-        { id: 'marketplace', display: 'Marketplace Notice' },
-        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
-        { id: 'time-of-hire', display: 'Time of Hire Notice' },
         { id: 'employee-information', display: 'Employee Information' },
+        { id: 'state-tax', display: 'State Tax Form' },
         { id: 'fw4', display: 'Federal W-4' },
         { id: 'i9', display: 'I-9 Employment Verification' },
+        { id: 'adp-deposit', display: 'ADP Direct Deposit' },
+        { id: 'employee-handbook', display: 'PDS Employee Handbook 2026' },
+        { id: 'ui-guide', display: 'UI Guide' },
+        { id: 'disability-insurance', display: 'Disability Insurance' },
+        { id: 'paid-family-leave', display: 'Paid Family Leave' },
+        { id: 'sexual-harassment', display: 'Sexual Harassment' },
+        { id: 'survivors-rights', display: 'Survivors Rights' },
+        { id: 'transgender-rights', display: 'Transgender Rights' },
+        { id: 'health-insurance', display: 'Health Insurance Marketplace' },
+        { id: 'time-of-hire', display: 'Time of Hire Notice' },
         { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'discrimination-law', display: 'Discrimination Law' },
+        { id: 'immigration-rights', display: 'Immigration Rights' },
+        { id: 'military-rights', display: 'Military Rights' },
+        { id: 'lgbtq-rights', display: 'LGBTQ Rights' },
         { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
         { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
-        { id: 'state-tax', display: 'State Tax Form' },
-        { id: 'handbook', display: 'Employee Handbook' },
+        { id: 'marketplace', display: 'Marketplace Notice' },
       ],
       wi: [
         { id: 'state-tax', display: 'State Tax Form' },
@@ -165,6 +201,7 @@ export async function GET(req: NextRequest) {
         { id: 'fw4', display: 'Federal W-4' },
         { id: 'i9', display: 'I-9 Employment Verification' },
         { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temporary Employment Services Agreement' },
         { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
         { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
         { id: 'state-tax', display: 'State Tax Form' },
@@ -192,6 +229,7 @@ export async function GET(req: NextRequest) {
         { id: 'fw4', display: 'Federal W-4' },
         { id: 'i9', display: 'I-9 Employment Verification' },
         { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee' },
+        { id: 'temp-employment-agreement', display: 'Temporary Employment Services Agreement' },
         { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
         { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
         { id: 'state-tax', display: 'State Tax Form' },
@@ -200,24 +238,75 @@ export async function GET(req: NextRequest) {
 
     // Default forms (CA) for fallback
     const DEFAULT_FORMS = STATE_FORMS.ca;
-    // Helper to extract state code from form_name (e.g., "wi-i9" -> "wi")
-    const extractStateCode = (formName: string): string => {
-      const parts = formName.split('-');
-      if (parts.length > 1) {
-        return parts[0].toLowerCase();
-      }
-      return 'ca'; // Default to CA
+    const STATE_FORM_CODES = new Set(Object.keys(STATE_FORMS));
+    const PROFILE_STATE_TO_CODE: Record<string, string> = {
+      ca: "ca",
+      california: "ca",
+      ny: "ny",
+      "new york": "ny",
+      wi: "wi",
+      wisconsin: "wi",
+      wisconson: "wi",
+      az: "az",
+      arizona: "az",
+      nv: "nv",
+      nevada: "nv",
     };
 
-    // Helper to extract form ID from stored form_name (e.g., "ca-adp-deposit" -> "adp-deposit")
-    const extractFormId = (formName: string): string => {
-      // form_name format is "{stateCode}-{formId}" e.g., "ca-adp-deposit", "az-fw4"
-      const parts = formName.split('-');
-      if (parts.length > 1) {
-        // Remove first part (state code) and rejoin the rest
-        return parts.slice(1).join('-');
+    const normalizeProfileStateCode = (state?: string | null): string | null => {
+      const normalized = (state || "").toString().trim().toLowerCase();
+      return PROFILE_STATE_TO_CODE[normalized] || null;
+    };
+
+    // Parse stored form names and only treat known state prefixes as state codes.
+    // Examples:
+    // - "wi-fw4" -> { stateCode: "wi", formId: "fw4" }
+    // - "fw4" -> { stateCode: null, formId: "fw4" }
+    // - "meal-waiver-6hour" -> { stateCode: null, formId: "meal-waiver-6hour" }
+    const parseStoredFormName = (formName: string): { stateCode: string | null; formId: string } => {
+      const normalized = (formName || "").toString().trim().toLowerCase().replace(/\.pdf$/i, "");
+      const parts = normalized.split("-");
+      if (parts.length > 1 && STATE_FORM_CODES.has(parts[0])) {
+        return {
+          stateCode: parts[0],
+          formId: parts.slice(1).join("-"),
+        };
       }
-      return formName;
+      return { stateCode: null, formId: normalized };
+    };
+
+    const normalizeFormIdForMatching = (formId: string, stateCode: string): string => {
+      let normalized = (formId || "").toString().trim().toLowerCase().replace(/\.pdf$/i, "");
+      if (!normalized) return "";
+      normalized = normalized.replace(/^(ca|ny|wi|az|nv)-/, "");
+
+      if (
+        normalized === "fillable" ||
+        normalized === "de4" ||
+        normalized === "ca-de4" ||
+        normalized === "state-tax" ||
+        normalized.endsWith("-state-tax")
+      ) {
+        return "state-tax";
+      }
+
+      if (normalized === "handbook") {
+        return "employee-handbook";
+      }
+
+      if (normalized === "state-supplements") {
+        return `${stateCode}-state-supplements`;
+      }
+
+      if (normalized.endsWith("-state-supplements")) {
+        return normalized;
+      }
+
+      if (normalized.endsWith("-temp-employment-agreement")) {
+        return "temp-employment-agreement";
+      }
+
+      return normalized;
     };
 
     // Get forms list for a specific state
@@ -225,22 +314,54 @@ export async function GET(req: NextRequest) {
       return STATE_FORMS[stateCode] || DEFAULT_FORMS;
     };
 
-    // Get form position (1-indexed) in the state's sequence
-    const getFormPosition = (formName: string): number => {
-      const stateCode = extractStateCode(formName);
-      const formId = extractFormId(formName);
+    const stateFormLookupByCode = new Map<string, Map<string, { id: string; display: string; position: number }>>();
+    const getStateFormLookup = (stateCode: string) => {
+      if (stateFormLookupByCode.has(stateCode)) return stateFormLookupByCode.get(stateCode)!;
+
       const stateFormList = getStateFormList(stateCode);
-      const index = stateFormList.findIndex((f: { id: string; display: string }) => f.id === formId);
-      return index >= 0 ? index + 1 : 0;
+      const lookup = new Map<string, { id: string; display: string; position: number }>();
+      stateFormList.forEach((form, index) => {
+        const normalized = normalizeFormIdForMatching(form.id, stateCode);
+        if (!lookup.has(normalized)) {
+          lookup.set(normalized, { id: form.id, display: form.display, position: index + 1 });
+        }
+      });
+      stateFormLookupByCode.set(stateCode, lookup);
+      return lookup;
     };
 
-    // Get display name for a form
-    const getFormDisplayName = (formName: string): string => {
-      const stateCode = extractStateCode(formName);
-      const formId = extractFormId(formName);
-      const stateFormList = getStateFormList(stateCode);
-      const form = stateFormList.find((f: { id: string; display: string }) => f.id === formId);
-      return form?.display || formName;
+    const resolveStateFormMatch = (
+      storedFormName: string,
+      stateCode: string
+    ): { id: string; display: string; position: number } | null => {
+      const { formId } = parseStoredFormName(storedFormName);
+      const normalizedStored = (storedFormName || "").toString().trim().toLowerCase().replace(/\.pdf$/i, "");
+      const lookup = getStateFormLookup(stateCode);
+
+      const candidates = new Set<string>([
+        normalizeFormIdForMatching(formId, stateCode),
+        normalizeFormIdForMatching(normalizedStored, stateCode),
+        normalizeFormIdForMatching(`${stateCode}-${formId}`, stateCode),
+      ]);
+
+      for (const candidate of candidates) {
+        if (!candidate) continue;
+        const match = lookup.get(candidate);
+        if (match) return match;
+      }
+
+      return null;
+    };
+
+    const humanizeFormName = (storedFormName: string): string => {
+      const { formId } = parseStoredFormName(storedFormName);
+      const normalized = formId
+        .replace(/\.pdf$/i, "")
+        .replace(/_/g, " ")
+        .replace(/-/g, " ")
+        .trim();
+      if (!normalized) return "Started Form";
+      return normalized.replace(/\b\w/g, (c) => c.toUpperCase());
     };
 
     // Get total forms count for a state
@@ -248,55 +369,17 @@ export async function GET(req: NextRequest) {
       return getStateFormList(stateCode).length;
     };
 
-    // Create a map of user_id to their furthest form progress (highest position) and count of completed forms
-    const furthestFormProgressByUser = new Map<string, { form_name: string; updated_at: string; position: number; display_name: string; state_code: string }>();
-    // Track unique form IDs per user (e.g., "i9", "fw4") to prevent duplicates across states
-    const completedFormIdsByUser = new Map<string, Set<string>>();
-    // Track full form names for display (e.g., "wi-i9")
-    const completedFormNamesByUser = new Map<string, Set<string>>();
-    // Track detected state per user
-    const userStateCode = new Map<string, string>();
-
+    // Group form progress by user for state-aware progress calculation during profile mapping.
+    const formProgressByUser = new Map<string, Array<{ form_name: string; updated_at: string }>>();
     if (formProgressData) {
       for (const progress of formProgressData) {
-        // Skip stage markers (not actual forms)
-        if (STAGE_MARKERS.includes(progress.form_name)) {
-          continue;
+        if (!formProgressByUser.has(progress.user_id)) {
+          formProgressByUser.set(progress.user_id, []);
         }
-
-        // Note: DB query already filters out empty/null form_data
-        const stateCode = extractStateCode(progress.form_name);
-        const formId = extractFormId(progress.form_name);
-        const position = getFormPosition(progress.form_name);
-
-        // Track user's state (use the most recent form's state)
-        if (!userStateCode.has(progress.user_id)) {
-          userStateCode.set(progress.user_id, stateCode);
-        }
-
-        // Track the form with the highest position (furthest in the sequence)
-        const existing = furthestFormProgressByUser.get(progress.user_id);
-        if (!existing || position > existing.position) {
-          furthestFormProgressByUser.set(progress.user_id, {
-            form_name: progress.form_name,
-            updated_at: progress.updated_at,
-            position: position,
-            display_name: getFormDisplayName(progress.form_name),
-            state_code: stateCode
-          });
-        }
-
-        // Track unique form IDs (prevents counting "wi-i9" and "ca-i9" as two separate forms)
-        if (!completedFormIdsByUser.has(progress.user_id)) {
-          completedFormIdsByUser.set(progress.user_id, new Set<string>());
-        }
-        completedFormIdsByUser.get(progress.user_id)!.add(formId);
-
-        // Track form names for display
-        if (!completedFormNamesByUser.has(progress.user_id)) {
-          completedFormNamesByUser.set(progress.user_id, new Set<string>());
-        }
-        completedFormNamesByUser.get(progress.user_id)!.add(progress.form_name);
+        formProgressByUser.get(progress.user_id)!.push({
+          form_name: progress.form_name,
+          updated_at: progress.updated_at,
+        });
       }
     }
 
@@ -324,45 +407,123 @@ export async function GET(req: NextRequest) {
       const hasSubmittedPdf = !!profile?.onboarding_completed_at;
       const pdfSubmittedAt = profile?.onboarding_completed_at || null;
 
-      // Get furthest form progress for this user (highest position in sequence)
-      const latestFormProgress = furthestFormProgressByUser.get(profile.user_id) || null;
-      const completedFormIdsSet = completedFormIdsByUser.get(profile.user_id);
-      const completedFormNamesSet = completedFormNamesByUser.get(profile.user_id);
-      const formsCompleted = completedFormIdsSet?.size || 0;
-      const completedForms = completedFormNamesSet ? Array.from(completedFormNamesSet) : [];
+      // State detection: prefer explicit state-prefixed forms, then profile state, then CA.
+      const userProgressEntries = formProgressByUser.get(profile.user_id) || [];
+      const mostRecentNonStageEntry = userProgressEntries.reduce<{ form_name: string; updated_at: string } | null>(
+        (latest, entry) => {
+          if (STAGE_MARKERS.includes(entry.form_name)) return latest;
+          if (!latest) return entry;
+          return new Date(entry.updated_at).getTime() > new Date(latest.updated_at).getTime() ? entry : latest;
+        },
+        null
+      );
+      const lastUploadedIsBackground = !!mostRecentNonStageEntry?.form_name?.toLowerCase().includes('background');
+      let detectedState = normalizeProfileStateCode(profile?.state) || "ca";
+      for (const progress of userProgressEntries) {
+        if (STAGE_MARKERS.includes(progress.form_name)) continue;
+        const { stateCode } = parseStoredFormName(progress.form_name);
+        if (stateCode) {
+          detectedState = stateCode;
+          break;
+        }
+      }
+
+      // Compute furthest progress and completed count using the user's detected state sequence.
+      const completedFormIdsSet = new Set<string>();
+      const allNonStageFormNamesSet = new Set<string>();
+      let latestFormProgress: { form_name: string; updated_at: string; position: number; display_name: string; state_code: string } | null = null;
+
+      for (const progress of userProgressEntries) {
+        if (STAGE_MARKERS.includes(progress.form_name)) continue;
+        allNonStageFormNamesSet.add(progress.form_name);
+
+        const matchedForm = resolveStateFormMatch(progress.form_name, detectedState);
+        if (!matchedForm) continue;
+        const position = matchedForm.position;
+
+        if (
+          !latestFormProgress ||
+          position > latestFormProgress.position ||
+          (position === latestFormProgress.position &&
+            new Date(progress.updated_at).getTime() > new Date(latestFormProgress.updated_at).getTime())
+        ) {
+          latestFormProgress = {
+            form_name: progress.form_name,
+            updated_at: progress.updated_at,
+            position,
+            display_name: matchedForm.display,
+            state_code: detectedState,
+          };
+        }
+
+        completedFormIdsSet.add(matchedForm.id);
+      }
+
+      let formsCompleted = completedFormIdsSet.size;
+      const completedForms = Array.from(allNonStageFormNamesSet);
+
+      // If the user has real form saves but no exact state-sequence match, still show partial progress.
+      if (!latestFormProgress && allNonStageFormNamesSet.size > 0) {
+        const mostRecentNonStage =
+          userProgressEntries.find((entry) => !STAGE_MARKERS.includes(entry.form_name)) || null;
+        if (mostRecentNonStage) {
+          latestFormProgress = {
+            form_name: mostRecentNonStage.form_name,
+            updated_at: mostRecentNonStage.updated_at,
+            position: 1,
+            display_name: humanizeFormName(mostRecentNonStage.form_name),
+            state_code: detectedState,
+          };
+          formsCompleted = Math.max(formsCompleted, 1);
+        }
+      }
 
       // Get state-specific total forms count
-      const profileState = (profile?.state || '').toString().trim().toLowerCase();
-      const detectedStateRaw = userStateCode.get(profile.user_id) || profileState || 'ca';
-      const detectedState =
-        detectedStateRaw === 'xx' || detectedStateRaw.length !== 2 ? 'ca' : detectedStateRaw;
-      const totalFormsForUser = getTotalFormsForState(detectedState);
+      const stateFormList = getStateFormList(detectedState);
+      const totalFormsForUser = stateFormList.length;
 
       // Some legacy submissions may not have per-form progress rows. If the user has a
       // vendor_onboarding_status record, treat progress as fully submitted so the UI
       // doesn't show "Not started" for already-submitted onboarding.
       let effectiveLatestFormProgress = latestFormProgress;
       let effectiveFormsCompleted = formsCompleted;
-      if (!effectiveLatestFormProgress && onboardingStatus) {
-        const stateFormList = getStateFormList(detectedState);
+      let effectiveCompletedForms = completedForms;
+      let effectiveCompletedFormIds = new Set<string>(completedFormIdsSet);
+      if (onboardingStatus) {
         const lastForm = stateFormList[stateFormList.length - 1];
         const updatedAt =
-          pdfSubmittedAt ||
           onboardingStatus?.updated_at ||
           onboardingStatus?.completed_date ||
+          pdfSubmittedAt ||
+          latestFormProgress?.updated_at ||
           profile?.onboarding_completed_at ||
           profile?.created_at ||
           new Date().toISOString();
 
         effectiveLatestFormProgress = {
-          form_name: `${detectedState}-${lastForm?.id || 'submitted'}`,
+          form_name: latestFormProgress?.form_name || `${detectedState}-${lastForm?.id || 'submitted'}`,
           updated_at: updatedAt,
           position: totalFormsForUser,
-          display_name: lastForm?.display || 'Form Submitted',
+          display_name: lastForm?.display || latestFormProgress?.display_name || 'Form Submitted',
           state_code: detectedState,
         };
         effectiveFormsCompleted = totalFormsForUser;
+        effectiveCompletedForms = stateFormList.map((form) => `${detectedState}-${form.id}`);
+        effectiveCompletedFormIds = new Set(stateFormList.map((form) => form.id));
       }
+
+      // Business rule: if the most recently uploaded document is a background form,
+      // show onboarding progress as 0%.
+      if (lastUploadedIsBackground) {
+        effectiveLatestFormProgress = null;
+        effectiveFormsCompleted = 0;
+        effectiveCompletedForms = [];
+        effectiveCompletedFormIds = new Set<string>();
+      }
+
+      const missingStateForms = stateFormList.filter((form) => !effectiveCompletedFormIds.has(form.id));
+      const missingForms = missingStateForms.map((form) => `${detectedState}-${form.id}`);
+      const missingFormsDisplay = missingStateForms.map((form) => form.display);
 
       return {
         id: profile.id,
@@ -390,7 +551,9 @@ export async function GET(req: NextRequest) {
         latest_form_progress: effectiveLatestFormProgress,
         forms_completed: effectiveFormsCompleted,
         total_forms: totalFormsForUser,
-        completed_forms: completedForms,
+        completed_forms: effectiveCompletedForms,
+        missing_forms: missingForms,
+        missing_forms_display: missingFormsDisplay,
       };
     });
 

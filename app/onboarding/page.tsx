@@ -42,6 +42,8 @@ interface User {
   forms_completed: number;
   total_forms: number;
   completed_forms: string[];
+  missing_forms?: string[];
+  missing_forms_display?: string[];
 }
 
 interface SignatureAuditEntry {
@@ -488,6 +490,11 @@ export default function OnboardingPage() {
     }
   };
 
+  const normalizeFormFilterValue = (value?: string | null) => {
+    const normalized = (value || '').toLowerCase().trim().replace(/\.pdf$/i, '');
+    return normalized.replace(/^(ca|ny|wi|az|nv)-/, '');
+  };
+
   const filteredUsers = users
     .filter(user => {
       const matchesSearch =
@@ -516,7 +523,8 @@ export default function OnboardingPage() {
       if (filterForm === 'no_progress') {
         if (user.latest_form_progress) return false;
       } else if (filterForm !== 'all') {
-        if (!user.latest_form_progress || user.latest_form_progress.form_name !== filterForm) return false;
+        const normalizedLatestForm = normalizeFormFilterValue(user.latest_form_progress?.form_name);
+        if (!normalizedLatestForm || normalizedLatestForm !== filterForm) return false;
       }
 
       // Filter to show only users with progress (must have form progress with position > 0)
@@ -574,8 +582,8 @@ export default function OnboardingPage() {
   const uniqueFormNames = Array.from(
     new Set(
       users
-        .filter(u => u.latest_form_progress?.form_name)
-        .map(u => u.latest_form_progress!.form_name)
+        .map(u => normalizeFormFilterValue(u.latest_form_progress?.form_name))
+        .filter((formName): formName is string => !!formName)
     )
   ).sort();
 
@@ -778,6 +786,9 @@ export default function OnboardingPage() {
                     const auditEntries = signatureAudits[user.user_id];
                     const realStrokeCount = auditEntries?.filter((entry) => entry.hasRealDrawing).length ?? 0;
                     const blankCount = auditEntries ? auditEntries.length - realStrokeCount : 0;
+                    const progressDenominator = Math.max(user.total_forms || 0, 1);
+                    const progressNumerator = Math.max(0, Math.min(user.latest_form_progress?.position || 0, progressDenominator));
+                    const progressPercent = Math.round((progressNumerator / progressDenominator) * 100);
                     return (
                     <tr key={user.id} className="hover:bg-gray-50">
                       <td className="px-6 py-4 whitespace-nowrap">
@@ -792,20 +803,20 @@ export default function OnboardingPage() {
                             <>
                               <div className="flex items-center justify-between mb-1">
                                 <span className="text-xs font-medium text-gray-700">
-                                  Step {user.latest_form_progress.position}/{user.total_forms}
+                                  Step {progressNumerator}/{progressDenominator}
                                 </span>
                                 <span className="text-xs text-gray-500">
-                                  {Math.round((user.latest_form_progress.position / user.total_forms) * 100)}%
+                                  {progressPercent}%
                                 </span>
                               </div>
                               <div className="w-full bg-gray-200 rounded-full h-2">
                                 <div
                                   className={`h-2 rounded-full transition-all ${
-                                    user.latest_form_progress.position === user.total_forms
+                                    progressNumerator === progressDenominator
                                       ? 'bg-green-500'
                                       : 'bg-indigo-500'
                                   }`}
-                                  style={{ width: `${(user.latest_form_progress.position / user.total_forms) * 100}%` }}
+                                  style={{ width: `${progressPercent}%` }}
                                 />
                               </div>
                               <div className="text-xs text-gray-600 mt-1 truncate" title={user.latest_form_progress.display_name}>
@@ -823,6 +834,20 @@ export default function OnboardingPage() {
                                     {user.completed_forms.map((formName, idx) => (
                                       <li key={idx} className="truncate" title={formName}>
                                         • {formName.replace(/^[a-z]{2}-/, '').replace(/-/g, ' ')}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </details>
+                              )}
+                              {user.missing_forms_display && user.missing_forms_display.length > 0 && user.forms_completed < user.total_forms && (
+                                <details className="mt-1">
+                                  <summary className="text-xs text-amber-700 cursor-pointer hover:text-amber-900">
+                                    Missing {user.missing_forms_display.length} forms
+                                  </summary>
+                                  <ul className="mt-1 text-xs text-amber-800 pl-2 space-y-0.5 max-h-32 overflow-y-auto">
+                                    {user.missing_forms_display.map((formDisplay, idx) => (
+                                      <li key={idx} className="truncate" title={formDisplay}>
+                                        • {formDisplay}
                                       </li>
                                     ))}
                                   </ul>
