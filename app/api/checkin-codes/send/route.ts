@@ -65,10 +65,10 @@ function buildCheckinEmailHtml(params: {
   checkInUrl: string;
 }) {
   const { recipientName, code, label, checkInUrl } = params;
-  const title = "PDS Check-In Code";
+  const title = "PDS Employee ID Code";
   const message = recipientName
     ? `Hi ${recipientName},\n\nPlease use the code below to check in today.`
-    : "Please use the code below to check in today.";
+    : "Please use the code below to check in.";
   return `
 <!DOCTYPE html>
 <html>
@@ -83,7 +83,7 @@ function buildCheckinEmailHtml(params: {
       <div style="margin: 0 0 16px 0; color: #374151; line-height: 1.5;">${nl2br(message)}</div>
 
       <div style="border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; background: #f9fafb;">
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">Check-in code</div>
+        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">Employee ID code</div>
         <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: 0.25em; font-weight: 700; font-size: 28px; color: #1d4ed8;">
           ${escapeHtml(code)}
         </div>
@@ -96,13 +96,7 @@ function buildCheckinEmailHtml(params: {
         }
       </div>
 
-      <div style="margin-top: 16px;">
-        <a href="${escapeHtml(
-          checkInUrl
-        )}" style="display:inline-block; background:#1d4ed8; color:#ffffff; text-decoration:none; padding:10px 14px; border-radius:10px; font-weight:600;">
-          Open Check-In Page
-        </a>
-      </div>
+      
 
       <div style="margin-top: 16px; font-size: 12px; color: #6b7280;">
         If you already checked in today, you can ignore this email.

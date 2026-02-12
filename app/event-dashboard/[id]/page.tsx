@@ -979,6 +979,34 @@ export default function EventDashboardPage() {
     return computeAzNyCommissionPerVendor(items, totalCommissionPool);
   })();
 
+  // Download attestation PDF for a specific user
+  const handleDownloadAttestation = async (userId: string, userName: string) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
+
+      const res = await fetch(`/api/events/${eventId}/attestation/${userId}`, { method: "GET", headers });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: "Download failed" }));
+        alert(errData.error || "Failed to download attestation");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `attestation_${userName.replace(/[^a-zA-Z0-9]/g, "_")}_${event?.event_date?.split("T")[0] || "event"}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("Error downloading attestation:", err);
+      alert("Failed to download attestation PDF");
+    }
+  };
+
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -2743,8 +2771,18 @@ export default function EventDashboardPage() {
                               <button className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-2">
                                 Save
                               </button>
-                              <button className="text-gray-600 hover:text-gray-700 font-medium text-xs">
+                              <button className="text-gray-600 hover:text-gray-700 font-medium text-xs mr-2">
                                 Clock In/Out
+                              </button>
+                              <button
+                                onClick={() => handleDownloadAttestation(uid, `${firstName} ${lastName}`.trim())}
+                                className="text-purple-600 hover:text-purple-700 font-medium text-xs inline-flex items-center gap-1"
+                                title="Download attestation PDF"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                </svg>
+                                Attestation
                               </button>
                             </td>
                           </tr>
