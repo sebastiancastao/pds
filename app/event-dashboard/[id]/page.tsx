@@ -1852,7 +1852,7 @@ export default function EventDashboardPage() {
                       </div>
 
                       <div className="flex justify-between items-center pt-2">
-                        <span className="text-lg font-bold text-gray-900">= Net Sales</span>
+                        <span className="text-lg font-bold text-gray-900">= Adjusted Gross Amount</span>
                         <span className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">${shares.netSales.toFixed(2)}</span>
                       </div>
                     </div>

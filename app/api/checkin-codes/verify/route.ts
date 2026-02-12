@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -34,9 +35,9 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const code = body.code?.trim();
+    const code = normalizeCheckinCode(body.code);
 
-    if (!code || !/^\d{6}$/.test(code)) {
+    if (!isValidCheckinCode(code)) {
       return NextResponse.json({ error: "Invalid code format" }, { status: 400 });
     }
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, useCallback, MouseEvent, TouchEvent } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 // ─── Types ───────────────────────────────────────────────────────────
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
@@ -532,7 +533,10 @@ export default function CheckInKioskPage() {
 
   // ─── Code input handlers ───────────────────────────────────────
   const handleDigitChange = (index: number, value: string) => {
-    const digit = value.replace(/\D/g, "").slice(-1);
+    const nextChar = value.slice(-1).toUpperCase();
+    const digit = index < 2
+      ? nextChar.replace(/[^A-Z]/g, "")
+      : nextChar.replace(/\D/g, "");
     const newDigits = [...digits];
     newDigits[index] = digit;
     setDigits(newDigits);
@@ -553,21 +557,32 @@ export default function CheckInKioskPage() {
 
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
-    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
-    if (pasted.length > 0) {
-      const newDigits = [...digits];
-      for (let i = 0; i < 6; i++) newDigits[i] = pasted[i] || "";
-      setDigits(newDigits);
-      setError("");
-      inputRefs.current[Math.min(pasted.length, 5)]?.focus();
+    const pasted = normalizeCheckinCode(e.clipboardData.getData("text")).replace(
+      /[^A-Z0-9]/g,
+      ""
+    );
+    if (!pasted) return;
+
+    const letters = pasted.replace(/[^A-Z]/g, "");
+    const numbers = pasted.replace(/\D/g, "");
+    if (letters.length < 2 || numbers.length < 4) {
+      setError("Code format is 2 initials + 4 digits");
+      return;
     }
+
+    const normalized = `${letters.slice(0, 2)}${numbers.slice(0, 4)}`;
+    const newDigits = [...digits];
+    for (let i = 0; i < 6; i++) newDigits[i] = normalized[i] || "";
+    setDigits(newDigits);
+    setError("");
+    inputRefs.current[5]?.focus();
   };
 
   // ─── Validate code ─────────────────────────────────────────────
   const handleValidate = async () => {
-    const code = digits.join("");
-    if (code.length !== 6) {
-      setError("Please enter all 6 digits");
+    const code = normalizeCheckinCode(digits.join(""));
+    if (!isValidCheckinCode(code)) {
+      setError("Code format is 2 initials + 4 digits");
       return;
     }
 
@@ -769,7 +784,7 @@ export default function CheckInKioskPage() {
   }
   if (!isAuthed) return null;
 
-  const codeComplete = digits.every((d) => d !== "");
+  const codeComplete = isValidCheckinCode(digits.join(""));
 
   // ─── Attestation screen ────────────────────────────────────────
   if (showAttestation && worker) {
@@ -1083,7 +1098,7 @@ export default function CheckInKioskPage() {
                     </svg>
                   </div>
                   <h2 className="text-2xl font-bold text-gray-900">Kiosk Check-In</h2>
-                  <p className="text-gray-600 mt-2">Enter your 6-digit code</p>
+                  <p className="text-gray-600 mt-2">Enter your code (2 initials + 4 digits)</p>
                 </div>
 
                 <div className="flex justify-center gap-3 mb-8" onPaste={handlePaste}>
@@ -1092,7 +1107,8 @@ export default function CheckInKioskPage() {
                       key={i}
                       ref={(el) => { inputRefs.current[i] = el; }}
                       type="text"
-                      inputMode="numeric"
+                      inputMode={i < 2 ? "text" : "numeric"}
+                      autoCapitalize="characters"
                       maxLength={1}
                       value={digit}
                       onChange={(e) => handleDigitChange(i, e.target.value)}

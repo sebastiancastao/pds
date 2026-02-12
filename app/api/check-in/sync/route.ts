@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
+import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 export const runtime = "nodejs";
 
@@ -82,7 +83,9 @@ export async function POST(req: NextRequest) {
 
     for (const item of actions) {
       try {
-        if (!item.code || !/^\d{6}$/.test(item.code)) {
+        const normalizedCode = normalizeCheckinCode(item.code);
+
+        if (!isValidCheckinCode(normalizedCode)) {
           results.push({ id: item.id, success: false, error: "Invalid code format" });
           continue;
         }
@@ -91,7 +94,7 @@ export async function POST(req: NextRequest) {
         const { data: codeRecord } = await supabaseAdmin
           .from("checkin_codes")
           .select("id, target_user_id")
-          .eq("code", item.code)
+          .eq("code", normalizedCode)
           .eq("is_active", true)
           .single();
 

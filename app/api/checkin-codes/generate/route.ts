@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { generateCheckinCode } from "@/lib/checkin-code";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -12,10 +13,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-function generate6DigitCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
 
 export async function POST(req: NextRequest) {
   try {
@@ -51,18 +48,31 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => ({}));
     const label = body.label?.trim() || null;
 
-    // Generate a unique 6-digit code
-    let code = generate6DigitCode();
-    for (let i = 0; i < 25; i += 1) {
-      const { data: existing } = await supabaseAdmin
-        .from("checkin_codes")
-        .select("id")
-        .eq("code", code)
-        .eq("is_active", true)
-        .limit(1);
+    const { data: existingCodes, error: existingError } = await supabaseAdmin
+      .from("checkin_codes")
+      .select("code")
+      .eq("is_active", true);
 
-      if (!existing || existing.length === 0) break;
-      code = generate6DigitCode();
+    if (existingError) {
+      return NextResponse.json({ error: existingError.message }, { status: 400 });
+    }
+
+    const existingActiveCodes = new Set(
+      (existingCodes || []).map((row: any) => String(row.code))
+    );
+
+    let code = generateCheckinCode();
+    let isUnique = !existingActiveCodes.has(code);
+    for (let i = 0; i < 200 && !isUnique; i += 1) {
+      code = generateCheckinCode();
+      isUnique = !existingActiveCodes.has(code);
+    }
+
+    if (!isUnique) {
+      return NextResponse.json(
+        { error: "Failed to generate unique code" },
+        { status: 500 }
+      );
     }
 
     const { data, error } = await supabaseAdmin

@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
+import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 export const runtime = "nodejs";
 
@@ -55,7 +56,7 @@ function decryptProfileNamePart(value: unknown, workerIdForLog: string): string 
  * POST /api/check-in/validate
  * body: { code: string }
  *
- * Validates a 6-digit check-in code for the kiosk flow.
+ * Validates a check-in code for the kiosk flow.
  * Returns the worker's name and current time-keeping status.
  */
 export async function POST(req: NextRequest) {
@@ -66,9 +67,9 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const code = body.code?.trim();
+    const code = normalizeCheckinCode(body.code);
 
-    if (!code || !/^\d{6}$/.test(code)) {
+    if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
     }
 

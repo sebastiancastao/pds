@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendEmail } from "@/lib/email";
 import { safeDecrypt } from "@/lib/encryption";
+import { deriveCheckinInitials, generateCheckinCode } from "@/lib/checkin-code";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -63,10 +64,6 @@ async function listAllAuthUsers(): Promise<Map<string, string>> {
     if (users.length < perPage) break;
   }
   return authMap;
-}
-
-function generate6DigitCode(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 function escapeHtml(input: string) {
@@ -147,24 +144,42 @@ function isValidUuid(id: unknown) {
 }
 
 async function generateUniqueCodes(params: {
-  count: number;
+  recipients: Array<{
+    id: string;
+    email: string;
+    first_name: string;
+    last_name: string;
+  }>;
   existingActiveCodes: Set<string>;
 }) {
-  const { count, existingActiveCodes } = params;
+  const { recipients, existingActiveCodes } = params;
   const codes: string[] = [];
   const used = new Set<string>();
 
-  const maxAttempts = 10000;
-  let attempts = 0;
+  const maxAttemptsPerRecipient = 10000;
 
-  while (codes.length < count) {
-    attempts += 1;
-    if (attempts > maxAttempts) {
+  for (const recipient of recipients) {
+    const initials = deriveCheckinInitials({
+      firstName: recipient.first_name,
+      lastName: recipient.last_name,
+      email: recipient.email,
+      fallback: recipient.id,
+    });
+
+    let attempts = 0;
+    let code = "";
+    while (attempts < maxAttemptsPerRecipient) {
+      attempts += 1;
+      code = generateCheckinCode(initials);
+      if (existingActiveCodes.has(code)) continue;
+      if (used.has(code)) continue;
+      break;
+    }
+
+    if (!code || existingActiveCodes.has(code) || used.has(code)) {
       throw new Error("Failed to generate unique codes");
     }
-    const code = generate6DigitCode();
-    if (existingActiveCodes.has(code)) continue;
-    if (used.has(code)) continue;
+
     used.add(code);
     codes.push(code);
   }
@@ -336,7 +351,7 @@ export async function POST(req: NextRequest) {
     );
 
     const codes = await generateUniqueCodes({
-      count: validRecipients.length,
+      recipients: validRecipients,
       existingActiveCodes,
     });
 

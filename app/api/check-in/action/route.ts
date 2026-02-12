@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
+import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 export const runtime = "nodejs";
 
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
     }
 
     const body = await req.json();
-    const code = body.code?.trim();
+    const code = normalizeCheckinCode(body.code);
     const action: ActionType = body.action;
     const offlineTimestamp = body.timestamp; // ISO string from offline queue
     const signature = body.signature; // base64 signature for clock_out
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
       typeof id === "string" &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
-    if (!code || !/^\d{6}$/.test(code)) {
+    if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
     }
 

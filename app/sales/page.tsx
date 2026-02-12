@@ -432,7 +432,7 @@ function SalesContent() {
                   <hr className="my-2 border-blue-200" />
 
                   <div className="flex justify-between items-center text-lg">
-                    <span className="font-bold">Net Sales</span>
+                    <span className="font-bold">Adjusted Gross Amount</span>
                     <span className="font-bold text-blue-600">
                       ${shares.netSales.toFixed(2)}
                     </span>

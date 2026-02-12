@@ -397,8 +397,22 @@ function HRDashboardContent() {
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
+        const eventPaymentSummary = eventPaymentData?.eventPayment || {};
         const eventState = normalizeState(eventInfo.state) || "CA";
         const configuredBaseRate = getConfiguredBaseRate(eventState);
+        // Sales-tab parity: Adjusted Gross Amount = Net Sales, Commission $ = Net Sales x Commission Pool.
+        const eventTips = Number(eventInfo.tips || 0);
+        const ticketSales = Number(eventInfo.ticket_sales || 0);
+        const totalSales = Math.max(ticketSales - eventTips, 0);
+        const taxRate = Number(eventInfo.tax_rate_percent || 0);
+        const tax = totalSales * (taxRate / 100);
+        const adjustedGrossAmount =
+          Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
+        const commissionPoolPercent =
+          Number(eventPaymentSummary.commission_pool_percent || eventInfo.commission_pool || 0) || 0;
+        const eventCommissionDollars =
+          Number(eventPaymentSummary.commission_pool_dollars || 0) || (adjustedGrossAmount * commissionPoolPercent);
+        const eventTotalTips = Number(eventPaymentSummary.total_tips || 0) || eventTips;
 
         // Initialize venue entry
         if (!byVenue[eventInfo.venue]) {
@@ -464,6 +478,9 @@ function HRDashboardContent() {
                   date: eventInfo.event_date,
                   state: eventInfo.state,
                   baseRate: configuredBaseRate,
+                  commissionDollars: eventCommissionDollars,
+                  adjustedGrossAmount,
+                  totalTips: eventTotalTips,
                   eventTotal: 0,
                   eventHours: 0,
                   payments: teamPayments
@@ -482,6 +499,9 @@ function HRDashboardContent() {
             date: eventInfo.event_date,
             state: eventInfo.state,
             baseRate: configuredBaseRate,
+            commissionDollars: eventCommissionDollars,
+            adjustedGrossAmount,
+            totalTips: eventTotalTips,
             eventTotal: 0,
             eventHours: 0,
             payments: []
@@ -491,7 +511,6 @@ function HRDashboardContent() {
 
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
-        const eventPaymentSummary = eventPaymentData.eventPayment || {};
         const summaryBaseRate = Number(eventPaymentSummary.base_rate || 0);
         const baseRate = configuredBaseRate > 0 ? configuredBaseRate : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
@@ -500,20 +519,7 @@ function HRDashboardContent() {
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — try event_payments first, then compute from events table
-        let commissionPoolDollars =
-          Number(eventPaymentSummary.commission_pool_dollars || 0) ||
-          (Number(eventPaymentSummary.net_sales || 0) * Number(eventPaymentSummary.commission_pool_percent || 0)) ||
-          0;
-        // Fallback: compute from the events table fields (always available after Sales tab save)
-        if (commissionPoolDollars === 0 && Number(eventInfo.commission_pool || 0) > 0) {
-          const ticketSales = Number(eventInfo.ticket_sales || 0);
-          const eventTips = Number(eventInfo.tips || 0);
-          const taxRate = Number(eventInfo.tax_rate_percent || 0);
-          const totalSales = Math.max(ticketSales - eventTips, 0);
-          const tax = totalSales * (taxRate / 100);
-          const netSales = Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
-          commissionPoolDollars = netSales * Number(eventInfo.commission_pool);
-        }
+        const commissionPoolDollars = eventCommissionDollars;
         const isAZorNY = eventState === "AZ" || eventState === "NY";
 
         // Vendor count for commission allocation
@@ -547,7 +553,7 @@ function HRDashboardContent() {
           : 0;
 
         // Tips: try event_payments summary first, then fall back to events table
-        const totalTips = Number(eventPaymentSummary.total_tips || 0) || Number(eventInfo.tips || 0);
+        const totalTips = eventTotalTips;
         // Pro-rate tips by hours worked instead of equal split
         const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + getEffectiveHours(p), 0);
 
@@ -663,6 +669,9 @@ function HRDashboardContent() {
           date: eventInfo.event_date,
           state: eventInfo.state,
           baseRate,
+          commissionDollars: eventCommissionDollars,
+          adjustedGrossAmount,
+          totalTips: eventTotalTips,
           eventTotal,
           eventHours,
           payments: eventPayments
@@ -1308,6 +1317,9 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Commission $</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Tips</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total</th>
                           </tr>
@@ -1318,11 +1330,14 @@ function HRDashboardContent() {
                               <tr key={ev.id} className="bg-white">
                                 <td className="px-4 py-2 text-sm text-gray-900">{ev.name}</td>
                                 <td className="px-4 py-2 text-sm text-gray-500">{ev.date || '—'}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">{(ev.eventHours || 0).toFixed(1)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">${(ev.eventTotal || 0).toFixed(2)}</td>
                               </tr>
                               <tr>
-                                <td colSpan={4} className="px-4 py-2">
+                                <td colSpan={7} className="px-4 py-2">
                                   {Array.isArray(ev.payments) && ev.payments.length > 0 ? (
                                     <div className="overflow-x-auto border rounded">
                                       <table className="min-w-full">
