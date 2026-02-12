@@ -65,6 +65,7 @@ export default function EventDashboardPage() {
   const [commissionPool, setCommissionPool] = useState<string>(""); // fraction like 0.04
   const [taxRate, setTaxRate] = useState<string>("0");
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
+  const [apiRates, setApiRates] = useState<Record<string, { base_rate: number; tax_rate: number; overtime_rate: number; doubletime_rate: number; overtime_enabled: boolean; doubletime_enabled: boolean }>>({}); // Rates fetched from /api/rates keyed by state_code
   const [tips, setTips] = useState<string>("");
   // Manual tax amount for Sales tab (no auto rate calc)
   const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
@@ -326,12 +327,25 @@ export default function EventDashboardPage() {
             if (taxRes.ok) {
               const taxData = await taxRes.json();
               console.debug('[SALES-DEBUG] /api/rates ok. Count:', taxData?.rates?.length ?? 0);
+              // Store all rates keyed by state_code for use in payment tab
+              const ratesMap: Record<string, { base_rate: number; tax_rate: number; overtime_rate: number; doubletime_rate: number; overtime_enabled: boolean; doubletime_enabled: boolean }> = {};
+              for (const r of (taxData.rates || [])) {
+                ratesMap[r.state_code?.toUpperCase()] = {
+                  base_rate: Number(r.base_rate) || 0,
+                  tax_rate: Number(r.tax_rate) || 0,
+                  overtime_rate: Number(r.overtime_rate) || 1.5,
+                  doubletime_rate: Number(r.doubletime_rate) || 0,
+                  overtime_enabled: !!r.overtime_enabled,
+                  doubletime_enabled: !!r.doubletime_enabled,
+                };
+              }
+              setApiRates(ratesMap);
               const stateRate = taxData.rates?.find(
                 (r: any) => r.state_code?.toUpperCase() === eventData.state?.toUpperCase()
               );
               console.debug('[SALES-DEBUG] Matched state rate:', stateRate);
               if (stateRate) {
-                setStateTaxRate(stateRate.tax_rate || 0);
+                setStateTaxRate(Number(stateRate.tax_rate) || 0);
               } else {
                 console.warn('[SALES-DEBUG] No state rate match. Using event.tax_rate_percent fallback:', eventData.tax_rate_percent);
                 setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
@@ -859,14 +873,18 @@ export default function EventDashboardPage() {
   const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
 
   const getBaseRateForState = (stateCode: string): number => {
-    const stateRates: Record<string, number> = {
+    const normalized = normalizeState(stateCode) || "CA";
+    if (apiRates[normalized]) {
+      return apiRates[normalized].base_rate;
+    }
+    // Fallback hardcoded rates if API rates not loaded yet
+    const fallbackRates: Record<string, number> = {
       CA: 17.28,
       NY: 17.0,
       AZ: 14.7,
       WI: 15.0,
     };
-    const normalized = normalizeState(stateCode) || "CA";
-    return stateRates[normalized] ?? stateRates.CA;
+    return fallbackRates[normalized] ?? fallbackRates.CA;
   };
 
   const getRestBreakAmount = (actualHours: number, stateCode: string): number => {
@@ -2785,17 +2803,8 @@ export default function EventDashboardPage() {
                     ${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
@@ -2828,12 +2837,7 @@ export default function EventDashboardPage() {
                   <div className="text-right">
                     <div className="text-sm font-semibold text-blue-700">Base Rate</div>
                     <div className="text-2xl font-bold text-blue-900">
-                      ${(() => {
-                        const stateRates: Record<string, number> = {
-                          'CA': 17.28, 'NY': 17.00, 'AZ': 14.70, 'WI': 15.00,
-                        };
-                        return stateRates[event?.state?.toUpperCase()?.trim() || 'CA'] || 17.28;
-                      })()}/hr
+                      ${getBaseRateForState(event?.state || 'CA').toFixed(2)}/hr
                     </div>
                   </div>
                 </div>
@@ -3232,17 +3236,8 @@ export default function EventDashboardPage() {
                     <span className="font-semibold text-gray-900"> ${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
                       return totalPayment.toFixed(2);
@@ -3285,17 +3280,8 @@ export default function EventDashboardPage() {
                     <span className="text-2xl font-bold text-green-600">${(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
                       const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // State-specific base rates (2025)
-                      // Based on VENUE location (where event takes place), not vendor address
-                      const stateRates: Record<string, number> = {
-                        'CA': 17.28,  // California
-                        'NY': 17.00,  // New York
-                        'AZ': 14.70,  // Arizona
-                        'WI': 15.00,  // Wisconsin
-                      };
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA'; // Venue's state
-                      const baseRate = stateRates[eventState] || 17.28;
+                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
+                      const baseRate = getBaseRateForState(eventState);
 
                       const basePay = totalHours * baseRate;
                       const tipsAmount = Number(tips) || 0;

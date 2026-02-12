@@ -481,6 +481,8 @@ function HRDashboardContent() {
                   commissionDollars: eventCommissionDollars,
                   adjustedGrossAmount,
                   totalTips: eventTotalTips,
+                  totalRestBreak: 0,
+                  totalOther: 0,
                   eventTotal: 0,
                   eventHours: 0,
                   payments: teamPayments
@@ -502,6 +504,8 @@ function HRDashboardContent() {
             commissionDollars: eventCommissionDollars,
             adjustedGrossAmount,
             totalTips: eventTotalTips,
+            totalRestBreak: 0,
+            totalOther: 0,
             eventTotal: 0,
             eventHours: 0,
             payments: []
@@ -660,6 +664,8 @@ function HRDashboardContent() {
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
+        const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
 
         byVenue[eventInfo.venue].totalPayment += eventTotal;
         byVenue[eventInfo.venue].totalHours += eventHours;
@@ -672,6 +678,8 @@ function HRDashboardContent() {
           commissionDollars: eventCommissionDollars,
           adjustedGrossAmount,
           totalTips: eventTotalTips,
+          totalRestBreak: eventTotalRestBreak,
+          totalOther: eventTotalOther,
           eventTotal,
           eventHours,
           payments: eventPayments
@@ -729,7 +737,8 @@ function HRDashboardContent() {
           });
           const eventTotal = payments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
           const eventHours = payments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-          return { ...ev, payments, eventTotal, eventHours };
+          const totalOther = payments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
+          return { ...ev, payments, totalOther, eventTotal, eventHours };
         });
         const totalPayment = events.reduce((sum: number, ev: any) => sum + Number(ev.eventTotal || 0), 0);
         const totalHours = events.reduce((sum: number, ev: any) => sum + Number(ev.eventHours || 0), 0);
@@ -1317,10 +1326,12 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Commission $</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Tips</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Commission</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Tips</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Rest Break</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Other</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total</th>
                           </tr>
                         </thead>
@@ -1330,14 +1341,16 @@ function HRDashboardContent() {
                               <tr key={ev.id} className="bg-white">
                                 <td className="px-4 py-2 text-sm text-gray-900">{ev.name}</td>
                                 <td className="px-4 py-2 text-sm text-gray-500">{ev.date || '—'}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">{(ev.eventHours || 0).toFixed(1)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(ev.eventTotal || 0).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalRestBreak || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalOther || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.eventTotal || 0)).toFixed(2)}</td>
                               </tr>
                               <tr>
-                                <td colSpan={7} className="px-4 py-2">
+                                <td colSpan={9} className="px-4 py-2">
                                   {Array.isArray(ev.payments) && ev.payments.length > 0 ? (
                                     <div className="overflow-x-auto border rounded">
                                       <table className="min-w-full">

@@ -13,6 +13,7 @@ interface StateRate {
   overtime_rate: number;
   doubletime_enabled: boolean;
   doubletime_rate: number;
+  tax_rate: number;
   effective_date: string;
   updated_at?: string;
 }
@@ -26,6 +27,7 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: true,
     doubletime_rate: 2.0,
+    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -36,6 +38,7 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
+    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -46,6 +49,7 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
+    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
   {
@@ -56,6 +60,7 @@ const DEFAULT_RATES: StateRate[] = [
     overtime_rate: 1.5,
     doubletime_enabled: false,
     doubletime_rate: 0,
+    tax_rate: 0,
     effective_date: new Date().toISOString().split('T')[0],
   },
 ];
@@ -285,6 +290,9 @@ export default function RatesPage() {
                     Doubletime
                   </th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                    Tax Rate (%)
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                     Effective Date
                   </th>
                 </tr>
@@ -361,6 +369,15 @@ export default function RatesPage() {
                           </div>
                         )}
                       </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={rate.tax_rate}
+                        onChange={(e) => updateRate(index, 'tax_rate', parseFloat(e.target.value) || 0)}
+                        className="w-24 px-3 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                      />
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
                       <input

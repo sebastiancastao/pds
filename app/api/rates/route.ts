@@ -22,6 +22,7 @@ interface StateRate {
   overtime_rate: number;
   doubletime_enabled: boolean;
   doubletime_rate: number;
+  tax_rate: number;
   effective_date: string;
 }
 
@@ -133,6 +134,7 @@ export async function POST(req: NextRequest) {
           overtime_rate: rate.overtime_rate,
           doubletime_enabled: rate.doubletime_enabled,
           doubletime_rate: rate.doubletime_rate,
+          tax_rate: rate.tax_rate ?? 0,
           effective_date: rate.effective_date,
         }, {
           onConflict: 'state_code',
