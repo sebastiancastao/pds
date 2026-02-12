@@ -82,6 +82,7 @@ export async function POST(req: NextRequest) {
         created_by: user.id,
         is_active: true,
         label,
+        expires_at: "9999-12-31T23:59:59.999Z",
       })
       .select()
       .single();

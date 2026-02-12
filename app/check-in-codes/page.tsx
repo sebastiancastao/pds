@@ -209,9 +209,7 @@ export default function CheckInCodesPage() {
       }
 
       setEmailSuccess(
-        `Generated ${Number(data?.generatedCount || 0)} codes, emailed ${Number(
-          data?.sentCount || 0
-        )}`
+        `Generated ${Number(data?.generatedCount || 0)} codes`
       );
       await fetchCodes();
     } catch (err) {
@@ -248,7 +246,7 @@ export default function CheckInCodesPage() {
         return;
       }
 
-      setEmailSuccess("Generated and emailed code");
+      setEmailSuccess("Code generated successfully");
       await fetchCodes();
     } catch (err) {
       setEmailError("An unexpected error occurred while generating code");
@@ -581,7 +579,7 @@ export default function CheckInCodesPage() {
               }}
               disabled={generatingAllPersonal || recipientsLoading}
               className="px-6 py-3 bg-white border border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-all disabled:opacity-50 shadow-sm"
-              title="Generates a unique code for each user and emails it"
+              title="Generates a unique code for each user"
             >
               {generatingAllPersonal
                 ? "Generating..."
@@ -665,7 +663,7 @@ export default function CheckInCodesPage() {
                         }}
                         disabled={generatingPersonalUserId === u.id}
                         className="px-4 py-2 text-sm bg-white border border-primary-200 text-primary-700 rounded-lg hover:bg-primary-50 disabled:opacity-50 whitespace-nowrap"
-                        title="Generates a unique code for this user and emails it"
+                        title="Generates a unique code for this user"
                       >
                         {generatingPersonalUserId === u.id
                           ? "Generating..."

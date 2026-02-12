@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { sendEmail } from "@/lib/email";
 import { safeDecrypt } from "@/lib/encryption";
 import { deriveCheckinInitials, generateCheckinCode } from "@/lib/checkin-code";
 
@@ -66,76 +65,6 @@ async function listAllAuthUsers(): Promise<Map<string, string>> {
   return authMap;
 }
 
-function escapeHtml(input: string) {
-  return String(input || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function nl2br(input: string) {
-  return escapeHtml(input).replace(/\r?\n/g, "<br/>");
-}
-
-function buildCheckinEmailHtml(params: {
-  recipientName?: string;
-  code: string;
-  label?: string | null;
-  checkInUrl: string;
-}) {
-  const { recipientName, code, label, checkInUrl } = params;
-  const title = "PDS Check-In Code";
-  const message = recipientName
-    ? `Hi ${recipientName},\n\nPlease use the code below to check in today.`
-    : "Please use the code below to check in today.";
-
-  return `
-<!DOCTYPE html>
-<html>
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(title)}</title>
-  </head>
-  <body style="font-family: -apple-system, Segoe UI, Arial, sans-serif; color: #111827; background: #f9fafb; margin: 0; padding: 24px;">
-    <div style="max-width: 640px; margin: 0 auto; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px;">
-      <h2 style="margin: 0 0 12px 0; font-size: 18px;">${escapeHtml(title)}</h2>
-      <div style="margin: 0 0 16px 0; color: #374151; line-height: 1.5;">${nl2br(
-        message
-      )}</div>
-
-      <div style="border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; background: #f9fafb;">
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 8px;">Check-in code</div>
-        <div style="font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; letter-spacing: 0.25em; font-weight: 700; font-size: 28px; color: #1d4ed8;">
-          ${escapeHtml(code)}
-        </div>
-        ${
-          label
-            ? `<div style="margin-top: 10px; font-size: 12px; color: #6b7280;">Label: <strong style="color:#111827;">${escapeHtml(
-                label
-              )}</strong></div>`
-            : ""
-        }
-      </div>
-
-      <div style="margin-top: 16px;">
-        <a href="${escapeHtml(
-          checkInUrl
-        )}" style="display:inline-block; background:#1d4ed8; color:#ffffff; text-decoration:none; padding:10px 14px; border-radius:10px; font-weight:600;">
-          Open Check-In Page
-        </a>
-      </div>
-
-      <div style="margin-top: 16px; font-size: 12px; color: #6b7280;">
-        If you already checked in today, you can ignore this email.
-      </div>
-    </div>
-  </body>
-</html>`.trim();
-}
-
 function isValidUuid(id: unknown) {
   if (typeof id !== "string") return false;
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
@@ -187,19 +116,6 @@ async function generateUniqueCodes(params: {
   return codes;
 }
 
-async function chunkedAllSettled<T>(
-  tasks: Array<() => Promise<T>>,
-  chunkSize: number
-) {
-  const results: PromiseSettledResult<T>[] = [];
-  for (let i = 0; i < tasks.length; i += chunkSize) {
-    const chunk = tasks.slice(i, i + chunkSize).map((t) => t());
-    const r = await Promise.allSettled(chunk);
-    results.push(...r);
-  }
-  return results;
-}
-
 export async function POST(req: NextRequest) {
   try {
     const userId = await getAuthenticatedUserId(req);
@@ -228,8 +144,6 @@ export async function POST(req: NextRequest) {
         { status: 400 }
       );
     }
-
-    const checkInUrl = `${req.nextUrl.origin}/check-in`;
 
     let recipients: Array<{
       id: string;
@@ -361,6 +275,7 @@ export async function POST(req: NextRequest) {
       target_user_id: r.id,
       is_active: true,
       label,
+      expires_at: "9999-12-31T23:59:59.999Z",
     }));
 
     const { data: inserted, error: insertError } = await supabaseAdmin
@@ -373,33 +288,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: insertError.message }, { status: 400 });
     }
 
-    const subject = "PDS Check-In Code";
-    const sendTasks = validRecipients.map((r, idx) => {
-      const recipientName = [r.first_name, r.last_name].filter(Boolean).join(" ").trim();
-      const html = buildCheckinEmailHtml({
-        recipientName: recipientName || undefined,
-        code: codes[idx],
-        label,
-        checkInUrl,
-      });
-
-      return () =>
-        sendEmail({
-          to: r.email,
-          subject,
-          html,
-        });
-    });
-
-    const results = await chunkedAllSettled(sendTasks, 10);
-    const sentCount = results.filter((r) => r.status === "fulfilled" && (r as any).value?.success).length;
-    const failedCount = results.length - sentCount;
-
     return NextResponse.json({
       success: true,
       generatedCount: inserted?.length || validRecipients.length,
-      sentCount,
-      failedCount,
       skippedCount,
     });
   } catch (err: any) {
