@@ -37,18 +37,20 @@ export async function POST(request: NextRequest) {
     }
 
     const token = authHeader.substring(7);
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { persistSession: false },
-      global: { headers: { Authorization: `Bearer ${token}` } }
+    const supabaseAuth = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    });
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
     });
 
     // Verify user role
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser(token);
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { data: userData, error: userError } = await supabase
+    const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
       .select('role')
       .eq('id', user.id)
@@ -77,7 +79,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Insert venue
-    const { data: newVenue, error: insertError } = await supabase
+    const { data: newVenue, error: insertError } = await supabaseAdmin
       .from('venue_reference')
       .insert({
         venue_name,
@@ -119,18 +121,20 @@ export async function DELETE(request: NextRequest) {
     }
 
     const token = authHeader.substring(7);
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { persistSession: false },
-      global: { headers: { Authorization: `Bearer ${token}` } }
+    const supabaseAuth = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    });
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
     });
 
     // Verify user role
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser(token);
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { data: userData, error: userError } = await supabase
+    const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
       .select('role')
       .eq('id', user.id)
@@ -149,7 +153,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     // Delete venue
-    const { error: deleteError } = await supabase
+    const { error: deleteError } = await supabaseAdmin
       .from('venue_reference')
       .delete()
       .eq('id', id);
@@ -175,18 +179,20 @@ export async function PATCH(request: NextRequest) {
     }
 
     const token = authHeader.substring(7);
-    const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      auth: { persistSession: false },
-      global: { headers: { Authorization: `Bearer ${token}` } }
+    const supabaseAuth = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    });
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
     });
 
     // Verify user role
-    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    const { data: { user }, error: authError } = await supabaseAuth.auth.getUser(token);
     if (authError || !user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { data: userData, error: userError } = await supabase
+    const { data: userData, error: userError } = await supabaseAdmin
       .from('users')
       .select('role')
       .eq('id', user.id)
@@ -212,7 +218,7 @@ export async function PATCH(request: NextRequest) {
     }
 
     // Update venue
-    const { data: updatedVenue, error: updateError } = await supabase
+    const { data: updatedVenue, error: updateError } = await supabaseAdmin
       .from('venue_reference')
       .update({
         venue_name,
