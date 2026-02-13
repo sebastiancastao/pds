@@ -1557,6 +1557,15 @@ export default function DashboardPage() {
                             </svg>
                             Create Team
                           </button>
+                          <Link href={`/admin-email-team?eventId=${ev.id}&from=dashboard`}>
+                            <button className="apple-button apple-button-secondary text-sm py-2 px-4">
+                              <svg className="w-5 h-5 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4 7.5C4 6.672 4.672 6 5.5 6h13c.828 0 1.5.672 1.5 1.5v9c0 .828-.672 1.5-1.5 1.5h-13A1.5 1.5 0 014 16.5v-9z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M4.5 8l6.682 4.454a1.5 1.5 0 001.636 0L19.5 8" />
+                              </svg>
+                              Email Team
+                            </button>
+                          </Link>
                           <Link href={`/event-dashboard/${ev.id}`}>
                             <button className="apple-icon-button">
                               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

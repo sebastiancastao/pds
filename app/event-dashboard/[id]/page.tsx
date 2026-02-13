@@ -75,6 +75,8 @@ export default function EventDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [savingPayment, setSavingPayment] = useState(false);
+  const [loadingTimesheetTab, setLoadingTimesheetTab] = useState(false);
+  const [loadingPaymentTab, setLoadingPaymentTab] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
@@ -250,10 +252,34 @@ export default function EventDashboardPage() {
 
   // Load team & timesheet when needed
   useEffect(() => {
-    if ((activeTab === "team" || activeTab === "timesheet" || activeTab === "hr") && eventId) {
+    if (!eventId) return;
+
+    if (activeTab === "team") {
       loadTeam();
-      loadTimesheetTotals();
-      loadAdjustmentsFromPayments();
+      return;
+    }
+
+    if (activeTab === "timesheet") {
+      (async () => {
+        setLoadingTimesheetTab(true);
+        try {
+          await Promise.all([loadTeam(), loadTimesheetTotals()]);
+        } finally {
+          setLoadingTimesheetTab(false);
+        }
+      })();
+      return;
+    }
+
+    if (activeTab === "hr") {
+      (async () => {
+        setLoadingPaymentTab(true);
+        try {
+          await Promise.all([loadTeam(), loadTimesheetTotals(), loadAdjustmentsFromPayments()]);
+        } finally {
+          setLoadingPaymentTab(false);
+        }
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
@@ -2400,6 +2426,13 @@ export default function EventDashboardPage() {
                 </div>
               )}
 
+              {loadingTimesheetTab && (
+                <div className="text-center py-6 bg-white border rounded-lg">
+                  <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-sm text-gray-600">Loading timesheet data...</p>
+                </div>
+              )}
+
               {/* Summary */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-blue-50 rounded-lg p-4">
@@ -2608,6 +2641,13 @@ export default function EventDashboardPage() {
           {activeTab === "hr" && (
             <div className="space-y-6">
               <h2 className="text-2xl font-bold mb-6">HR Management</h2>
+
+              {loadingPaymentTab && (
+                <div className="text-center py-6 bg-white border rounded-lg">
+                  <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-sm text-gray-600">Loading payment data...</p>
+                </div>
+              )}
 
               {/* Quick Stats */}
               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
