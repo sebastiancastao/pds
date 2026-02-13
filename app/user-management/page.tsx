@@ -433,6 +433,45 @@ export default function UserManagementPage() {
             Reset User Password
           </Link>
           <Link
+            href="/admin-email"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#6366f1',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Email Sender
+          </Link>
+          <Link
+            href="/admin/check-in-monitor"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#0ea5e9',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Check-In Monitor
+          </Link>
+          <Link
+            href="/check-in-codes"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#14b8a6',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Check-In Codes
+          </Link>
+          <Link
             href="/global-calendar"
             style={{
               padding: '0.5rem 1rem',
