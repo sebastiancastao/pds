@@ -51,6 +51,26 @@ export async function POST(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
+    // Role-based authorization:
+    // - exec/admin: can create teams for any event
+    // - manager: can create teams for own events
+    const { data: requester, error: requesterError } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (requesterError || !requester) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+    const requesterRole = String(requester.role || '').toLowerCase();
+    const canManageAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
+    const canManageOwnedEvents = requesterRole === 'manager';
+
+    if (!canManageAllEvents && !canManageOwnedEvents) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
     // Get request body
     const body = await req.json();
     const { vendorIds } = body;
@@ -70,7 +90,7 @@ export async function POST(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    if (event.created_by !== user.id) {
+    if (!canManageAllEvents && event.created_by !== user.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
@@ -311,6 +331,38 @@ export async function GET(
 
     if (!user || !user.id) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
+    // Role-based read authorization:
+    // - exec/admin: can read team for any event
+    // - manager: can read team for own events
+    const { data: requester, error: requesterError } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (requesterError || !requester) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+    const requesterRole = String(requester.role || '').toLowerCase();
+    const canManageAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
+    const canManageOwnedEvents = requesterRole === 'manager';
+    if (!canManageAllEvents && !canManageOwnedEvents) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
+    // Verify event scope for managers
+    const { data: event, error: eventError } = await supabaseAdmin
+      .from('events')
+      .select('id, created_by')
+      .eq('id', eventId)
+      .single();
+    if (eventError || !event) {
+      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+    }
+    if (!canManageAllEvents && event.created_by !== user.id) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
     // Get team members for this event

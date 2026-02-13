@@ -34,6 +34,30 @@ function calculateDistance(
   return R * c;
 }
 
+type AvailabilityDay = {
+  date: string;
+  available: boolean;
+};
+
+function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
+  if (Array.isArray(payload)) {
+    return payload.filter((day: any) => day && typeof day.date === "string");
+  }
+
+  // Backward compatibility for malformed legacy rows where availability
+  // was stored as an object map (e.g. { "2026-02-13": true }).
+  if (payload && typeof payload === "object") {
+    return Object.entries(payload as Record<string, unknown>)
+      .filter(([date]) => typeof date === "string")
+      .map(([date, available]) => ({
+        date,
+        available: available === true
+      }));
+  }
+
+  return [];
+}
+
 /**
  * GET /api/events/[id]/available-vendors
  * Get vendors who have confirmed availability for this event's date
@@ -136,16 +160,28 @@ export async function GET(
 
     // Get all vendor invitations that include this event date
     // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
-    const { data: invitations, error: invitationsError } = await supabaseAdmin
+    let invitationsQuery = supabaseAdmin
       .from('vendor_invitations')
       .select(`
         vendor_id,
         availability,
         invitation_type,
-        status
+        status,
+        responded_at
       `)
-      .in('invited_by', inviterIds)
-      .eq('invitation_type', 'bulk');
+      .eq('invitation_type', 'bulk')
+      .eq('status', 'accepted')
+      .not('responded_at', 'is', null)
+      .not('availability', 'is', null);
+
+    // Role-scoped visibility:
+    // - Exec/Admin can review all availability records across inviters
+    // - Managers are scoped to their own/owner invitations for their events
+    if (!canAccessAllEvents) {
+      invitationsQuery = invitationsQuery.in('invited_by', inviterIds);
+    }
+
+    const { data: invitations, error: invitationsError } = await invitationsQuery;
 
     console.log('🔍 DEBUG - Invitations Query:', {
       userId: user.id,
@@ -184,7 +220,7 @@ export async function GET(
           return null;
         }
 
-        const availability = Array.isArray(inv.availability) ? inv.availability : [];
+        const availability = normalizeAvailabilityPayload(inv.availability);
         console.log(`  📅 Checking ${availability.length} days for vendor ${inv.vendor_id}`);
 
         const isAvailable = availability.some((day: any) => {

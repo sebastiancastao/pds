@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
@@ -132,6 +132,7 @@ export default function DashboardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
+  const [vendorSearchQuery, setVendorSearchQuery] = useState("");
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
 
   // Team creation for a given event
@@ -166,6 +167,25 @@ export default function DashboardPage() {
 
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
+
+  const filteredAndSortedVendors = useMemo(() => {
+    const query = vendorSearchQuery.trim().toLowerCase();
+    return [...vendors]
+      .sort((a, b) => {
+        const aName = `${a.profiles.first_name || ""} ${a.profiles.last_name || ""}`.trim().toLowerCase();
+        const bName = `${b.profiles.first_name || ""} ${b.profiles.last_name || ""}`.trim().toLowerCase();
+        return aName.localeCompare(bName);
+      })
+      .filter((v) => {
+        if (!query) return true;
+        const fullName = `${v.profiles.first_name || ""} ${v.profiles.last_name || ""}`.trim().toLowerCase();
+        return fullName.includes(query) || v.email.toLowerCase().includes(query);
+      });
+  }, [vendors, vendorSearchQuery]);
+
+  const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
+  const allVisibleVendorsSelected =
+    filteredAndSortedVendors.length > 0 && selectedVisibleVendorCount === filteredAndSortedVendors.length;
 
   // Helpers
   const toIsoDateTime = (dateStr: string, timeStr?: string | null) => {
@@ -826,6 +846,7 @@ export default function DashboardPage() {
     setShowVendorModal(true);
     setSelectedVendors(new Set());
     setSelectedRegion("all");
+    setVendorSearchQuery("");
     setMessage("");
     loadRegions();
     loadAllVendors("all");
@@ -834,6 +855,7 @@ export default function DashboardPage() {
     setShowVendorModal(false);
     setVendors([]);
     setSelectedVendors(new Set());
+    setVendorSearchQuery("");
     setMessage("");
   };
   const handleRegionChange = async (newRegion: string) => {
@@ -848,8 +870,18 @@ export default function DashboardPage() {
     setSelectedVendors(s);
   };
   const handleSelectAll = () => {
-    if (selectedVendors.size === vendors.length) setSelectedVendors(new Set());
-    else setSelectedVendors(new Set(vendors.map((v) => v.id)));
+    setSelectedVendors((prev) => {
+      const next = new Set(prev);
+      const allVisibleSelected =
+        filteredAndSortedVendors.length > 0 && filteredAndSortedVendors.every((v) => next.has(v.id));
+
+      if (allVisibleSelected) {
+        filteredAndSortedVendors.forEach((v) => next.delete(v.id));
+      } else {
+        filteredAndSortedVendors.forEach((v) => next.add(v.id));
+      }
+      return next;
+    });
   };
   const handleInvite = async () => {
     if (selectedVendors.size === 0) return;
@@ -882,6 +914,11 @@ export default function DashboardPage() {
   };
 
   const openTeamModal = async (event: EventItem) => {
+    if (userRole !== "exec") {
+      setTeamMessage("Only executives can create teams from Global Calendar.");
+      return;
+    }
+
     setSelectedEvent(event);
     setShowTeamModal(true);
     setTeamMessage("");
@@ -1479,7 +1516,7 @@ export default function DashboardPage() {
                             </div>
                           )}
                         </div>
-                        {userRole !== "manager" && (
+                        {userRole === "exec" && (
                           <div className="flex items-center gap-2">
                             <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
                               <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1969,16 +2006,32 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  <div className="mb-6">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Search Vendors</label>
+                    <input
+                      type="text"
+                      value={vendorSearchQuery}
+                      onChange={(e) => setVendorSearchQuery(e.target.value)}
+                      placeholder="Search by name or email"
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    />
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      Showing {filteredAndSortedVendors.length} of {vendors.length}{" "}
+                      {vendors.length === 1 ? "vendor" : "vendors"}
+                    </p>
+                  </div>
+
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
-                        checked={selectedVendors.size === vendors.length && vendors.length > 0}
+                        checked={allVisibleVendorsSelected}
                         onChange={handleSelectAll}
+                        disabled={filteredAndSortedVendors.length === 0}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({vendors.length})
+                        Select All ({filteredAndSortedVendors.length})
                       </span>
                     </label>
                     <button
@@ -1993,7 +2046,12 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
-                    {vendors.map((v) => (
+                    {filteredAndSortedVendors.length === 0 && (
+                      <div className="apple-empty-state py-10">
+                        <p className="text-sm text-gray-500">No vendors match your search</p>
+                      </div>
+                    )}
+                    {filteredAndSortedVendors.map((v) => (
                       <div key={v.id} className="apple-vendor-card" onClick={() => toggleVendorSelection(v.id)}>
                         <input
                           type="checkbox"
