@@ -74,6 +74,20 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
+    // Get requester role for authorization
+    const { data: requester, error: requesterError } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (requesterError || !requester) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+    }
+
+    const requesterRole = String(requester.role || '').toLowerCase();
+    const canAccessAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
+
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
@@ -91,8 +105,8 @@ export async function GET(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    // Verify user owns this event
-    if (event.created_by !== user.id) {
+    // Managers can access their own events. Exec/Admin can access all events.
+    if (!canAccessAllEvents && event.created_by !== user.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
@@ -117,6 +131,9 @@ export async function GET(
       }, { status: 200 });
     }
 
+    const invitationOwnerId = event.created_by || user.id;
+    const inviterIds = Array.from(new Set([invitationOwnerId, user.id].filter(Boolean)));
+
     // Get all vendor invitations that include this event date
     // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
     const { data: invitations, error: invitationsError } = await supabaseAdmin
@@ -127,11 +144,14 @@ export async function GET(
         invitation_type,
         status
       `)
-      .eq('invited_by', user.id)
+      .in('invited_by', inviterIds)
       .eq('invitation_type', 'bulk');
 
     console.log('🔍 DEBUG - Invitations Query:', {
       userId: user.id,
+      requesterRole,
+      invitationOwnerId,
+      inviterIds,
       invitationsCount: invitations?.length || 0,
       invitationsError
     });
@@ -145,7 +165,11 @@ export async function GET(
 
     // Filter vendors who are available on this event date
     // IMPORTANT: This does NOT check if they're on other event teams
-    console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date);
+    const eventDateKey =
+      typeof event.event_date === "string"
+        ? event.event_date.slice(0, 10)
+        : new Date(event.event_date).toISOString().slice(0, 10);
+    console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date, 'normalized:', eventDateKey);
 
     const availableVendorIds = (invitations || [])
       .map((inv, index) => {
@@ -164,26 +188,28 @@ export async function GET(
         console.log(`  📅 Checking ${availability.length} days for vendor ${inv.vendor_id}`);
 
         const isAvailable = availability.some((day: any) => {
-          const match = day.date === event.event_date && day.available === true;
-          if (day.date === event.event_date) {
-            console.log(`  🎯 Found matching date: ${day.date}, available: ${day.available}, match: ${match}`);
+          const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
+          const match = dayDate === eventDateKey && day.available === true;
+          if (dayDate === eventDateKey) {
+            console.log(`  🎯 Found matching date: ${dayDate}, available: ${day.available}, match: ${match}`);
           }
           return match;
         });
 
         if (isAvailable) {
-          console.log(`  ✅ Vendor ${inv.vendor_id} is available on ${event.event_date}`);
+          console.log(`  ✅ Vendor ${inv.vendor_id} is available on ${eventDateKey}`);
           return inv.vendor_id;
         } else {
-          console.log(`  ❌ Vendor ${inv.vendor_id} is NOT available on ${event.event_date}`);
+          console.log(`  ❌ Vendor ${inv.vendor_id} is NOT available on ${eventDateKey}`);
           return null;
         }
       })
       .filter(id => id !== null);
+    const uniqueAvailableVendorIds = Array.from(new Set(availableVendorIds));
 
-    console.log('🔍 DEBUG - Available Vendor IDs (NO EVENT_TEAMS FILTERING):', availableVendorIds);
+    console.log('🔍 DEBUG - Available Vendor IDs (NO EVENT_TEAMS FILTERING):', uniqueAvailableVendorIds);
 
-    if (availableVendorIds.length === 0) {
+    if (uniqueAvailableVendorIds.length === 0) {
       console.log('❌ No available vendors found for this date');
       return NextResponse.json({
         vendors: []
@@ -212,11 +238,11 @@ export async function GET(
           region_id
         )
       `)
-      .in('id', availableVendorIds)
+      .in('id', uniqueAvailableVendorIds)
       .eq('is_active', true);
 
     console.log('🔍 DEBUG - Vendor Details Query:', {
-      availableVendorIds,
+      availableVendorIds: uniqueAvailableVendorIds,
       vendorsCount: vendors?.length || 0,
       vendorsError
     });
