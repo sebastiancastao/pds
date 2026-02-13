@@ -284,7 +284,7 @@ export async function POST(req: NextRequest) {
       .select("id, code, target_user_id");
 
     if (insertError) {
-      console.error("Error creating personal employee id codes:", insertError);
+      console.error("Error creating personal Employee ID Codes:", insertError);
       return NextResponse.json({ error: insertError.message }, { status: 400 });
     }
 
@@ -294,7 +294,7 @@ export async function POST(req: NextRequest) {
       skippedCount,
     });
   } catch (err: any) {
-    console.error("Error generating personal employee id codes:", err);
+    console.error("Error generating personal Employee ID Codes:", err);
     return NextResponse.json({ error: err.message || "Internal server error" }, { status: 500 });
   }
 }

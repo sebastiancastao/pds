@@ -396,7 +396,7 @@ export default function CheckInCodesPage() {
       <div className="bg-white/80 backdrop-blur-sm border-b border-gray-200">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">employee id codes</h1>
+            <h1 className="text-2xl font-bold text-gray-900">Employee ID Codes</h1>
             <p className="text-gray-600 text-sm mt-1">
               Generate codes for workers to check in
             </p>

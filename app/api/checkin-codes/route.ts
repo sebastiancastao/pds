@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json(codesWithLogs);
   } catch (err) {
-    console.error("Error fetching employee id codes:", err);
+    console.error("Error fetching Employee ID Codes:", err);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
