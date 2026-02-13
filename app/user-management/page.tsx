@@ -459,6 +459,19 @@ export default function UserManagementPage() {
             Check-In Monitor
           </Link>
           <Link
+            href="/check-in-codes"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#14b8a6',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Check-In Codes
+          </Link>
+          <Link
             href="/global-calendar"
             style={{
               padding: '0.5rem 1rem',

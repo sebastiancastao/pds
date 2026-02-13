@@ -8,6 +8,13 @@ type DayAvailability = {
   available: boolean;
 };
 
+const toLocalDateString = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 export default function InvitationPage() {
   const params = useParams();
   const token = params?.token as string | undefined;
@@ -25,7 +32,7 @@ export default function InvitationPage() {
     for (let i = 0; i < 21; i++) {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
+      const iso = toLocalDateString(d);
       arr.push({ date: iso, available: false });
     }
     return arr;
@@ -39,18 +46,19 @@ export default function InvitationPage() {
     setDays(initial);
 
     // Try to load existing availability
-    fetch(`/api/invitations/${encodeURIComponent(token)}`)
+    fetch(`/api/invitations/${encodeURIComponent(token)}`, { cache: "no-store" })
       .then(async (res) => {
-        if (!res.ok) throw new Error("No data");
         const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || "Failed to load availability.");
         const existing: DayAvailability[] = data.availability || [];
         // Merge existing data with the 21-day range
         const map = new Map(existing.map(e => [e.date, e]));
         const merged = initial.map(d => map.get(d.date) ? { ...d, ...map.get(d.date) } : d);
         setDays(merged);
       })
-      .catch(() => {
-        // Leave initial days if no data
+      .catch((err: any) => {
+        setMessage(err?.message || "Failed to load saved availability.");
+        setTimeout(() => setMessage(""), 5000);
       })
       .finally(() => setLoading(false));
   }, [token]);
@@ -108,7 +116,7 @@ export default function InvitationPage() {
         </div>
 
         {/* Error Message */}
-        {message && message.toLowerCase().includes("error") && (
+        {message && (
           <div className="apple-alert apple-alert-error mb-6">
             {message}
           </div>
@@ -152,7 +160,7 @@ export default function InvitationPage() {
                 const dt = new Date(d.date + "T00:00:00");
                 const dayName = dt.toLocaleDateString('en-US', { weekday: 'long' });
                 const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                const isToday = d.date === new Date().toISOString().slice(0, 10);
+                const isToday = d.date === toLocalDateString(new Date());
 
                 return (
                   <div
@@ -164,7 +172,7 @@ export default function InvitationPage() {
                         <div className="font-semibold text-gray-900 text-lg">{dayName}</div>
                         <div className="text-sm text-gray-500">
                           {dateStr}
-                          {isToday && <span className="ml-2 text-blue-600 font-medium">• Today</span>}
+                          {isToday && <span className="ml-2 text-blue-600 font-medium">- Today</span>}
                         </div>
                       </div>
                       <label className="invitation-checkbox-wrapper">
