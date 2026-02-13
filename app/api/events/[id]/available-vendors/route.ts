@@ -155,9 +155,6 @@ export async function GET(
       }, { status: 200 });
     }
 
-    const invitationOwnerId = event.created_by || user.id;
-    const inviterIds = Array.from(new Set([invitationOwnerId, user.id].filter(Boolean)));
-
     // Get all vendor invitations that include this event date
     // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
     let invitationsQuery = supabaseAdmin
@@ -174,20 +171,11 @@ export async function GET(
       .not('responded_at', 'is', null)
       .not('availability', 'is', null);
 
-    // Role-scoped visibility:
-    // - Exec/Admin can review all availability records across inviters
-    // - Managers are scoped to their own/owner invitations for their events
-    if (!canAccessAllEvents) {
-      invitationsQuery = invitationsQuery.in('invited_by', inviterIds);
-    }
-
     const { data: invitations, error: invitationsError } = await invitationsQuery;
 
     console.log('🔍 DEBUG - Invitations Query:', {
       userId: user.id,
       requesterRole,
-      invitationOwnerId,
-      inviterIds,
       invitationsCount: invitations?.length || 0,
       invitationsError
     });
