@@ -102,6 +102,7 @@ export default function EventDashboardPage() {
   // Team & Timesheet
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
+  const [teamSearch, setTeamSearch] = useState<string>("");
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
@@ -128,6 +129,28 @@ export default function EventDashboardPage() {
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
 
   // Derived: filtered team members based on search and role filter
+  const filteredTeamListMembers = (teamMembers || []).filter((member: any) => {
+    const q = teamSearch.trim().toLowerCase();
+    if (!q) return true;
+
+    const profile = member?.users?.profiles;
+    const firstName = (profile?.first_name || "").toString().toLowerCase();
+    const lastName = (profile?.last_name || "").toString().toLowerCase();
+    const fullName = `${firstName} ${lastName}`.trim();
+    const email = (member?.users?.email || "").toString().toLowerCase();
+    const phone = (profile?.phone || "").toString().toLowerCase();
+    const division = (member?.users?.division || "").toString().toLowerCase();
+    const status = (member?.status || "").toString().replace(/_/g, " ").toLowerCase();
+
+    return (
+      fullName.includes(q) ||
+      email.includes(q) ||
+      phone.includes(q) ||
+      division.includes(q) ||
+      status.includes(q)
+    );
+  });
+
   const filteredTeamMembers = (teamMembers || []).filter((member: any) => {
     try {
       const division = (member?.users?.division || '').toString().toLowerCase();
@@ -2146,6 +2169,21 @@ export default function EventDashboardPage() {
                     </div>
                   </div>
 
+                  <div className="bg-white border rounded-lg p-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Search Team</label>
+                    <input
+                      type="text"
+                      placeholder="Search by name, email, phone, role, or status"
+                      value={teamSearch}
+                      onChange={(e) => setTeamSearch(e.target.value)}
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                    />
+                    <p className="text-xs text-gray-500 mt-2">
+                      Showing {filteredTeamListMembers.length} of {teamMembers.length}{" "}
+                      {teamMembers.length === 1 ? "member" : "members"}
+                    </p>
+                  </div>
+
                   {/* List */}
                   <div className="bg-white border rounded-lg overflow-hidden">
                     <table className="min-w-full divide-y divide-gray-200">
@@ -2169,7 +2207,14 @@ export default function EventDashboardPage() {
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
-                        {teamMembers.map((member: any) => {
+                        {filteredTeamListMembers.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-500">
+                              No team members match your search
+                            </td>
+                          </tr>
+                        ) : (
+                        filteredTeamListMembers.map((member: any) => {
                           const profile = member.users?.profiles;
                           const firstName = profile?.first_name || "N/A";
                           const lastName = profile?.last_name || "";
@@ -2231,7 +2276,8 @@ export default function EventDashboardPage() {
                               </td>
                             </tr>
                           );
-                        })}
+                        })
+                        )}
                       </tbody>
                     </table>
                   </div>
