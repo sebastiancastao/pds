@@ -144,6 +144,19 @@ export default function DashboardPage() {
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
 
+  const hasActiveAvailability = useCallback((vendor: Vendor) => {
+    const hasInvitationAvailability = !!(vendor.has_submitted_availability || vendor.availability_responded_at);
+    if (!hasInvitationAvailability || !vendor.availability_scope_start || !vendor.availability_scope_end) {
+      return false;
+    }
+
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    const today = `${now.getFullYear()}-${month}-${day}`;
+    return vendor.availability_scope_start <= today && vendor.availability_scope_end >= today;
+  }, []);
+
   const filteredAndSortedVendors = useMemo(() => {
     const query = vendorSearchQuery.trim().toLowerCase();
     return [...vendors]
@@ -153,13 +166,13 @@ export default function DashboardPage() {
         return aName.localeCompare(bName);
       })
       .filter((v) => {
-        const hasSubmittedAvailability = !!(v.has_submitted_availability || v.availability_responded_at);
+        const hasSubmittedAvailability = hasActiveAvailability(v);
         if (showOnlyPendingAvailability && hasSubmittedAvailability) return false;
         if (!query) return true;
         const fullName = `${v.profiles.first_name || ""} ${v.profiles.last_name || ""}`.trim().toLowerCase();
         return fullName.includes(query) || v.email.toLowerCase().includes(query);
       });
-  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability]);
+  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability, hasActiveAvailability]);
 
   const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
   const allVisibleVendorsSelected =
@@ -2211,7 +2224,7 @@ export default function DashboardPage() {
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
-                              {(v.has_submitted_availability || v.availability_responded_at) && (
+                              {hasActiveAvailability(v) && (
                                 <div className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-md">Availability sent</div>
                               )}
                               {v.distance !== null ? (
@@ -2229,7 +2242,7 @@ export default function DashboardPage() {
                                 {v.profiles.phone}
                               </>
                             )}
-                          {v.availability_responded_at && (
+                          {hasActiveAvailability(v) && v.availability_responded_at && (
                             <div className="text-xs text-green-700 mb-1">
                               Sent availability: {formatDateTime(v.availability_responded_at)}
                               {v.availability_scope_start && v.availability_scope_end && (
@@ -2454,7 +2467,7 @@ export default function DashboardPage() {
                                 {phone}
                               </>
                             )}
-                          {v.availability_responded_at && (
+                          {hasActiveAvailability(v) && v.availability_responded_at && (
                             <div className="text-xs text-green-700 mb-1">
                               Sent availability: {formatDateTime(v.availability_responded_at)}
                               {v.availability_scope_start && v.availability_scope_end && (

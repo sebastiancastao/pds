@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS regions (
 -- Insert the metro regions with geographic coordinates
 INSERT INTO regions (name, description, center_lat, center_lng, radius_miles) VALUES
   ('LA Metro', 'Los Angeles Metropolitan Area', 34.0522, -118.2437, 75),
+  ('Las Vegas', 'Las Vegas Metropolitan Area', 36.1699, -115.1398, 50),
   ('Phoenix Metro', 'Phoenix Metropolitan Area', 33.4484, -112.0740, 50),
   ('SF Metro', 'San Francisco Bay Area', 37.7749, -122.4194, 60),
   ('NY Metro', 'New York Metropolitan Area', 40.7128, -74.0060, 60),
