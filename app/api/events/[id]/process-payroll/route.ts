@@ -14,6 +14,11 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
+const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
+
 export async function POST(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -58,8 +63,9 @@ export async function POST(
 
     // Send email to each team member
     for (const member of payrollData) {
-      if (!member.email) {
-        console.warn(`[PROCESS-PAYROLL] Skipping member without email: ${member.firstName} ${member.lastName}`);
+      const normalizedEmail = (member.email || "").toString().trim().toLowerCase();
+      if (!isValidEmail(normalizedEmail)) {
+        console.warn(`[PROCESS-PAYROLL] Skipping member with invalid email: ${member.firstName} ${member.lastName} (${member.email || "missing"})`);
         failedCount++;
         continue;
       }
@@ -232,16 +238,38 @@ export async function POST(
           </html>
         `;
 
-        await sendEmail({
-          to: member.email,
-          subject: `Payment Details - ${eventName}`,
-          html: emailHtml,
-        });
+        let emailSent = false;
+        let lastEmailError = "Unknown email error";
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const sendResult = await sendEmail({
+            to: normalizedEmail,
+            subject: `Payment Details - ${eventName}`,
+            html: emailHtml,
+          });
+
+          if (sendResult.success) {
+            emailSent = true;
+            break;
+          }
+
+          lastEmailError = sendResult.error || lastEmailError;
+          if (attempt < 3 && isRateLimitError(lastEmailError)) {
+            await sleep(1200 * attempt);
+            continue;
+          }
+          break;
+        }
+
+        if (!emailSent) {
+          throw new Error(lastEmailError);
+        }
 
         sentCount++;
-        console.log(`[PROCESS-PAYROLL] Email sent to ${member.email}`);
+        console.log(`[PROCESS-PAYROLL] Email sent to ${normalizedEmail}`);
+        await sleep(125);
       } catch (emailError: any) {
-        console.error(`[PROCESS-PAYROLL] Failed to send email to ${member.email}:`, emailError);
+        console.error(`[PROCESS-PAYROLL] Failed to send email to ${normalizedEmail}:`, emailError);
         failedCount++;
         errors.push(`${member.firstName} ${member.lastName}: ${emailError.message}`);
       }

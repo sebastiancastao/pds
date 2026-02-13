@@ -20,6 +20,18 @@ interface EmailResult {
   error?: string;
 }
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
+const DEFAULT_FROM = process.env.RESEND_FROM || 'PDS Time Keeping <service@pdsportal.site>';
+const EVENTS_FROM = process.env.RESEND_FROM_EVENTS || process.env.RESEND_FROM || 'PDS Events <service@pdsportal.site>';
+
+function formatResendError(error: any): string {
+  if (!error) return 'Unknown email provider error';
+  const statusCode = Number(error?.statusCode || error?.status || 0);
+  const message = (error?.message || error?.name || 'Email provider error').toString();
+  return statusCode ? `[${statusCode}] ${message}` : message;
+}
+
 /**
  * Send temporary password email to new user
  * 
@@ -536,6 +548,14 @@ export async function sendVendorEventInvitationEmail(data: {
   invitationToken: string;
 }): Promise<EmailResult> {
   const { email, firstName, lastName, eventName, eventDate, venueName, invitationToken } = data;
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+
+  if (!isValidEmail(normalizedEmail)) {
+    return {
+      success: false,
+      error: `Invalid recipient email: ${email || "missing"}`,
+    };
+  }
 
   // Build invitation URL with token
   const invitationUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/invitation/${invitationToken}`;
@@ -687,8 +707,8 @@ export async function sendVendorEventInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
-      to: email,
+      from: EVENTS_FROM,
+      to: normalizedEmail,
       subject: emailSubject,
       html: emailBody,
     });
@@ -697,7 +717,7 @@ export async function sendVendorEventInvitationEmail(data: {
       console.error('❌ Resend error (vendor invitation):', error);
       return {
         success: false,
-        error: error.message,
+        error: formatResendError(error),
       };
     }
 
@@ -714,7 +734,7 @@ export async function sendVendorEventInvitationEmail(data: {
     console.error('❌ Vendor invitation email failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to send vendor invitation',
+      error: formatResendError(error),
     };
   }
 }
@@ -735,6 +755,14 @@ export async function sendVendorBulkInvitationEmail(data: {
   invitationToken: string;
 }): Promise<EmailResult> {
   const { email, firstName, lastName, durationWeeks, eventCount, startDate, endDate, managerName, managerPhone, invitationToken } = data;
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+
+  if (!isValidEmail(normalizedEmail)) {
+    return {
+      success: false,
+      error: `Invalid recipient email: ${email || "missing"}`,
+    };
+  }
 
   // Build invitation URL with token
   const invitationUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/invitation/${invitationToken}`;
@@ -922,8 +950,8 @@ export async function sendVendorBulkInvitationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
-      to: email,
+      from: EVENTS_FROM,
+      to: normalizedEmail,
       subject: emailSubject,
       html: emailBody,
     });
@@ -932,7 +960,7 @@ export async function sendVendorBulkInvitationEmail(data: {
       console.error('❌ Resend error (bulk vendor invitation):', error);
       return {
         success: false,
-        error: error.message,
+        error: formatResendError(error),
       };
     }
 
@@ -949,7 +977,7 @@ export async function sendVendorBulkInvitationEmail(data: {
     console.error('❌ Bulk vendor invitation email failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to send bulk vendor invitation',
+      error: formatResendError(error),
     };
   }
 }
@@ -968,6 +996,14 @@ export async function sendTeamConfirmationEmail(data: {
   confirmationToken: string;
 }): Promise<EmailResult> {
   const { email, firstName, lastName, eventName, eventDate, managerName, managerPhone, confirmationToken } = data;
+  const normalizedEmail = (email || "").toString().trim().toLowerCase();
+
+  if (!isValidEmail(normalizedEmail)) {
+    return {
+      success: false,
+      error: `Invalid recipient email: ${email || "missing"}`,
+    };
+  }
 
   // Build confirmation URL with token
   const confirmationUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/team-confirmation/${confirmationToken}`;
@@ -1144,8 +1180,8 @@ export async function sendTeamConfirmationEmail(data: {
   // Send email via Resend
   try {
     const { data, error } = await resend.emails.send({
-      from: 'PDS Events <service@pdsportal.site>', // Update this to your domain after verification
-      to: email,
+      from: EVENTS_FROM,
+      to: normalizedEmail,
       subject: emailSubject,
       cc:"jenvillar625@gmail.com",
       html: emailBody,
@@ -1155,7 +1191,7 @@ export async function sendTeamConfirmationEmail(data: {
       console.error('❌ Resend error (team confirmation):', error);
       return {
         success: false,
-        error: error.message,
+        error: formatResendError(error),
       };
     }
 
@@ -1172,7 +1208,7 @@ export async function sendTeamConfirmationEmail(data: {
     console.error('❌ Team confirmation email failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to send team confirmation',
+      error: formatResendError(error),
     };
   }
 }
@@ -1371,26 +1407,41 @@ export async function sendEmail(data: {
   cc?: string | string[];
 }): Promise<EmailResult> {
   const { to, subject, html, from, cc } = data;
+  const toList = (Array.isArray(to) ? to : [to])
+    .map((v) => (v || "").toString().trim().toLowerCase())
+    .filter(Boolean);
+  const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : [])
+    .map((v) => (v || "").toString().trim().toLowerCase())
+    .filter(Boolean);
+
+  if (toList.length === 0 || toList.some((email) => !isValidEmail(email))) {
+    return {
+      success: false,
+      error: `Invalid recipient email list: ${toList.join(", ") || "missing"}`,
+    };
+  }
+
+  const validCcList = ccList.filter((email) => isValidEmail(email));
 
   try {
     const { data: resendData, error } = await resend.emails.send({
-      from: from || 'PDS Time Keeping <service@pdsportal.site>',
-      to,
-      cc,
+      from: from || DEFAULT_FROM,
+      to: Array.isArray(to) ? toList : toList[0],
+      cc: validCcList.length > 0 ? (Array.isArray(cc) ? validCcList : validCcList[0]) : undefined,
       subject,
       html,
     });
 
     if (error) {
-      console.error('❌ Resend error (generic email):', error);
+      console.error('Resend error (generic email):', error);
       return {
         success: false,
-        error: error.message,
+        error: formatResendError(error),
       };
     }
 
-    console.log('✅ Email sent successfully via Resend!');
-    console.log(`   To: ${to}`);
+    console.log('Email sent successfully via Resend!');
+    console.log(`   To: ${Array.isArray(to) ? toList.join(', ') : toList[0]}`);
     console.log(`   Subject: ${subject}`);
     console.log(`   Message ID: ${resendData?.id}`);
 
@@ -1399,10 +1450,10 @@ export async function sendEmail(data: {
       messageId: resendData?.id,
     };
   } catch (error: any) {
-    console.error('❌ Email sending failed:', error);
+    console.error('Email sending failed:', error);
     return {
       success: false,
-      error: error.message || 'Failed to send email',
+      error: formatResendError(error),
     };
   }
 }

@@ -16,6 +16,11 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
+const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
+
 /**
  * POST /api/events/[id]/team
  * Create a team for an event by assigning vendors
@@ -57,7 +62,7 @@ export async function POST(
     // Verify event exists and user owns it
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('id, created_by, event_name')
+      .select('id, created_by, event_name, event_date')
       .eq('id', eventId)
       .single();
 
@@ -161,68 +166,95 @@ export async function POST(
 
     // Send confirmation emails only to newly added vendors
     const newVendors = vendors.filter((v: any) => newVendorIds.includes(v.id));
-    const emailResults = await Promise.allSettled(
-      newVendors.map(async (vendor: any) => {
-        const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
-        if (!teamMember) return null;
+    let emailsSent = 0;
+    let emailsFailed = 0;
 
-        // Decrypt vendor names
-        let vendorFirstName = 'Vendor';
-        let vendorLastName = '';
-        try {
-          vendorFirstName = vendor.profiles?.first_name
-            ? decrypt(vendor.profiles.first_name)
-            : 'Vendor';
-          vendorLastName = vendor.profiles?.last_name
-            ? decrypt(vendor.profiles.last_name)
+    for (const vendor of newVendors as any[]) {
+      const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
+      if (!teamMember) {
+        emailsFailed++;
+        continue;
+      }
+
+      const normalizedEmail = (vendor.email || "").toString().trim().toLowerCase();
+      if (!isValidEmail(normalizedEmail)) {
+        console.warn('Skipping team confirmation email due to invalid address:', vendor.email);
+        emailsFailed++;
+        continue;
+      }
+
+      let vendorFirstName = 'Vendor';
+      let vendorLastName = '';
+      try {
+        vendorFirstName = vendor.profiles?.first_name
+          ? decrypt(vendor.profiles.first_name)
+          : 'Vendor';
+        vendorLastName = vendor.profiles?.last_name
+          ? decrypt(vendor.profiles.last_name)
+          : '';
+      } catch (error) {
+        console.error('Error decrypting vendor name for email:', error);
+      }
+
+      let managerName = 'Event Manager';
+      let managerPhone = '';
+      try {
+        if (managerProfile) {
+          const managerFirst = managerProfile.first_name
+            ? decrypt(managerProfile.first_name)
             : '';
-        } catch (error) {
-          console.error('❌ Error decrypting vendor name for email:', error);
+          const managerLast = managerProfile.last_name
+            ? decrypt(managerProfile.last_name)
+            : '';
+          managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
+          managerPhone = managerProfile.phone
+            ? decrypt(managerProfile.phone)
+            : '';
         }
+      } catch (error) {
+        console.error('Error decrypting manager details:', error);
+      }
 
-        // Decrypt manager names
-        let managerName = 'Event Manager';
-        let managerPhone = '';
-        try {
-          if (managerProfile) {
-            const managerFirst = managerProfile.first_name
-              ? decrypt(managerProfile.first_name)
-              : '';
-            const managerLast = managerProfile.last_name
-              ? decrypt(managerProfile.last_name)
-              : '';
-            managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
-            managerPhone = managerProfile.phone
-              ? decrypt(managerProfile.phone)
-              : '';
-          }
-        } catch (error) {
-          console.error('❌ Error decrypting manager details:', error);
-        }
+      const eventDate = new Date((event as any).event_date || Date.now()).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
 
-        // Format event date
-        const eventDate = new Date(event.event_name).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-
-        return await sendTeamConfirmationEmail({
-          email: vendor.email,
+      let sent = false;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const emailResult = await sendTeamConfirmationEmail({
+          email: normalizedEmail,
           firstName: vendorFirstName,
           lastName: vendorLastName,
           eventName: event.event_name,
-          eventDate: eventDate,
-          managerName: managerName,
-          managerPhone: managerPhone,
+          eventDate,
+          managerName,
+          managerPhone,
           confirmationToken: teamMember.confirmation_token
         });
-      })
-    );
 
-    const emailsSent = emailResults.filter(r => r.status === 'fulfilled').length;
-    const emailsFailed = emailResults.filter(r => r.status === 'rejected').length;
+        if (emailResult.success) {
+          sent = true;
+          break;
+        }
+
+        const err = emailResult.error || "Unknown email error";
+        if (attempt < 3 && isRateLimitError(err)) {
+          await sleep(1200 * attempt);
+          continue;
+        }
+
+        console.error(`Failed to send team confirmation email to ${normalizedEmail}:`, err);
+        break;
+      }
+
+      if (sent) emailsSent++;
+      else emailsFailed++;
+
+      await sleep(125);
+    }
 
     console.log(`📧 Sent ${emailsSent} confirmation emails, ${emailsFailed} failed`);
 
@@ -427,3 +459,4 @@ export async function GET(
     }, { status: 500 });
   }
 }
+

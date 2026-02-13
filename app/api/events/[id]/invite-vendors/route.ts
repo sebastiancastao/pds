@@ -16,6 +16,12 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
+const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
+
 /**
  * POST /api/events/[id]/invite-vendors
  * Send invitations to selected vendors for an event
@@ -90,13 +96,23 @@ export async function POST(
       day: 'numeric'
     });
 
-    // Send invitations to each vendor
-    const results = await Promise.allSettled(
-      vendors.map(async (vendor: any) => {
+    // Send invitations sequentially to avoid provider burst rate limiting (429)
+    let successes = 0;
+    const failedEmails: string[] = [];
+
+    for (const vendor of vendors as any[]) {
+      const normalizedEmail = (vendor.email || "").toString().trim().toLowerCase();
+
+      if (!isValidEmail(normalizedEmail)) {
+        failedEmails.push(`Skipped ${vendor.id}: invalid email "${vendor.email || "missing"}"`);
+        continue;
+      }
+
+      try {
         // Generate unique invitation token
         const invitationToken = crypto.randomBytes(32).toString('hex');
 
-        // Store invitation in database (you may want to create a vendor_invitations table)
+        // Store invitation in database
         const { error: inviteError } = await supabaseAdmin
           .from('vendor_invitations')
           .insert({
@@ -110,7 +126,7 @@ export async function POST(
 
         if (inviteError) {
           console.error('Error storing invitation:', inviteError);
-          throw new Error(`Failed to store invitation for ${vendor.email}`);
+          throw new Error(`Failed to store invitation for ${normalizedEmail}`);
         }
 
         // Decrypt vendor names
@@ -125,37 +141,41 @@ export async function POST(
           lastName = '';
         }
 
-        // Send invitation email
-        const emailResult = await sendVendorEventInvitationEmail({
-          email: vendor.email,
-          firstName: firstName,
-          lastName: lastName,
-          eventName: eventData.event_name,
-          eventDate: eventDate,
-          venueName: eventData.venue,
-          invitationToken: invitationToken
-        });
+        // Retry on 429 responses from provider
+        let emailResult: Awaited<ReturnType<typeof sendVendorEventInvitationEmail>> | null = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          emailResult = await sendVendorEventInvitationEmail({
+            email: normalizedEmail,
+            firstName,
+            lastName,
+            eventName: eventData.event_name,
+            eventDate,
+            venueName: eventData.venue,
+            invitationToken
+          });
 
-        if (!emailResult.success) {
-          throw new Error(`Failed to send email to ${vendor.email}: ${emailResult.error}`);
+          if (emailResult.success) break;
+          const err = emailResult.error || "Unknown email error";
+          if (attempt < 3 && isRateLimitError(err)) {
+            await sleep(1200 * attempt);
+            continue;
+          }
+          throw new Error(`Failed to send email to ${normalizedEmail}: ${err}`);
         }
 
-        return {
-          vendorId: vendor.id,
-          email: vendor.email,
-          success: true,
-          messageId: emailResult.messageId
-        };
-      })
-    );
+        if (!emailResult?.success) {
+          throw new Error(`Failed to send email to ${normalizedEmail}`);
+        }
 
-    // Count successes and failures
-    const successes = results.filter(r => r.status === 'fulfilled').length;
-    const failures = results.filter(r => r.status === 'rejected').length;
+        successes++;
+        // Light throttling between sends to reduce 429 likelihood
+        await sleep(125);
+      } catch (error: any) {
+        failedEmails.push(error?.message || `Failed to send email to ${normalizedEmail}`);
+      }
+    }
 
-    const failedEmails = results
-      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-      .map(r => r.reason.message);
+    const failures = failedEmails.length;
 
     return NextResponse.json({
       success: true,
