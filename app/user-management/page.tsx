@@ -469,7 +469,7 @@ export default function UserManagementPage() {
               fontWeight: '500'
             }}
           >
-            Check-In Codes
+            employee id codes
           </Link>
           <Link
             href="/global-calendar"
