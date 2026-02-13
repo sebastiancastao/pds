@@ -47,6 +47,10 @@ type Vendor = {
   distance: number | null;
   hasCoordinates?: boolean;
   recently_responded?: boolean;
+  has_submitted_availability?: boolean;
+  availability_responded_at?: string | null;
+  availability_scope_start?: string | null;
+  availability_scope_end?: string | null;
   profiles: {
     first_name: string;
     last_name: string;
@@ -133,6 +137,7 @@ export default function DashboardPage() {
   const [message, setMessage] = useState("");
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [vendorSearchQuery, setVendorSearchQuery] = useState("");
+  const [showOnlyPendingAvailability, setShowOnlyPendingAvailability] = useState(false);
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
 
   // Team creation for a given event
@@ -177,11 +182,13 @@ export default function DashboardPage() {
         return aName.localeCompare(bName);
       })
       .filter((v) => {
+        const hasSubmittedAvailability = !!(v.has_submitted_availability || v.availability_responded_at);
+        if (showOnlyPendingAvailability && hasSubmittedAvailability) return false;
         if (!query) return true;
         const fullName = `${v.profiles.first_name || ""} ${v.profiles.last_name || ""}`.trim().toLowerCase();
         return fullName.includes(query) || v.email.toLowerCase().includes(query);
       });
-  }, [vendors, vendorSearchQuery]);
+  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability]);
 
   const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
   const allVisibleVendorsSelected =
@@ -200,6 +207,32 @@ export default function DashboardPage() {
     const d = new Date(iso);
     d.setHours(d.getHours() + hours);
     return d.toISOString();
+  };
+
+  const formatDateOnly = (value?: string | null) => {
+    if (!value) return null;
+    const d = new Date(`${value}T00:00:00`);
+    if (isNaN(d.getTime())) return value;
+    return d.toLocaleDateString();
+  };
+
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return value;
+    return d.toLocaleString();
+  };
+
+  const getRegionIcon = (regionName?: string | null) => {
+    const name = (regionName || "").toLowerCase();
+    if (/\bny\b|new york/.test(name)) return "\uD83D\uDDFD\uFE0F";
+    if (/\bca\b|california|los angeles|san diego|san francisco/.test(name)) return "\uD83C\uDF07";
+    if (/\bnv\b|nevada|las vegas/.test(name)) return "\uD83C\uDFDC\uFE0F";
+    if (/\baz\b|arizona|phoenix/.test(name)) return "\uD83C\uDF35";
+    if (/\btx\b|texas/.test(name)) return "\uD83E\uDD20";
+    if (/\bwi\b|wisconsin/.test(name)) return "\uD83E\uDDC0";
+    if (/\beast\b|\bwest\b|\bnorth\b|\bsouth\b/.test(name)) return "\uD83E\uDDED";
+    return "\uD83D\uDCCD";
   };
 
   // Load staff prediction for an event
@@ -249,7 +282,7 @@ export default function DashboardPage() {
         params.append("region_id", regionFilter);
         params.append("geo_filter", "true");
       }
-      console.log('[GLOBAL-CALENDAR-HR] 🔍 Loading employees with filters:', { stateFilter, regionFilter });
+      console.log('[GLOBAL-CALENDAR-HR] ð Loading employees with filters:', { stateFilter, regionFilter });
       const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}`, {
         method: "GET",
         headers: {
@@ -258,7 +291,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load employees");
-      console.log('[GLOBAL-CALENDAR-HR] 📦 Employees loaded:', {
+      console.log('[GLOBAL-CALENDAR-HR] ð¦ Employees loaded:', {
         count: data.employees?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered
@@ -266,7 +299,7 @@ export default function DashboardPage() {
       setEmployees(data.employees || []);
       if (data.stats?.states) setAvailableStates(data.stats.states);
     } catch (err: any) {
-      console.error('[GLOBAL-CALENDAR-HR] ❌ Error loading employees:', err);
+      console.error('[GLOBAL-CALENDAR-HR] â Error loading employees:', err);
       setEmployeesError(err.message || "Failed to load employees");
     }
     setLoadingEmployees(false);
@@ -276,7 +309,7 @@ export default function DashboardPage() {
   const loadBackgroundChecks = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      console.log('[GLOBAL-CALENDAR-HR] 🔍 Loading background checks...');
+      console.log('[GLOBAL-CALENDAR-HR] ð Loading background checks...');
 
       const { data, error } = await supabase
         .from('vendor_background_checks')
@@ -285,14 +318,14 @@ export default function DashboardPage() {
 
       if (error) throw error;
 
-      console.log('[GLOBAL-CALENDAR-HR] 📦 Background checks loaded:', {
+      console.log('[GLOBAL-CALENDAR-HR] ð¦ Background checks loaded:', {
         count: data?.length || 0,
         approved: data?.filter((bc: any) => bc.status === 'approved').length || 0
       });
 
       setBackgroundChecks(data || []);
     } catch (err: any) {
-      console.error('[GLOBAL-CALENDAR-HR] ❌ Error loading background checks:', err);
+      console.error('[GLOBAL-CALENDAR-HR] â Error loading background checks:', err);
     }
   }, []);
 
@@ -303,7 +336,7 @@ export default function DashboardPage() {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      console.log('[PAYMENTS] 🔍 Loading payments from database for', startDate, 'to', endDate);
+      console.log('[PAYMENTS] ð Loading payments from database for', startDate, 'to', endDate);
 
       // Fetch ALL events using the API endpoint (bypasses RLS issues)
       const eventsRes = await fetch("/api/all-events", {
@@ -321,13 +354,13 @@ export default function DashboardPage() {
       const eventsJson = await eventsRes.json();
       const allEvents = eventsJson.events || [];
 
-      console.log('[PAYMENTS] 📅 All events loaded:', {
+      console.log('[PAYMENTS] ð All events loaded:', {
         count: allEvents.length,
         events: allEvents.slice(0, 5).map((e: any) => ({ name: e.event_name, date: e.event_date }))
       });
 
       if (allEvents.length === 0) {
-        console.warn('[PAYMENTS] ⚠️ No events found in database');
+        console.warn('[PAYMENTS] â ï¸ No events found in database');
         setPaymentsError('No events found in the database.');
         setLoadingPayments(false);
         return;
@@ -336,12 +369,12 @@ export default function DashboardPage() {
       // Use ALL events (no date filtering)
       const eventsData = allEvents;
 
-      console.log('[PAYMENTS] 📦 Processing ALL', eventsData.length, 'events (date filter ignored)');
+      console.log('[PAYMENTS] ð¦ Processing ALL', eventsData.length, 'events (date filter ignored)');
       console.log('[PAYMENTS] Events:', eventsData.map((e: any) => ({ name: e.event_name, date: e.event_date })));
 
       // Fetch all vendor payments for ALL events using API (bypasses RLS)
       const eventIds = eventsData.map((e: any) => e.id).join(',');
-      console.log('[PAYMENTS] 🔍 Fetching vendor payments for ALL', eventsData.length, 'events via API');
+      console.log('[PAYMENTS] ð Fetching vendor payments for ALL', eventsData.length, 'events via API');
 
       const paymentsApiRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}`, {
         method: "GET",
@@ -358,7 +391,7 @@ export default function DashboardPage() {
       const paymentsApiData = await paymentsApiRes.json();
       const paymentsByEventId = paymentsApiData.paymentsByEvent || {};
 
-      console.log('[PAYMENTS] ✅ Fetched payment data for', Object.keys(paymentsByEventId).length, 'events');
+      console.log('[PAYMENTS] â Fetched payment data for', Object.keys(paymentsByEventId).length, 'events');
       console.log('[PAYMENTS] Total vendor payment records:', paymentsApiData.totalVendorPayments);
 
       const paymentsByVenue: Record<string, any> = {};
@@ -367,14 +400,14 @@ export default function DashboardPage() {
         const eventPaymentData = paymentsByEventId[event.id];
 
         if (!eventPaymentData || !eventPaymentData.vendorPayments || eventPaymentData.vendorPayments.length === 0) {
-          console.log('[PAYMENTS] ⚠️ No saved payment data for event', event.event_name, '(ID:', event.id, ')');
+          console.log('[PAYMENTS] â ï¸ No saved payment data for event', event.event_name, '(ID:', event.id, ')');
           continue;
         }
 
         const vendorPayments = eventPaymentData.vendorPayments;
         const eventPaymentSummary = eventPaymentData.eventPayment;
 
-        console.log('[PAYMENTS] ✅ Found', vendorPayments.length, 'vendor payments for event', event.event_name);
+        console.log('[PAYMENTS] â Found', vendorPayments.length, 'vendor payments for event', event.event_name);
 
         const baseRate = eventPaymentSummary?.base_rate || 17.28;
 
@@ -399,7 +432,7 @@ export default function DashboardPage() {
           const rawFirstName = profile?.first_name || "N/A";
           const rawLastName = profile?.last_name || "";
 
-          console.log('[PAYMENTS] 🔍 Raw name data:', {
+          console.log('[PAYMENTS] ð Raw name data:', {
             rawFirst: rawFirstName,
             rawFirstLength: rawFirstName.length,
             rawLast: rawLastName,
@@ -409,7 +442,7 @@ export default function DashboardPage() {
           const firstName = rawFirstName !== "N/A" ? safeDecrypt(rawFirstName) : "N/A";
           const lastName = rawLastName ? safeDecrypt(rawLastName) : "";
 
-          console.log('[PAYMENTS] ✅ After decryption:', {
+          console.log('[PAYMENTS] â After decryption:', {
             firstName,
             lastName,
             firstChanged: firstName !== rawFirstName,
@@ -453,13 +486,13 @@ export default function DashboardPage() {
       }
 
       const venueCount = Object.keys(paymentsByVenue).length;
-      console.log('[PAYMENTS] ✅ Payment data loaded from database:', venueCount, 'venues with payment data');
+      console.log('[PAYMENTS] â Payment data loaded from database:', venueCount, 'venues with payment data');
 
       if (venueCount === 0 && eventsData && eventsData.length > 0) {
-        console.warn('[PAYMENTS] ⚠️ Found', eventsData.length, 'events in date range but NONE have saved payment data. Go to each event dashboard HR/Payments tab and click "Save Payment Data"');
+        console.warn('[PAYMENTS] â ï¸ Found', eventsData.length, 'events in date range but NONE have saved payment data. Go to each event dashboard HR/Payments tab and click "Save Payment Data"');
         setPaymentsError(`Found ${eventsData.length} event(s) in the selected date range, but none have saved payment data yet. Please go to the event dashboard and click "Save Payment Data" in the HR/Payments tab.`);
       } else if (venueCount === 0) {
-        console.warn('[PAYMENTS] ⚠️ No events found in the selected date range:', startDate, 'to', endDate);
+        console.warn('[PAYMENTS] â ï¸ No events found in the selected date range:', startDate, 'to', endDate);
         setPaymentsError('No events found in the selected date range. Try adjusting the dates.');
       }
 
@@ -479,7 +512,7 @@ export default function DashboardPage() {
 
       setPaymentsData(paymentsByVenue);
     } catch (err: any) {
-      console.error('[PAYMENTS] ❌ Error loading payment data:', err);
+      console.error('[PAYMENTS] â Error loading payment data:', err);
       setPaymentsError(err.message || "Failed to load payment data");
     } finally {
       setLoadingPayments(false);
@@ -763,7 +796,7 @@ export default function DashboardPage() {
 
   // Region + vendors helpers
   const loadRegions = async () => {
-    console.log('[GLOBAL-CALENDAR] 📍 Loading regions...');
+    console.log('[GLOBAL-CALENDAR] ð Loading regions...');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/regions", {
@@ -772,13 +805,13 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        console.log('[GLOBAL-CALENDAR] ✅ Regions loaded:', data.regions?.length || 0, data.regions);
+        console.log('[GLOBAL-CALENDAR] â Regions loaded:', data.regions?.length || 0, data.regions);
         setRegions(data.regions || []);
       } else {
-        console.error('[GLOBAL-CALENDAR] ❌ Failed to load regions, status:', res.status);
+        console.error('[GLOBAL-CALENDAR] â Failed to load regions, status:', res.status);
       }
     } catch (err) {
-      console.error("[GLOBAL-CALENDAR] ❌ Failed to load regions:", err);
+      console.error("[GLOBAL-CALENDAR] â Failed to load regions:", err);
     }
   };
 
@@ -789,7 +822,7 @@ export default function DashboardPage() {
   };
 
   const loadAllVendors = async (regionId: string = selectedRegion) => {
-    console.log('[GLOBAL-CALENDAR] 🔍 loadAllVendors called with regionId:', regionId);
+    console.log('[GLOBAL-CALENDAR] ð loadAllVendors called with regionId:', regionId);
     setLoadingVendors(true);
     setMessage("");
     try {
@@ -798,7 +831,7 @@ export default function DashboardPage() {
       // Use geographic filtering when a region is selected
       const useGeoFilter = regionId !== "all";
       const url = `/api/all-vendors${regionId !== "all" ? `?region_id=${regionId}&geo_filter=true` : ""}`;
-      console.log('[GLOBAL-CALENDAR] 📡 Fetching vendors from:', url, { useGeoFilter });
+      console.log('[GLOBAL-CALENDAR] ð¡ Fetching vendors from:', url, { useGeoFilter });
 
       // Fetch ALL vendors from the database directly, not filtered by venue
       const res = await fetch(url, {
@@ -806,16 +839,16 @@ export default function DashboardPage() {
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
 
-      console.log('[GLOBAL-CALENDAR] 📥 Response status:', res.status, res.ok ? '✅' : '❌');
+      console.log('[GLOBAL-CALENDAR] ð¥ Response status:', res.status, res.ok ? 'â' : 'â');
 
       if (!res.ok) {
         const errorData = await res.json();
-        console.error('[GLOBAL-CALENDAR] ❌ API error:', errorData);
+        console.error('[GLOBAL-CALENDAR] â API error:', errorData);
         throw new Error(errorData.error || "Failed to load vendors");
       }
 
       const data = await res.json();
-      console.log('[GLOBAL-CALENDAR] 📦 Received data:', {
+      console.log('[GLOBAL-CALENDAR] ð¦ Received data:', {
         vendors_count: data.vendors?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered,
@@ -832,10 +865,10 @@ export default function DashboardPage() {
             return A.localeCompare(B);
           });
 
-      console.log('[GLOBAL-CALENDAR] ✅ Setting vendors state:', allVendors.length);
+      console.log('[GLOBAL-CALENDAR] â Setting vendors state:', allVendors.length);
       setVendors(allVendors);
     } catch (err: any) {
-      console.error("[GLOBAL-CALENDAR] ❌ Error loading vendors:", err);
+      console.error("[GLOBAL-CALENDAR] â Error loading vendors:", err);
       setMessage(err.message || "Network error loading vendors");
     }
     setLoadingVendors(false);
@@ -859,7 +892,7 @@ export default function DashboardPage() {
     setMessage("");
   };
   const handleRegionChange = async (newRegion: string) => {
-    console.log('[GLOBAL-CALENDAR] 🌍 Region changed:', { from: selectedRegion, to: newRegion });
+    console.log('[GLOBAL-CALENDAR] ð Region changed:', { from: selectedRegion, to: newRegion });
     setSelectedRegion(newRegion);
     setSelectedVendors(new Set());
     loadAllVendors(newRegion);
@@ -948,7 +981,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (res.ok && data.team && data.team.length > 0) {
-        console.log('[GLOBAL-CALENDAR-TEAM] 📋 Loading', data.team.length, 'existing team members');
+        console.log('[GLOBAL-CALENDAR-TEAM] ð Loading', data.team.length, 'existing team members');
 
         // Convert team members to vendor format (names are already decrypted by API)
         const existingVendors = data.team.map((member: any) => ({
@@ -999,14 +1032,14 @@ export default function DashboardPage() {
             .map((member: any) => String(member?.vendor_id ?? ""))
             .filter((id) => id.length > 0)
         );
-        console.log('[GLOBAL-CALENDAR-TEAM] ✅ Pre-selecting', existingMemberIds.size, 'existing team members');
+        console.log('[GLOBAL-CALENDAR-TEAM] â Pre-selecting', existingMemberIds.size, 'existing team members');
         setSelectedTeamMembers(existingMemberIds);
       } else {
         // No existing team - start with empty selection
         setSelectedTeamMembers(new Set());
       }
     } catch (err) {
-      console.error('[GLOBAL-CALENDAR-TEAM] ❌ Error loading existing team members:', err);
+      console.error('[GLOBAL-CALENDAR-TEAM] â Error loading existing team members:', err);
       // Continue anyway - user can still create a team
       setSelectedTeamMembers(new Set());
     }
@@ -1096,7 +1129,7 @@ export default function DashboardPage() {
   };
 
   const handleEmployeeRegionChange = async (newRegion: string) => {
-    console.log('[GLOBAL-CALENDAR-HR] 🌍 Region changed:', { from: selectedEmployeeRegion, to: newRegion });
+    console.log('[GLOBAL-CALENDAR-HR] ð Region changed:', { from: selectedEmployeeRegion, to: newRegion });
     setSelectedEmployeeRegion(newRegion);
     loadEmployees(selectedState, newRegion);
   };
@@ -1468,7 +1501,7 @@ export default function DashboardPage() {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
                             <span className="font-medium">{ev.venue}</span>
-                            {ev.city && ev.state && <span className="ml-2 text-gray-500">• {ev.city}, {ev.state}</span>}
+                            {ev.city && ev.state && <span className="ml-2 text-gray-500">. {ev.city}, {ev.state}</span>}
                           </div>
                           {ev.artist && (
                             <div className="flex items-center text-gray-600 mb-2">
@@ -1483,7 +1516,7 @@ export default function DashboardPage() {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
                             <span>{ev.event_date}</span>
-                            <span className="mx-2">•</span>
+                            <span className="mx-2">.</span>
                             <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
@@ -1771,10 +1804,10 @@ export default function DashboardPage() {
                       onChange={(e) => handleEmployeeRegionChange(e.target.value)}
                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="all">All Regions</option>
+                      <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.name}
+                          {getRegionIcon(r.name)} {r.name}
                         </option>
                       ))}
                     </select>
@@ -1811,9 +1844,9 @@ export default function DashboardPage() {
                       {selectedEmployeeRegion !== "all" && (
                         <span className="ml-1">{regions.find(r => r.id === selectedEmployeeRegion)?.name || selectedEmployeeRegion}</span>
                       )}
-                      {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">•</span>}
+                      {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">.</span>}
                       {selectedState !== "all" && <span>{selectedState}</span>}
-                      <span className="ml-2 text-blue-600">• {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
+                      <span className="ml-2 text-blue-600">. {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
                     </div>
                     <button onClick={() => { handleStateFilterChange("all"); handleEmployeeRegionChange("all"); }} className="text-xs text-blue-700 hover:text-blue-900 font-medium flex items-center">
                       <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1990,10 +2023,10 @@ export default function DashboardPage() {
                       onChange={(e) => handleRegionChange(e.target.value)}
                       className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                     >
-                      <option value="all">🌎 All Regions</option>
+                      <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          📍 {r.name}
+                          {getRegionIcon(r.name)} {r.name}
                         </option>
                       ))}
                     </select>
@@ -2022,6 +2055,15 @@ export default function DashboardPage() {
                       Showing {filteredAndSortedVendors.length} of {vendors.length}{" "}
                       {vendors.length === 1 ? "vendor" : "vendors"}
                     </p>
+                    <label className="mt-2 inline-flex items-center cursor-pointer text-xs text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={showOnlyPendingAvailability}
+                        onChange={(e) => setShowOnlyPendingAvailability(e.target.checked)}
+                        className="mr-2 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Show only vendors who have not sent availability
+                    </label>
                   </div>
 
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
@@ -2090,6 +2132,9 @@ export default function DashboardPage() {
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
+                              {(v.has_submitted_availability || v.availability_responded_at) && (
+                                <div className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-md">Availability sent</div>
+                              )}
                               {v.distance !== null ? (
                                 <div className="apple-distance-badge">{v.distance} mi</div>
                               ) : (
@@ -2101,10 +2146,18 @@ export default function DashboardPage() {
                             {v.email}
                             {v.profiles.phone && (
                               <>
-                                <span className="mx-2 text-gray-400">•</span>
+                                <span className="mx-2 text-gray-400">.</span>
                                 {v.profiles.phone}
                               </>
                             )}
+                          {v.availability_responded_at && (
+                            <div className="text-xs text-green-700 mb-1">
+                              Sent availability: {formatDateTime(v.availability_responded_at)}
+                              {v.availability_scope_start && v.availability_scope_end && (
+                                <> · Scope: {formatDateOnly(v.availability_scope_start)} to {formatDateOnly(v.availability_scope_end)}</>
+                              )}
+                            </div>
+                          )}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
@@ -2115,11 +2168,11 @@ export default function DashboardPage() {
                                   </svg>
                                   {v.profiles.city}, {v.profiles.state}
                                 </span>
-                                <span className="text-gray-400">•</span>
+                                <span className="text-gray-400">.</span>
                               </>
                             )}
                             <span>{v.division}</span>
-                            <span className="text-gray-400">•</span>
+                            <span className="text-gray-400">.</span>
                             <span>{v.role}</span>
                           </div>
                         </div>
@@ -2280,7 +2333,7 @@ export default function DashboardPage() {
                         <div className="flex items-center justify-between mb-4 pb-3 border-b">
                           <div>
                             <h3 className="text-lg font-semibold text-gray-900">{eventData.eventName}</h3>
-                            <p className="text-sm text-gray-600">{eventData.eventDate} • Base Rate: ${eventData.baseRate}/hr</p>
+                            <p className="text-sm text-gray-600">{eventData.eventDate} . Base Rate: ${eventData.baseRate}/hr</p>
                           </div>
                         </div>
 
@@ -2506,10 +2559,18 @@ export default function DashboardPage() {
                             {v.email}
                             {v.profiles.phone && (
                               <>
-                                <span className="mx-2 text-gray-400">•</span>
+                                <span className="mx-2 text-gray-400">.</span>
                                 {v.profiles.phone}
                               </>
                             )}
+                          {v.availability_responded_at && (
+                            <div className="text-xs text-green-700 mb-1">
+                              Sent availability: {formatDateTime(v.availability_responded_at)}
+                              {v.availability_scope_start && v.availability_scope_end && (
+                                <> · Scope: {formatDateOnly(v.availability_scope_start)} to {formatDateOnly(v.availability_scope_end)}</>
+                              )}
+                            </div>
+                          )}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
@@ -2520,11 +2581,11 @@ export default function DashboardPage() {
                                   </svg>
                                   {v.profiles.city}, {v.profiles.state}
                                 </span>
-                                <span className="text-gray-400">•</span>
+                                <span className="text-gray-400">.</span>
                               </>
                             )}
                             <span>{v.division}</span>
-                            <span className="text-gray-400">•</span>
+                            <span className="text-gray-400">.</span>
                             <span>{v.role}</span>
                           </div>
                         </div>

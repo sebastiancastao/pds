@@ -36,6 +36,44 @@ const normalizeStreetAddress = (address: string): string => {
 const getProfile = (vendor: any) =>
   Array.isArray(vendor?.profiles) ? vendor.profiles[0] : vendor?.profiles;
 
+type AvailabilityDay = {
+  date: string;
+  available: boolean;
+};
+
+const normalizeAvailabilityPayload = (payload: unknown): AvailabilityDay[] => {
+  if (Array.isArray(payload)) {
+    return payload.filter((day: any) => day && typeof day.date === "string");
+  }
+
+  if (payload && typeof payload === "object") {
+    return Object.entries(payload as Record<string, unknown>).map(([date, available]) => ({
+      date,
+      available: available === true
+    }));
+  }
+
+  return [];
+};
+
+const getAvailabilityScope = (
+  payload: unknown
+): { scopeStart: string | null; scopeEnd: string | null } => {
+  const days = normalizeAvailabilityPayload(payload)
+    .map((day) => day.date?.slice(0, 10))
+    .filter((value): value is string => !!value);
+
+  if (days.length === 0) {
+    return { scopeStart: null, scopeEnd: null };
+  }
+
+  const sorted = [...new Set(days)].sort();
+  return {
+    scopeStart: sorted[0] || null,
+    scopeEnd: sorted[sorted.length - 1] || null
+  };
+};
+
 const chunkArray = <T>(items: T[], chunkSize: number): T[][] => {
   const chunks: T[][] = [];
   for (let i = 0; i < items.length; i += chunkSize) {
@@ -131,23 +169,69 @@ export async function GET(req: NextRequest) {
 
     const { data: rawVendors, error } = await vendorQuery;
 
-    // Gather recent responders within the past week for these vendors (invitations sent by current user)
+    // Gather latest availability submissions for these vendors.
     let recentResponderSet = new Set<string>();
-    try {
-      const vendorIds = (rawVendors || []).map((v: any) => v.id);
-      if (vendorIds.length > 0) {
-        const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const { data: recent, error: recentErr } = await supabaseAdmin
-          .from('vendor_invitations')
-          .select('vendor_id, responded_at')
-          .in('vendor_id', vendorIds)
-          .eq('invited_by', (user as any).id)
-          .gte('responded_at', weekAgoIso);
-        if (!recentErr && Array.isArray(recent)) {
-          recentResponderSet = new Set(recent.map((r: any) => r.vendor_id));
+    const latestAvailabilityByVendor = new Map<
+      string,
+      { respondedAt: string; scopeStart: string | null; scopeEnd: string | null }
+    >();
+    const vendorIds = (rawVendors || []).map((v: any) => v.id).filter(Boolean);
+    if (vendorIds.length > 0) {
+      const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const availabilityBatches = chunkArray(vendorIds, 200);
+
+      for (const batch of availabilityBatches) {
+        let responses: any[] | null = null;
+        let batchSuccess = false;
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const { data, error: responsesErr } = await supabaseAdmin
+            .from('vendor_invitations')
+            .select('vendor_id, responded_at, updated_at, created_at, availability')
+            .in('vendor_id', batch)
+            .not('availability', 'is', null)
+            .order('updated_at', { ascending: false });
+
+          if (!responsesErr) {
+            responses = data || [];
+            batchSuccess = true;
+            break;
+          }
+
+          console.error('[ALL-VENDORS] Error fetching availability batch:', {
+            attempt,
+            batchSize: batch.length,
+            error: responsesErr
+          });
+          await delay(300 * attempt);
+        }
+
+        if (!batchSuccess) {
+          console.error('[ALL-VENDORS] Availability lookup failed after retries for one batch');
+          continue;
+        }
+
+        for (const response of responses || []) {
+          const vendorId = response.vendor_id;
+          const respondedAt =
+            response.responded_at || response.updated_at || response.created_at || null;
+          if (!vendorId || !respondedAt) continue;
+
+          if (respondedAt >= weekAgoIso) {
+            recentResponderSet.add(vendorId);
+          }
+
+          if (!latestAvailabilityByVendor.has(vendorId)) {
+            const { scopeStart, scopeEnd } = getAvailabilityScope(response.availability);
+            latestAvailabilityByVendor.set(vendorId, {
+              respondedAt,
+              scopeStart,
+              scopeEnd
+            });
+          }
         }
       }
-    } catch {}
+    }
 
     if (error) {
       console.error('[ALL-VENDORS] ❌ SUPABASE SELECT ERROR:', error);
@@ -375,6 +459,7 @@ export async function GET(req: NextRequest) {
         }
 
         // Explicitly construct the response object to avoid exposing sensitive/encrypted fields
+        const latestAvailability = latestAvailabilityByVendor.get(vendor.id);
         return {
           id: vendor.id,
           email: vendor.email,
@@ -382,6 +467,10 @@ export async function GET(req: NextRequest) {
           division: vendor.division,
           is_active: vendor.is_active,
           recently_responded: recentResponderSet.has(vendor.id),
+          has_submitted_availability: latestAvailabilityByVendor.has(vendor.id),
+          availability_responded_at: latestAvailability?.respondedAt || null,
+          availability_scope_start: latestAvailability?.scopeStart || null,
+          availability_scope_end: latestAvailability?.scopeEnd || null,
           profiles: {
             first_name: firstName,
             last_name: lastName,
