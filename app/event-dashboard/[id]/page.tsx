@@ -52,6 +52,15 @@ type StateRateData = {
   doubletime_rate: number;
 };
 
+type TimesheetEditDraft = {
+  firstIn: string;
+  lastOut: string;
+  firstMealStart: string;
+  lastMealEnd: string;
+  secondMealStart: string;
+  secondMealEnd: string;
+};
+
 export default function EventDashboardPage() {
   const router = useRouter();
   const params = useParams();
@@ -69,6 +78,7 @@ export default function EventDashboardPage() {
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const canEditTimesheets = userRole === "exec";
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -123,6 +133,9 @@ export default function EventDashboardPage() {
   // HR/Payroll reimbursements (user_id -> reimbursement amount)
   const [reimbursements, setReimbursements] = useState<Record<string, number>>({});
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [editingTimesheetUserId, setEditingTimesheetUserId] = useState<string | null>(null);
+  const [timesheetDrafts, setTimesheetDrafts] = useState<Record<string, TimesheetEditDraft>>({});
+  const [savingTimesheetUserId, setSavingTimesheetUserId] = useState<string | null>(null);
 
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
@@ -247,7 +260,7 @@ export default function EventDashboardPage() {
 
   // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
-    if (!eventId || activeTab !== 'hr') return;
+    if (!eventId || activeTab !== 'hr' || !canEditTimesheets) return;
     const handler = setTimeout(async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
@@ -275,7 +288,7 @@ export default function EventDashboardPage() {
       }
     }, 600);
     return () => clearTimeout(handler);
-  }, [adjustments, reimbursements, activeTab, eventId]);
+  }, [adjustments, reimbursements, activeTab, eventId, canEditTimesheets]);
 
   const loadVenues = async () => {
     try {
@@ -753,6 +766,87 @@ export default function EventDashboardPage() {
     return `${hh}:${mm}`;
   };
 
+  const startTimesheetEdit = (uid: string, span: {
+    firstIn: string | null;
+    lastOut: string | null;
+    firstMealStart: string | null;
+    lastMealEnd: string | null;
+    secondMealStart: string | null;
+    secondMealEnd: string | null;
+  }) => {
+    if (!canEditTimesheets) return;
+    setTimesheetDrafts((prev) => ({
+      ...prev,
+      [uid]: {
+        firstIn: isoToHHMM(span.firstIn),
+        lastOut: isoToHHMM(span.lastOut),
+        firstMealStart: isoToHHMM(span.firstMealStart),
+        lastMealEnd: isoToHHMM(span.lastMealEnd),
+        secondMealStart: isoToHHMM(span.secondMealStart),
+        secondMealEnd: isoToHHMM(span.secondMealEnd),
+      },
+    }));
+    setEditingTimesheetUserId(uid);
+    setMessage("");
+  };
+
+  const updateTimesheetDraft = (uid: string, field: keyof TimesheetEditDraft, value: string) => {
+    setTimesheetDrafts((prev) => ({
+      ...prev,
+      [uid]: {
+        ...(prev[uid] || {
+          firstIn: "",
+          lastOut: "",
+          firstMealStart: "",
+          lastMealEnd: "",
+          secondMealStart: "",
+          secondMealEnd: "",
+        }),
+        [field]: value,
+      },
+    }));
+  };
+
+  const cancelTimesheetEdit = () => {
+    setEditingTimesheetUserId(null);
+    setMessage("");
+  };
+
+  const saveTimesheetEdit = async (uid: string) => {
+    if (!eventId || !canEditTimesheets) return;
+    const draft = timesheetDrafts[uid];
+    if (!draft) return;
+
+    setSavingTimesheetUserId(uid);
+    setMessage("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${eventId}/timesheet`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ userId: uid, spans: draft }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage(data?.error || "Failed to save timesheet edits.");
+        return;
+      }
+
+      await loadTimesheetTotals();
+      setEditingTimesheetUserId(null);
+      setMessage("Timesheet updated.");
+      setTimeout(() => setMessage(""), 3000);
+    } catch (err: any) {
+      setMessage(err?.message || "Network error while saving timesheet.");
+    } finally {
+      setSavingTimesheetUserId(null);
+    }
+  };
+
   /**
    * Calculate regular/overtime/doubletime hours based on state labor laws
    * Note: Overtime logic is intentionally disabled in the Payment tab.
@@ -779,6 +873,10 @@ export default function EventDashboardPage() {
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
+    if (!canEditTimesheets) {
+      setMessage("Only exec can edit timesheets and payroll adjustments.");
+      return;
+    }
 
     setSavingPayment(true);
     setMessage("");
@@ -2296,6 +2394,12 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
+              {!canEditTimesheets && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Read-only access. Only exec can edit timesheets.
+                </div>
+              )}
+
               {/* Summary */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-blue-50 rounded-lg p-4">
@@ -2379,6 +2483,15 @@ export default function EventDashboardPage() {
                         const lastMealEnd = isoToHHMM(span.lastMealEnd);
                         const secondMealStart = isoToHHMM(span.secondMealStart);
                         const secondMealEnd = isoToHHMM(span.secondMealEnd);
+                        const isEditing = canEditTimesheets && editingTimesheetUserId === uid;
+                        const draft = timesheetDrafts[uid] || {
+                          firstIn: firstClockIn,
+                          lastOut: lastClockOut,
+                          firstMealStart,
+                          lastMealEnd,
+                          secondMealStart,
+                          secondMealEnd,
+                        };
 
                         const totalMs = timesheetTotals[uid] || 0;
                         const hours = (totalMs / (1000 * 60 * 60)).toFixed(2);
@@ -2394,63 +2507,92 @@ export default function EventDashboardPage() {
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={firstClockIn}
-                                readOnly
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                value={isEditing ? draft.firstIn : firstClockIn}
+                                onChange={(e) => updateTimesheetDraft(uid, "firstIn", e.target.value)}
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={lastClockOut}
-                                readOnly
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                value={isEditing ? draft.lastOut : lastClockOut}
+                                onChange={(e) => updateTimesheetDraft(uid, "lastOut", e.target.value)}
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={firstMealStart}
-                                readOnly
+                                value={isEditing ? draft.firstMealStart : firstMealStart}
+                                onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
                                 placeholder="--:--"
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={lastMealEnd}
-                                readOnly
+                                value={isEditing ? draft.lastMealEnd : lastMealEnd}
+                                onChange={(e) => updateTimesheetDraft(uid, "lastMealEnd", e.target.value)}
                                 placeholder="--:--"
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={secondMealStart}
-                                readOnly
+                                value={isEditing ? draft.secondMealStart : secondMealStart}
+                                onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
                                 placeholder="--:--"
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3">
                               <input
                                 type="time"
-                                value={secondMealEnd}
-                                readOnly
+                                value={isEditing ? draft.secondMealEnd : secondMealEnd}
+                                onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
                                 placeholder="--:--"
-                                className="border rounded px-2 py-1 text-sm bg-gray-100 cursor-not-allowed w-28"
+                                readOnly={!isEditing}
+                                className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                               />
                             </td>
                             <td className="px-3 py-3 text-sm font-medium whitespace-nowrap">{hours}</td>
                             <td className="px-4 py-3 text-right whitespace-nowrap">
-                              <button className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-2">
-                                Save
-                              </button>
-                              <button className="text-gray-600 hover:text-gray-700 font-medium text-xs">
-                                Clock In/Out
-                              </button>
+                              {canEditTimesheets ? (
+                                isEditing ? (
+                                  <>
+                                    <button
+                                      onClick={() => saveTimesheetEdit(uid)}
+                                      disabled={savingTimesheetUserId === uid}
+                                      className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      {savingTimesheetUserId === uid ? "Saving..." : "Save"}
+                                    </button>
+                                    <button
+                                      onClick={cancelTimesheetEdit}
+                                      disabled={savingTimesheetUserId === uid}
+                                      className="text-gray-600 hover:text-gray-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    onClick={() => startTimesheetEdit(uid, span)}
+                                    className="text-blue-600 hover:text-blue-700 font-medium text-xs"
+                                  >
+                                    Edit
+                                  </button>
+                                )
+                              ) : (
+                                <span className="text-xs text-gray-400">View only</span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -2776,7 +2918,7 @@ export default function EventDashboardPage() {
 
                               {/* Other (Adjustments + Reimbursements) - Editable */}
                               <td className="p-4">
-                                {editingMemberId === member.id ? (
+                                {canEditTimesheets && editingMemberId === member.id ? (
                                   <div className="flex flex-col gap-1">
                                     <div className="flex items-center gap-1">
                                       <span className="text-[10px] text-gray-500">Adj:</span>
@@ -2810,8 +2952,11 @@ export default function EventDashboardPage() {
                                   </div>
                                 ) : (
                                   <div
-                                    onClick={() => setEditingMemberId(member.id)}
-                                    className="cursor-pointer hover:bg-gray-100 rounded px-2 py-1 text-sm font-medium"
+                                    onClick={() => {
+                                      if (!canEditTimesheets) return;
+                                      setEditingMemberId(member.id);
+                                    }}
+                                    className={`${canEditTimesheets ? "cursor-pointer hover:bg-gray-100" : "cursor-not-allowed opacity-70"} rounded px-2 py-1 text-sm font-medium`}
                                   >
                                     {otherAmount !== 0 ? (
                                       <span className={otherAmount >= 0 ? "text-green-600" : "text-red-600"}>
@@ -2822,7 +2967,9 @@ export default function EventDashboardPage() {
                                     )}
                                   </div>
                                 )}
-                                <div className="text-[10px] text-gray-500 mt-1">Click to edit</div>
+                                <div className="text-[10px] text-gray-500 mt-1">
+                                  {canEditTimesheets ? "Click to edit" : "Exec only"}
+                                </div>
                               </td>
 
                               {/* Total Gross Pay */}
@@ -2836,13 +2983,15 @@ export default function EventDashboardPage() {
                               <td className="p-4 text-right">
                                 <button
                                   onClick={() => {
+                                    if (!canEditTimesheets) return;
                                     if (editingMemberId === member.id) {
                                       setEditingMemberId(null);
                                     } else {
                                       setEditingMemberId(member.id);
                                     }
                                   }}
-                                  className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3 transition-colors"
+                                  disabled={!canEditTimesheets}
+                                  className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
                                   {editingMemberId === member.id ? 'Done' : 'Edit'}
                                 </button>
@@ -2958,7 +3107,8 @@ export default function EventDashboardPage() {
                   {/* Save Payment Data Button */}
                   <button
                     onClick={handleSavePaymentData}
-                    disabled={savingPayment || teamMembers.length === 0}
+                    disabled={savingPayment || teamMembers.length === 0 || !canEditTimesheets}
+                    title={!canEditTimesheets ? "Only exec can save timesheet payment data" : undefined}
                     className="w-full mt-4 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
                   >
                     {savingPayment ? (

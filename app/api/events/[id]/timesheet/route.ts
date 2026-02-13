@@ -364,6 +364,181 @@ export async function GET(
   }
 }
 
+type TimesheetSpanPayload = {
+  firstIn?: string;
+  lastOut?: string;
+  firstMealStart?: string;
+  lastMealEnd?: string;
+  secondMealStart?: string;
+  secondMealEnd?: string;
+};
+
+const toEventIso = (eventDate: string, hhmm?: string) => {
+  const value = (hhmm || "").trim();
+  if (!value) return null;
+  const parsed = new Date(`${eventDate}T${value}:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const normalizeEventDate = (dateValue?: string | null) => {
+  if (!dateValue) return null;
+  return dateValue.split("T")[0];
+};
+
+export async function PUT(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const user = await getAuthedUser(req);
+    if (!user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    const eventId = params.id;
+    if (!eventId) {
+      return NextResponse.json({ error: "Event ID is required" }, { status: 400 });
+    }
+
+    const { data: requester, error: requesterError } = await supabaseAdmin
+      .from("users")
+      .select("role")
+      .eq("id", user.id)
+      .maybeSingle();
+    if (requesterError) {
+      return NextResponse.json({ error: requesterError.message }, { status: 500 });
+    }
+    const requesterRole = String(requester?.role || "").toLowerCase().trim();
+    if (requesterRole !== "exec") {
+      return NextResponse.json({ error: "Only exec can edit timesheets." }, { status: 403 });
+    }
+
+    const body = await req.json().catch(() => null);
+    const targetUserId = String(body?.userId || "").trim();
+    const spans: TimesheetSpanPayload = body?.spans || {};
+    if (!targetUserId) {
+      return NextResponse.json({ error: "userId is required" }, { status: 400 });
+    }
+
+    const { data: teamMember, error: teamError } = await supabaseAdmin
+      .from("event_teams")
+      .select("id")
+      .eq("event_id", eventId)
+      .eq("vendor_id", targetUserId)
+      .maybeSingle();
+    if (teamError) {
+      return NextResponse.json({ error: teamError.message }, { status: 500 });
+    }
+    if (!teamMember) {
+      return NextResponse.json({ error: "User is not assigned to this event" }, { status: 404 });
+    }
+
+    const { data: event, error: eventError } = await supabaseAdmin
+      .from("events")
+      .select("event_date")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (eventError) {
+      return NextResponse.json({ error: eventError.message }, { status: 500 });
+    }
+    const eventDate = normalizeEventDate(event?.event_date);
+    if (!eventDate) {
+      return NextResponse.json({ error: "Event date is missing" }, { status: 400 });
+    }
+
+    const { data: targetUser, error: targetUserError } = await supabaseAdmin
+      .from("users")
+      .select("division")
+      .eq("id", targetUserId)
+      .maybeSingle();
+    if (targetUserError) {
+      return NextResponse.json({ error: targetUserError.message }, { status: 500 });
+    }
+    const division = targetUser?.division || "vendor";
+
+    const timeline = [
+      { action: "clock_in", timestamp: toEventIso(eventDate, spans.firstIn) },
+      { action: "meal_start", timestamp: toEventIso(eventDate, spans.firstMealStart) },
+      { action: "meal_end", timestamp: toEventIso(eventDate, spans.lastMealEnd) },
+      { action: "meal_start", timestamp: toEventIso(eventDate, spans.secondMealStart) },
+      { action: "meal_end", timestamp: toEventIso(eventDate, spans.secondMealEnd) },
+      { action: "clock_out", timestamp: toEventIso(eventDate, spans.lastOut) },
+    ].filter((entry) => !!entry.timestamp);
+
+    const hasClockIn = !!spans.firstIn;
+    const hasClockOut = !!spans.lastOut;
+    if (hasClockIn !== hasClockOut) {
+      return NextResponse.json(
+        { error: "Clock In and Clock Out are both required when editing a shift." },
+        { status: 400 }
+      );
+    }
+    const hasMeal1Start = !!spans.firstMealStart;
+    const hasMeal1End = !!spans.lastMealEnd;
+    if (hasMeal1Start !== hasMeal1End) {
+      return NextResponse.json(
+        { error: "Meal 1 Start and Meal 1 End must both be set." },
+        { status: 400 }
+      );
+    }
+    const hasMeal2Start = !!spans.secondMealStart;
+    const hasMeal2End = !!spans.secondMealEnd;
+    if (hasMeal2Start !== hasMeal2End) {
+      return NextResponse.json(
+        { error: "Meal 2 Start and Meal 2 End must both be set." },
+        { status: 400 }
+      );
+    }
+
+    for (let i = 1; i < timeline.length; i++) {
+      const prev = new Date(String(timeline[i - 1].timestamp)).getTime();
+      const curr = new Date(String(timeline[i].timestamp)).getTime();
+      if (!(curr > prev)) {
+        return NextResponse.json(
+          { error: "Times must be strictly increasing from Clock In to Clock Out." },
+          { status: 400 }
+        );
+      }
+    }
+
+    const dayStart = new Date(`${eventDate}T00:00:00`).toISOString();
+    const dayEnd = new Date(`${eventDate}T23:59:59.999`).toISOString();
+
+    const { error: deleteError } = await supabaseAdmin
+      .from("time_entries")
+      .delete()
+      .eq("event_id", eventId)
+      .eq("user_id", targetUserId)
+      .gte("timestamp", dayStart)
+      .lte("timestamp", dayEnd);
+    if (deleteError) {
+      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    }
+
+    if (timeline.length > 0) {
+      const records = timeline.map((entry) => ({
+        user_id: targetUserId,
+        action: entry.action,
+        timestamp: entry.timestamp,
+        division,
+        event_id: eventId,
+        notes: "Manual edit by exec",
+      }));
+
+      const { error: insertError } = await supabaseAdmin
+        .from("time_entries")
+        .insert(records as any);
+      if (insertError) {
+        return NextResponse.json({ error: insertError.message }, { status: 500 });
+      }
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || "Unhandled error" }, { status: 500 });
+  }
+}
 
 
 
