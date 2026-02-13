@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { FIXED_REGION_RADIUS_MILES } from '@/lib/geocoding';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -133,7 +134,6 @@ export async function POST(req: NextRequest) {
       description,
       center_lat,
       center_lng,
-      radius_miles,
       boundary,
     } = body;
 
@@ -145,12 +145,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Validate that either radius or boundary is provided
-    if (!boundary && (!center_lat || !center_lng || !radius_miles)) {
+    // Validate that either polygon boundary or center coordinates are provided.
+    // Radius is fixed globally at 200 miles.
+    if (!boundary && (center_lat == null || center_lng == null)) {
       return NextResponse.json(
         {
           error:
-            'Either boundary or (center_lat, center_lng, radius_miles) must be provided',
+            'Either boundary or (center_lat, center_lng) must be provided',
         },
         { status: 400 }
       );
@@ -164,11 +165,11 @@ export async function POST(req: NextRequest) {
       created_by: user.id,
     };
 
-    // Add radius-based data if provided
-    if (center_lat && center_lng && radius_miles) {
+    // Add radius-based data if provided (fixed 200-mile radius).
+    if (center_lat != null && center_lng != null) {
       regionData.center_lat = center_lat;
       regionData.center_lng = center_lng;
-      regionData.radius_miles = radius_miles;
+      regionData.radius_miles = FIXED_REGION_RADIUS_MILES;
     }
 
     // Add boundary if provided (WKT format)

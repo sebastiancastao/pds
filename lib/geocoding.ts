@@ -20,6 +20,13 @@ export interface Region {
   radius_miles: number;
 }
 
+// Fixed business radius for region-based matching across the app.
+export const FIXED_REGION_RADIUS_MILES = 200;
+
+export function getEffectiveRegionRadiusMiles(_radiusMiles: number | null | undefined): number {
+  return FIXED_REGION_RADIUS_MILES;
+}
+
 /**
  * Geocode an address to latitude/longitude coordinates
  * Uses OpenStreetMap Nominatim service (free, no API key required)
@@ -187,7 +194,8 @@ export function isWithinRegion(
     regionCenterLon
   );
 
-  return distance <= regionRadiusMiles;
+  const effectiveRadiusMiles = getEffectiveRegionRadiusMiles(regionRadiusMiles);
+  return distance <= effectiveRadiusMiles;
 }
 
 /**
@@ -219,7 +227,8 @@ export function getUserRegion(
       region.center_lng
     );
 
-    if (distance <= region.radius_miles && distance < minDistance) {
+    const effectiveRadiusMiles = getEffectiveRegionRadiusMiles(region.radius_miles);
+    if (distance <= effectiveRadiusMiles && distance < minDistance) {
       closestRegion = region;
       minDistance = distance;
     }

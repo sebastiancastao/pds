@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt } from "@/lib/encryption";
+import { FIXED_REGION_RADIUS_MILES } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -296,7 +297,7 @@ export async function GET(
           console.log('[AVAILABLE-VENDORS] 📍 Region center:', {
             lat: regionData.center_lat,
             lng: regionData.center_lng,
-            radius: regionData.radius_miles
+            radius: FIXED_REGION_RADIUS_MILES
           });
 
           filteredVendors = filteredVendors.filter((vendor: any) => {
@@ -312,8 +313,8 @@ export async function GET(
               vendor.profiles.longitude
             );
 
-            const isInRegion = distance <= regionData.radius_miles;
-            console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${regionData.radius_miles}mi)`);
+            const isInRegion = distance <= FIXED_REGION_RADIUS_MILES;
+            console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${FIXED_REGION_RADIUS_MILES}mi)`);
             return isInRegion;
           });
 
@@ -404,3 +405,4 @@ export async function GET(
     }, { status: 500 });
   }
 }
+

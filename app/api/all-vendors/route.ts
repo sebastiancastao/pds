@@ -2,8 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { decrypt } from "@/lib/encryption";
-import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
+import { decrypt, safeDecrypt } from "@/lib/encryption";
+import {
+  isWithinRegion,
+  calculateDistanceMiles,
+  FIXED_REGION_RADIUS_MILES,
+  geocodeAddress,
+  delay
+} from "@/lib/geocoding";
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +22,19 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+const toPlainText = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return safeDecrypt(value).trim();
+};
+
+const normalizeStreetAddress = (address: string): string => {
+  if (!address) return "";
+  return address.replace(/^(\d+)([A-Z])/i, "$1 $2").trim();
+};
+
+const getProfile = (vendor: any) =>
+  Array.isArray(vendor?.profiles) ? vendor.profiles[0] : vendor?.profiles;
 
 export async function GET(req: NextRequest) {
   try {
@@ -75,11 +94,14 @@ export async function GET(req: NextRequest) {
         division,
         is_active,
         profiles!inner (
+          id,
           first_name,
           last_name,
           phone,
+          address,
           city,
           state,
+          zip_code,
           latitude,
           longitude,
           region_id
@@ -125,6 +147,119 @@ export async function GET(req: NextRequest) {
     }
 
     console.log('[ALL-VENDORS] 📦 Raw vendors fetched:', vendors?.length || 0);
+
+    // Geocode missing vendor coordinates on modal load and persist in profiles.
+    if (vendors && vendors.length > 0) {
+      const vendorsMissingCoords = vendors.filter((vendor: any) => {
+        const profile = getProfile(vendor);
+        return profile && (profile.latitude == null || profile.longitude == null);
+      });
+
+      console.log('[ALL-VENDORS] Vendors missing coordinates:', vendorsMissingCoords.length);
+
+      for (let i = 0; i < vendorsMissingCoords.length; i++) {
+        const vendor = vendorsMissingCoords[i];
+        const profile = getProfile(vendor);
+        if (!profile) continue;
+
+        const address = normalizeStreetAddress(toPlainText(profile.address));
+        const city = toPlainText(profile.city);
+        const state = toPlainText(profile.state);
+        const zipCode = toPlainText(profile.zip_code);
+
+        if (!address && !city && !state && !zipCode) {
+          console.log('[ALL-VENDORS] Skipping geocode (missing address fields):', {
+            vendorId: vendor.id,
+            hasAddress: !!address,
+            hasCity: !!city,
+            hasState: !!state,
+            hasZip: !!zipCode
+          });
+          continue;
+        }
+
+        try {
+          let geocodeResult = await geocodeAddress(
+            address,
+            city,
+            state,
+            zipCode || undefined
+          );
+
+          // Fallbacks for partially populated profile data
+          if (!geocodeResult && (city || state || zipCode)) {
+            geocodeResult = await geocodeAddress(
+              "",
+              city,
+              state,
+              zipCode || undefined
+            );
+          }
+          if (!geocodeResult && address) {
+            geocodeResult = await geocodeAddress(
+              address,
+              "",
+              "",
+              zipCode || undefined
+            );
+          }
+
+          if (!geocodeResult) {
+            console.log('[ALL-VENDORS] Geocoding returned no result for vendor:', vendor.id);
+            continue;
+          }
+
+          let updateError: any = null;
+          if (profile.id) {
+            const { error } = await supabaseAdmin
+              .from('profiles')
+              .update({
+                latitude: geocodeResult.latitude,
+                longitude: geocodeResult.longitude
+              })
+              .eq('id', profile.id);
+            updateError = error;
+          } else {
+            const { error } = await supabaseAdmin
+              .from('profiles')
+              .update({
+                latitude: geocodeResult.latitude,
+                longitude: geocodeResult.longitude
+              })
+              .eq('user_id', vendor.id);
+            updateError = error;
+          }
+
+          if (updateError) {
+            console.error('[ALL-VENDORS] Failed to persist geocoded coordinates:', {
+              vendorId: vendor.id,
+              profileId: profile.id,
+              error: updateError.message
+            });
+            continue;
+          }
+
+          // Keep in-memory data in sync for this response.
+          profile.latitude = geocodeResult.latitude;
+          profile.longitude = geocodeResult.longitude;
+
+          console.log('[ALL-VENDORS] Geocoded and saved vendor coordinates:', {
+            vendorId: vendor.id,
+            latitude: geocodeResult.latitude,
+            longitude: geocodeResult.longitude
+          });
+        } catch (geocodeErr: any) {
+          console.error('[ALL-VENDORS] Geocoding failed for vendor:', {
+            vendorId: vendor.id,
+            error: geocodeErr?.message || geocodeErr
+          });
+        }
+
+        if (i < vendorsMissingCoords.length - 1) {
+          await delay(1100);
+        }
+      }
+    }
 
     // Debug: Show first vendor's region_id if any vendors exist
     if (vendors && vendors.length > 0) {
@@ -202,68 +337,111 @@ export async function GET(req: NextRequest) {
     console.log('[ALL-VENDORS] 📦 Processed vendors (after decryption):', processedVendors.length);
 
     // Apply geographic filtering if enabled
-    if (useGeoFilter && regionData && regionData.center_lat && regionData.center_lng) {
-      console.log('[ALL-VENDORS] 🌍 Applying geographic filter:', {
+    if (
+      useGeoFilter &&
+      regionData &&
+      regionData.center_lat != null &&
+      regionData.center_lng != null &&
+      regionData.radius_miles != null
+    ) {
+      const effectiveRadiusMiles = FIXED_REGION_RADIUS_MILES;
+      console.log('[ALL-VENDORS] Applying geographic filter:', {
         region: regionData.name,
         center: `${regionData.center_lat}, ${regionData.center_lng}`,
-        radius: regionData.radius_miles
+        radius: effectiveRadiusMiles
       });
       processedVendors = processedVendors
         .filter((vendor: any) => {
-          // Only include vendors with valid coordinates that are within the region
-          if (!vendor.profiles.latitude || !vendor.profiles.longitude) {
-            console.log(`[ALL-VENDORS] ⚠️ Vendor ${vendor.id} excluded: missing coordinates`);
-            return false;
+          const hasCoordinates =
+            vendor.profiles.latitude != null && vendor.profiles.longitude != null;
+          const matchesAssignedRegion = vendor.region_id === regionId;
+
+          let withinRegion = false;
+          let distance: number | null = null;
+
+          if (hasCoordinates) {
+            withinRegion = isWithinRegion(
+              vendor.profiles.latitude,
+              vendor.profiles.longitude,
+              regionData.center_lat,
+              regionData.center_lng,
+              regionData.radius_miles
+            );
+
+            distance = calculateDistanceMiles(
+              vendor.profiles.latitude,
+              vendor.profiles.longitude,
+              regionData.center_lat,
+              regionData.center_lng
+            );
           }
 
-          const withinRegion = isWithinRegion(
-            vendor.profiles.latitude,
-            vendor.profiles.longitude,
-            regionData.center_lat,
-            regionData.center_lng,
-            regionData.radius_miles
-          );
+          const includeVendor = withinRegion || matchesAssignedRegion;
 
-          const distance = calculateDistanceMiles(
-            vendor.profiles.latitude,
-            vendor.profiles.longitude,
-            regionData.center_lat,
-            regionData.center_lng
-          );
-
-          console.log(`[ALL-VENDORS] 🔍 Vendor ${vendor.email}:`, {
-            coordinates: `${vendor.profiles.latitude}, ${vendor.profiles.longitude}`,
-            distance: `${Math.round(distance * 10) / 10} miles`,
+          console.log(`[ALL-VENDORS] Vendor ${vendor.email}:`, {
+            coordinates: hasCoordinates
+              ? `${vendor.profiles.latitude}, ${vendor.profiles.longitude}`
+              : 'missing',
+            distance: distance != null ? `${Math.round(distance * 10) / 10} miles` : null,
             withinRegion,
-            threshold: `${regionData.radius_miles} miles`
+            matchesAssignedRegion,
+            included: includeVendor,
+            threshold: `${effectiveRadiusMiles} miles`
           });
 
-          return withinRegion;
+          return includeVendor;
         })
         .map((vendor: any) => {
-          // Add distance information for each vendor
-          const distance = calculateDistanceMiles(
-            vendor.profiles.latitude,
-            vendor.profiles.longitude,
-            regionData.center_lat,
-            regionData.center_lng
-          );
+          const hasCoordinates =
+            vendor.profiles.latitude != null && vendor.profiles.longitude != null;
+          const distance = hasCoordinates
+            ? calculateDistanceMiles(
+                vendor.profiles.latitude,
+                vendor.profiles.longitude,
+                regionData.center_lat,
+                regionData.center_lng
+              )
+            : null;
+          const roundedDistance =
+            distance != null ? Math.round(distance * 10) / 10 : null;
 
           return {
             ...vendor,
-            // Expose a generic `distance` like other endpoints (e.g., available-vendors)
-            distance: Math.round(distance * 10) / 10,
-            distance_from_center: Math.round(distance * 10) / 10 // Round to 1 decimal place
+            distance: roundedDistance,
+            distance_from_center: roundedDistance
           };
         })
         .sort((a: any, b: any) => {
-          // Sort by distance from region center when using geo filter
-          return a.distance_from_center - b.distance_from_center;
+          const aDistance =
+            typeof a.distance_from_center === 'number' ? a.distance_from_center : null;
+          const bDistance =
+            typeof b.distance_from_center === 'number' ? b.distance_from_center : null;
+
+          if (aDistance != null && bDistance != null) return aDistance - bDistance;
+          if (aDistance != null) return -1;
+          if (bDistance != null) return 1;
+
+          const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.toLowerCase();
+          const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.toLowerCase();
+          return nameA.localeCompare(nameB);
         });
 
-      console.log('[ALL-VENDORS] ✅ Geographic filtering complete:', {
+      console.log('[ALL-VENDORS] Geographic filtering complete:', {
         filtered_count: processedVendors.length,
         sorted_by: 'distance'
+      });
+    } else if (regionId && regionId !== 'all' && useGeoFilter) {
+      processedVendors = processedVendors
+        .filter((vendor: any) => vendor.region_id === regionId)
+        .sort((a: any, b: any) => {
+          const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.toLowerCase();
+          const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.toLowerCase();
+          return nameA.localeCompare(nameB);
+        });
+
+      console.log('[ALL-VENDORS] Geo filter requested but region geometry missing; used region_id fallback:', {
+        regionId,
+        count: processedVendors.length
       });
     } else {
       // Standard alphabetical sorting when not using geographic filter
@@ -293,7 +471,7 @@ export async function GET(req: NextRequest) {
         name: regionData.name,
         center_lat: regionData.center_lat,
         center_lng: regionData.center_lng,
-        radius_miles: regionData.radius_miles
+        radius_miles: FIXED_REGION_RADIUS_MILES
       } : null,
       geo_filtered: useGeoFilter && regionData != null
     }, { status: 200 });
@@ -302,3 +480,4 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: err.message || err }, { status: 500 });
   }
 }
+
