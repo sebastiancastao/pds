@@ -1938,7 +1938,10 @@ export default function DashboardPage() {
               {message && (
                 <div
                   className={`apple-alert ${
-                    message.toLowerCase().includes("success") ? "apple-alert-success" : "apple-alert-error"
+                    (
+                      message.toLowerCase().includes("success") ||
+                      message.toLowerCase().includes("awaiting confirmation")
+                    ) ? "apple-alert-success" : "apple-alert-error"
                   }`}
                 >
                   {message}
@@ -2381,7 +2384,10 @@ export default function DashboardPage() {
               {teamMessage && (
                 <div
                   className={`apple-alert mb-6 ${
-                    teamMessage.toLowerCase().includes("success") ? "apple-alert-success" : "apple-alert-error"
+                    (
+                      teamMessage.toLowerCase().includes("success") ||
+                      teamMessage.toLowerCase().includes("awaiting confirmation")
+                    ) ? "apple-alert-success" : "apple-alert-error"
                   }`}
                 >
                   {teamMessage}
