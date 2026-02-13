@@ -36,6 +36,14 @@ const normalizeStreetAddress = (address: string): string => {
 const getProfile = (vendor: any) =>
   Array.isArray(vendor?.profiles) ? vendor.profiles[0] : vendor?.profiles;
 
+const chunkArray = <T>(items: T[], chunkSize: number): T[][] => {
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+};
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = createRouteHandlerClient({ cookies });
@@ -121,12 +129,12 @@ export async function GET(req: NextRequest) {
       console.log('[ALL-VENDORS] 🌐 Fetching all vendors (no region filter)');
     }
 
-    const { data: vendors, error } = await vendorQuery;
+    const { data: rawVendors, error } = await vendorQuery;
 
     // Gather recent responders within the past week for these vendors (invitations sent by current user)
     let recentResponderSet = new Set<string>();
     try {
-      const vendorIds = (vendors || []).map((v: any) => v.id);
+      const vendorIds = (rawVendors || []).map((v: any) => v.id);
       if (vendorIds.length > 0) {
         const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
         const { data: recent, error: recentErr } = await supabaseAdmin
@@ -144,6 +152,60 @@ export async function GET(req: NextRequest) {
     if (error) {
       console.error('[ALL-VENDORS] ❌ SUPABASE SELECT ERROR:', error);
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+    }
+
+    let vendors = rawVendors || [];
+
+    // Show only users that have a row in vendor_onboarding_status.
+    if (vendors.length > 0) {
+      const profileIds = vendors
+        .map((vendor: any) => getProfile(vendor)?.id)
+        .filter((id: any) => typeof id === "string");
+
+      if (profileIds.length > 0) {
+        const allowedProfileIds = new Set<string>();
+        const batches = chunkArray(profileIds as string[], 200);
+
+        for (const batch of batches) {
+          let batchSuccess = false;
+
+          for (let attempt = 1; attempt <= 3; attempt++) {
+            const { data: onboardingRows, error: onboardingError } = await supabaseAdmin
+              .from("vendor_onboarding_status")
+              .select("profile_id")
+              .in("profile_id", batch);
+
+            if (!onboardingError) {
+              (onboardingRows || []).forEach((row: any) => {
+                if (row?.profile_id) allowedProfileIds.add(row.profile_id);
+              });
+              batchSuccess = true;
+              break;
+            }
+
+            console.error("[ALL-VENDORS] Error fetching vendor_onboarding_status batch:", {
+              attempt,
+              batchSize: batch.length,
+              error: onboardingError
+            });
+            await delay(300 * attempt);
+          }
+
+          if (!batchSuccess) {
+            return NextResponse.json(
+              { error: "Failed to filter vendors by onboarding status" },
+              { status: 503 }
+            );
+          }
+        }
+
+        vendors = vendors.filter((vendor: any) => {
+          const profileId = getProfile(vendor)?.id;
+          return typeof profileId === "string" && allowedProfileIds.has(profileId);
+        });
+      } else {
+        vendors = [];
+      }
     }
 
     console.log('[ALL-VENDORS] 📦 Raw vendors fetched:', vendors?.length || 0);
@@ -480,4 +542,3 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: err.message || err }, { status: 500 });
   }
 }
-
