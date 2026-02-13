@@ -2,7 +2,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import FullCalendar from "@fullcalendar/react";
@@ -46,6 +46,10 @@ type Vendor = {
   distance: number | null;
   hasCoordinates?: boolean;
   recently_responded?: boolean;
+  has_submitted_availability?: boolean;
+  availability_responded_at?: string | null;
+  availability_scope_start?: string | null;
+  availability_scope_end?: string | null;
   profiles: {
     first_name: string;
     last_name: string;
@@ -123,6 +127,8 @@ export default function DashboardPage() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
+  const [vendorSearchQuery, setVendorSearchQuery] = useState("");
+  const [showOnlyPendingAvailability, setShowOnlyPendingAvailability] = useState(false);
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
 
   // Team creation for a given event
@@ -134,9 +140,62 @@ export default function DashboardPage() {
   const [savingTeam, setSavingTeam] = useState(false);
   const [teamMessage, setTeamMessage] = useState("");
   const [selectedTeamRegion, setSelectedTeamRegion] = useState<string>("all");
+  const [teamSearchQuery, setTeamSearchQuery] = useState("");
 
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
+
+  const hasActiveAvailability = useCallback((vendor: Vendor) => {
+    const hasInvitationAvailability = !!(vendor.has_submitted_availability || vendor.availability_responded_at);
+    if (!hasInvitationAvailability || !vendor.availability_scope_start || !vendor.availability_scope_end) {
+      return false;
+    }
+
+    const now = new Date();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    const today = `${now.getFullYear()}-${month}-${day}`;
+    return vendor.availability_scope_start <= today && vendor.availability_scope_end >= today;
+  }, []);
+
+  const filteredAndSortedVendors = useMemo(() => {
+    const query = vendorSearchQuery.trim().toLowerCase();
+    return [...vendors]
+      .sort((a, b) => {
+        const aName = `${a.profiles.first_name || ""} ${a.profiles.last_name || ""}`.trim().toLowerCase();
+        const bName = `${b.profiles.first_name || ""} ${b.profiles.last_name || ""}`.trim().toLowerCase();
+        return aName.localeCompare(bName);
+      })
+      .filter((v) => {
+        const hasSubmittedAvailability = hasActiveAvailability(v);
+        if (showOnlyPendingAvailability && hasSubmittedAvailability) return false;
+        if (!query) return true;
+        const fullName = `${v.profiles.first_name || ""} ${v.profiles.last_name || ""}`.trim().toLowerCase();
+        return fullName.includes(query) || v.email.toLowerCase().includes(query);
+      });
+  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability, hasActiveAvailability]);
+
+  const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
+  const allVisibleVendorsSelected =
+    filteredAndSortedVendors.length > 0 && selectedVisibleVendorCount === filteredAndSortedVendors.length;
+  const filteredTeamVendors = useMemo(() => {
+    const query = teamSearchQuery.trim().toLowerCase();
+    if (!query) return availableVendors;
+
+    return availableVendors.filter((v) => {
+      const firstName = safeDecrypt(v.profiles.first_name || "");
+      const lastName = safeDecrypt(v.profiles.last_name || "");
+      const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
+      const fullName = `${firstName} ${lastName}`.trim().toLowerCase();
+      return (
+        fullName.includes(query) ||
+        v.email.toLowerCase().includes(query) ||
+        phone.toLowerCase().includes(query) ||
+        (v.division || "").toLowerCase().includes(query) ||
+        (v.role || "").toLowerCase().includes(query)
+      );
+    });
+  }, [availableVendors, teamSearchQuery]);
 
   // HR tab state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -161,6 +220,32 @@ export default function DashboardPage() {
     const d = new Date(iso);
     d.setHours(d.getHours() + hours);
     return d.toISOString();
+  };
+
+  const formatDateOnly = (value?: string | null) => {
+    if (!value) return null;
+    const d = new Date(`${value}T00:00:00`);
+    if (isNaN(d.getTime())) return value;
+    return d.toLocaleDateString();
+  };
+
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return null;
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return value;
+    return d.toLocaleString();
+  };
+
+  const getRegionIcon = (regionName?: string | null) => {
+    const name = (regionName || "").toLowerCase();
+    if (/\bny\b|new york/.test(name)) return "\uD83D\uDDFD\uFE0F";
+    if (/\bca\b|california|los angeles|san diego|san francisco/.test(name)) return "\uD83C\uDF07";
+    if (/\bnv\b|nevada|las vegas/.test(name)) return "\uD83C\uDFDC\uFE0F";
+    if (/\baz\b|arizona|phoenix/.test(name)) return "\uD83C\uDF35";
+    if (/\btx\b|texas/.test(name)) return "\uD83E\uDD20";
+    if (/\bwi\b|wisconsin/.test(name)) return "\uD83E\uDDC0";
+    if (/\beast\b|\bwest\b|\bnorth\b|\bsouth\b/.test(name)) return "\uD83E\uDDED";
+    return "\uD83D\uDCCD";
   };
 
   // Load staff prediction for an event
@@ -210,7 +295,7 @@ export default function DashboardPage() {
         params.append("region_id", regionFilter);
         params.append("geo_filter", "true");
       }
-      console.log('[DASHBOARD-HR] 🔍 Loading employees with filters:', { stateFilter, regionFilter });
+      console.log('[DASHBOARD-HR] ð Loading employees with filters:', { stateFilter, regionFilter });
       const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}`, {
         method: "GET",
         headers: {
@@ -219,7 +304,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to load employees");
-      console.log('[DASHBOARD-HR] 📦 Employees loaded:', {
+      console.log('[DASHBOARD-HR] ð¦ Employees loaded:', {
         count: data.employees?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered
@@ -227,7 +312,7 @@ export default function DashboardPage() {
       setEmployees(data.employees || []);
       if (data.stats?.states) setAvailableStates(data.stats.states);
     } catch (err: any) {
-      console.error('[DASHBOARD-HR] ❌ Error loading employees:', err);
+      console.error('[DASHBOARD-HR] â Error loading employees:', err);
       setEmployeesError(err.message || "Failed to load employees");
     }
     setLoadingEmployees(false);
@@ -237,28 +322,28 @@ export default function DashboardPage() {
   useEffect(() => {
     const checkAuth = async () => {
       try {
-        console.log('[DASHBOARD] 🔐 Starting auth check...');
+        console.log('[DASHBOARD] ð Starting auth check...');
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-        console.log('[DASHBOARD] 🔐 Session check result:', {
+        console.log('[DASHBOARD] ð Session check result:', {
           hasSession: !!session,
           userId: session?.user?.id,
           error: sessionError?.message
         });
 
         if (sessionError) {
-          console.error('[DASHBOARD] ❌ Session error:', sessionError);
+          console.error('[DASHBOARD] â Session error:', sessionError);
           router.replace('/login');
           return;
         }
 
         if (!session) {
-          console.error('[DASHBOARD] ❌ No session found, redirecting to login');
+          console.error('[DASHBOARD] â No session found, redirecting to login');
           router.replace('/login');
           return;
         }
 
-        console.log('[DASHBOARD] ✅ Session found, fetching user data for:', session.user.id);
+        console.log('[DASHBOARD] â Session found, fetching user data for:', session.user.id);
 
         // Check user role and region from users table (coordinates are in profiles table)
         const { data: userData, error: userError } = await (supabase
@@ -267,7 +352,7 @@ export default function DashboardPage() {
           .eq('id', session.user.id)
           .single() as any);
 
-        console.log('[DASHBOARD] 📊 User data fetch result:', {
+        console.log('[DASHBOARD] ð User data fetch result:', {
           success: !!userData,
           hasError: !!userError,
           errorCode: userError?.code,
@@ -275,21 +360,21 @@ export default function DashboardPage() {
         });
 
         if (userError) {
-          console.error('[DASHBOARD] ❌ User data fetch error:', userError);
+          console.error('[DASHBOARD] â User data fetch error:', userError);
           router.replace('/login');
           return;
         }
 
         if (!userData) {
-          console.error('[DASHBOARD] ❌ No user data found');
+          console.error('[DASHBOARD] â No user data found');
           router.replace('/login');
           return;
         }
 
-        console.log('[DASHBOARD] 📋 User data from users table:', JSON.stringify(userData, null, 2));
+        console.log('[DASHBOARD] ð User data from users table:', JSON.stringify(userData, null, 2));
 
         // Fetch profile data - try both possible foreign key columns
-        console.log('[DASHBOARD] 🔍 Fetching profile for user:', session.user.id);
+        console.log('[DASHBOARD] ð Fetching profile for user:', session.user.id);
 
         // Debug: Check what's in profiles table
         const debugProfiles = await supabase
@@ -297,7 +382,7 @@ export default function DashboardPage() {
           .select('id, user_id, latitude, longitude')
           .limit(3);
 
-        console.log('[DASHBOARD] 🔍 DEBUG - Sample profiles:', {
+        console.log('[DASHBOARD] ð DEBUG - Sample profiles:', {
           count: debugProfiles.data?.length,
           samples: debugProfiles.data,
           error: debugProfiles.error?.message
@@ -313,7 +398,7 @@ export default function DashboardPage() {
           .eq('user_id', session.user.id)
           .maybeSingle();
 
-        console.log('[DASHBOARD] 🔍 Profile query (user_id):', {
+        console.log('[DASHBOARD] ð Profile query (user_id):', {
           found: !!result1.data,
           error: result1.error?.message,
           dataPreview: result1.data ? 'Found' : 'Not found',
@@ -324,14 +409,14 @@ export default function DashboardPage() {
           profileData = result1.data;
         } else if (!result1.error) {
           // Try 2: id column as foreign key
-          console.log('[DASHBOARD] 🔍 Trying with id column...');
+          console.log('[DASHBOARD] ð Trying with id column...');
           const result2 = await supabase
             .from('profiles')
             .select('*')
             .eq('id', session.user.id)
             .maybeSingle();
 
-          console.log('[DASHBOARD] 🔍 Profile query (id):', {
+          console.log('[DASHBOARD] ð Profile query (id):', {
             found: !!result2.data,
             error: result2.error?.message
           });
@@ -342,7 +427,7 @@ export default function DashboardPage() {
           profileError = result1.error;
         }
 
-        console.log('[DASHBOARD] 📋 Final profile data:', profileData ? {
+        console.log('[DASHBOARD] ð Final profile data:', profileData ? {
           hasLatitude: !!profileData.latitude,
           hasLongitude: !!profileData.longitude,
           latitude: profileData.latitude,
@@ -350,7 +435,7 @@ export default function DashboardPage() {
         } : null);
 
         if (profileError) {
-          console.warn('[DASHBOARD] ⚠️ Profile fetch error (non-fatal):', profileError);
+          console.warn('[DASHBOARD] â ï¸ Profile fetch error (non-fatal):', profileError);
         }
 
         // Only allow manager and exec users
@@ -361,7 +446,7 @@ export default function DashboardPage() {
         let userLat = profileData?.latitude;
         let userLng = profileData?.longitude;
 
-        console.log('[DASHBOARD] 📍 Coordinates from profiles table:', {
+        console.log('[DASHBOARD] ð Coordinates from profiles table:', {
           lat: userLat,
           lng: userLng,
           hasCoordinates: !!(userLat && userLng)
@@ -369,7 +454,7 @@ export default function DashboardPage() {
 
         // If no coordinates but user has address, geocode it
         if ((!userLat || !userLng) && profileData?.city && profileData?.state) {
-          console.log('[DASHBOARD] 🗺️ No coordinates found, attempting to geocode address:', {
+          console.log('[DASHBOARD] ðºï¸ No coordinates found, attempting to geocode address:', {
             city: profileData.city,
             state: profileData.state
           });
@@ -385,7 +470,7 @@ export default function DashboardPage() {
             if (geocodeResult) {
               userLat = geocodeResult.latitude;
               userLng = geocodeResult.longitude;
-              console.log('[DASHBOARD] ✅ Address geocoded successfully:', {
+              console.log('[DASHBOARD] â Address geocoded successfully:', {
                 lat: userLat,
                 lng: userLng,
                 display_name: geocodeResult.display_name
@@ -398,10 +483,10 @@ export default function DashboardPage() {
               //   longitude: userLng
               // }).eq('id', session.user.id);
             } else {
-              console.warn('[DASHBOARD] ⚠️ Geocoding returned no results for address');
+              console.warn('[DASHBOARD] â ï¸ Geocoding returned no results for address');
             }
           } catch (geocodeErr) {
-            console.error('[DASHBOARD] ❌ Geocoding failed:', geocodeErr);
+            console.error('[DASHBOARD] â Geocoding failed:', geocodeErr);
           }
         }
 
@@ -411,14 +496,14 @@ export default function DashboardPage() {
           return;
         }
 
-        console.log('[DASHBOARD] ✅ Access granted - user role:', role, 'region:', regionId, 'coords:', { userLat, userLng });
+        console.log('[DASHBOARD] â Access granted - user role:', role, 'region:', regionId, 'coords:', { userLat, userLng });
 
         setUserRole(role);
         setUserRegionId(regionId);
 
         // IMPORTANT: Grant access immediately - geocoding should NOT block dashboard access
         setIsAuthorized(true);
-        console.log('[DASHBOARD] 🎯 Authorization granted, proceeding with region detection...');
+        console.log('[DASHBOARD] ð¯ Authorization granted, proceeding with region detection...');
 
         // Priority order for determining user's region (non-blocking):
         // 1. Geocoding from coordinates (most accurate)
@@ -432,7 +517,7 @@ export default function DashboardPage() {
           // If user has coordinates, find their region
           // This applies to both managers and executives
           if (userLat && userLng) {
-          console.log('[DASHBOARD] 🌍 Determining region from coordinates:', { userLat, userLng });
+          console.log('[DASHBOARD] ð Determining region from coordinates:', { userLat, userLng });
           setUserCoordinates({ lat: userLat, lng: userLng });
 
           // Fetch all regions to determine which one the user is in
@@ -446,31 +531,31 @@ export default function DashboardPage() {
               const userRegion = getUserRegion(userLat, userLng, allRegions);
 
               if (userRegion) {
-                console.log('[DASHBOARD] ✅ User detected in region:', userRegion.name);
+                console.log('[DASHBOARD] â User detected in region:', userRegion.name);
                 setDetectedRegion({ id: userRegion.id, name: userRegion.name });
                 regionDetected = true;
 
                 // For managers, auto-set their region filter
                 // For executives, they can still change it
                 if (role === 'manager') {
-                  console.log('[DASHBOARD] 👤 Setting manager region filters to:', userRegion.id);
+                  console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                   setSelectedEmployeeRegion(userRegion.id);
                 }
               } else {
-                console.warn('[DASHBOARD] ⚠️ No region found within radius for user coordinates');
+                console.warn('[DASHBOARD] â ï¸ No region found within radius for user coordinates');
               }
             }
           } catch (err) {
-            console.error('[DASHBOARD] ❌ Failed to determine user region:', err);
+            console.error('[DASHBOARD] â Failed to determine user region:', err);
           }
         } else {
-          console.log('[DASHBOARD] ⚠️ No coordinates available for region detection');
+          console.log('[DASHBOARD] â ï¸ No coordinates available for region detection');
         }
 
         // Fallback: If geocoding didn't work but user has a region_id, use that
         if (!regionDetected && regionId) {
-          console.log('[DASHBOARD] 📌 Using database region_id as fallback:', regionId);
+          console.log('[DASHBOARD] ð Using database region_id as fallback:', regionId);
           // Fetch region name for display
           try {
             const regionsRes = await fetch('/api/regions');
@@ -478,7 +563,7 @@ export default function DashboardPage() {
               const regionsData = await regionsRes.json();
               const region = regionsData.regions?.find((r: any) => r.id === regionId);
               if (region) {
-                console.log('[DASHBOARD] ✅ Region found from database:', region.name);
+                console.log('[DASHBOARD] â Region found from database:', region.name);
                 setDetectedRegion({ id: region.id, name: region.name });
                 if (role === 'manager') {
                   setSelectedRegion(region.id);
@@ -488,13 +573,13 @@ export default function DashboardPage() {
               }
             }
           } catch (err) {
-            console.error('[DASHBOARD] ❌ Failed to fetch region data:', err);
+            console.error('[DASHBOARD] â Failed to fetch region data:', err);
           }
         }
 
         // Last resort: Use browser geolocation to determine current location
         if (!regionDetected) {
-          console.log('[DASHBOARD] 🌐 Attempting browser geolocation...');
+          console.log('[DASHBOARD] ð Attempting browser geolocation...');
           try {
             // Get user's current location from browser
             const position = await new Promise<GeolocationPosition>((resolve, reject) => {
@@ -512,7 +597,7 @@ export default function DashboardPage() {
             const currentLat = position.coords.latitude;
             const currentLng = position.coords.longitude;
 
-            console.log('[DASHBOARD] 📍 Browser location obtained:', { currentLat, currentLng });
+            console.log('[DASHBOARD] ð Browser location obtained:', { currentLat, currentLng });
 
             // Fetch regions and determine which one the user is in
             const regionsRes = await fetch('/api/regions');
@@ -524,47 +609,47 @@ export default function DashboardPage() {
               const userRegion = getUserRegion(currentLat, currentLng, allRegions);
 
               if (userRegion) {
-                console.log('[DASHBOARD] ✅ User location detected in region:', userRegion.name);
+                console.log('[DASHBOARD] â User location detected in region:', userRegion.name);
                 setDetectedRegion({ id: userRegion.id, name: userRegion.name });
                 setUserCoordinates({ lat: currentLat, lng: currentLng });
                 if (role === 'manager') {
-                  console.log('[DASHBOARD] 👤 Setting manager region filters to:', userRegion.id);
+                  console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                   setSelectedEmployeeRegion(userRegion.id);
                 }
                 regionDetected = true;
               } else {
-                console.warn('[DASHBOARD] ⚠️ Current location is not within any defined region');
+                console.warn('[DASHBOARD] â ï¸ Current location is not within any defined region');
               }
             }
           } catch (geoErr: any) {
-            console.warn('[DASHBOARD] ⚠️ Browser geolocation failed:', geoErr.message);
+            console.warn('[DASHBOARD] â ï¸ Browser geolocation failed:', geoErr.message);
           }
         }
 
           // If still no region detected, warn the user (but still allow access)
           if (!regionDetected && role === 'manager') {
-            console.warn('[DASHBOARD] ⚠️ Manager has no region assigned. Showing all data. Please allow location access or set coordinates in profile for region filtering.');
+            console.warn('[DASHBOARD] â ï¸ Manager has no region assigned. Showing all data. Please allow location access or set coordinates in profile for region filtering.');
           } else if (!regionDetected) {
-            console.log('[DASHBOARD] ℹ️ No region detected for executive. User can select region from dropdown.');
+            console.log('[DASHBOARD] â¹ï¸ No region detected for executive. User can select region from dropdown.');
           }
 
-          console.log('[DASHBOARD] 🏁 Auth check complete. Region detection:', regionDetected ? 'SUCCESS' : 'NONE');
+          console.log('[DASHBOARD] ð Auth check complete. Region detection:', regionDetected ? 'SUCCESS' : 'NONE');
         } catch (regionErr) {
           // Geocoding failed, but this should NOT block access
-          console.error('[DASHBOARD] ⚠️ Region detection failed (non-fatal):', regionErr);
-          console.log('[DASHBOARD] ℹ️ User can still access dashboard, region filtering disabled.');
+          console.error('[DASHBOARD] â ï¸ Region detection failed (non-fatal):', regionErr);
+          console.log('[DASHBOARD] â¹ï¸ User can still access dashboard, region filtering disabled.');
         }
       } catch (err: any) {
-        console.error('[DASHBOARD] ❌ FATAL: Auth check error:', {
+        console.error('[DASHBOARD] â FATAL: Auth check error:', {
           message: err?.message,
           stack: err?.stack,
           error: err
         });
-        console.error('[DASHBOARD] ❌ Redirecting to login due to fatal error');
+        console.error('[DASHBOARD] â Redirecting to login due to fatal error');
         router.replace('/login');
       } finally {
-        console.log('[DASHBOARD] 🏁 Auth check finally block, setting authChecking to false');
+        console.log('[DASHBOARD] ð Auth check finally block, setting authChecking to false');
         setAuthChecking(false);
       }
     };
@@ -620,7 +705,7 @@ export default function DashboardPage() {
       ? detectedRegion.id
       : (userRole === 'manager' && userRegionId ? userRegionId : 'all');
 
-    console.log('[DASHBOARD] 🚀 Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
+    console.log('[DASHBOARD] ð Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
 
     loadEvents();
     loadEmployees('all', initialRegion);
@@ -674,7 +759,7 @@ export default function DashboardPage() {
 
   // Region + vendors helpers
   const loadRegions = async () => {
-    console.log('[DASHBOARD] 📍 Loading regions...');
+    console.log('[DASHBOARD] ð Loading regions...');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch("/api/regions", {
@@ -683,13 +768,13 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        console.log('[DASHBOARD] ✅ Regions loaded:', data.regions?.length || 0, data.regions);
+        console.log('[DASHBOARD] â Regions loaded:', data.regions?.length || 0, data.regions);
         setRegions(data.regions || []);
       } else {
-        console.error('[DASHBOARD] ❌ Failed to load regions, status:', res.status);
+        console.error('[DASHBOARD] â Failed to load regions, status:', res.status);
       }
     } catch (err) {
-      console.error("[DASHBOARD] ❌ Failed to load regions:", err);
+      console.error("[DASHBOARD] â Failed to load regions:", err);
     }
   };
 
@@ -700,7 +785,7 @@ export default function DashboardPage() {
   };
 
   const loadAllVendors = async (regionId: string = selectedRegion) => {
-    console.log('[DASHBOARD] 🔍 loadAllVendors called with regionId:', regionId);
+    console.log('[DASHBOARD] ð loadAllVendors called with regionId:', regionId);
     setLoadingVendors(true);
     setMessage("");
     try {
@@ -710,7 +795,7 @@ export default function DashboardPage() {
       // This ensures vendors are filtered by geographic boundaries (radius from region center)
       const useGeoFilter = regionId !== "all";
       const url = `/api/all-vendors${regionId !== "all" ? `?region_id=${regionId}${useGeoFilter ? '&geo_filter=true' : ''}` : ""}`;
-      console.log('[DASHBOARD] 📡 Fetching vendors from:', url, { useGeoFilter, userRole, regionId });
+      console.log('[DASHBOARD] ð¡ Fetching vendors from:', url, { useGeoFilter, userRole, regionId });
 
       // Fetch ALL vendors from the database directly, not filtered by venue
       const res = await fetch(url, {
@@ -718,25 +803,25 @@ export default function DashboardPage() {
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
 
-      console.log('[DASHBOARD] 📥 Response status:', res.status, res.ok ? '✅' : '❌');
+      console.log('[DASHBOARD] ð¥ Response status:', res.status, res.ok ? 'â' : 'â');
 
       if (!res.ok) {
         let errorMessage = "Failed to load vendors";
         try {
           const errorData = await res.json();
-          console.error('[DASHBOARD] ❌ API error:', errorData);
+          console.error('[DASHBOARD] â API error:', errorData);
           errorMessage = errorData.error || errorMessage;
         } catch (parseErr) {
           // If JSON parsing fails, try to get text
           const errorText = await res.text();
-          console.error('[DASHBOARD] ❌ Non-JSON error response:', errorText.substring(0, 200));
+          console.error('[DASHBOARD] â Non-JSON error response:', errorText.substring(0, 200));
           errorMessage = `Server error (${res.status}): ${res.statusText}`;
         }
         throw new Error(errorMessage);
       }
 
       const data = await res.json();
-      console.log('[DASHBOARD] 📦 Received data:', {
+      console.log('[DASHBOARD] ð¦ Received data:', {
         vendors_count: data.vendors?.length || 0,
         region: data.region?.name || 'all',
         geo_filtered: data.geo_filtered,
@@ -753,10 +838,10 @@ export default function DashboardPage() {
             return A.localeCompare(B);
           });
 
-      console.log('[DASHBOARD] ✅ Setting vendors state:', allVendors.length);
+      console.log('[DASHBOARD] â Setting vendors state:', allVendors.length);
       setVendors(allVendors);
     } catch (err: any) {
-      console.error("[DASHBOARD] ❌ Error loading vendors:", err);
+      console.error("[DASHBOARD] â Error loading vendors:", err);
       setMessage(err.message || "Network error loading vendors");
     }
     setLoadingVendors(false);
@@ -766,11 +851,12 @@ export default function DashboardPage() {
   const openVendorModal = () => {
     setShowVendorModal(true);
     setSelectedVendors(new Set());
+    setVendorSearchQuery("");
     // For managers, use their detected region from geocoding; for execs, show all
     const initialRegion = userRole === 'manager' && detectedRegion
       ? detectedRegion.id
       : (userRole === 'manager' && userRegionId ? userRegionId : "all");
-    console.log('[DASHBOARD] 📂 Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
+    console.log('[DASHBOARD] ð Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
     setSelectedRegion(initialRegion);
     setMessage("");
     loadRegions();
@@ -780,10 +866,11 @@ export default function DashboardPage() {
     setShowVendorModal(false);
     setVendors([]);
     setSelectedVendors(new Set());
+    setVendorSearchQuery("");
     setMessage("");
   };
   const handleRegionChange = async (newRegion: string) => {
-    console.log('[DASHBOARD] 🌍 Region changed:', { from: selectedRegion, to: newRegion, userRole });
+    console.log('[DASHBOARD] ð Region changed:', { from: selectedRegion, to: newRegion, userRole });
     setSelectedRegion(newRegion);
     setSelectedVendors(new Set());
     loadAllVendors(newRegion);
@@ -794,8 +881,18 @@ export default function DashboardPage() {
     setSelectedVendors(s);
   };
   const handleSelectAll = () => {
-    if (selectedVendors.size === vendors.length) setSelectedVendors(new Set());
-    else setSelectedVendors(new Set(vendors.map((v) => v.id)));
+    setSelectedVendors((prev) => {
+      const next = new Set(prev);
+      const allVisibleSelected =
+        filteredAndSortedVendors.length > 0 && filteredAndSortedVendors.every((v) => next.has(v.id));
+
+      if (allVisibleSelected) {
+        filteredAndSortedVendors.forEach((v) => next.delete(v.id));
+      } else {
+        filteredAndSortedVendors.forEach((v) => next.add(v.id));
+      }
+      return next;
+    });
   };
   const handleInvite = async () => {
     if (selectedVendors.size === 0) return;
@@ -829,7 +926,7 @@ export default function DashboardPage() {
 
   const loadTeamVendors = async (event: EventItem, regionId: string = "all") => {
     setLoadingAvailable(true);
-    console.log('[DASHBOARD-TEAM] 🔍 Loading team vendors for event:', event.id, 'with regionId:', regionId);
+    console.log('[DASHBOARD-TEAM] ð Loading team vendors for event:', event.id, 'with regionId:', regionId);
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
@@ -844,7 +941,7 @@ export default function DashboardPage() {
         }
       }
       const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
-      console.log('[DASHBOARD-TEAM] 📡 Fetching available vendors from:', url, { useGeoFilter, regionId });
+      console.log('[DASHBOARD-TEAM] ð¡ Fetching available vendors from:', url, { useGeoFilter, regionId });
 
       const res = await fetch(url, {
         method: "GET",
@@ -852,14 +949,14 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (res.ok) {
-        console.log('[DASHBOARD-TEAM] ✅ Loaded', data.vendors?.length || 0, 'available vendors');
+        console.log('[DASHBOARD-TEAM] â Loaded', data.vendors?.length || 0, 'available vendors');
         setAvailableVendors(data.vendors || []);
       } else {
-        console.error('[DASHBOARD-TEAM] ❌ Failed to load available vendors:', data.error);
+        console.error('[DASHBOARD-TEAM] â Failed to load available vendors:', data.error);
         setTeamMessage("Failed to load available vendors");
       }
     } catch (err) {
-      console.error('[DASHBOARD-TEAM] ❌ Network error loading available vendors:', err);
+      console.error('[DASHBOARD-TEAM] â Network error loading available vendors:', err);
       setTeamMessage("Network error loading available vendors");
     }
     setLoadingAvailable(false);
@@ -870,6 +967,7 @@ export default function DashboardPage() {
     setShowTeamModal(true);
     setTeamMessage("");
     setSelectedTeamRegion("all");
+    setTeamSearchQuery("");
 
     // Load available vendors first
     await loadTeamVendors(event, "all");
@@ -883,7 +981,7 @@ export default function DashboardPage() {
       });
       const data = await res.json();
       if (res.ok && data.team && data.team.length > 0) {
-        console.log('[DASHBOARD-TEAM] 📋 Loading', data.team.length, 'existing team members');
+        console.log('[DASHBOARD-TEAM] ð Loading', data.team.length, 'existing team members');
 
         // Convert team members to vendor format (names are already decrypted by API)
         const existingVendors = data.team.map((member: any) => ({
@@ -934,14 +1032,14 @@ export default function DashboardPage() {
             .map((member: any) => String(member?.vendor_id ?? ""))
             .filter((id) => id.length > 0)
         );
-        console.log('[DASHBOARD-TEAM] ✅ Pre-selecting', existingMemberIds.size, 'existing team members');
+        console.log('[DASHBOARD-TEAM] â Pre-selecting', existingMemberIds.size, 'existing team members');
         setSelectedTeamMembers(existingMemberIds);
       } else {
         // No existing team - start with empty selection
         setSelectedTeamMembers(new Set());
       }
     } catch (err) {
-      console.error('[DASHBOARD-TEAM] ❌ Error loading existing team members:', err);
+      console.error('[DASHBOARD-TEAM] â Error loading existing team members:', err);
       // Continue anyway - user can still create a team
       setSelectedTeamMembers(new Set());
     }
@@ -1012,7 +1110,7 @@ export default function DashboardPage() {
           setSelectedTeamMembers(existingMemberIds);
         }
       } catch (err) {
-        console.error('[DASHBOARD-TEAM] ❌ Error preserving existing team members on region change:', err);
+        console.error('[DASHBOARD-TEAM] â Error preserving existing team members on region change:', err);
       }
     }
   };
@@ -1024,6 +1122,7 @@ export default function DashboardPage() {
     setSelectedTeamMembers(new Set());
     setTeamMessage("");
     setSelectedTeamRegion("all");
+    setTeamSearchQuery("");
   };
   const toggleTeamMember = (id: string) => {
     const s = new Set(selectedTeamMembers);
@@ -1031,24 +1130,22 @@ export default function DashboardPage() {
     setSelectedTeamMembers(s);
   };
   const handleSelectAllTeam = () => {
-    // Get vendors who are NOT already invited (new vendors only)
-    const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
-    const existingVendors = availableVendors.filter((v) => (v as any).isExistingMember);
+    const visibleNewVendorIds = filteredTeamVendors
+      .filter((v) => !(v as any).isExistingMember)
+      .map((v) => v.id);
 
-    // Get IDs of new vendors and existing vendors
-    const newVendorIds = newVendors.map((v) => v.id);
-    const existingVendorIds = existingVendors.map((v) => v.id);
+    if (visibleNewVendorIds.length === 0) return;
 
-    // Check if all NEW vendors are selected
-    const allNewSelected = newVendorIds.every(id => selectedTeamMembers.has(id));
+    const allVisibleNewSelected = visibleNewVendorIds.every((id) => selectedTeamMembers.has(id));
+    const nextSelected = new Set(selectedTeamMembers);
 
-    if (allNewSelected) {
-      // Deselect all NEW vendors, but keep existing members selected
-      setSelectedTeamMembers(new Set(existingVendorIds));
+    if (allVisibleNewSelected) {
+      visibleNewVendorIds.forEach((id) => nextSelected.delete(id));
     } else {
-      // Select all NEW vendors + keep existing members selected
-      setSelectedTeamMembers(new Set([...newVendorIds, ...existingVendorIds]));
+      visibleNewVendorIds.forEach((id) => nextSelected.add(id));
     }
+
+    setSelectedTeamMembers(nextSelected);
   };
   const handleSaveTeam = async () => {
     if (!selectedEvent || selectedTeamMembers.size === 0) return;
@@ -1105,10 +1202,10 @@ export default function DashboardPage() {
   const handleEmployeeRegionChange = async (newRegion: string) => {
     // Prevent managers from changing regions
     if (userRole === 'manager') {
-      console.warn('[DASHBOARD-HR] ⚠️ Managers cannot change regions');
+      console.warn('[DASHBOARD-HR] â ï¸ Managers cannot change regions');
       return;
     }
-    console.log('[DASHBOARD-HR] 🌍 Region changed:', { from: selectedEmployeeRegion, to: newRegion });
+    console.log('[DASHBOARD-HR] ð Region changed:', { from: selectedEmployeeRegion, to: newRegion });
     setSelectedEmployeeRegion(newRegion);
     loadEmployees(selectedState, newRegion);
   };
@@ -1397,7 +1494,7 @@ export default function DashboardPage() {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                             </svg>
                             <span className="font-medium">{ev.venue}</span>
-                            {ev.city && ev.state && <span className="ml-2 text-gray-500">• {ev.city}, {ev.state}</span>}
+                            {ev.city && ev.state && <span className="ml-2 text-gray-500">. {ev.city}, {ev.state}</span>}
                           </div>
                           {ev.artist && (
                             <div className="flex items-center text-gray-600 mb-2">
@@ -1412,7 +1509,7 @@ export default function DashboardPage() {
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                             </svg>
                             <span>{ev.event_date}</span>
-                            <span className="mx-2">•</span>
+                            <span className="mx-2">.</span>
                             <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
@@ -1613,7 +1710,7 @@ export default function DashboardPage() {
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Recent Leave Requests</h2>
                     <button onClick={() => setHrView("leaves")} className="text-blue-600 hover:text-blue-700 font-medium text-sm">
-                      View All →
+                      View All â
                     </button>
                   </div>
                   <div className="apple-card overflow-hidden">
@@ -1700,10 +1797,10 @@ export default function DashboardPage() {
                       onChange={(e) => handleEmployeeRegionChange(e.target.value)}
                       className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                     >
-                      <option value="all">All Regions</option>
+                      <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {r.name} {detectedRegion?.id === r.id && userRole === 'manager' ? '(Your Region)' : ''}
+                          {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id && userRole === 'manager' ? '(Your Region)' : ''}
                         </option>
                       ))}
                     </select>
@@ -1743,7 +1840,7 @@ export default function DashboardPage() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                       </svg>
                       <span>
-                        Your region was auto-detected: <strong>{detectedRegion.name}</strong> •
+                        Your region was auto-detected: <strong>{detectedRegion.name}</strong> .
                         Showing {employees.length} {employees.length === 1 ? "employee" : "employees"}
                       </span>
                     </div>
@@ -1761,9 +1858,9 @@ export default function DashboardPage() {
                       {selectedEmployeeRegion !== "all" && (
                         <span className="ml-1">{regions.find(r => r.id === selectedEmployeeRegion)?.name || selectedEmployeeRegion}</span>
                       )}
-                      {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">•</span>}
+                      {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">.</span>}
                       {selectedState !== "all" && <span>{selectedState}</span>}
-                      <span className="ml-2 text-blue-600">• {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
+                      <span className="ml-2 text-blue-600">. {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
                     </div>
                     <button
                       onClick={() => {
@@ -1977,7 +2074,10 @@ export default function DashboardPage() {
               {message && (
                 <div
                   className={`apple-alert ${
-                    message.toLowerCase().includes("success") ? "apple-alert-success" : "apple-alert-error"
+                    (
+                      message.toLowerCase().includes("success") ||
+                      message.toLowerCase().includes("awaiting confirmation")
+                    ) ? "apple-alert-success" : "apple-alert-error"
                   }`}
                 >
                   {message}
@@ -2010,7 +2110,7 @@ export default function DashboardPage() {
                     </svg>
                     <div className="text-sm text-gray-700">
                       <div className="font-semibold mb-1">3-Week Work Period</div>
-                      <div className="text-xs text-gray-600">We’ll invite selected vendors to share availability</div>
+                      <div className="text-xs text-gray-600">Weâll invite selected vendors to share availability</div>
                     </div>
                   </div>
 
@@ -2039,10 +2139,10 @@ export default function DashboardPage() {
                       onChange={(e) => handleRegionChange(e.target.value)}
                       className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                     >
-                      <option value="all">🌎 All Regions</option>
+                      <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          📍 {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
+                          {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
                         </option>
                       ))}
                     </select>
@@ -2061,16 +2161,41 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  <div className="mb-6">
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Search Vendors</label>
+                    <input
+                      type="text"
+                      value={vendorSearchQuery}
+                      onChange={(e) => setVendorSearchQuery(e.target.value)}
+                      placeholder="Search by name or email"
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    />
+                    <p className="text-xs text-gray-500 mt-1.5">
+                      Showing {filteredAndSortedVendors.length} of {vendors.length}{" "}
+                      {vendors.length === 1 ? "vendor" : "vendors"}
+                    </p>
+                    <label className="mt-2 inline-flex items-center cursor-pointer text-xs text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={showOnlyPendingAvailability}
+                        onChange={(e) => setShowOnlyPendingAvailability(e.target.checked)}
+                        className="mr-2 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Show only vendors who have not sent availability
+                    </label>
+                  </div>
+
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
-                        checked={selectedVendors.size === vendors.length && vendors.length > 0}
+                        checked={allVisibleVendorsSelected}
                         onChange={handleSelectAll}
+                        disabled={filteredAndSortedVendors.length === 0}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({vendors.length})
+                        Select All ({filteredAndSortedVendors.length})
                       </span>
                     </label>
                     <button
@@ -2085,7 +2210,12 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
-                    {vendors.map((v) => (
+                    {filteredAndSortedVendors.length === 0 && (
+                      <div className="apple-empty-state py-10">
+                        <p className="text-sm text-gray-500">No vendors match your search</p>
+                      </div>
+                    )}
+                    {filteredAndSortedVendors.map((v) => (
                       <div key={v.id} className="apple-vendor-card" onClick={() => toggleVendorSelection(v.id)}>
                         <input
                           type="checkbox"
@@ -2121,6 +2251,9 @@ export default function DashboardPage() {
                               {v.recently_responded && (
                                 <div className="px-2 py-0.5 text-xs bg-green-100 text-green-700 rounded-md">Replied this week</div>
                               )}
+                              {hasActiveAvailability(v) && (
+                                <div className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-md">Availability sent</div>
+                              )}
                               {v.distance !== null ? (
                                 <div className="apple-distance-badge">{v.distance} mi</div>
                               ) : (
@@ -2132,10 +2265,18 @@ export default function DashboardPage() {
                             {v.email}
                             {v.profiles.phone && (
                               <>
-                                <span className="mx-2 text-gray-400">•</span>
+                                <span className="mx-2 text-gray-400">.</span>
                                 {v.profiles.phone}
                               </>
                             )}
+                          {hasActiveAvailability(v) && v.availability_responded_at && (
+                            <div className="text-xs text-green-700 mb-1">
+                              Sent availability: {formatDateTime(v.availability_responded_at)}
+                              {v.availability_scope_start && v.availability_scope_end && (
+                                <> · Scope: {formatDateOnly(v.availability_scope_start)} to {formatDateOnly(v.availability_scope_end)}</>
+                              )}
+                            </div>
+                          )}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
@@ -2146,11 +2287,11 @@ export default function DashboardPage() {
                                   </svg>
                                   {v.profiles.city}, {v.profiles.state}
                                 </span>
-                                <span className="text-gray-400">•</span>
+                                <span className="text-gray-400">.</span>
                               </>
                             )}
                             <span>{v.division}</span>
-                            <span className="text-gray-400">•</span>
+                            <span className="text-gray-400">.</span>
                             <span>{v.role}</span>
                           </div>
                         </div>
@@ -2186,7 +2327,10 @@ export default function DashboardPage() {
               {teamMessage && (
                 <div
                   className={`apple-alert mb-6 ${
-                    teamMessage.toLowerCase().includes("success") ? "apple-alert-success" : "apple-alert-error"
+                    (
+                      teamMessage.toLowerCase().includes("success") ||
+                      teamMessage.toLowerCase().includes("awaiting confirmation")
+                    ) ? "apple-alert-success" : "apple-alert-error"
                   }`}
                 >
                   {teamMessage}
@@ -2212,10 +2356,10 @@ export default function DashboardPage() {
                   disabled={loadingAvailable}
                   className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                 >
-                  <option value="all">🌎 All Regions</option>
+                  <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                   {regions.map((r) => (
                     <option key={r.id} value={r.id}>
-                      📍 {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
+                      {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id ? '(Your Region)' : ''}
                     </option>
                   ))}
                 </select>
@@ -2261,19 +2405,29 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  <div className="mb-4">
+                    <input
+                      type="search"
+                      value={teamSearchQuery}
+                      onChange={(e) => setTeamSearchQuery(e.target.value)}
+                      placeholder="Search vendors by name, email, phone, division, or role..."
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    />
+                  </div>
+
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
                         checked={(() => {
-                          const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
+                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember);
                           return newVendors.length > 0 && newVendors.every(v => selectedTeamMembers.has(v.id));
                         })()}
                         onChange={handleSelectAllTeam}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({availableVendors.filter((v) => !(v as any).isExistingMember).length} new)
+                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember).length} new)
                       </span>
                     </label>
                     <button
@@ -2286,7 +2440,12 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
-                    {availableVendors.map((v) => {
+                    {filteredTeamVendors.length === 0 && (
+                      <div className="apple-empty-state !py-8">
+                        <p className="text-sm text-gray-500">No vendors match your search</p>
+                      </div>
+                    )}
+                    {filteredTeamVendors.map((v) => {
                       const firstName = safeDecrypt(v.profiles.first_name);
                       const lastName = safeDecrypt(v.profiles.last_name);
                       const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
@@ -2346,10 +2505,18 @@ export default function DashboardPage() {
                             {v.email}
                             {phone && (
                               <>
-                                <span className="mx-2 text-gray-400">•</span>
+                                <span className="mx-2 text-gray-400">.</span>
                                 {phone}
                               </>
                             )}
+                          {hasActiveAvailability(v) && v.availability_responded_at && (
+                            <div className="text-xs text-green-700 mb-1">
+                              Sent availability: {formatDateTime(v.availability_responded_at)}
+                              {v.availability_scope_start && v.availability_scope_end && (
+                                <> · Scope: {formatDateOnly(v.availability_scope_start)} to {formatDateOnly(v.availability_scope_end)}</>
+                              )}
+                            </div>
+                          )}
                           </div>
                           <div className="flex items-center gap-3 text-xs text-gray-500">
                             {v.profiles.city && v.profiles.state && (
@@ -2360,11 +2527,11 @@ export default function DashboardPage() {
                                   </svg>
                                   {v.profiles.city}, {v.profiles.state}
                                 </span>
-                                <span className="text-gray-400">•</span>
+                                <span className="text-gray-400">.</span>
                               </>
                             )}
                             <span>{v.division}</span>
-                            <span className="text-gray-400">•</span>
+                            <span className="text-gray-400">.</span>
                             <span>{v.role}</span>
                           </div>
                         </div>
