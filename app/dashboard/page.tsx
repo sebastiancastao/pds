@@ -140,6 +140,7 @@ export default function DashboardPage() {
   const [savingTeam, setSavingTeam] = useState(false);
   const [teamMessage, setTeamMessage] = useState("");
   const [selectedTeamRegion, setSelectedTeamRegion] = useState<string>("all");
+  const [teamSearchQuery, setTeamSearchQuery] = useState("");
 
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
@@ -177,6 +178,24 @@ export default function DashboardPage() {
   const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
   const allVisibleVendorsSelected =
     filteredAndSortedVendors.length > 0 && selectedVisibleVendorCount === filteredAndSortedVendors.length;
+  const filteredTeamVendors = useMemo(() => {
+    const query = teamSearchQuery.trim().toLowerCase();
+    if (!query) return availableVendors;
+
+    return availableVendors.filter((v) => {
+      const firstName = safeDecrypt(v.profiles.first_name || "");
+      const lastName = safeDecrypt(v.profiles.last_name || "");
+      const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
+      const fullName = `${firstName} ${lastName}`.trim().toLowerCase();
+      return (
+        fullName.includes(query) ||
+        v.email.toLowerCase().includes(query) ||
+        phone.toLowerCase().includes(query) ||
+        (v.division || "").toLowerCase().includes(query) ||
+        (v.role || "").toLowerCase().includes(query)
+      );
+    });
+  }, [availableVendors, teamSearchQuery]);
 
   // HR tab state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -948,6 +967,7 @@ export default function DashboardPage() {
     setShowTeamModal(true);
     setTeamMessage("");
     setSelectedTeamRegion("all");
+    setTeamSearchQuery("");
 
     // Load available vendors first
     await loadTeamVendors(event, "all");
@@ -1102,6 +1122,7 @@ export default function DashboardPage() {
     setSelectedTeamMembers(new Set());
     setTeamMessage("");
     setSelectedTeamRegion("all");
+    setTeamSearchQuery("");
   };
   const toggleTeamMember = (id: string) => {
     const s = new Set(selectedTeamMembers);
@@ -1109,24 +1130,22 @@ export default function DashboardPage() {
     setSelectedTeamMembers(s);
   };
   const handleSelectAllTeam = () => {
-    // Get vendors who are NOT already invited (new vendors only)
-    const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
-    const existingVendors = availableVendors.filter((v) => (v as any).isExistingMember);
+    const visibleNewVendorIds = filteredTeamVendors
+      .filter((v) => !(v as any).isExistingMember)
+      .map((v) => v.id);
 
-    // Get IDs of new vendors and existing vendors
-    const newVendorIds = newVendors.map((v) => v.id);
-    const existingVendorIds = existingVendors.map((v) => v.id);
+    if (visibleNewVendorIds.length === 0) return;
 
-    // Check if all NEW vendors are selected
-    const allNewSelected = newVendorIds.every(id => selectedTeamMembers.has(id));
+    const allVisibleNewSelected = visibleNewVendorIds.every((id) => selectedTeamMembers.has(id));
+    const nextSelected = new Set(selectedTeamMembers);
 
-    if (allNewSelected) {
-      // Deselect all NEW vendors, but keep existing members selected
-      setSelectedTeamMembers(new Set(existingVendorIds));
+    if (allVisibleNewSelected) {
+      visibleNewVendorIds.forEach((id) => nextSelected.delete(id));
     } else {
-      // Select all NEW vendors + keep existing members selected
-      setSelectedTeamMembers(new Set([...newVendorIds, ...existingVendorIds]));
+      visibleNewVendorIds.forEach((id) => nextSelected.add(id));
     }
+
+    setSelectedTeamMembers(nextSelected);
   };
   const handleSaveTeam = async () => {
     if (!selectedEvent || selectedTeamMembers.size === 0) return;
@@ -2378,19 +2397,29 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  <div className="mb-4">
+                    <input
+                      type="search"
+                      value={teamSearchQuery}
+                      onChange={(e) => setTeamSearchQuery(e.target.value)}
+                      placeholder="Search vendors by name, email, phone, division, or role..."
+                      className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                    />
+                  </div>
+
                   <div className="mb-6 flex items-center justify-between border-b border-gray-200 pb-4">
                     <label className="flex items-center cursor-pointer group">
                       <input
                         type="checkbox"
                         checked={(() => {
-                          const newVendors = availableVendors.filter((v) => !(v as any).isExistingMember);
+                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember);
                           return newVendors.length > 0 && newVendors.every(v => selectedTeamMembers.has(v.id));
                         })()}
                         onChange={handleSelectAllTeam}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({availableVendors.filter((v) => !(v as any).isExistingMember).length} new)
+                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember).length} new)
                       </span>
                     </label>
                     <button
@@ -2403,7 +2432,12 @@ export default function DashboardPage() {
                   </div>
 
                   <div className="space-y-3">
-                    {availableVendors.map((v) => {
+                    {filteredTeamVendors.length === 0 && (
+                      <div className="apple-empty-state !py-8">
+                        <p className="text-sm text-gray-500">No vendors match your search</p>
+                      </div>
+                    )}
+                    {filteredTeamVendors.map((v) => {
                       const firstName = safeDecrypt(v.profiles.first_name);
                       const lastName = safeDecrypt(v.profiles.last_name);
                       const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
