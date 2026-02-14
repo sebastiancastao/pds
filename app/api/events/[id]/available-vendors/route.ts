@@ -381,11 +381,8 @@ export async function GET(
         };
       })
       .sort((a: any, b: any) => {
-        if (a.distance !== null && b.distance === null) return -1;
-        if (a.distance === null && b.distance !== null) return 1;
-        if (a.distance !== null && b.distance !== null) return a.distance - b.distance;
-        const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.toLowerCase();
-        const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.toLowerCase();
+        const nameA = `${a.profiles.first_name} ${a.profiles.last_name}`.trim().toLowerCase();
+        const nameB = `${b.profiles.first_name} ${b.profiles.last_name}`.trim().toLowerCase();
         return nameA.localeCompare(nameB);
       });
 

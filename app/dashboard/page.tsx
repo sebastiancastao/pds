@@ -179,22 +179,27 @@ export default function DashboardPage() {
   const allVisibleVendorsSelected =
     filteredAndSortedVendors.length > 0 && selectedVisibleVendorCount === filteredAndSortedVendors.length;
   const filteredTeamVendors = useMemo(() => {
+    const getFullName = (v: any) => {
+      const fn = safeDecrypt(v.profiles.first_name || "");
+      const ln = safeDecrypt(v.profiles.last_name || "");
+      return `${fn} ${ln}`.trim().toLowerCase();
+    };
     const query = teamSearchQuery.trim().toLowerCase();
-    if (!query) return availableVendors;
-
-    return availableVendors.filter((v) => {
-      const firstName = safeDecrypt(v.profiles.first_name || "");
-      const lastName = safeDecrypt(v.profiles.last_name || "");
-      const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
-      const fullName = `${firstName} ${lastName}`.trim().toLowerCase();
-      return (
-        fullName.includes(query) ||
-        v.email.toLowerCase().includes(query) ||
-        phone.toLowerCase().includes(query) ||
-        (v.division || "").toLowerCase().includes(query) ||
-        (v.role || "").toLowerCase().includes(query)
-      );
-    });
+    const list = !query
+      ? [...availableVendors]
+      : availableVendors.filter((v) => {
+          const fullName = getFullName(v);
+          const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
+          return (
+            fullName.includes(query) ||
+            v.email.toLowerCase().includes(query) ||
+            phone.toLowerCase().includes(query) ||
+            (v.division || "").toLowerCase().includes(query) ||
+            (v.role || "").toLowerCase().includes(query)
+          );
+        });
+    list.sort((a, b) => getFullName(a).localeCompare(getFullName(b)));
+    return list;
   }, [availableVendors, teamSearchQuery]);
 
   // HR tab state
