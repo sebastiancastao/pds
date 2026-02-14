@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
-import { decrypt, decryptData } from "@/lib/encryption";
+import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -333,15 +333,40 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Role-based read authorization:
-    // - exec/admin: can read team for any event
-    // - manager: can read team for own events
-    const { data: requester, error: requesterError } = await supabaseAdmin
-      .from('users')
-      .select('role')
-      .eq('id', user.id)
-      .single();
+    // Fetch role, event, and team members in parallel to reduce latency
+    const [requesterResult, eventResult, teamResult] = await Promise.all([
+      supabaseAdmin
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single(),
+      supabaseAdmin
+        .from('events')
+        .select('id, created_by')
+        .eq('id', eventId)
+        .single(),
+      supabaseAdmin
+        .from('event_teams')
+        .select(`
+          id,
+          vendor_id,
+          status,
+          created_at,
+          users!event_teams_vendor_id_fkey (
+            id,
+            email,
+            division,
+            profiles (
+              first_name,
+              last_name,
+              phone
+            )
+          )
+        `)
+        .eq('event_id', eventId),
+    ]);
 
+    const { data: requester, error: requesterError } = requesterResult;
     if (requesterError || !requester) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
@@ -352,12 +377,7 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
-    // Verify event scope for managers
-    const { data: event, error: eventError } = await supabaseAdmin
-      .from('events')
-      .select('id, created_by')
-      .eq('id', eventId)
-      .single();
+    const { data: event, error: eventError } = eventResult;
     if (eventError || !event) {
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
@@ -365,112 +385,19 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
-    // Get team members for this event
-    const { data: teamMembers, error: teamError } = await supabaseAdmin
-      .from('event_teams')
-      .select(`
-        id,
-        vendor_id,
-        status,
-        created_at,
-        users!event_teams_vendor_id_fkey (
-          id,
-          email,
-          division,
-          profiles (
-            first_name,
-            last_name,
-            phone,
-            profile_photo_data
-          )
-        )
-      `)
-      .eq('event_id', eventId);
-
-    console.log('🔍 DEBUG - Team members query result:', teamMembers);
-    console.log('🔍 DEBUG - Team members query error:', teamError);
+    const { data: teamMembers, error: teamError } = teamResult;
 
     if (teamError) {
-      console.error('❌ Error fetching team:', teamError);
       return NextResponse.json({
         team: [],
         error: teamError.message
       }, { status: 200 });
     }
 
-    // Decrypt sensitive profile data and convert binary photo to data URL
+    // Decrypt sensitive profile data (names and phone only — photos loaded separately)
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (member.users?.profiles) {
         try {
-          let profilePhotoUrl = null;
-
-          // Convert binary profile photo (bytea) to data URL if exists
-          if (member.users.profiles.profile_photo_data) {
-            try {
-              let photoData = member.users.profiles.profile_photo_data;
-              console.log('🔍 DEBUG - Photo data type:', typeof photoData);
-              console.log('🔍 DEBUG - Is Buffer?:', Buffer.isBuffer(photoData));
-
-              // First, convert hex bytea to string if needed
-              if (typeof photoData === 'string' && photoData.startsWith('\\x')) {
-                console.log('🔍 DEBUG - Photo is hex bytea, converting to string');
-                const hexString = photoData.slice(2); // Remove \x prefix
-                const buffer = Buffer.from(hexString, 'hex');
-                photoData = buffer.toString('utf-8'); // Convert to string for decryption
-                console.log('🔍 DEBUG - Converted hex to string, sample:', photoData.substring(0, 50));
-              }
-
-              // Check if photo data is encrypted (starts with U2FsdGVk = "Salted__" in base64)
-              if (typeof photoData === 'string' && (photoData.startsWith('U2FsdGVk') || photoData.includes('Salted'))) {
-                console.log('🔍 DEBUG - Photo appears to be encrypted, decrypting binary data...');
-                try {
-                  // Decrypt the binary photo data using decryptData() for binary data
-                  const decryptedBytes = decryptData(photoData);
-                  console.log('✅ Decrypted photo binary data, size:', decryptedBytes.length, 'bytes');
-
-                  // Convert Uint8Array to base64
-                  const base64 = Buffer.from(decryptedBytes).toString('base64');
-                  profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-                  console.log('✅ Converted decrypted bytes to data URL');
-                } catch (decryptError) {
-                  console.error('❌ Error decrypting photo:', decryptError);
-                  // Fallback: try treating it as a data URL string instead of binary
-                  try {
-                    console.log('🔄 Trying to decrypt as text data URL...');
-                    const decryptedText = decrypt(photoData);
-                    if (decryptedText.startsWith('data:')) {
-                      profilePhotoUrl = decryptedText;
-                      console.log('✅ Decrypted text data URL');
-                    }
-                  } catch (fallbackError) {
-                    console.error('❌ Fallback decryption also failed:', fallbackError);
-                  }
-                }
-              } else if (Buffer.isBuffer(photoData)) {
-                // Raw buffer - convert directly
-                const base64 = photoData.toString('base64');
-                profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-                console.log('✅ Converted raw buffer to data URL, size:', photoData.length, 'bytes');
-              } else if (typeof photoData === 'string') {
-                // String that's not encrypted
-                if (photoData.startsWith('data:')) {
-                  profilePhotoUrl = photoData;
-                  console.log('✅ Photo is already a data URL');
-                } else {
-                  // Assume base64
-                  profilePhotoUrl = `data:image/jpeg;base64,${photoData}`;
-                  console.log('✅ Added data URL prefix to base64 string');
-                }
-              } else {
-                console.log('⚠️ Unknown photo data format:', typeof photoData);
-              }
-            } catch (photoError) {
-              console.error('❌ Error processing profile photo:', photoError);
-            }
-          } else {
-            console.log('⚠️ No profile_photo_data found for this member');
-          }
-
           return {
             ...member,
             users: {
@@ -486,19 +413,15 @@ export async function GET(
                 phone: member.users.profiles.phone
                   ? decrypt(member.users.profiles.phone)
                   : '',
-                profile_photo_url: profilePhotoUrl, // Add converted photo URL
               }
             }
           };
         } catch (error) {
-          console.error('❌ Error decrypting profile data:', error);
           return member;
         }
       }
       return member;
     });
-
-    console.log('✅ Decrypted team members ready to send');
 
     return NextResponse.json({
       team: decryptedTeamMembers || []

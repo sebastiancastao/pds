@@ -115,6 +115,10 @@ export default function EventDashboardPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [teamSearch, setTeamSearch] = useState<string>("");
+  // Cache flags to avoid re-fetching data when switching tabs
+  const [teamLoaded, setTeamLoaded] = useState(false);
+  const [timesheetLoaded, setTimesheetLoaded] = useState(false);
+  const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
@@ -250,20 +254,26 @@ export default function EventDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, eventId]);
 
-  // Load team & timesheet when needed
+  // Load team & timesheet when needed (with caching to avoid re-fetching on tab switch)
   useEffect(() => {
     if (!eventId) return;
 
     if (activeTab === "team") {
-      loadTeam();
+      if (!teamLoaded) loadTeam();
       return;
     }
 
     if (activeTab === "timesheet") {
+      const needsTeam = !teamLoaded;
+      const needsTimesheet = !timesheetLoaded;
+      if (!needsTeam && !needsTimesheet) return;
       (async () => {
         setLoadingTimesheetTab(true);
         try {
-          await Promise.all([loadTeam(), loadTimesheetTotals()]);
+          const promises: Promise<void>[] = [];
+          if (needsTeam) promises.push(loadTeam());
+          if (needsTimesheet) promises.push(loadTimesheetTotals());
+          await Promise.all(promises);
         } finally {
           setLoadingTimesheetTab(false);
         }
@@ -272,10 +282,18 @@ export default function EventDashboardPage() {
     }
 
     if (activeTab === "hr") {
+      const needsTeam = !teamLoaded;
+      const needsTimesheet = !timesheetLoaded;
+      const needsAdjustments = !adjustmentsLoaded;
+      if (!needsTeam && !needsTimesheet && !needsAdjustments) return;
       (async () => {
         setLoadingPaymentTab(true);
         try {
-          await Promise.all([loadTeam(), loadTimesheetTotals(), loadAdjustmentsFromPayments()]);
+          const promises: Promise<void>[] = [];
+          if (needsTeam) promises.push(loadTeam());
+          if (needsTimesheet) promises.push(loadTimesheetTotals());
+          if (needsAdjustments) promises.push(loadAdjustmentsFromPayments());
+          await Promise.all(promises);
         } finally {
           setLoadingPaymentTab(false);
         }
@@ -468,6 +486,7 @@ export default function EventDashboardPage() {
       if (res.ok) {
         const data = await res.json();
         setTeamMembers(data.team || []);
+        setTeamLoaded(true);
       } else {
         const errorText = await res.text();
         console.error("Failed to load team members:", { errorText });
@@ -497,6 +516,7 @@ export default function EventDashboardPage() {
         if (uid) map[uid] = Number(vp.adjustment_amount || 0);
       }
       setAdjustments(map);
+      setAdjustmentsLoaded(true);
     } catch (e) {
       // ignore
     }
@@ -546,6 +566,7 @@ export default function EventDashboardPage() {
         const data = await res.json();
         setTimesheetTotals(data.totals || {});
         setTimesheetSpans(data.spans || {});
+        setTimesheetLoaded(true);
       } else {
         const errorText = await res.text();
         console.error("Failed to load timesheet:", { errorText });

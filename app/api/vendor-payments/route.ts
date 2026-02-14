@@ -37,13 +37,7 @@ export async function GET(req: NextRequest) {
     const fetchAllEvents = !eventIdsParam;
     const eventIds = eventIdsParam ? eventIdsParam.split(',').filter(Boolean) : [];
 
-    console.log('[VENDOR-PAYMENTS] start', {
-      fetchAllEvents,
-      requestedEventCount: eventIds.length,
-      requestedEventIds: eventIds,
-    });
-
-    // Fetch vendor payments
+    // Fetch vendor payments, event payment summaries, and adjustments in parallel
     let vendorQuery = supabaseAdmin
       .from('event_vendor_payments')
       .select(`
@@ -59,8 +53,27 @@ export async function GET(req: NextRequest) {
         )
       `);
     if (!fetchAllEvents) vendorQuery = vendorQuery.in('event_id', eventIds);
-    const { data: vendorPayments, error: paymentsError } = await vendorQuery;
+
+    let eventPaymentsQuery = supabaseAdmin.from('event_payments').select('*');
+    if (!fetchAllEvents) eventPaymentsQuery = eventPaymentsQuery.in('event_id', eventIds);
+
+    let adjustmentsQuery = supabaseAdmin.from('payment_adjustments').select('*');
+    if (!fetchAllEvents) adjustmentsQuery = adjustmentsQuery.in('event_id', eventIds);
+
+    const [vendorResult, eventPaymentsResult, adjustmentsResult] = await Promise.all([
+      vendorQuery,
+      eventPaymentsQuery,
+      adjustmentsQuery,
+    ]);
+
+    const { data: vendorPayments, error: paymentsError } = vendorResult;
     if (paymentsError) return NextResponse.json({ error: paymentsError.message }, { status: 500 });
+
+    const { data: eventPayments, error: eventPaymentsError } = eventPaymentsResult;
+    if (eventPaymentsError) return NextResponse.json({ error: eventPaymentsError.message }, { status: 500 });
+
+    const { data: adjustments, error: adjustmentsError } = adjustmentsResult as any;
+    if (adjustmentsError) return NextResponse.json({ error: adjustmentsError.message }, { status: 500 });
 
     // Decrypt profile names
     const vendorPaymentsDecrypted = (vendorPayments || []).map((row: any) => {
@@ -75,51 +88,26 @@ export async function GET(req: NextRequest) {
       return { ...row, users: newUser };
     });
 
-    console.log('[VENDOR-PAYMENTS] vendorPayments fetched', {
-      count: vendorPaymentsDecrypted?.length || 0,
-      sample: (vendorPaymentsDecrypted || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, user_id: r.user_id })),
-    });
-
-    // Fetch event payment summaries
-    let eventPaymentsQuery = supabaseAdmin.from('event_payments').select('*');
-    if (!fetchAllEvents) eventPaymentsQuery = eventPaymentsQuery.in('event_id', eventIds);
-    const { data: eventPayments, error: eventPaymentsError } = await eventPaymentsQuery;
-    if (eventPaymentsError) return NextResponse.json({ error: eventPaymentsError.message }, { status: 500 });
-
-    console.log('[VENDOR-PAYMENTS] eventPayments fetched', {
-      count: eventPayments?.length || 0,
-      sample: (eventPayments || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, base_rate: r.base_rate })),
-    });
-
-    // Fetch payment adjustments
-    let adjustmentsQuery = supabaseAdmin.from('payment_adjustments').select('*');
-    if (!fetchAllEvents) adjustmentsQuery = adjustmentsQuery.in('event_id', eventIds);
-    const { data: adjustments, error: adjustmentsError } = await adjustmentsQuery as any;
-    if (adjustmentsError) return NextResponse.json({ error: adjustmentsError.message }, { status: 500 });
-
-    console.log('[VENDOR-PAYMENTS] adjustments fetched', {
-      count: adjustments?.length || 0,
-      sample: (adjustments || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, user_id: r.user_id, amount: r.adjustment_amount })),
-    });
-
     // Helper: compute fallback vendor payments from team + time entries if table empty
     async function computeFallbackVendorPayments(eventId: string, eventPaymentSummary: any) {
-      // 1) Load event for date/state
-      const { data: eventRow } = await supabaseAdmin
-        .from('events')
-        .select('id, event_date, state')
-        .eq('id', eventId)
-        .maybeSingle();
+      // Load event and team in parallel
+      const [eventResult, teamResult] = await Promise.all([
+        supabaseAdmin
+          .from('events')
+          .select('id, event_date, state')
+          .eq('id', eventId)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('event_teams')
+          .select('vendor_id,status')
+          .eq('event_id', eventId),
+      ]);
+
+      const { data: eventRow } = eventResult;
       if (!eventRow) return [] as any[];
 
-      // 2) Team (confirmed)
-      // Try with any status first (some teams may not be confirmed yet)
-      const { data: teamAny } = await supabaseAdmin
-        .from('event_teams')
-        .select('vendor_id,status')
-        .eq('event_id', eventId);
+      const { data: teamAny } = teamResult;
       let vendorIds = Array.from(new Set((teamAny || []).map((t: any) => t.vendor_id).filter(Boolean)));
-      console.log('[VENDOR-PAYMENTS][fallback] team members (any status)', { count: vendorIds.length, statuses: Array.from(new Set((teamAny||[]).map((t:any)=>t.status))) });
 
       // If still empty, infer from time entries on that date (last resort)
       if (vendorIds.length === 0) {
@@ -132,11 +120,10 @@ export async function GET(req: NextRequest) {
           .gte('timestamp', start0)
           .lte('timestamp', end0);
         vendorIds = Array.from(new Set((inferredEntries || []).map((r: any) => r.user_id).filter(Boolean)));
-        console.log('[VENDOR-PAYMENTS][fallback] inferred vendorIds from time_entries', { count: vendorIds.length });
       }
       if (vendorIds.length === 0) return [] as any[];
 
-      // 3) Pull time entries for full event day (UTC day window)
+      // Pull time entries for full event day
       const dateStr = (eventRow.event_date || '').toString().split('T')[0];
       const startIso = new Date(`${dateStr}T00:00:00Z`).toISOString();
       const endIso = new Date(`${dateStr}T23:59:59.999Z`).toISOString();
@@ -269,19 +256,11 @@ export async function GET(req: NextRequest) {
         ].filter(Boolean)))
       : eventIds;
 
-    console.log('[VENDOR-PAYMENTS] grouping events', {
-      eventIds: eventIdsToGroup,
-      totalToGroup: eventIdsToGroup.length,
-    });
-
     // Fetch basic event metadata for display purposes
-    const { data: eventsMeta, error: eventsMetaError } = await supabaseAdmin
+    const { data: eventsMeta } = await supabaseAdmin
       .from('events')
       .select('id, event_name, event_date, venue, city, state')
       .in('id', eventIdsToGroup);
-    if (eventsMetaError) {
-      console.log('[VENDOR-PAYMENTS] eventsMeta error', eventsMetaError.message);
-    }
     const eventsMetaById: Record<string, any> = {};
     (eventsMeta || []).forEach((e: any) => { eventsMetaById[e.id] = e; });
 
@@ -291,14 +270,8 @@ export async function GET(req: NextRequest) {
 
       // Fallback: synthesize from time entries if none persisted
       if (!eventVendorPayments || eventVendorPayments.length === 0) {
-        console.log('[VENDOR-PAYMENTS] no persisted vendor payments; computing fallback', { eventId });
         try {
           eventVendorPayments = await computeFallbackVendorPayments(eventId, eventPaymentSummary);
-          console.log('[VENDOR-PAYMENTS] fallback computed', {
-            eventId,
-            count: eventVendorPayments?.length || 0,
-            sample: (eventVendorPayments || []).slice(0, 2).map((r: any) => ({ user_id: r.user_id, hours: r.actual_hours, total: r.total_pay })),
-          });
         } catch {
           eventVendorPayments = [];
         }
@@ -314,28 +287,12 @@ export async function GET(req: NextRequest) {
         };
       });
 
-      const adjustedCount = paymentsWithAdjustments.filter((p: any) => Number(p.adjustment_amount || 0) !== 0).length;
-      console.log('[VENDOR-PAYMENTS] event assembled', {
-        eventId,
-        vendorPayments: paymentsWithAdjustments.length,
-        adjustmentsApplied: adjustedCount,
-        hasEventSummary: !!eventPaymentSummary,
-      });
       paymentsByEvent[eventId] = {
         vendorPayments: paymentsWithAdjustments,
         eventPayment: eventPaymentSummary,
         eventInfo: eventsMetaById[eventId] || null,
       };
     }
-
-    console.log('[VENDOR-PAYMENTS] done', {
-      events: Object.keys(paymentsByEvent).length,
-      totals: {
-        totalVendorPayments: vendorPayments?.length || 0,
-        totalEventPayments: eventPayments?.length || 0,
-        totalAdjustments: adjustments?.length || 0,
-      }
-    });
 
     return NextResponse.json({
       success: true,
