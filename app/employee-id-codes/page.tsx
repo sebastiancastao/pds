@@ -50,6 +50,7 @@ export default function CheckInCodesPage() {
 
   const [selectedCodeId, setSelectedCodeId] = useState("");
   const [sendingAll, setSendingAll] = useState(false);
+  const [sendingOnboardingCompleted, setSendingOnboardingCompleted] = useState(false);
   const [sendingUserId, setSendingUserId] = useState<string | null>(null);
   const [emailError, setEmailError] = useState("");
   const [emailSuccess, setEmailSuccess] = useState("");
@@ -294,6 +295,55 @@ export default function CheckInCodesPage() {
     }
   };
 
+  const sendToOnboardingCompletedUsers = async (codeId: string) => {
+    setSendingOnboardingCompleted(true);
+    setEmailError("");
+    setEmailSuccess("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setEmailError("Session expired. Please log in again.");
+        return;
+      }
+
+      const res = await fetch("/api/checkin-codes/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          codeId,
+          audience: "onboarding_completed",
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEmailError(data?.error || "Failed to send email");
+        return;
+      }
+
+      const sentTo = Number(data?.sentTo || 0);
+      const failedCount = Number(data?.failedCount || 0);
+      if (failedCount > 0) {
+        setEmailSuccess(
+          `Email sent to ${sentTo} onboarding-completed users (${failedCount} failed)`
+        );
+        return;
+      }
+
+      setEmailSuccess(
+        `Email sent to onboarding-completed users (${sentTo} recipients)`
+      );
+    } catch (err) {
+      setEmailError("An unexpected error occurred while sending the email");
+    } finally {
+      setSendingOnboardingCompleted(false);
+    }
+  };
+
   const sendToOneUser = async (codeId: string, userId: string) => {
     setSendingUserId(userId);
     setEmailError("");
@@ -500,7 +550,7 @@ export default function CheckInCodesPage() {
             Email Check-In Code
           </h2>
           <p className="text-sm text-gray-600 mb-4">
-            Standard email template. Send to all users or to a single user.
+            Standard email template. Send to all users, onboarding-completed users, or to a single user.
           </p>
 
           <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
@@ -572,6 +622,26 @@ export default function CheckInCodesPage() {
               className="px-6 py-3 bg-liquid-blue-200 hover:bg-liquid-blue-300 text-gray-900 rounded-xl font-medium transition-all disabled:opacity-50 shadow-lg"
             >
               {sendingAll ? "Sending..." : "Send to All Users"}
+            </button>
+            <button
+              onClick={async () => {
+                if (!selectedCodeId) {
+                  setEmailError("No active code selected");
+                  return;
+                }
+                await sendToOnboardingCompletedUsers(selectedCodeId);
+              }}
+              disabled={
+                sendingOnboardingCompleted ||
+                activeCodes.length === 0 ||
+                Boolean(selectedCode?.target_user_id)
+              }
+              className="px-6 py-3 bg-white border border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-all disabled:opacity-50 shadow-sm"
+              title="Sends in batches only to users with a vendor_onboarding_status row"
+            >
+              {sendingOnboardingCompleted
+                ? "Sending..."
+                : "Send to Onboarding Completed"}
             </button>
             <button
               onClick={async () => {

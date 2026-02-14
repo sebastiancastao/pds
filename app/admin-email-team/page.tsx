@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
@@ -20,7 +20,7 @@ function dedupeEmails(values: string[]): string[] {
   );
 }
 
-export default function TeamEmailPage() {
+function TeamEmailPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const eventId = (searchParams.get('eventId') || '').trim();
@@ -377,5 +377,25 @@ export default function TeamEmailPage() {
         </div>
       </div>
     </AuthGuard>
+  );
+}
+
+export default function TeamEmailPage() {
+  return (
+    <Suspense
+      fallback={
+        <AuthGuard requireMFA={true}>
+          <div className="container mx-auto max-w-4xl py-10 px-4">
+            <div className="bg-white shadow-md rounded p-6">
+              <div className="p-4 rounded bg-blue-50 text-blue-800">
+                Loading page...
+              </div>
+            </div>
+          </div>
+        </AuthGuard>
+      }
+    >
+      <TeamEmailPageContent />
+    </Suspense>
   );
 }
