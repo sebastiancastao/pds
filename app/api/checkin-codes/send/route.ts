@@ -21,6 +21,9 @@ const supabaseAnon = createClient(
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_BATCH_DELAY_MS = 400;
 const RETRY_DELAY_MS = 1200;
+const DEFAULT_PER_EMAIL_DELAY_MS = 600;
+const DB_CHUNK_SIZE = 200;
+const DB_RETRY_ATTEMPTS = 3;
 
 type Audience = "all" | "one" | "onboarding_completed";
 type Recipient = {
@@ -82,25 +85,24 @@ function isRateLimitError(message?: string) {
   return text.includes("429") || text.includes("rate limit") || text.includes("too many");
 }
 
-async function listAllAuthUsers(): Promise<Map<string, string>> {
-  const authMap = new Map<string, string>();
-  const perPage = 1000;
-
-  for (let page = 1; page <= 50; page += 1) {
-    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage });
-    if (error) throw error;
-
-    const users = data?.users || [];
-    for (const u of users as any[]) {
-      if (!u?.id) continue;
-      const email = String(u.email || "").trim();
-      if (email) authMap.set(String(u.id), email);
+async function withDbRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  let lastError: any = null;
+  for (let attempt = 1; attempt <= DB_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const message = String(err?.message || "").toLowerCase();
+      const isTransient =
+        message.includes("fetch failed") ||
+        message.includes("econnreset") ||
+        message.includes("etimedout") ||
+        message.includes("network");
+      if (!isTransient || attempt === DB_RETRY_ATTEMPTS) break;
+      await sleep(300 * attempt);
     }
-
-    if (users.length < perPage) break;
   }
-
-  return authMap;
+  throw new Error(`DB query failed (${label}): ${lastError?.message || "unknown error"}`);
 }
 
 function buildEmailHtml(params: { firstName: string; code: string }) {
@@ -129,9 +131,8 @@ function buildEmailHtml(params: { firstName: string; code: string }) {
 async function getRecipients(params: {
   audience: Audience;
   recipientUserId?: string;
-  authUsers: Map<string, string>;
 }): Promise<{ recipients: Recipient[]; skippedCount: number }> {
-  const { audience, recipientUserId, authUsers } = params;
+  const { audience, recipientUserId } = params;
 
   if (audience === "one") {
     const { data: user, error: userError } = await supabaseAdmin
@@ -144,21 +145,23 @@ async function getRecipients(params: {
       throw new Error("Recipient not found");
     }
 
-    if (!authUsers.has(String(user.id))) {
-      throw new Error("Recipient does not have an auth account");
-    }
+    const oneProfileRes = await withDbRetry(
+      async () =>
+        await supabaseAdmin
+          .from("profiles")
+          .select("first_name")
+          .eq("user_id", user.id)
+          .maybeSingle(),
+      "profiles:single"
+    );
 
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("first_name")
-      .eq("user_id", user.id)
-      .maybeSingle();
+    const profile = (oneProfileRes as any)?.data;
 
     return {
       recipients: [
         {
           id: String(user.id),
-          email: String(user.email || "").trim() || authUsers.get(String(user.id)) || "",
+          email: String(user.email || "").trim(),
           first_name: safeDecrypt(String(profile?.first_name || "").trim()),
         },
       ].filter((r) => Boolean(r.email)),
@@ -166,27 +169,42 @@ async function getRecipients(params: {
     };
   }
 
-  const { data: users, error: usersError } = await supabaseAdmin
-    .from("users")
-    .select("id, email, is_active")
-    .eq("is_active", true)
-    .order("email", { ascending: true });
+  const usersRes = await withDbRetry(
+    async () =>
+      await supabaseAdmin
+        .from("users")
+        .select("id, email, is_active")
+        .eq("is_active", true)
+        .order("email", { ascending: true }),
+    "users:list"
+  );
+
+  const users = (usersRes as any)?.data;
+  const usersError = (usersRes as any)?.error;
 
   if (usersError) throw usersError;
 
-  const usersWithAuth = (users || []).filter((u: any) => authUsers.has(String(u.id)));
-
-  const userIds = usersWithAuth.map((u: any) => String(u.id));
+  const usersWithEmail = (users || []).filter((u: any) => Boolean(String(u.email || "").trim()));
+  const userIds = usersWithEmail.map((u: any) => String(u.id));
   if (userIds.length === 0) {
     return { recipients: [], skippedCount: users?.length || 0 };
   }
 
-  const { data: profiles, error: profilesError } = await supabaseAdmin
-    .from("profiles")
-    .select("id, user_id, first_name")
-    .in("user_id", userIds as any);
-
-  if (profilesError) throw profilesError;
+  const profiles: any[] = [];
+  for (let i = 0; i < userIds.length; i += DB_CHUNK_SIZE) {
+    const chunk = userIds.slice(i, i + DB_CHUNK_SIZE);
+    const profileChunkRes = await withDbRetry(
+      async () =>
+        await supabaseAdmin
+          .from("profiles")
+          .select("id, user_id, first_name")
+          .in("user_id", chunk as any),
+      "profiles:chunk"
+    );
+    const chunkError = (profileChunkRes as any)?.error;
+    if (chunkError) throw chunkError;
+    profiles.push(...(((profileChunkRes as any)?.data || []) as any[]));
+  }
 
   const profileByUserId = new Map<string, { id: string; first_name: string }>();
   for (const p of profiles || []) {
@@ -201,14 +219,18 @@ async function getRecipients(params: {
   if (audience === "onboarding_completed") {
     const profileIds = (profiles || []).map((p: any) => String(p.id));
     const completedProfileIds = new Set<string>();
-    const chunkSize = 200;
-
-    for (let i = 0; i < profileIds.length; i += chunkSize) {
-      const chunk = profileIds.slice(i, i + chunkSize);
-      const { data: rows, error: onboardingError } = await supabaseAdmin
-        .from("vendor_onboarding_status")
-        .select("profile_id")
-        .in("profile_id", chunk as any);
+    for (let i = 0; i < profileIds.length; i += DB_CHUNK_SIZE) {
+      const chunk = profileIds.slice(i, i + DB_CHUNK_SIZE);
+      const onboardingRes = await withDbRetry(
+        async () =>
+          await supabaseAdmin
+            .from("vendor_onboarding_status")
+            .select("profile_id")
+            .in("profile_id", chunk as any),
+        "vendor_onboarding_status:chunk"
+      );
+      const rows = (onboardingRes as any)?.data;
+      const onboardingError = (onboardingRes as any)?.error;
 
       if (onboardingError) throw onboardingError;
 
@@ -227,7 +249,7 @@ async function getRecipients(params: {
     }
   }
 
-  const recipients = usersWithAuth
+  const recipients = usersWithEmail
     .filter((u: any) => {
       if (!allowedUserIds) return true;
       return allowedUserIds.has(String(u.id));
@@ -236,7 +258,7 @@ async function getRecipients(params: {
       const profile = profileByUserId.get(String(u.id));
       return {
         id: String(u.id),
-        email: String(u.email || "").trim() || authUsers.get(String(u.id)) || "",
+        email: String(u.email || "").trim(),
         first_name: profile?.first_name || "",
       };
     })
@@ -311,11 +333,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const authUsers = await listAllAuthUsers();
     const { recipients, skippedCount } = await getRecipients({
       audience,
       recipientUserId: audience === "one" ? String(recipientUserId) : undefined,
-      authUsers,
     });
 
     if (recipients.length === 0) {
@@ -324,55 +344,80 @@ export async function POST(req: NextRequest) {
 
     const batchSize = Number(process.env.CHECKIN_EMAIL_SEND_BATCH_SIZE || DEFAULT_BATCH_SIZE);
     const batchDelayMs = Number(process.env.CHECKIN_EMAIL_SEND_BATCH_DELAY_MS || DEFAULT_BATCH_DELAY_MS);
-    const chunks = chunkArray(recipients, batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE);
+    const perEmailDelayMs = Number(
+      process.env.CHECKIN_EMAIL_SEND_PER_EMAIL_DELAY_MS || DEFAULT_PER_EMAIL_DELAY_MS
+    );
+    const resolvedBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
+    const chunks = chunkArray(recipients, resolvedBatchSize);
 
     let sentTo = 0;
     const failures: Array<{ userId: string; email: string; error: string }> = [];
 
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
+      for (let j = 0; j < chunk.length; j += 1) {
+        const recipient = chunk[j];
+        const subject = "Your Employee Check-In Code";
+        const html = buildEmailHtml({
+          firstName: recipient.first_name,
+          code: String(code.code),
+        });
 
-      await Promise.all(
-        chunk.map(async (recipient) => {
-          const subject = "Your Employee Check-In Code";
-          const html = buildEmailHtml({
-            firstName: recipient.first_name,
-            code: String(code.code),
-          });
+        let result = await sendEmail({
+          to: recipient.email,
+          subject,
+          html,
+          from: process.env.RESEND_FROM || undefined,
+        });
 
-          let result = await sendEmail({
+        if (!result.success && isRateLimitError(result.error)) {
+          await sleep(RETRY_DELAY_MS);
+          result = await sendEmail({
             to: recipient.email,
             subject,
             html,
             from: process.env.RESEND_FROM || undefined,
           });
+        }
 
-          if (!result.success && isRateLimitError(result.error)) {
-            await sleep(RETRY_DELAY_MS);
-            result = await sendEmail({
-              to: recipient.email,
-              subject,
-              html,
-              from: process.env.RESEND_FROM || undefined,
-            });
-          }
-
-          if (!result.success) {
-            failures.push({
-              userId: recipient.id,
-              email: recipient.email,
-              error: result.error || "Failed to send",
-            });
-            return;
-          }
-
+        if (!result.success) {
+          failures.push({
+            userId: recipient.id,
+            email: recipient.email,
+            error: result.error || "Failed to send",
+          });
+        } else {
           sentTo += 1;
-        })
-      );
+        }
+
+        if (j < chunk.length - 1 && perEmailDelayMs > 0) {
+          await sleep(perEmailDelayMs);
+        }
+      }
 
       if (i < chunks.length - 1 && batchDelayMs > 0) {
         await sleep(batchDelayMs);
       }
+    }
+
+    if (sentTo === 0 && failures.length > 0) {
+      const firstFailure = failures[0]?.error || "Failed to send all emails";
+      return NextResponse.json(
+        {
+          success: false,
+          error: firstFailure,
+          sentTo,
+          totalRecipients: recipients.length,
+          skippedCount,
+          failedCount: failures.length,
+          failures,
+          audience,
+          batched: true,
+          batchSize: batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE,
+          batches: chunks.length,
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json({
@@ -384,7 +429,8 @@ export async function POST(req: NextRequest) {
       failures,
       audience,
       batched: true,
-      batchSize: batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE,
+      batchSize: resolvedBatchSize,
+      perEmailDelayMs: perEmailDelayMs > 0 ? perEmailDelayMs : 0,
       batches: chunks.length,
     });
   } catch (err: any) {

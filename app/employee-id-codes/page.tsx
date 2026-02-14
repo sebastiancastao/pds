@@ -108,6 +108,11 @@ export default function CheckInCodesPage() {
     () => activeCodes.find((c) => c.id === selectedCodeId) || null,
     [activeCodes, selectedCodeId]
   );
+  const selectedBulkCodeId = useMemo(() => {
+    if (selectedCode && !selectedCode.target_user_id) return selectedCode.id;
+    const nonPersonal = activeCodes.find((c) => !c.target_user_id);
+    return nonPersonal?.id || "";
+  }, [activeCodes, selectedCode]);
 
   const checkAuth = async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -295,6 +300,36 @@ export default function CheckInCodesPage() {
     }
   };
 
+  const getOrCreateBulkCodeId = async (): Promise<string | null> => {
+    if (selectedBulkCodeId) return selectedBulkCodeId;
+
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      setEmailError("Session expired. Please log in again.");
+      return null;
+    }
+
+    const res = await fetch("/api/checkin-codes/generate", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ label: "Bulk Email" }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.id) {
+      setEmailError(data?.error || "Failed to create a bulk code");
+      return null;
+    }
+
+    const newCodeId = String(data.id);
+    setSelectedCodeId(newCodeId);
+    await fetchCodes();
+    return newCodeId;
+  };
+
   const sendToOnboardingCompletedUsers = async (codeId: string) => {
     setSendingOnboardingCompleted(true);
     setEmailError("");
@@ -325,12 +360,24 @@ export default function CheckInCodesPage() {
         return;
       }
 
-      const sentTo = Number(data?.sentTo || 0);
-      const failedCount = Number(data?.failedCount || 0);
-      if (failedCount > 0) {
-        setEmailSuccess(
-          `Email sent to ${sentTo} onboarding-completed users (${failedCount} failed)`
+      if (data?.success === false || Number(data?.failedCount || 0) > 0) {
+        const failedCount = Number(data?.failedCount || 0);
+        const sentTo = Number(data?.sentTo || 0);
+        const firstFailure =
+          Array.isArray(data?.failures) && data.failures.length > 0
+            ? String(data.failures[0]?.error || "").trim()
+            : "";
+        setEmailError(
+          firstFailure
+            ? `Sent to ${sentTo}, failed ${failedCount}: ${firstFailure}`
+            : `Sent to ${sentTo}, failed ${failedCount}`
         );
+        return;
+      }
+
+      const sentTo = Number(data?.sentTo || 0);
+      if (sentTo === 0) {
+        setEmailError("No onboarding-completed recipients were found.");
         return;
       }
 
@@ -608,16 +655,13 @@ export default function CheckInCodesPage() {
             </button>
             <button
               onClick={async () => {
-                if (!selectedCodeId) {
-                  setEmailError("No active code selected");
-                  return;
-                }
-                await sendToAllUsers(selectedCodeId);
+                const codeId = await getOrCreateBulkCodeId();
+                if (!codeId) return;
+                await sendToAllUsers(codeId);
               }}
               disabled={
                 sendingAll ||
-                activeCodes.length === 0 ||
-                Boolean(selectedCode?.target_user_id)
+                activeCodes.length === 0
               }
               className="px-6 py-3 bg-liquid-blue-200 hover:bg-liquid-blue-300 text-gray-900 rounded-xl font-medium transition-all disabled:opacity-50 shadow-lg"
             >
@@ -625,19 +669,21 @@ export default function CheckInCodesPage() {
             </button>
             <button
               onClick={async () => {
-                if (!selectedCodeId) {
+                if (!activeCodes.length) {
                   setEmailError("No active code selected");
                   return;
                 }
-                await sendToOnboardingCompletedUsers(selectedCodeId);
+                const codeId = await getOrCreateBulkCodeId();
+                if (!codeId) {
+                  return;
+                }
+                await sendToOnboardingCompletedUsers(codeId);
               }}
               disabled={
-                sendingOnboardingCompleted ||
-                activeCodes.length === 0 ||
-                Boolean(selectedCode?.target_user_id)
+                sendingOnboardingCompleted || activeCodes.length === 0
               }
-              className="px-6 py-3 bg-white border border-primary-200 text-primary-700 rounded-xl font-medium hover:bg-primary-50 transition-all disabled:opacity-50 shadow-sm"
-              title="Sends in batches only to users with a vendor_onboarding_status row"
+              className="px-6 py-3 bg-emerald-600 border border-emerald-700 text-white rounded-xl font-medium hover:bg-emerald-700 transition-all disabled:opacity-50 shadow-sm"
+              title="Sends in batches only to users with a vendor_onboarding_status row using a non-personal active code"
             >
               {sendingOnboardingCompleted
                 ? "Sending..."
