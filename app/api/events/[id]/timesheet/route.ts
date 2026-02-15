@@ -197,6 +197,22 @@ export async function GET(
         console.warn(`⚠️ User ${uid}: Still clocked in at end of day, not counting incomplete shift`);
       }
 
+      // Subtract explicit meal periods from total
+      // When workers use meal_start/meal_end they stay clocked in,
+      // so the clock_in→clock_out span includes the meal time.
+      if (mealStarts.length > 0 && mealEnds.length > 0) {
+        const mealPairs = Math.min(mealStarts.length, mealEnds.length);
+        for (let i = 0; i < mealPairs; i++) {
+          const mealStartMs = new Date(mealStarts[i].timestamp).getTime();
+          const mealEndMs = new Date(mealEnds[i].timestamp).getTime();
+          const mealDuration = mealEndMs - mealStartMs;
+          if (mealDuration > 0) {
+            totals[uid] -= mealDuration;
+          }
+        }
+        if (totals[uid] < 0) totals[uid] = 0;
+      }
+
       // AUTO-DETECT MEAL BREAKS: Analyze gaps between work intervals
       // If there are no explicit meal_start/meal_end, infer from gaps
       const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
