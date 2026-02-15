@@ -6,6 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
+import * as XLSX from 'xlsx';
 
 type Employee = {
   id: string;
@@ -67,6 +68,69 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
+  const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
+  const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
+  const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
+  const isVendorDivision = (d?: string | null) => {
+    const div = normalizeDivision(d);
+    return div === "vendor" || div === "both";
+  };
+  const isEventDashboardPaymentState = (s?: string | null) => {
+    const st = normalizeState(s);
+    return st === "CA" || st === "NV" || st === "WI";
+  };
+  const getRestBreakAmount = (actualHours: number, stateCode: string) => {
+    const st = normalizeState(stateCode);
+    if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
+    if (actualHours <= 0) return 0;
+    return actualHours >= 10 ? 12 : 9;
+  };
+  const getEffectiveHours = (payment: any): number => {
+    const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
+    if (actual > 0) return actual;
+    const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
+    if (worked > 0) return worked;
+    const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
+    const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
+    const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
+    const summed = reg + ot + dt;
+    return summed > 0 ? summed : 0;
+  };
+
+  type AzNyCommissionCalcItem = {
+    eligible: boolean;
+    actualHours: number;
+    extAmtRegular: number;
+    isWeeklyOT: boolean;
+  };
+
+  const computeAzNyCommissionPerVendor = (
+    items: AzNyCommissionCalcItem[],
+    totalCommissionPool: number
+  ): number => {
+    const eligibleItems = items.filter((i) => i.eligible && i.actualHours > 0);
+    const vendorCount = eligibleItems.length;
+    if (vendorCount <= 0) return 0;
+
+    let commissionPerVendor = 0;
+    for (let iter = 0; iter < 20; iter++) {
+      const sumExtAmtOnRegRate = eligibleItems.reduce((sum, i) => {
+        if (!i.isWeeklyOT) return sum + i.extAmtRegular;
+        const totalFinalCommissionBase = Math.max(150, i.extAmtRegular + commissionPerVendor);
+        return sum + (1.5 * totalFinalCommissionBase);
+      }, 0);
+
+      const next = (totalCommissionPool - sumExtAmtOnRegRate) / vendorCount;
+      const nextCapped = Math.max(0, next);
+      if (Math.abs(nextCapped - commissionPerVendor) < 0.01) {
+        commissionPerVendor = nextCapped;
+        break;
+      }
+      commissionPerVendor = nextCapped;
+    }
+
+    return commissionPerVendor;
+  };
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
@@ -80,8 +144,6 @@ function HRDashboardContent() {
   const [uploadingForm, setUploadingForm] = useState(false);
   const [filterFormState, setFilterFormState] = useState<string>(initialFormState);
   const [filterFormCategory, setFilterFormCategory] = useState<string>('all');
-
-  const [paystubTool, setPaystubTool] = useState<null | "pdf-reader" | "paystub-generator">(null);
 
   const handleLogout = async () => {
     try {
@@ -250,10 +312,11 @@ function HRDashboardContent() {
       if (paymentsStartDate) filtered = filtered.filter(e => !e.event_date || e.event_date >= paymentsStartDate);
       if (paymentsEndDate) filtered = filtered.filter(e => !e.event_date || e.event_date <= paymentsEndDate);
       console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate });
-      const eventIds = filtered.map((e: any) => e.id).join(',');
+      const filteredEventIds = filtered.map((e: any) => e.id).filter(Boolean);
+      const eventIds = filteredEventIds.join(',');
       if (!eventIds) { setPaymentsByVenue([]); setLoadingPayments(false); return; }
       // Fetch vendor payments for filtered events (same data model as Global Calendar)
-      const payRes = await fetch(`/api/vendor-payments`, {
+      const payRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}`, {
         method: 'GET',
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
@@ -271,6 +334,31 @@ function HRDashboardContent() {
           totalAdjustments: payJson.totalAdjustments,
         }
       });
+      const configuredBaseRatesByState: Record<string, number> = {};
+      try {
+        const ratesRes = await fetch('/api/rates', {
+          method: 'GET',
+          headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        });
+        if (ratesRes.ok) {
+          const ratesJson = await ratesRes.json();
+          for (const row of ratesJson?.rates || []) {
+            const stateCode = normalizeState(row?.state_code);
+            const baseRate = Number(row?.base_rate || 0);
+            if (stateCode && baseRate > 0) configuredBaseRatesByState[stateCode] = baseRate;
+          }
+        } else {
+          console.warn('[HR PAYMENTS] Failed to load /api/rates for base rates, using fallback values.');
+        }
+      } catch (e) {
+        console.warn('[HR PAYMENTS] Error loading /api/rates for base rates, using fallback values.', e);
+      }
+      const getConfiguredBaseRate = (stateCode?: string | null) => {
+        const st = normalizeState(stateCode);
+        const configured = Number(configuredBaseRatesByState[st] || 0);
+        if (configured > 0) return configured;
+        return 17.28;
+      };
       const byVenue: Record<string, { venue: string; city?: string | null; state?: string | null; totalPayment: number; totalHours: number; events: any[] }> = {};
 
       // Show ALL filtered events, not just those with payment data
@@ -278,9 +366,53 @@ function HRDashboardContent() {
 
       console.log('[HR PAYMENTS] Processing filtered events:', { filteredCount: filtered.length, withPaymentData: Object.keys(paymentsByEventId).length });
 
+      // AZ/NY: fetch prior weekly hours for OT rate display (Mon..day before event)
+      let weeklyHoursMap: Record<string, Record<string, number>> = {};
+      const azNyEvents = filtered.filter((e: any) => {
+        const st = normalizeState(e.state);
+        return st === "AZ" || st === "NY";
+      });
+      if (azNyEvents.length > 0) {
+        const weeklyHoursRequests = azNyEvents.map((e: any) => {
+          const epd = paymentsByEventId[e.id];
+          const userIds = epd?.vendorPayments
+            ? epd.vendorPayments.map((vp: any) => vp.user_id).filter(Boolean)
+            : [];
+          return { event_id: e.id, event_date: e.event_date, user_ids: userIds };
+        }).filter((r: any) => r.event_date && r.user_ids.length > 0);
+        if (weeklyHoursRequests.length > 0) {
+          try {
+            const whRes = await fetch(
+              `/api/weekly-hours?events=${encodeURIComponent(JSON.stringify(weeklyHoursRequests))}`,
+              { headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) } }
+            );
+            if (whRes.ok) weeklyHoursMap = await whRes.json();
+          } catch (err) {
+            console.error('[HR PAYMENTS] Failed to fetch weekly hours:', err);
+          }
+        }
+      }
+
+
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
+        const eventPaymentSummary = eventPaymentData?.eventPayment || {};
+        const eventState = normalizeState(eventInfo.state) || "CA";
+        const configuredBaseRate = getConfiguredBaseRate(eventState);
+        // Sales-tab parity: Adjusted Gross Amount = Net Sales, Commission $ = Net Sales x Commission Pool.
+        const eventTips = Number(eventInfo.tips || 0);
+        const ticketSales = Number(eventInfo.ticket_sales || 0);
+        const totalSales = Math.max(ticketSales - eventTips, 0);
+        const taxRate = Number(eventInfo.tax_rate_percent || 0);
+        const tax = totalSales * (taxRate / 100);
+        const adjustedGrossAmount =
+          Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
+        const commissionPoolPercent =
+          Number(eventPaymentSummary.commission_pool_percent || eventInfo.commission_pool || 0) || 0;
+        const eventCommissionDollars =
+          Number(eventPaymentSummary.commission_pool_dollars || 0) || (adjustedGrossAmount * commissionPoolPercent);
+        const eventTotalTips = Number(eventPaymentSummary.total_tips || 0) || eventTips;
 
         // Initialize venue entry
         if (!byVenue[eventInfo.venue]) {
@@ -344,7 +476,13 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
-                  baseRate: 17.28,
+                  state: eventInfo.state,
+                  baseRate: configuredBaseRate,
+                  commissionDollars: eventCommissionDollars,
+                  adjustedGrossAmount,
+                  totalTips: eventTotalTips,
+                  totalRestBreak: 0,
+                  totalOther: 0,
                   eventTotal: 0,
                   eventHours: 0,
                   payments: teamPayments
@@ -361,7 +499,13 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
-            baseRate: 17.28,
+            state: eventInfo.state,
+            baseRate: configuredBaseRate,
+            commissionDollars: eventCommissionDollars,
+            adjustedGrossAmount,
+            totalTips: eventTotalTips,
+            totalRestBreak: 0,
+            totalOther: 0,
             eventTotal: 0,
             eventHours: 0,
             payments: []
@@ -371,11 +515,61 @@ function HRDashboardContent() {
 
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
-        const eventPaymentSummary = eventPaymentData.eventPayment || {};
-        const baseRate = Number(eventPaymentSummary.base_rate || 17.28);
+        const summaryBaseRate = Number(eventPaymentSummary.base_rate || 0);
+        const baseRate = configuredBaseRate > 0 ? configuredBaseRate : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
-        // Map vendor payments to the normalized shape used in Global Calendar
+        // Total team members on this event
+        const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
+
+        // Commission pool in dollars — try event_payments first, then compute from events table
+        const commissionPoolDollars = eventCommissionDollars;
+        const isAZorNY = eventState === "AZ" || eventState === "NY";
+
+        // Vendor count for commission allocation
+        const vendorCountEligible = vendorPayments.reduce((count: number, p: any) => {
+          return isVendorDivision(p?.users?.division) ? count + 1 : count;
+        }, 0);
+        const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : memberCount;
+
+        // Commission share denominator must match Event Dashboard: eligible vendor count (fallback to member count)
+        const perVendorCommissionShare = vendorCountForCommission > 0
+          ? commissionPoolDollars / vendorCountForCommission
+          : 0;
+
+        const commissionPerVendorAzNy = isAZorNY
+          ? computeAzNyCommissionPerVendor(
+            vendorPayments.map((p: any) => {
+              const actualHours = getEffectiveHours(p);
+              const div = p?.users?.division;
+              const eligible = !isTrailersDivision(div) && isVendorDivision(div) && actualHours > 0;
+              const priorWeeklyHours = weeklyHoursMap[eventId]?.[p.user_id] || 0;
+              const isWeeklyOT = (priorWeeklyHours + actualHours) > 40;
+              return {
+                eligible,
+                actualHours,
+                extAmtRegular: actualHours * baseRate,
+                isWeeklyOT,
+              };
+            }),
+            commissionPoolDollars
+          )
+          : 0;
+
+        // Tips: try event_payments summary first, then fall back to events table
+        const totalTips = eventTotalTips;
+        // Pro-rate tips by hours worked instead of equal split
+        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + getEffectiveHours(p), 0);
+
+        console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
+          commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventHours, memberCount, vendorCountForCommission,
+          summaryPool: eventPaymentSummary.commission_pool_dollars,
+          eventCommissionPool: eventInfo.commission_pool,
+          summaryTips: eventPaymentSummary.total_tips,
+          eventTips: eventInfo.tips,
+        });
+
+        // Map vendor payments
         const eventPayments = vendorPayments.map((payment: any) => {
           const user = payment.users;
           const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
@@ -384,30 +578,94 @@ function HRDashboardContent() {
           const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
           const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
           const adjustmentAmount = Number(payment.adjustment_amount || 0);
-          const totalPay = Number(payment.total_pay || 0);
+          const actualHours = getEffectiveHours(payment);
+
+          const memberDivision = payment?.users?.division;
+          const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
+
+          const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
+          const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
+          const extAmtRegular = actualHours * baseRate;
+          const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+
+          // Commission Amt: AZ/NY = pool / vendors; others subtract Ext Amt
+          let commissionAmt;
+          if (isAZorNY) {
+            commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0) ? commissionPerVendorAzNy : 0;
+          } else {
+            // Non-AZ/NY parity with Event Dashboard: trailers are excluded from commission allocation.
+            commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              : 0;
+          }
+
+          // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
+          const totalFinalCommissionBase = (isAZorNY && actualHours > 0)
+            ? Math.max(150, extAmtRegular + commissionAmt)
+            : 0;
+          const loadedRateBase = (isAZorNY && actualHours > 0)
+            ? totalFinalCommissionBase / actualHours
+            : baseRate;
+          const otRate = (isAZorNY && isWeeklyOT) ? loadedRateBase * 1.5 : 0;
+
+          // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours; others = baseRate x 1.5 x hours
+          const extAmtOnRegRate = isAZorNY
+            ? (isWeeklyOT ? (otRate * actualHours) : extAmtRegular)
+            : extAmtOnRegRateNonAzNy;
+
+          // Total Final Commission Amt = Ext Amt + Commission Amt; minimum $150
+          const totalFinalCommissionAmt = actualHours > 0
+            ? isAZorNY
+              ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+              : Math.max(150, extAmtOnRegRate + commissionAmt)
+            : 0;
+
+          // Loaded Rate should remain the "regular" loaded rate for AZ/NY, since OT Rate is 1.5x Loaded Rate.
+          const loadedRate = isAZorNY
+            ? loadedRateBase
+            : (actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate);
+
+          // Tips: pro-rated by hours worked (fall back to stored per-vendor tips if summary missing)
+          const tips = (totalEventHours > 0 && totalTips > 0)
+            ? totalTips * (actualHours / totalEventHours)
+            : Number(payment.tips || 0);
+
+          const restBreak = getRestBreakAmount(actualHours, eventState);
+          const totalPay = totalFinalCommissionAmt + tips + restBreak;
+          const finalPay = totalPay + adjustmentAmount;
           return {
             userId: payment.user_id,
             firstName,
             lastName,
             email: user?.email || 'N/A',
-            actualHours: Number(payment.actual_hours || 0),
-            regularHours: Number(payment.regular_hours || 0),
-            regularPay: Number(payment.regular_pay || 0),
-            overtimeHours: Number(payment.overtime_hours || 0),
-            overtimePay: Number(payment.overtime_pay || 0),
-            doubletimeHours: Number(payment.doubletime_hours || 0),
-            doubletimePay: Number(payment.doubletime_pay || 0),
-            commissions: Number(payment.commissions || 0),
-            tips: Number(payment.tips || 0),
+            actualHours,
+            regularHours: actualHours,
+            regularPay: extAmtOnRegRate,
+            overtimeHours: 0,
+            overtimePay: 0,
+            otRate,
+            doubletimeHours: 0,
+            doubletimePay: 0,
+            commissions: commissionAmt,
+            tips,
             totalPay,
             adjustmentAmount,
-            finalPay: totalPay + adjustmentAmount,
+            finalPay,
+            regRate: baseRate,
+            loadedRate,
+            extAmtOnRegRate,
+            commissionAmt,
+            totalFinalCommissionAmt,
+            restBreak,
+            totalGrossPay: finalPay,
           };
         });
         console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map((p: any) => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
 
-        const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
+        const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
+        const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
 
         byVenue[eventInfo.venue].totalPayment += eventTotal;
         byVenue[eventInfo.venue].totalHours += eventHours;
@@ -415,7 +673,13 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          state: eventInfo.state,
           baseRate,
+          commissionDollars: eventCommissionDollars,
+          adjustedGrossAmount,
+          totalTips: eventTotalTips,
+          totalRestBreak: eventTotalRestBreak,
+          totalOther: eventTotalOther,
           eventTotal,
           eventHours,
           payments: eventPayments
@@ -463,20 +727,23 @@ function HRDashboardContent() {
       }
 
       // Update local payments state to reflect saved amount
-      setPaymentsByVenue(prev => prev.map(v => ({
-        ...v,
-        events: v.events.map((ev: any) => {
+      setPaymentsByVenue(prev => prev.map(v => {
+        const events = v.events.map((ev: any) => {
           if (ev.id !== eventId) return ev;
           const payments = (ev.payments || []).map((p: any) => {
             if (p.userId !== userId) return p;
             const newAdj = amount;
-            return { ...p, adjustmentAmount: newAdj, finalPay: Number(p.totalPay || 0) + newAdj };
+            return { ...p, adjustmentAmount: newAdj, finalPay: Number(p.totalPay || 0) + newAdj, totalGrossPay: Number(p.totalPay || 0) + newAdj };
           });
-          const eventTotal = payments.reduce((sum: number, p: any) => sum + p.totalPay, 0);
+          const eventTotal = payments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
           const eventHours = payments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-          return { ...ev, payments, eventTotal, eventHours };
-        })
-      })));
+          const totalOther = payments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
+          return { ...ev, payments, totalOther, eventTotal, eventHours };
+        });
+        const totalPayment = events.reduce((sum: number, ev: any) => sum + Number(ev.eventTotal || 0), 0);
+        const totalHours = events.reduce((sum: number, ev: any) => sum + Number(ev.eventHours || 0), 0);
+        return { ...v, events, totalPayment, totalHours };
+      }));
     } finally {
       setSavingAdjustment(false);
     }
@@ -526,6 +793,98 @@ function HRDashboardContent() {
       setSendingEmails(false);
     }
   }, [paymentsByVenue]);
+
+  // Export payments to Excel
+  const exportPaymentsToExcel = useCallback(() => {
+    if (paymentsByVenue.length === 0) {
+      alert('No payment data to export. Please load payments first.');
+      return;
+    }
+
+    // Flatten data for Excel export
+    const rows: any[] = [];
+
+    paymentsByVenue.forEach(venue => {
+      venue.events.forEach(event => {
+        if (Array.isArray(event.payments) && event.payments.length > 0) {
+          event.payments.forEach((p: any) => {
+            const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
+            const hideRest = st === 'NV' || st === 'WI' || st === 'AZ' || st === 'NY';
+
+            const regRate = Number(p.regRate ?? event.baseRate ?? 0);
+            const loadedRate = Number(p.loadedRate ?? regRate);
+            const hours = Number(p.actualHours || 0);
+            const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
+            const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
+            const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
+            const tips = Number(p.tips || 0);
+            const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
+            const other = Number(p.adjustmentAmount || 0);
+            const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+
+            rows.push({
+              'Venue': venue.venue,
+              'City': venue.city || '',
+              'State': venue.state || '',
+              'Event Name': event.name,
+              'Event Date': event.date || '',
+              'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
+              'Email': p.email || '',
+              'Reg Rate': regRate.toFixed(2),
+              'Loaded Rate': loadedRate.toFixed(2),
+              'Hours': hours.toFixed(2),
+              'Ext Amt on Reg Rate': extAmtOnRegRate.toFixed(2),
+              'Commission Amt': commissionAmt.toFixed(2),
+              'Total Final Commission Amt': totalFinalCommissionAmt.toFixed(2),
+              'Tips': tips.toFixed(2),
+              'Rest Break': hideRest ? 'N/A' : restBreak.toFixed(2),
+              'Other': other.toFixed(2),
+              'Total Gross Pay': totalGrossPay.toFixed(2),
+            });
+          });
+        }
+      });
+    });
+
+    if (rows.length === 0) {
+      alert('No payment records found in the loaded data.');
+      return;
+    }
+
+    // Create workbook and worksheet
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Payments');
+
+    // Set column widths
+    worksheet['!cols'] = [
+      { wch: 25 }, // Venue
+      { wch: 15 }, // City
+      { wch: 8 },  // State
+      { wch: 30 }, // Event Name
+      { wch: 12 }, // Event Date
+      { wch: 25 }, // Employee
+      { wch: 30 }, // Email
+      { wch: 10 }, // Reg Rate
+      { wch: 12 }, // Loaded Rate
+      { wch: 8 },  // Hours
+      { wch: 18 }, // Ext Amt on Reg Rate
+      { wch: 15 }, // Commission Amt
+      { wch: 22 }, // Total Final Commission Amt
+      { wch: 10 }, // Tips
+      { wch: 12 }, // Rest Break
+      { wch: 10 }, // Other
+      { wch: 15 }, // Total Gross Pay
+    ];
+
+    // Generate filename with date range
+    const startStr = paymentsStartDate || 'start';
+    const endStr = paymentsEndDate || 'end';
+    const filename = `payments_${startStr}_to_${endStr}.xlsx`;
+
+    // Download file
+    XLSX.writeFile(workbook, filename);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate]);
 
   // Load onboarding forms
   const loadOnboardingForms = useCallback(async () => {
@@ -935,8 +1294,8 @@ function HRDashboardContent() {
                 <button onClick={saveAllAdjustments} className={`apple-button ${savingAdjustment ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={savingAdjustment}>
                   {savingAdjustment ? 'Saving…' : 'Save All Adjustments'}
                 </button>
-                <button onClick={sendPaymentEmails} className={`apple-button ${sendingEmails ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={sendingEmails}>
-                  {sendingEmails ? 'Emailing…' : 'Email Final Payments'}
+                <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                  Export to Excel
                 </button>
               </div>
             </div>
@@ -968,6 +1327,11 @@ function HRDashboardContent() {
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Commission</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Tips</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Rest Break</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Other</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total</th>
                           </tr>
                         </thead>
@@ -978,27 +1342,44 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-sm text-gray-900">{ev.name}</td>
                                 <td className="px-4 py-2 text-sm text-gray-500">{ev.date || '—'}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">{(ev.eventHours || 0).toFixed(1)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(ev.eventTotal || 0).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalRestBreak || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalOther || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.eventTotal || 0)).toFixed(2)}</td>
                               </tr>
                               <tr>
-                                <td colSpan={4} className="px-4 py-2">
+                                <td colSpan={9} className="px-4 py-2">
                                   {Array.isArray(ev.payments) && ev.payments.length > 0 ? (
                                     <div className="overflow-x-auto border rounded">
                                       <table className="min-w-full">
                                         <thead className="bg-gray-50">
-                                          <tr>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Hrs</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">DT Pay</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commissions</th>
-                                            <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
-                                            <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Adj</th>
-                                            <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total</th>
-                                          </tr>
+                                          {(() => {
+                                            const st = normalizeState(ev.state || v.state);
+                                            const hideRest = st === "NV" || st === "WI" || st === "AZ" || st === "NY";
+                                            const showOT = st === "AZ" || st === "NY";
+                                            return (
+                                              <tr>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Loaded Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+                                                {showOT && (
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
+                                                )}
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Ext Amt on Reg Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Amt</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Total Final Commission Amt</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
+                                                {!hideRest && (
+                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                                                )}
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
+                                              </tr>
+                                            );
+                                          })()}
                                         </thead>
                                         <tbody className="divide-y">
                                           {ev.payments.map((p: any, idx: number) => (
@@ -1020,48 +1401,74 @@ function HRDashboardContent() {
                                                   )}
                                                 </div>
                                               </td>
-                                              <td className="p-2 text-sm">{Number(p.regularHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.regularPay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm">{Number(p.overtimeHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.overtimePay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm">{Number(p.doubletimeHours || 0).toFixed(2)}h</td>
-                                              <td className="p-2 text-sm text-green-600">${Number(p.doubletimePay || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-purple-600">${Number(p.commissions || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-orange-600">${Number(p.tips || 0).toFixed(2)}</td>
-                                              <td className="p-2 text-sm text-right">
-                                                {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
-                                                  <div className="flex items-center justify-end gap-2">
-                                                    <span className="text-gray-500">$</span>
-                                                    <input
-                                                      type="number"
-                                                      className="w-24 px-2 py-1 border rounded text-sm"
-                                                      value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
-                                                      onChange={(e) => {
-                                                        const val = Number(e.target.value) || 0;
-                                                        setAdjustments(prev => ({
-                                                          ...prev,
-                                                          [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
-                                                        }));
-                                                      }}
-                                                      step="1"
-                                                    />
-                                                    <button
-                                                      onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
-                                                      className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                                    >Save</button>
-                                                    <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
-                                                  </div>
-                                                ) : (
-                                                  <span
-                                                    className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
-                                                    onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
-                                                    title="Click to edit"
-                                                  >
-                                                    {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
-                                                  </span>
-                                                )}
-                                              </td>
-                                              <td className="p-2 text-sm font-semibold text-right">${Number(p.finalPay || 0).toFixed(2)}</td>
+                                              {(() => {
+                                                const st = normalizeState(ev.state || v.state);
+                                                const hideRest = st === "NV" || st === "WI" || st === "AZ" || st === "NY";
+                                                const showOT = st === "AZ" || st === "NY";
+
+                                                const regRate = Number(p.regRate ?? ev.baseRate ?? 0);
+                                                const loadedRate = Number(p.loadedRate ?? regRate);
+                                                const hours = Number(p.actualHours || 0);
+                                                const otRate = Number(p.otRate || 0);
+                                                const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
+                                                const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
+                                                const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
+                                                const tips = Number(p.tips || 0);
+                                                const restBreak = Number(p.restBreak || 0);
+                                                const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+
+                                                return (
+                                                  <>
+                                                    <td className="p-2 text-sm">${regRate.toFixed(2)}/hr</td>
+                                                    <td className="p-2 text-sm">${loadedRate.toFixed(2)}/hr</td>
+                                                    <td className="p-2 text-sm">{hours.toFixed(2)}h</td>
+                                                    {showOT && (
+                                                      <td className="p-2 text-sm">{otRate > 0 ? `$${otRate.toFixed(2)}/hr` : '\u2014'}</td>
+                                                    )}
+                                                    <td className="p-2 text-sm text-green-600">${extAmtOnRegRate.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-purple-600">{commissionAmt > 0 ? `$${commissionAmt.toFixed(2)}` : '\u2014'}</td>
+                                                    <td className="p-2 text-sm text-green-600">${totalFinalCommissionAmt.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-orange-600">${tips.toFixed(2)}</td>
+                                                    {!hideRest && (
+                                                      <td className="p-2 text-sm text-green-600">${restBreak.toFixed(2)}</td>
+                                                    )}
+                                                    <td className="p-2 text-sm text-right">
+                                                      {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
+                                                        <div className="flex items-center justify-end gap-2">
+                                                          <span className="text-gray-500">$</span>
+                                                          <input
+                                                            type="number"
+                                                            className="w-24 px-2 py-1 border rounded text-sm"
+                                                            value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
+                                                            onChange={(e) => {
+                                                              const val = Number(e.target.value) || 0;
+                                                              setAdjustments(prev => ({
+                                                                ...prev,
+                                                                [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
+                                                              }));
+                                                            }}
+                                                            step="1"
+                                                          />
+                                                          <button
+                                                            onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
+                                                            className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                                          >Save</button>
+                                                          <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                        </div>
+                                                      ) : (
+                                                        <span
+                                                          className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                                                          onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
+                                                          title="Click to edit"
+                                                        >
+                                                          {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
+                                                        </span>
+                                                      )}
+                                                    </td>
+                                                    <td className="p-2 text-sm font-semibold text-right">${totalGrossPay.toFixed(2)}</td>
+                                                  </>
+                                                );
+                                              })()}
                                             </tr>
                                           ))}
                                         </tbody>
@@ -1090,7 +1497,7 @@ function HRDashboardContent() {
                 <div>
                   <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Paystub Tools</h2>
                   <p className="text-sm text-gray-500">
-                    Click a tool to open it here in the dashboard.
+                    Click a tool to open it in its own page.
                   </p>
                 </div>
                 <span className="text-xs uppercase keeping-wider text-slate-500 px-3 py-1 border border-slate-200 rounded-full">
@@ -1098,66 +1505,20 @@ function HRDashboardContent() {
                 </span>
               </div>
               <div className="flex flex-wrap gap-3">
-                <a
+                <Link
                   href="/pdf-reader"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setPaystubTool("pdf-reader");
-                  }}
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
                 >
                   PDF Reader
-                </a>
-                <a
+                </Link>
+                <Link
                   href="/paystub-generator"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    setPaystubTool("paystub-generator");
-                  }}
                   className="inline-flex items-center justify-center gap-2 px-5 py-3 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
                 >
                   Paystub Generator
-                </a>
+                </Link>
               </div>
             </section>
-
-            {paystubTool && (
-              <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-slate-200">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-slate-900 truncate">
-                      {paystubTool === "pdf-reader" ? "PDF Reader" : "Paystub Generator"}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate">
-                      Showing /{paystubTool} inside the dashboard.
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPaystubTool(null)}
-                      className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
-                    >
-                      Back to tools
-                    </button>
-                    <a
-                      href={`/${paystubTool}`}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="inline-flex items-center justify-center px-4 py-2 rounded-lg border border-slate-200 bg-white text-sm font-semibold text-slate-700 hover:bg-slate-50 transition"
-                    >
-                      Open full page
-                    </a>
-                  </div>
-                </div>
-                <iframe
-                  key={paystubTool}
-                  title={paystubTool === "pdf-reader" ? "PDF Reader" : "Paystub Generator"}
-                  src={`/${paystubTool}`}
-                  className="w-full h-[80vh] bg-white"
-                />
-              </section>
-            )}
           </div>
         )}
         {hrView === "employees" && (

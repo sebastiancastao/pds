@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
+import { PDFDocument } from 'pdf-lib';
 
 interface PaymentData {
   actual_hours: number | null;
@@ -26,6 +27,7 @@ interface Worker {
   address?: string;
   status: string;
   payment_data: PaymentData | null;
+  worked_hours?: number;
 }
 
 interface Event {
@@ -39,6 +41,33 @@ interface Event {
   state: string | null;
   workers?: Worker[];
 }
+
+type ImportedEmployeeRow = {
+  rowIndex: number;
+  employeeName: string;
+  ssn: string;
+  address: string;
+  employeeId: string;
+
+  payPeriodStart: string;
+  payPeriodEnd: string;
+  payDate: string;
+
+  // Deductions
+  federalIncome: string;
+  socialSecurity: string;
+  medicare: string;
+  stateIncome: string;
+  stateDI: string;
+  state: string;
+
+  // Other
+  miscDeduction: string;
+  miscReimbursement: string;
+
+  matchedUserId: string | null;
+  matchError?: string;
+};
 
 interface SickLeaveBalance {
   total_hours: number;
@@ -92,6 +121,10 @@ export default function PaystubGenerator() {
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [matchedUserId, setMatchedUserId] = useState<string | null>(null);
+  const [importedEmployees, setImportedEmployees] = useState<ImportedEmployeeRow[]>([]);
+  const [batchGenerating, setBatchGenerating] = useState(false);
+  const [batchMessage, setBatchMessage] = useState<string | null>(null);
+  const [batchErrors, setBatchErrors] = useState<string[]>([]);
   const [sickLeave, setSickLeave] = useState<SickLeaveBalance | null>(null);
   const [sickLeaveLoading, setSickLeaveLoading] = useState(false);
   const [sickLeaveError, setSickLeaveError] = useState<string | null>(null);
@@ -100,6 +133,45 @@ export default function PaystubGenerator() {
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const normalizeState = (s: any) => (s || '').toString().toUpperCase().trim();
+  const normalizeStateCode = (s: any) => {
+    const st = normalizeState(s);
+    const map: Record<string, string> = {
+      CALIFORNIA: 'CA',
+      NEVADA: 'NV',
+      WISCONSIN: 'WI',
+      'NEW YORK': 'NY',
+      ARIZONA: 'AZ',
+    };
+    return map[st] || st;
+  };
+
+  const fetchEmployeeSummary = async (userId: string): Promise<{
+    sickLeave: SickLeaveBalance | null;
+    profileStateCode: string | null;
+  }> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) {
+      throw new Error('Not authenticated');
+    }
+
+    const response = await fetch(`/api/employees/${userId}/summary`, {
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+      },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      throw new Error(body.error || 'Failed to load sick leave data');
+    }
+
+    const data = await response.json();
+    return {
+      sickLeave: data.summary?.sick_leave ?? null,
+      profileStateCode: normalizeStateCode(data?.employee?.state) || null,
+    };
   };
 
   // Fetch events when pay period dates change
@@ -114,8 +186,12 @@ export default function PaystubGenerator() {
       setEventsError(null);
 
       try {
+        const debugMode =
+          typeof window !== 'undefined' &&
+          new URLSearchParams(window.location.search).get('debug') === '1';
+
         const response = await fetch(
-          `/api/events-by-date?startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}`
+          `/api/events-by-date?startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}&includeHours=true${debugMode ? '&debug=true' : ''}`
         );
 
         if (!response.ok) {
@@ -150,24 +226,16 @@ export default function PaystubGenerator() {
       setSickLeaveLoading(true);
       setSickLeaveError(null);
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        throw new Error('Not authenticated');
-      }
-
-      const response = await fetch(`/api/employees/${matchedUserId}/summary`, {
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(body.error || 'Failed to load sick leave data');
-        }
-        const data = await response.json();
+      try {
+        const summaryData = await fetchEmployeeSummary(matchedUserId);
         if (isMounted) {
-          setSickLeave(data.summary?.sick_leave ?? null);
+          setSickLeave(summaryData.sickLeave);
+          const profileStateCode = summaryData.profileStateCode;
+          if (profileStateCode) {
+            setFormData(prev => (
+              prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }
+            ));
+          }
         }
       } catch (error: any) {
         if (!isMounted) return;
@@ -208,16 +276,93 @@ export default function PaystubGenerator() {
   const totalDeductions = calculateDeductions();
   const netPay = grossPay - totalDeductions + (parseFloat(formData.miscReimbursement) || 0);
 
+  const getWorkerHoursForEligibility = (worker?: Worker | null): number => {
+    if (!worker) return 0;
+    const pd: any = worker.payment_data;
+    const actualHours = pd?.actual_hours != null ? Number(pd.actual_hours) || 0 : 0;
+    if (actualHours > 0) return actualHours;
+    const workedHours = worker.worked_hours != null ? Number(worker.worked_hours) || 0 : 0;
+    if (workedHours > 0) return workedHours;
+    const regH = pd?.regular_hours != null ? Number(pd.regular_hours) || 0 : 0;
+    const otH = pd?.overtime_hours != null ? Number(pd.overtime_hours) || 0 : 0;
+    const dtH = pd?.doubletime_hours != null ? Number(pd.doubletime_hours) || 0 : 0;
+    const sum = regH + otH + dtH;
+    return sum > 0 ? sum : 0;
+  };
+
+  const periodStatsByUserId = useMemo(() => {
+    const stats: Record<string, { hours: number; events: number }> = {};
+    for (const event of events || []) {
+      const workers = event.workers || [];
+      for (const w of workers) {
+        const uid = (w?.user_id || '').toString();
+        if (!uid) continue;
+        const h = getWorkerHoursForEligibility(w);
+        if (h <= 0) continue;
+        if (!stats[uid]) stats[uid] = { hours: 0, events: 0 };
+        stats[uid].hours += h;
+        stats[uid].events += 1;
+      }
+    }
+    return stats;
+  }, [events]);
+
+  const assignedEventsByUserId = useMemo(() => {
+    const m: Record<string, Set<string>> = {};
+    for (const event of events || []) {
+      const eventId = (event?.id || '').toString();
+      if (!eventId) continue;
+      for (const w of event.workers || []) {
+        const uid = (w?.user_id || '').toString();
+        if (!uid) continue;
+        if (!m[uid]) m[uid] = new Set<string>();
+        m[uid].add(eventId);
+      }
+    }
+    const out: Record<string, number> = {};
+    for (const [uid, set] of Object.entries(m)) out[uid] = set.size;
+    return out;
+  }, [events]);
+
   const getFilteredEvents = () => {
-    // Filter events to only include the matched employee's data
+    // Only include events the employee worked, but keep ALL workers for those events.
+    // AZ/NY commission logic needs other workers' hours to compute the per-vendor commission.
     return matchedUserId
-      ? events
-          .map(event => ({
-            ...event,
-            workers: event.workers?.filter(w => w.user_id === matchedUserId)
-          }))
-          .filter(event => event.workers && event.workers.length > 0)
+      ? events.filter((event) => (event.workers || []).some((w) => w.user_id === matchedUserId))
       : events;
+  };
+
+  const filterEventsForUserId = (userId: string | null) => {
+    if (!userId) return events;
+    return events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
+  };
+
+  const filterEventsForUserIdWithHours = (userId: string | null) => {
+    if (!userId) return [];
+    return events.filter((event) => {
+      const w = (event.workers || []).find((x) => x.user_id === userId);
+      return getWorkerHoursForEligibility(w) > 0;
+    });
+  };
+
+  const resolveEmployeeUserIdByOfficialName = async (
+    officialNameRaw: string,
+    options?: { debug?: boolean }
+  ): Promise<string | null> => {
+    const officialName = (officialNameRaw || '').trim();
+    if (!officialName) return null;
+
+    try {
+      const response = await fetch(
+        `/api/match-employee?name=${encodeURIComponent(officialName)}${options?.debug ? '&debug=true' : ''}`
+      );
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data?.user_id || null;
+    } catch (error) {
+      console.error('Error matching employee:', error);
+      return null;
+    }
   };
 
   const sanitizeFilePart = (value: string) =>
@@ -229,7 +374,56 @@ export default function PaystubGenerator() {
   const handleGenerate = async () => {
     setGenerating(true);
     try {
-      const filteredEvents = getFilteredEvents();
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      const resolvedUserId =
+        matchedUserId ||
+        (formData.employeeName ? await resolveEmployeeUserIdByOfficialName(formData.employeeName, { debug: debugMode }) : null);
+
+      let sickLeaveForPayload = sickLeave;
+      let stateForPayload = formData.state;
+
+      if (resolvedUserId) {
+        const summaryData = await fetchEmployeeSummary(resolvedUserId);
+        sickLeaveForPayload = summaryData.sickLeave;
+        setSickLeave(summaryData.sickLeave);
+        setSickLeaveError(null);
+        const profileStateCode = summaryData.profileStateCode;
+        if (profileStateCode) {
+          stateForPayload = profileStateCode;
+          setFormData(prev => (
+            prev.state === profileStateCode ? prev : { ...prev, state: profileStateCode }
+          ));
+        }
+      }
+
+      if (resolvedUserId && resolvedUserId !== matchedUserId) {
+        setMatchedUserId(resolvedUserId);
+      }
+
+      const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
+      if (debugMode) {
+        console.log('[PAYSTUB-GEN][debug] generate clicked', {
+          resolvedUserId,
+          matchedUserId,
+          eventsTotal: events.length,
+          eventsFiltered: filteredEvents.length,
+        });
+        console.log(
+          '[PAYSTUB-GEN][debug] filtered event ids',
+          filteredEvents.map((e) => ({
+            id: e.id,
+            date: e.event_date,
+            workers: (e.workers || []).map((w) => ({
+              user_id: w.user_id,
+              worked_hours: w.worked_hours,
+              has_payment_data: !!w.payment_data,
+            })),
+          }))
+        );
+      }
 
       // Prepare payload for PDF generation
       const payload = {
@@ -250,7 +444,7 @@ export default function PaystubGenerator() {
         medicare: formData.medicare,
         stateIncome: formData.stateIncome,
         stateDI: formData.stateDI,
-        state: formData.state,
+        state: stateForPayload,
 
         // Other
         miscDeduction: formData.miscDeduction,
@@ -258,7 +452,13 @@ export default function PaystubGenerator() {
 
         // Events data
         events: filteredEvents,
-        sickLeave
+        sickLeave: sickLeaveForPayload,
+
+        // Used server-side to pick correct worker row per event (hours worked)
+        matchedUserId: resolvedUserId,
+
+        // Debug logging (opt-in via /paystub-generator?debug=1)
+        debug: debugMode,
       };
 
       const response = await fetch('/api/generate-paystub', {
@@ -289,6 +489,197 @@ export default function PaystubGenerator() {
       alert(`Error: ${error.message}`);
     } finally {
       setGenerating(false);
+    }
+  };
+
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    // Some browsers can fail to download if we revoke immediately.
+    setTimeout(() => window.URL.revokeObjectURL(url), 250);
+    document.body.removeChild(a);
+  };
+
+  const handleGenerateBatch = async (mode: 'merge' | 'separate') => {
+    setBatchMessage(null);
+    setBatchErrors([]);
+
+    const rows = importedEmployees || [];
+    if (rows.length === 0) {
+      alert('No employees imported from Excel yet.');
+      return;
+    }
+    if (!formData.payPeriodStart || !formData.payPeriodEnd) {
+      alert('Missing pay period start/end.');
+      return;
+    }
+    if (eventsLoading) {
+      alert('Events are still loading. Try again in a moment.');
+      return;
+    }
+    if (!events || events.length === 0) {
+      alert('No events loaded for the selected pay period.');
+      return;
+    }
+
+    setBatchGenerating(true);
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      const outPdf = mode === 'merge' ? await PDFDocument.create() : null;
+      let generated = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+      const generatedNames: string[] = [];
+      let mergedPagesAdded = 0;
+      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
+      const profileStateByUserId: Record<string, string | null> = {};
+
+      for (const emp of rows) {
+        try {
+          const employeeName = (emp.employeeName || '').trim();
+          if (!employeeName) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex}: missing employee name`);
+            continue;
+          }
+          if (!emp.matchedUserId) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): not found in database`);
+            continue;
+          }
+
+          const assignedCount = assignedEventsByUserId[emp.matchedUserId] || 0;
+          const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
+          const st = periodStatsByUserId[emp.matchedUserId];
+          const hoursInPeriod = st ? st.hours : 0;
+          if (assignedCount <= 0) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): not in any event teams during selected period`);
+            continue;
+          }
+          if (filteredEvents.length === 0 || hoursInPeriod <= 0) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): no hours found in selected period`);
+            continue;
+          }
+
+          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, emp.matchedUserId)) {
+            const summaryData = await fetchEmployeeSummary(emp.matchedUserId);
+            sickLeaveByUserId[emp.matchedUserId] = summaryData.sickLeave;
+            profileStateByUserId[emp.matchedUserId] = summaryData.profileStateCode;
+          }
+          const sickLeaveForRow = sickLeaveByUserId[emp.matchedUserId] ?? null;
+          const stateForRow =
+            profileStateByUserId[emp.matchedUserId] ||
+            emp.state ||
+            formData.state;
+
+          const payload = {
+            // Employee info
+            employeeName: employeeName,
+            ssn: emp.ssn,
+            address: emp.address,
+            employeeId: emp.employeeId,
+
+            // Pay period (prefer per-row; fall back to form)
+            payPeriodStart: emp.payPeriodStart || formData.payPeriodStart,
+            payPeriodEnd: emp.payPeriodEnd || formData.payPeriodEnd,
+            payDate: emp.payDate || formData.payDate,
+
+            // Deductions
+            federalIncome: emp.federalIncome,
+            socialSecurity: emp.socialSecurity,
+            medicare: emp.medicare,
+            stateIncome: emp.stateIncome,
+            stateDI: emp.stateDI,
+            state: stateForRow,
+
+            // Other
+            miscDeduction: emp.miscDeduction,
+            miscReimbursement: emp.miscReimbursement,
+
+            // Events data
+            events: filteredEvents,
+            sickLeave: sickLeaveForRow,
+
+            matchedUserId: emp.matchedUserId,
+            debug: debugMode,
+          };
+
+          const response = await fetch('/api/generate-paystub', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+
+          if (!response.ok) {
+            const body = await response.json().catch(() => ({}));
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${body?.error || 'Failed to generate paystub'}`);
+            continue;
+          }
+
+          const bytes = await response.arrayBuffer();
+
+          if (mode === 'separate') {
+            const blob = new Blob([bytes], { type: 'application/pdf' });
+            const safeName = employeeName ? sanitizeFilePart(employeeName) : `row_${emp.rowIndex}`;
+            const safePayDate = (emp.payDate || formData.payDate) ? sanitizeFilePart(emp.payDate || formData.payDate) : new Date().toISOString().split('T')[0];
+            downloadBlob(blob, `paystub-${safeName}-${safePayDate}.pdf`);
+            // Reduce the chance the browser blocks multiple downloads triggered too quickly.
+            await new Promise((r) => setTimeout(r, 200));
+          } else if (outPdf) {
+            const doc = await PDFDocument.load(bytes);
+            const pageIndices = doc.getPageIndices();
+            const copied = await outPdf.copyPages(doc, pageIndices);
+            for (const p of copied) outPdf.addPage(p);
+            mergedPagesAdded += copied.length;
+          }
+
+          generated++;
+          generatedNames.push(employeeName);
+        } catch (err: any) {
+          skipped++;
+          errors.push(`Row ${emp.rowIndex} (${(emp.employeeName || '').trim() || 'Unknown'}): ${err?.message || 'Unexpected error'}`);
+          continue;
+        }
+      }
+
+      if (generated === 0) {
+        throw new Error('No paystubs were generated. Check that employees are matched and have events in the selected period.');
+      }
+
+      const safePayDate = formData.payDate ? sanitizeFilePart(formData.payDate) : new Date().toISOString().split('T')[0];
+      if (mode === 'merge' && outPdf) {
+        const outBytes = await outPdf.save();
+        // pdf-lib returns Uint8Array<ArrayBufferLike>; normalize to a Uint8Array for Blob compatibility in TS.
+        const blob = new Blob([Uint8Array.from(outBytes)], { type: 'application/pdf' });
+        downloadBlob(blob, `paystubs-${safePayDate}.pdf`);
+      }
+
+      const msg = mode === 'merge'
+        ? `Generated ${generated} paystub(s) into 1 PDF (${mergedPagesAdded} page(s)). Skipped ${skipped}.`
+        : `Generated ${generated} paystub(s) as separate PDF downloads. Skipped ${skipped}.`;
+      setBatchMessage(msg);
+      setBatchErrors(errors);
+      if (debugMode && errors.length) {
+        console.log('[PAYSTUB-GEN][debug] batch errors', errors);
+      }
+      if (debugMode) {
+        console.log('[PAYSTUB-GEN][debug] batch generated', { generated, skipped, generatedNames });
+      }
+    } catch (error: any) {
+      console.error('Error generating batch paystubs:', error);
+      alert(`Error: ${error.message}`);
+    } finally {
+      setBatchGenerating(false);
     }
   };
 
@@ -421,20 +812,19 @@ export default function PaystubGenerator() {
       const worksheet = workbook.Sheets[sheetName];
       const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
 
-      // Expected format: First row is headers, second row is data
+      // Expected format: first row is headers, following rows are one employee per row.
       if (jsonData.length < 2) {
-        setUploadError('Excel file must have at least 2 rows (headers and data)');
+        setUploadError('Excel file must have at least 2 rows (headers and at least 1 employee row)');
         return;
       }
 
       const headers = jsonData[0].map((h: any) => String(h).toLowerCase().trim());
-      const values = jsonData[1];
 
-      const getValueByHeader = (possibleNames: string[]) => {
+      const getValueByHeader = (valuesRow: any[], possibleNames: string[]) => {
         for (const name of possibleNames) {
           const index = headers.findIndex((h: string) => h.includes(name));
-          if (index !== -1 && values[index] != null && values[index] !== '') {
-            const val = values[index];
+          if (index !== -1 && valuesRow[index] != null && valuesRow[index] !== '') {
+            const val = valuesRow[index];
             // Skip if value is 0 for deductions (means not applicable)
             if (typeof val === 'number' && val === 0 &&
                 (possibleNames.some(n => n.includes('deduction') || n.includes('tax') || n.includes('income') || n.includes('medicare') || n.includes('security')))) {
@@ -447,8 +837,8 @@ export default function PaystubGenerator() {
       };
 
       // Helper to get absolute value for deductions (handle negative values)
-      const getAbsoluteValue = (possibleNames: string[]) => {
-        const value = getValueByHeader(possibleNames);
+      const getAbsoluteValue = (valuesRow: any[], possibleNames: string[]) => {
+        const value = getValueByHeader(valuesRow, possibleNames);
         if (!value) return '';
         const num = parseFloat(value);
         return isNaN(num) ? value : String(Math.abs(num));
@@ -478,99 +868,128 @@ export default function PaystubGenerator() {
       };
 
       // Determine state from available state income columns
-      let detectedState = formData.state;
-      const caStateIncome = getValueByHeader(['ca state income']);
-      const wiStateIncome = getValueByHeader(['wi state income']);
-      const azStateIncome = getValueByHeader(['az state income']);
+      const dataRows = jsonData
+        .slice(1)
+        .map((row, idx) => ({ row, rowIndex: idx + 2 })) // +2 because Excel is 1-based and headers are row 1
+        .filter(({ row }) => Array.isArray(row) && row.some((c: any) => c != null && String(c).trim() !== ''));
 
-      if (caStateIncome) detectedState = 'CA';
-      else if (wiStateIncome) detectedState = 'WI';
-      else if (azStateIncome) detectedState = 'AZ';
-
-      // Get state-specific deductions
-      let stateIncome = '';
-      let stateDI = '';
-
-      if (detectedState === 'CA') {
-        stateIncome = getAbsoluteValue(['ca state income']);
-        stateDI = getAbsoluteValue(['ca state di']);
-      } else if (detectedState === 'WI') {
-        stateIncome = getAbsoluteValue(['wi state income']);
-      } else if (detectedState === 'AZ') {
-        stateIncome = getAbsoluteValue(['az state income']);
+      if (dataRows.length === 0) {
+        setUploadError('No employee rows found in Excel file');
+        return;
       }
 
-      // Get gross pay and net pay
-      const grossPay = getValueByHeader(['gross pay']);
-      const netPay = getValueByHeader(['net pay']);
+      const parsedEmployees: ImportedEmployeeRow[] = dataRows.map(({ row: valuesRow, rowIndex }) => {
+        // Determine state from available state income columns
+        let detectedState = formData.state;
+        const caStateIncome = getValueByHeader(valuesRow, ['ca state income']);
+        const wiStateIncome = getValueByHeader(valuesRow, ['wi state income']);
+        const azStateIncome = getValueByHeader(valuesRow, ['az state income']);
+        const nyStateIncome = getValueByHeader(valuesRow, ['ny state income']);
 
-      // Calculate hours and rates from gross pay if available
-      let regularHours = '';
-      let regularRate = '';
+        if (caStateIncome) detectedState = 'CA';
+        else if (wiStateIncome) detectedState = 'WI';
+        else if (azStateIncome) detectedState = 'AZ';
+        else if (nyStateIncome) detectedState = 'NY';
 
-      if (grossPay && parseFloat(grossPay) > 0) {
-        // Assume 80 hours for biweekly pay period
-        regularHours = '80';
-        const rate = parseFloat(grossPay) / 80;
-        regularRate = rate.toFixed(2);
-      }
+        // Get state-specific deductions
+        let stateIncome = '';
+        let stateDI = '';
 
-      // Map Excel data to form fields
-      const updatedFormData = {
-        employeeName: getValueByHeader(['employee name', 'name', 'employee']),
-        ssn: getValueByHeader(['ssn', 'social security']),
-        address: getValueByHeader(['address']),
-        employeeId: getValueByHeader(['employee id', 'emp id', 'id', 'page']),
-
-        payPeriodStart: formatDate(getValueByHeader(['pay period start', 'period start', 'start date'])),
-        payPeriodEnd: formatDate(getValueByHeader(['pay period end', 'period end', 'end date'])),
-        payDate: formatDate(getValueByHeader(['pay date', 'payment date'])),
-
-        regularHours: regularHours || getValueByHeader(['regular hours', 'hours']),
-        regularRate: regularRate || getValueByHeader(['regular rate', 'hourly rate', 'rate']),
-        overtimeHours: getValueByHeader(['overtime hours', 'ot hours']),
-        overtimeRate: getValueByHeader(['overtime rate', 'ot rate']),
-        doubleTimeHours: getValueByHeader(['double time hours', 'dt hours']),
-        doubleTimeRate: getValueByHeader(['double time rate', 'dt rate']),
-
-        federalIncome: getAbsoluteValue(['federal income', 'federal tax', 'fed income']),
-        socialSecurity: getAbsoluteValue(['social security', 'ss', 'fica']),
-        medicare: getAbsoluteValue(['medicare', 'med']),
-        stateIncome: stateIncome,
-        stateDI: stateDI,
-        state: detectedState,
-
-        miscDeduction: getAbsoluteValue(['misc non taxable', 'misc deduction', 'other deduction']),
-        miscReimbursement: getValueByHeader(['misc reimbursement', 'reimbursement']),
-      };
-
-      setFormData(updatedFormData);
-
-      // Match employee name with official_name in profiles
-      if (updatedFormData.employeeName) {
-        try {
-          const response = await fetch(`/api/match-employee?name=${encodeURIComponent(updatedFormData.employeeName)}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.user_id) {
-              setMatchedUserId(data.user_id);
-              setUploadSuccess(`Excel data imported and matched to ${updatedFormData.employeeName}!`);
-            } else {
-              setMatchedUserId(null);
-              setUploadSuccess('Excel data imported successfully! (No matching employee found)');
-            }
-          } else {
-            setMatchedUserId(null);
-            setUploadSuccess('Excel data imported successfully! (Could not match employee)');
-          }
-        } catch (error) {
-          console.error('Error matching employee:', error);
-          setMatchedUserId(null);
-          setUploadSuccess('Excel data imported successfully! (Error matching employee)');
+        if (detectedState === 'CA') {
+          stateIncome = getAbsoluteValue(valuesRow, ['ca state income']);
+          stateDI = getAbsoluteValue(valuesRow, ['ca state di']);
+        } else if (detectedState === 'WI') {
+          stateIncome = getAbsoluteValue(valuesRow, ['wi state income']);
+        } else if (detectedState === 'AZ') {
+          stateIncome = getAbsoluteValue(valuesRow, ['az state income']);
+        } else if (detectedState === 'NY') {
+          stateIncome = getAbsoluteValue(valuesRow, ['ny state income']);
         }
-      } else {
-        setUploadSuccess('Excel data imported successfully!');
+
+        // Calculate hours and rates from gross pay if available
+        const grossPay = getValueByHeader(valuesRow, ['gross pay']);
+        let regularHours = '';
+        let regularRate = '';
+
+        if (grossPay && parseFloat(grossPay) > 0) {
+          // Assume 80 hours for biweekly pay period
+          regularHours = '80';
+          const rate = parseFloat(grossPay) / 80;
+          regularRate = rate.toFixed(2);
+        }
+
+        return {
+          rowIndex,
+          employeeName: getValueByHeader(valuesRow, ['employee name', 'name', 'employee']),
+          ssn: getValueByHeader(valuesRow, ['ssn', 'social security']),
+          address: getValueByHeader(valuesRow, ['address']),
+          employeeId: getValueByHeader(valuesRow, ['employee id', 'emp id', 'id', 'page']),
+
+          payPeriodStart: formatDate(getValueByHeader(valuesRow, ['pay period start', 'period start', 'start date'])),
+          payPeriodEnd: formatDate(getValueByHeader(valuesRow, ['pay period end', 'period end', 'end date'])),
+          payDate: formatDate(getValueByHeader(valuesRow, ['pay date', 'payment date'])),
+
+          federalIncome: getAbsoluteValue(valuesRow, ['federal income', 'federal tax', 'fed income']),
+          socialSecurity: getAbsoluteValue(valuesRow, ['social security', 'ss', 'fica']),
+          medicare: getAbsoluteValue(valuesRow, ['medicare', 'med']),
+          stateIncome,
+          stateDI,
+          state: detectedState,
+
+          miscDeduction: getAbsoluteValue(valuesRow, ['misc non taxable', 'misc deduction', 'other deduction']),
+          miscReimbursement: getValueByHeader(valuesRow, ['misc reimbursement', 'reimbursement']),
+
+          // Keep for backward compat: these fields still exist on the single form, but batch uses the per-row data.
+          // (We don't store earnings fields in ImportedEmployeeRow because the PDF derives earnings from DB events.)
+          matchedUserId: null,
+        };
+      });
+
+      // Set the single-form view from the first row (for manual/single generation)
+      const first = parsedEmployees[0];
+      if (first) {
+        setFormData(prev => ({
+          ...prev,
+          employeeName: first.employeeName || prev.employeeName,
+          ssn: first.ssn || prev.ssn,
+          address: first.address || prev.address,
+          employeeId: first.employeeId || prev.employeeId,
+          payPeriodStart: first.payPeriodStart || prev.payPeriodStart,
+          payPeriodEnd: first.payPeriodEnd || prev.payPeriodEnd,
+          payDate: first.payDate || prev.payDate,
+          federalIncome: first.federalIncome || prev.federalIncome,
+          socialSecurity: first.socialSecurity || prev.socialSecurity,
+          medicare: first.medicare || prev.medicare,
+          stateIncome: first.stateIncome || prev.stateIncome,
+          stateDI: first.stateDI || prev.stateDI,
+          state: first.state || prev.state,
+          miscDeduction: first.miscDeduction || prev.miscDeduction,
+          miscReimbursement: first.miscReimbursement || prev.miscReimbursement,
+        }));
       }
+
+      // Match all employees (sequential to avoid spamming the server)
+      const matched: ImportedEmployeeRow[] = [];
+      for (const emp of parsedEmployees) {
+        if (!emp.employeeName) {
+          matched.push({ ...emp, matchError: 'Missing employee name' });
+          continue;
+        }
+        try {
+          const uid = await resolveEmployeeUserIdByOfficialName(emp.employeeName);
+          matched.push({ ...emp, matchedUserId: uid, matchError: uid ? undefined : 'No match found in database' });
+        } catch (err: any) {
+          matched.push({ ...emp, matchedUserId: null, matchError: err?.message || 'Match error' });
+        }
+      }
+
+      setImportedEmployees(matched);
+
+      const firstMatched = matched.find((e) => !!e.matchedUserId);
+      if (firstMatched?.matchedUserId) setMatchedUserId(firstMatched.matchedUserId);
+
+      const matchedCount = matched.filter((e) => !!e.matchedUserId).length;
+      setUploadSuccess(`Excel imported: ${matched.length} row(s), matched ${matchedCount}.`);
 
       // Clear success message after 5 seconds
       setTimeout(() => setUploadSuccess(null), 5000);
@@ -596,16 +1015,38 @@ export default function PaystubGenerator() {
             <p className="text-slate-600 mt-2 max-w-2xl">
               Generate professional paystubs with customizable payroll information.
             </p>
+            <div className="flex items-center gap-2 mt-3 text-sm text-slate-500">
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 rounded-md">
+                <span className="font-semibold text-blue-600">Step 1:</span> PDF Reader
+              </span>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14 5l7 7m0 0l-7 7m7-7H3" />
+              </svg>
+              <span className="inline-flex items-center gap-1 px-2 py-1 bg-blue-100 rounded-md">
+                <span className="font-semibold text-blue-600">Step 2:</span> Paystub Generator
+              </span>
+            </div>
           </div>
-          <Link
-            href="/hr-dashboard"
-            className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-            </svg>
-            Back to dashboard
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/pdf-reader"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-blue-600 border border-blue-600 rounded-lg shadow-sm text-sm font-medium text-white hover:bg-blue-700 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              PDF Reader (Step 1)
+            </Link>
+            <Link
+              href="/hr-dashboard"
+              className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-slate-200 rounded-lg shadow-sm text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+              </svg>
+              Back to dashboard
+            </Link>
+          </div>
         </div>
 
         <div className="grid lg:grid-cols-3 gap-6">
@@ -623,10 +1064,10 @@ export default function PaystubGenerator() {
                 </div>
                 <div className="flex-1">
                   <h2 className="text-lg font-semibold text-slate-900 mb-2">Import from Excel</h2>
-                  <p className="text-sm text-slate-600 mb-4">
-                    Upload an Excel file (.xlsx or .xls) to automatically populate the form fields.
-                    The file should have headers in the first row and data in the second row.
-                  </p>
+                    <p className="text-sm text-slate-600 mb-4">
+                      Upload an Excel file (.xlsx or .xls) to automatically populate the form fields.
+                      The file should have headers in the first row and one employee per row starting on row 2.
+                    </p>
 
                   <div className="flex items-center gap-3">
                     <input
@@ -667,6 +1108,57 @@ export default function PaystubGenerator() {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                       </svg>
                       {uploadSuccess}
+                    </div>
+                  )}
+
+                  {importedEmployees.length > 0 && (
+                    <div className="mt-4 bg-white/60 border border-blue-200 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-sm font-semibold text-slate-900">Imported Employees</div>
+                        <div className="text-xs text-slate-600">
+                          {importedEmployees.filter((e) => !!e.matchedUserId).length} matched / {importedEmployees.length} total
+                        </div>
+                      </div>
+                      <div className="mt-2 max-h-40 overflow-auto divide-y divide-slate-200 text-sm">
+                        {importedEmployees.slice(0, 50).map((e) => (
+                          <div key={`${e.rowIndex}-${e.employeeName}`} className="py-2 flex items-center justify-between gap-3">
+                            <div className="truncate">
+                              <span className="text-slate-500">Row {e.rowIndex}:</span>{' '}
+                              <span className="font-medium text-slate-900">{e.employeeName || '(missing name)'}</span>
+                            </div>
+                            <div className="flex-shrink-0">
+                              {e.matchedUserId ? (() => {
+                                const assignedCount = assignedEventsByUserId[e.matchedUserId] || 0;
+                                const st = periodStatsByUserId[e.matchedUserId];
+                                const hours = st ? st.hours : 0;
+                                const eligible = hours > 0;
+                                return eligible ? (
+                                  <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 text-xs font-semibold">
+                                    Eligible ({hours.toFixed(2)}h)
+                                  </span>
+                                ) : assignedCount > 0 ? (
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                                    Matched (0h, {assignedCount} event{assignedCount !== 1 ? 's' : ''})
+                                  </span>
+                                ) : (
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                                    Matched (no events)
+                                  </span>
+                                );
+                              })() : (
+                                <span className="px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 text-xs font-semibold">
+                                  {e.matchError ? 'Unmatched' : 'Pending'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                        {importedEmployees.length > 50 && (
+                          <div className="pt-2 text-xs text-slate-600">
+                            Showing first 50 rows.
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -958,16 +1450,20 @@ export default function PaystubGenerator() {
                                         ) : sickLeave ? (
                                           <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                                             <div>
-                                              <span className="text-slate-500">Used:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)} hrs ({sickLeave.total_days.toFixed(2)} days)</span>
+                                              <span className="text-slate-500">Hours Used:</span>{' '}
+                                              <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)}</span>
+                                            </div>
+                                            <div>
+                                              <span className="text-slate-500">Days Used:</span>{' '}
+                                              <span className="font-medium text-slate-900">{sickLeave.total_days.toFixed(2)}</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Accrued:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.accrued_hours.toFixed(2)} hrs ({sickLeave.accrued_days.toFixed(2)} days)</span>
+                                              <span className="font-medium text-slate-900">{sickLeave.accrued_days.toFixed(2)} days</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Balance:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.balance_hours.toFixed(2)} hrs ({sickLeave.balance_days.toFixed(2)} days)</span>
+                                              <span className="font-medium text-slate-900">{sickLeave.balance_days.toFixed(2)} days</span>
                                             </div>
                                           </div>
                                         ) : sickLeaveError ? (
@@ -1110,10 +1606,80 @@ export default function PaystubGenerator() {
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    Generate Paystub PDF
+                    Generate Paystub PDF (Single)
                   </>
                 )}
               </button>
+
+              {/* Batch Generate Button (Excel import) */}
+              {importedEmployees.length > 0 && (
+                <div className="space-y-2">
+                  <div className="text-xs text-slate-600">
+                    Excel rows: <span className="font-semibold">{importedEmployees.length}</span>, matched:{' '}
+                    <span className="font-semibold">{importedEmployees.filter((e) => !!e.matchedUserId).length}</span>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <button
+                      onClick={() => handleGenerateBatch('merge')}
+                      disabled={batchGenerating}
+                      className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                      title="Downloads one combined PDF containing all generated paystubs"
+                    >
+                      {batchGenerating ? (
+                        <>
+                          <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          Batch PDF (Merged)
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => handleGenerateBatch('separate')}
+                      disabled={batchGenerating}
+                      className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-slate-900 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                      title="Downloads one PDF per employee (your browser may prompt or block multiple downloads)"
+                    >
+                      {batchGenerating ? (
+                        <>
+                          <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          Batch PDFs (Separate)
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  {batchMessage && (
+                    <div className="text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-md p-2">
+                      {batchMessage}
+                    </div>
+                  )}
+                  {batchErrors.length > 0 && (
+                    <div className="text-xs text-slate-700 bg-white border border-slate-200 rounded-md p-2 max-h-40 overflow-auto">
+                      <div className="font-semibold text-slate-900 mb-1">Skipped / Errors</div>
+                      <ul className="list-disc pl-5 space-y-1">
+                        {batchErrors.slice(0, 50).map((e) => (
+                          <li key={e}>{e}</li>
+                        ))}
+                      </ul>
+                      {batchErrors.length > 50 && (
+                        <div className="mt-2 text-slate-600">Showing first 50.</div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Create Report Button */}
               <button
