@@ -27,6 +27,7 @@ type RecipientUser = {
   role: string;
   first_name: string;
   last_name: string;
+  onboarding_completed: boolean;
 };
 
 export default function CheckInCodesPage() {
@@ -47,10 +48,12 @@ export default function CheckInCodesPage() {
   const [recipients, setRecipients] = useState<RecipientUser[]>([]);
   const [recipientsLoading, setRecipientsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [filterOnboardedNotSent, setFilterOnboardedNotSent] = useState(false);
 
   const [selectedCodeId, setSelectedCodeId] = useState("");
   const [sendingAll, setSendingAll] = useState(false);
   const [sendingOnboardingCompleted, setSendingOnboardingCompleted] = useState(false);
+  const [sendingOnboardingCompletedTest, setSendingOnboardingCompletedTest] = useState(false);
   const [sendingUserId, setSendingUserId] = useState<string | null>(null);
   const [emailError, setEmailError] = useState("");
   const [emailSuccess, setEmailSuccess] = useState("");
@@ -63,15 +66,6 @@ export default function CheckInCodesPage() {
     }
     return m;
   }, [recipients]);
-
-  const filteredRecipients = useMemo(() => {
-    const q = searchQuery.toLowerCase().trim();
-    if (!q) return recipients;
-    return recipients.filter((u) => {
-      const name = `${u.first_name || ""} ${u.last_name || ""}`.toLowerCase();
-      return name.includes(q) || u.email.toLowerCase().includes(q) || u.role.toLowerCase().includes(q);
-    });
-  }, [recipients, searchQuery]);
 
   const activeCodes = useMemo(
     () => codes.filter((c) => c.is_active),
@@ -93,6 +87,26 @@ export default function CheckInCodesPage() {
     }
     return m;
   }, [activeCodes]);
+
+  const filteredRecipients = useMemo(() => {
+    let result = recipients;
+
+    if (filterOnboardedNotSent) {
+      result = result.filter((u) =>
+        u.onboarding_completed && !personalCodeByUserId.has(u.id)
+      );
+    }
+
+    const q = searchQuery.toLowerCase().trim();
+    if (q) {
+      result = result.filter((u) => {
+        const name = `${u.first_name || ""} ${u.last_name || ""}`.toLowerCase();
+        return name.includes(q) || u.email.toLowerCase().includes(q) || u.role.toLowerCase().includes(q);
+      });
+    }
+
+    return result;
+  }, [recipients, searchQuery, filterOnboardedNotSent, personalCodeByUserId]);
 
   useEffect(() => {
     checkAuth();
@@ -391,6 +405,51 @@ export default function CheckInCodesPage() {
     }
   };
 
+  const sendToOnboardingCompletedTest = async (codeId: string) => {
+    setSendingOnboardingCompletedTest(true);
+    setEmailError("");
+    setEmailSuccess("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setEmailError("Session expired. Please log in again.");
+        return;
+      }
+
+      const res = await fetch("/api/checkin-codes/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          codeId,
+          audience: "onboarding_completed_test",
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEmailError(data?.error || "Failed to send test email");
+        return;
+      }
+
+      const sentTo = Number(data?.sentTo || 0);
+      const failedCount = Number(data?.failedCount || 0);
+      if (failedCount > 0) {
+        setEmailError(`Test send: sent ${sentTo}, failed ${failedCount}`);
+        return;
+      }
+
+      setEmailSuccess(`Test emails sent (${sentTo} recipients)`);
+    } catch (err) {
+      setEmailError("An unexpected error occurred while sending test emails");
+    } finally {
+      setSendingOnboardingCompletedTest(false);
+    }
+  };
+
   const sendToOneUser = async (codeId: string, userId: string) => {
     setSendingUserId(userId);
     setEmailError("");
@@ -683,11 +742,33 @@ export default function CheckInCodesPage() {
                 sendingOnboardingCompleted || activeCodes.length === 0
               }
               className="px-6 py-3 bg-emerald-600 border border-emerald-700 text-white rounded-xl font-medium hover:bg-emerald-700 transition-all disabled:opacity-50 shadow-sm"
-              title="Sends in batches only to users with a vendor_onboarding_status row using a non-personal active code"
+              title="Sends in batches to users with completed onboarding workflow and uses each user's latest active personal code"
             >
               {sendingOnboardingCompleted
                 ? "Sending..."
                 : "Send to Onboarding Completed"}
+            </button>
+            <button
+              onClick={async () => {
+                if (!activeCodes.length) {
+                  setEmailError("No active code selected");
+                  return;
+                }
+                const codeId = await getOrCreateBulkCodeId();
+                if (!codeId) {
+                  return;
+                }
+                await sendToOnboardingCompletedTest(codeId);
+              }}
+              disabled={
+                sendingOnboardingCompletedTest || activeCodes.length === 0
+              }
+              className="px-6 py-3 bg-amber-500 border border-amber-600 text-white rounded-xl font-medium hover:bg-amber-600 transition-all disabled:opacity-50 shadow-sm"
+              title="Sends only to the fixed onboarding test email list"
+            >
+              {sendingOnboardingCompletedTest
+                ? "Sending..."
+                : "Send Onboarding Test"}
             </button>
             <button
               onClick={async () => {
@@ -721,28 +802,42 @@ export default function CheckInCodesPage() {
               </h3>
             </div>
 
-            <div className="relative mb-3">
-              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search by name, email, or role..."
-                className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all text-gray-900"
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                  type="button"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              )}
+            <div className="flex items-center gap-3 mb-3">
+              <div className="relative flex-1">
+                <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Search by name, email, or role..."
+                  className="w-full pl-10 pr-8 py-2 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all text-gray-900"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    type="button"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+              <button
+                onClick={() => setFilterOnboardedNotSent((v) => !v)}
+                className={`px-4 py-2 text-sm rounded-xl font-medium border transition-all whitespace-nowrap ${
+                  filterOnboardedNotSent
+                    ? "bg-emerald-600 text-white border-emerald-700"
+                    : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
+                }`}
+                type="button"
+                title="Show only users who completed onboarding and don't have a code yet"
+              >
+                Onboarded &amp; Not Sent
+              </button>
             </div>
 
             {filteredRecipients.length === 0 ? (

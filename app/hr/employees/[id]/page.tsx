@@ -788,21 +788,21 @@ export default function EmployeeProfilePage() {
               <div className="apple-card p-6 space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-pink-700">Hours Used</div>
-                    <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)}</div>
-                    <div className="text-xs text-pink-500 mt-1">Recorded as sick leave</div>
+                    <div className="text-sm font-medium text-pink-700">Used</div>
+                    <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+                    <div className="text-xs text-pink-500 mt-1">{sickLeaveTotalDays.toFixed(2)} days</div>
                   </div>
                   <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-indigo-700">Days Used</div>
+                    <div className="text-sm font-medium text-indigo-700">Earned</div>
                     <div className="text-3xl font-bold text-indigo-900">
-                      {sickLeaveTotalDays.toFixed(2)}
+                      {formatHours(sickLeaveAccruedHours)} hrs
                     </div>
-                    <div className="text-xs text-indigo-500 mt-1">Calculated from hours taken</div>
+                    <div className="text-xs text-indigo-500 mt-1">{sickLeaveAccruedDays.toFixed(2)} days</div>
                   </div>
                   <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-amber-700 uppercase keeping-wide">Requests</div>
-                    <div className="text-3xl font-bold text-amber-900">{sickLeaveRequestCount}</div>
-                    <div className="text-xs text-amber-500 mt-1">Most recent entries listed below</div>
+                    <div className="text-sm font-medium text-amber-700">Balance</div>
+                    <div className="text-3xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
+                    <div className="text-xs text-amber-500 mt-1">{sickLeaveBalanceDays.toFixed(2)} days</div>
                   </div>
                 </div>
 
@@ -813,7 +813,7 @@ export default function EmployeeProfilePage() {
                       {sickLeaveAccruedDays.toFixed(2)} days ({formatHours(sickLeaveAccruedHours)})
                     </p>
                     <p className="text-xs text-gray-400">
-                      {sickLeaveAccruedMonths} completed month{sickLeaveAccruedMonths === 1 ? "" : "s"}
+                      Based on {formatHours(summary?.total_hours ?? 0)} total hours worked
                     </p>
                   </div>
                   <div>
@@ -826,7 +826,7 @@ export default function EmployeeProfilePage() {
                     </p>
                   </div>
                   <p className="text-xs text-gray-400 self-end">
-                    Employees earn 1 sick day per completed month worked.
+                    Employees earn 1 hour of sick leave per 30 hours worked.
                   </p>
                 </div>
 

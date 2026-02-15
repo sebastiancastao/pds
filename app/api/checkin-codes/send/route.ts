@@ -25,12 +25,17 @@ const DEFAULT_PER_EMAIL_DELAY_MS = 600;
 const DB_CHUNK_SIZE = 200;
 const DB_RETRY_ATTEMPTS = 3;
 
-type Audience = "all" | "one" | "onboarding_completed";
+type Audience = "all" | "one" | "onboarding_completed" | "onboarding_completed_test";
 type Recipient = {
   id: string;
   email: string;
   first_name: string;
 };
+const ONBOARDING_COMPLETED_TEST_EMAILS = [
+  "sebastiancastao379@gmail.com",
+  "sebastiancastanosepul@gmail.com",
+  "brownseb379@gmail.com",
+];
 
 async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> {
   const supabase = createRouteHandlerClient({ cookies });
@@ -134,6 +139,54 @@ async function getRecipients(params: {
 }): Promise<{ recipients: Recipient[]; skippedCount: number }> {
   const { audience, recipientUserId } = params;
 
+  if (audience === "onboarding_completed_test") {
+    const normalizedEmails = ONBOARDING_COMPLETED_TEST_EMAILS.map((e) =>
+      String(e || "").trim().toLowerCase()
+    ).filter(Boolean);
+
+    const { data: users, error: usersError } = await supabaseAdmin
+      .from("users")
+      .select("id, email, is_active")
+      .in("email", normalizedEmails as any)
+      .eq("is_active", true);
+
+    if (usersError) throw usersError;
+
+    const activeUsers = (users || []).filter((u: any) =>
+      normalizedEmails.includes(String(u?.email || "").trim().toLowerCase())
+    );
+
+    if (activeUsers.length === 0) {
+      return { recipients: [], skippedCount: normalizedEmails.length };
+    }
+
+    const userIds = activeUsers.map((u: any) => String(u.id));
+    const { data: profiles, error: profilesError } = await supabaseAdmin
+      .from("profiles")
+      .select("user_id, first_name")
+      .in("user_id", userIds as any);
+
+    if (profilesError) throw profilesError;
+
+    const profileByUserId = new Map<string, { first_name: string }>();
+    for (const p of profiles || []) {
+      profileByUserId.set(String((p as any).user_id), {
+        first_name: safeDecrypt(String((p as any).first_name || "").trim()),
+      });
+    }
+
+    const recipients = activeUsers
+      .map((u: any) => ({
+        id: String(u.id),
+        email: String(u.email || "").trim(),
+        first_name: profileByUserId.get(String(u.id))?.first_name || "there",
+      }))
+      .filter((r: Recipient) => Boolean(r.email));
+
+    const skippedCount = Math.max(0, normalizedEmails.length - recipients.length);
+    return { recipients, skippedCount };
+  }
+
   if (audience === "one") {
     const { data: user, error: userError } = await supabaseAdmin
       .from("users")
@@ -197,7 +250,7 @@ async function getRecipients(params: {
       async () =>
         await supabaseAdmin
           .from("profiles")
-          .select("id, user_id, first_name")
+          .select("id, user_id, first_name, onboarding_completed_at")
           .in("user_id", chunk as any),
       "profiles:chunk"
     );
@@ -206,11 +259,15 @@ async function getRecipients(params: {
     profiles.push(...(((profileChunkRes as any)?.data || []) as any[]));
   }
 
-  const profileByUserId = new Map<string, { id: string; first_name: string }>();
+  const profileByUserId = new Map<
+    string,
+    { id: string; first_name: string; workflow_completed: boolean }
+  >();
   for (const p of profiles || []) {
     profileByUserId.set(String((p as any).user_id), {
       id: String((p as any).id),
       first_name: safeDecrypt(String((p as any).first_name || "").trim()),
+      workflow_completed: Boolean((p as any).onboarding_completed_at),
     });
   }
 
@@ -218,7 +275,7 @@ async function getRecipients(params: {
 
   if (audience === "onboarding_completed") {
     const profileIds = (profiles || []).map((p: any) => String(p.id));
-    const completedProfileIds = new Set<string>();
+    const adminCompletedProfileIds = new Set<string>();
     for (let i = 0; i < profileIds.length; i += DB_CHUNK_SIZE) {
       const chunk = profileIds.slice(i, i + DB_CHUNK_SIZE);
       const onboardingRes = await withDbRetry(
@@ -226,7 +283,8 @@ async function getRecipients(params: {
           await supabaseAdmin
             .from("vendor_onboarding_status")
             .select("profile_id")
-            .in("profile_id", chunk as any),
+            .in("profile_id", chunk as any)
+            .eq("onboarding_completed", true),
         "vendor_onboarding_status:chunk"
       );
       const rows = (onboardingRes as any)?.data;
@@ -236,14 +294,17 @@ async function getRecipients(params: {
 
       for (const row of rows || []) {
         if ((row as any)?.profile_id) {
-          completedProfileIds.add(String((row as any).profile_id));
+          adminCompletedProfileIds.add(String((row as any).profile_id));
         }
       }
     }
 
     allowedUserIds = new Set<string>();
     for (const [userId, profile] of profileByUserId.entries()) {
-      if (completedProfileIds.has(profile.id)) {
+      // "Onboarding completed workflow" includes:
+      // 1) workflow finished marker on profiles.onboarding_completed_at, or
+      // 2) admin-completed status in vendor_onboarding_status.onboarding_completed.
+      if (profile.workflow_completed || adminCompletedProfileIds.has(profile.id)) {
         allowedUserIds.add(userId);
       }
     }
@@ -268,6 +329,46 @@ async function getRecipients(params: {
   return { recipients, skippedCount };
 }
 
+async function getActivePersonalCodeByUserId(
+  userIds: string[]
+): Promise<Map<string, string>> {
+  const personalCodeByUserId = new Map<string, { code: string; createdAt: string }>();
+  if (userIds.length === 0) return new Map<string, string>();
+
+  for (let i = 0; i < userIds.length; i += DB_CHUNK_SIZE) {
+    const chunk = userIds.slice(i, i + DB_CHUNK_SIZE);
+    const codeChunkRes = await withDbRetry(
+      async () =>
+        await supabaseAdmin
+          .from("checkin_codes")
+          .select("target_user_id, code, created_at")
+          .eq("is_active", true)
+          .in("target_user_id", chunk as any),
+      "checkin_codes:personal:chunk"
+    );
+    const chunkError = (codeChunkRes as any)?.error;
+    if (chunkError) throw chunkError;
+
+    const rows = (((codeChunkRes as any)?.data || []) as any[]).filter(
+      (r: any) => r?.target_user_id && r?.code
+    );
+
+    for (const row of rows) {
+      const userId = String(row.target_user_id);
+      const code = String(row.code);
+      const createdAt = String(row.created_at || "");
+      const existing = personalCodeByUserId.get(userId);
+      if (!existing || new Date(createdAt) > new Date(existing.createdAt)) {
+        personalCodeByUserId.set(userId, { code, createdAt });
+      }
+    }
+  }
+
+  return new Map<string, string>(
+    Array.from(personalCodeByUserId.entries()).map(([userId, row]) => [userId, row.code])
+  );
+}
+
 export async function POST(req: NextRequest) {
   try {
     const userId = await getAuthenticatedUserId(req);
@@ -290,7 +391,7 @@ export async function POST(req: NextRequest) {
     const codeId = String(body?.codeId || "").trim();
     const recipientUserId = body?.recipientUserId;
 
-    if (!["all", "one", "onboarding_completed"].includes(audience)) {
+    if (!["all", "one", "onboarding_completed", "onboarding_completed_test"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
 
@@ -349,18 +450,37 @@ export async function POST(req: NextRequest) {
     );
     const resolvedBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
     const chunks = chunkArray(recipients, resolvedBatchSize);
+    const personalCodeByUserId =
+      audience === "onboarding_completed" || audience === "onboarding_completed_test"
+        ? await getActivePersonalCodeByUserId(recipients.map((r) => r.id))
+        : null;
 
     let sentTo = 0;
+    const sentUsers: Array<{ userId: string; email: string }> = [];
     const failures: Array<{ userId: string; email: string; error: string }> = [];
 
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
       for (let j = 0; j < chunk.length; j += 1) {
         const recipient = chunk[j];
+        let codeToSend = String(code.code);
+        if (audience === "onboarding_completed" || audience === "onboarding_completed_test") {
+          const personalCode = personalCodeByUserId?.get(recipient.id);
+          if (!personalCode) {
+            failures.push({
+              userId: recipient.id,
+              email: recipient.email,
+              error: "No active personal code for recipient",
+            });
+            continue;
+          }
+          codeToSend = personalCode;
+        }
+
         const subject = "Your Employee Check-In Code";
         const html = buildEmailHtml({
           firstName: recipient.first_name,
-          code: String(code.code),
+          code: codeToSend,
         });
 
         let result = await sendEmail({
@@ -388,6 +508,7 @@ export async function POST(req: NextRequest) {
           });
         } else {
           sentTo += 1;
+          sentUsers.push({ userId: recipient.id, email: recipient.email });
         }
 
         if (j < chunk.length - 1 && perEmailDelayMs > 0) {
@@ -411,6 +532,7 @@ export async function POST(req: NextRequest) {
           skippedCount,
           failedCount: failures.length,
           failures,
+          sentUsers,
           audience,
           batched: true,
           batchSize: batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE,
@@ -427,6 +549,7 @@ export async function POST(req: NextRequest) {
       skippedCount,
       failedCount: failures.length,
       failures,
+      sentUsers,
       audience,
       batched: true,
       batchSize: resolvedBatchSize,

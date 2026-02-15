@@ -958,20 +958,16 @@ export default function PaystubGenerator() {
                                         ) : sickLeave ? (
                                           <div className="grid grid-cols-2 gap-2 text-xs text-slate-600">
                                             <div>
-                                              <span className="text-slate-500">Hours Used:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)}</span>
-                                            </div>
-                                            <div>
-                                              <span className="text-slate-500">Days Used:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.total_days.toFixed(2)}</span>
+                                              <span className="text-slate-500">Used:</span>{' '}
+                                              <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)} hrs ({sickLeave.total_days.toFixed(2)} days)</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Accrued:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.accrued_days.toFixed(2)} days</span>
+                                              <span className="font-medium text-slate-900">{sickLeave.accrued_hours.toFixed(2)} hrs ({sickLeave.accrued_days.toFixed(2)} days)</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Balance:</span>{' '}
-                                              <span className="font-medium text-slate-900">{sickLeave.balance_days.toFixed(2)} days</span>
+                                              <span className="font-medium text-slate-900">{sickLeave.balance_hours.toFixed(2)} hrs ({sickLeave.balance_days.toFixed(2)} days)</span>
                                             </div>
                                           </div>
                                         ) : sickLeaveError ? (
