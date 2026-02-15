@@ -2569,7 +2569,10 @@ export default function EventDashboardPage() {
               };
 
               const totalMs = timesheetTotals[uid] || 0;
-              const hours = (totalMs / (1000 * 60 * 60)).toFixed(2);
+              const totalMinutes = Math.floor(totalMs / 60000);
+              const hh = Math.floor(totalMinutes / 60);
+              const mm = totalMinutes % 60;
+              const hours = `${hh}:${String(mm).padStart(2, "0")}`;
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
@@ -2753,8 +2756,10 @@ export default function EventDashboardPage() {
                   <div className="text-3xl font-bold text-green-900">
                     {(() => {
                       const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
-                      const totalHours = (totalMs / (1000 * 60 * 60)).toFixed(1);
-                      return totalHours;
+                      const totalMinutes = Math.floor(totalMs / 60000);
+                      const hh = Math.floor(totalMinutes / 60);
+                      const mm = totalMinutes % 60;
+                      return `${hh}:${String(mm).padStart(2, "0")}`;
                     })()}
                   </div>
                   <div className="text-xs text-green-600 mt-1">total hours</div>
