@@ -831,9 +831,9 @@ export default function CheckInKioskPage() {
                 I, <span className="font-semibold">{worker.name}</span>, hereby attest that:
               </p>
               <ul className="list-disc list-inside space-y-1 text-gray-600">
-                <li>I have accurately reported all hours worked</li>
-                <li>I have taken all required meal and rest breaks</li>
-                <li>I am clocking out at the correct time</li>
+                <li>I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.</li>
+                <li>I certify that I was provided with all meal periods and rest breaks during this workday.</li>
+                <li>I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.</li>
               </ul>
             </div>
 

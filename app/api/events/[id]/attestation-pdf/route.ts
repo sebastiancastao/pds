@@ -260,9 +260,9 @@ export async function GET(
     } else {
       drawText(`I, ${vendorName}, hereby attest that:`, { font: boldFont, size: 10 });
       y -= 2;
-      drawText(`    - I have accurately reported all hours worked`, { size: 10, x: leftMargin + 8 });
-      drawText(`    - I have taken all required meal and rest breaks`, { size: 10, x: leftMargin + 8 });
-      drawText(`    - I am clocking out at the correct time`, { size: 10, x: leftMargin + 8 });
+      drawText(`    - I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - I certify that I was provided with all meal periods and rest breaks during this workday.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.`, { size: 9, x: leftMargin + 8 });
       y -= 6;
       drawText(`Signed At: ${formatDateTime(att.signed_at)}  |  Valid: ${att.is_valid ? "Yes" : "No"}`, {
         size: 9, color: rgb(0.35, 0.35, 0.35),

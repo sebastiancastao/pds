@@ -535,15 +535,15 @@ async function createMonitorPdf(data: MonitorExportData): Promise<Uint8Array> {
       { size: 8.5, x: leftMargin + 22, fontOverride: boldFont }
     );
     drawWrapped(
-      `- I have accurately reported all hours worked`,
+      `- I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(
-      `- I have taken all required meal and rest breaks`,
+      `- I certify that I was provided with all meal periods and rest breaks during this workday.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(
-      `- I am clocking out at the correct time`,
+      `- I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(
