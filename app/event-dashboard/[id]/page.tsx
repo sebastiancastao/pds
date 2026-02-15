@@ -80,7 +80,7 @@ export default function EventDashboardPage() {
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const canEditTimesheets = userRole === "exec";
+  const canEditTimesheets = userRole === "exec" || userRole === "manager";
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -852,12 +852,12 @@ export default function EventDashboardPage() {
     setTimesheetDrafts((prev) => ({
       ...prev,
       [uid]: {
-        firstIn: isoToHHMM(span.firstIn),
-        lastOut: isoToHHMM(span.lastOut),
-        firstMealStart: isoToHHMM(span.firstMealStart),
-        lastMealEnd: isoToHHMM(span.lastMealEnd),
-        secondMealStart: isoToHHMM(span.secondMealStart),
-        secondMealEnd: isoToHHMM(span.secondMealEnd),
+        firstIn: isoToPacificHHMM(span.firstIn),
+        lastOut: isoToPacificHHMM(span.lastOut),
+        firstMealStart: isoToPacificHHMM(span.firstMealStart),
+        lastMealEnd: isoToPacificHHMM(span.lastMealEnd),
+        secondMealStart: isoToPacificHHMM(span.secondMealStart),
+        secondMealEnd: isoToPacificHHMM(span.secondMealEnd),
       },
     }));
     setEditingTimesheetUserId(uid);
@@ -2458,10 +2458,11 @@ export default function EventDashboardPage() {
             </div>
           )}
 
-          {/* TIMESHEET TAB */}
+        
          
 {/* TIMESHEET TAB */}
 {activeTab === "timesheet" && (
+
   <div className="space-y-6">
     <div className="flex items-center justify-between">
       <h2 className="text-2xl font-bold">TimeSheet</h2>
