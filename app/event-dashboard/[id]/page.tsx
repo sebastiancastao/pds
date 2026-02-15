@@ -2895,6 +2895,10 @@ export default function EventDashboardPage() {
                             }
                           }
                           const actualHours = totalMs / (1000 * 60 * 60);
+                          const totalMin = Math.floor(totalMs / 60000);
+                          const hhDisp = Math.floor(totalMin / 60);
+                          const mmDisp = totalMin % 60;
+                          const hoursHHMM = `${hhDisp}:${String(mmDisp).padStart(2, "0")}`;
                           // Hours pool for prorating excludes 'trailers' division
                           const totalHoursAll =
                             Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) /
@@ -2993,7 +2997,7 @@ export default function EventDashboardPage() {
                               {/* Hours */}
                               <td className="p-4">
                                 <div className="font-medium text-gray-900">
-                                  {actualHours > 0 ? `${actualHours.toFixed(2)}h` : "0h"}
+                                  {actualHours > 0 ? hoursHHMM : "0:00"}
                                 </div>
                               </td>
 
@@ -3003,7 +3007,7 @@ export default function EventDashboardPage() {
                                   ${extAmtOnRegRate.toFixed(2)}
                                 </div>
                                 <div className="text-[10px] text-gray-500 mt-1">
-                                  {actualHours.toFixed(2)}h × ${baseRate.toFixed(2)} × 1.5
+                                  {hoursHHMM} × ${baseRate.toFixed(2)} × 1.5
                                 </div>
                               </td>
 
@@ -3037,7 +3041,7 @@ export default function EventDashboardPage() {
                                     ${restBreak.toFixed(2)}
                                   </div>
                                   <div className="text-[10px] text-gray-500 mt-1">
-                                    {actualHours.toFixed(2)}h {actualHours > 10 ? '>' : '≤'} 10h
+                                    {hoursHHMM} {actualHours > 10 ? '>' : '≤'} 10h
                                   </div>
                                 </td>
                               )}
