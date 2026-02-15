@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -13,6 +16,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
+    const includeHours = searchParams.get('includeHours') === 'true';
+    const debug = searchParams.get('debug') === 'true';
 
     if (!startDate || !endDate) {
       return NextResponse.json({ error: 'Missing required parameters: startDate and endDate' }, { status: 400 });
@@ -37,6 +42,39 @@ export async function GET(req: NextRequest) {
       console.error('SUPABASE SELECT ERROR:', eventsError);
       return NextResponse.json({ error: eventsError.message || eventsError.code || eventsError }, { status: 500 });
     }
+    if (debug) {
+      console.log('[EVENTS-BY-DATE][debug] request', {
+        startDate,
+        endDate,
+        endDateStr,
+        includeHours,
+        eventsCount: (events || []).length,
+      });
+    }
+
+    // Fetch event payment summaries in one query (used by Paystub Generator + HR Payroll parity)
+    const eventIds = (events || []).map((e: any) => e?.id).filter(Boolean);
+    const eventPaymentsByEventId: Record<string, any> = {};
+    if (eventIds.length > 0) {
+      const { data: eventPayments, error: eventPaymentsError } = await supabaseAdmin
+        .from('event_payments')
+        .select('*')
+        .in('event_id', eventIds);
+
+      if (eventPaymentsError) {
+        console.error('Error fetching event payment summaries:', eventPaymentsError);
+      } else {
+        for (const row of eventPayments || []) {
+          if (row?.event_id) eventPaymentsByEventId[row.event_id] = row;
+        }
+        if (debug) {
+          console.log('[EVENTS-BY-DATE][debug] event_payments fetched', {
+            count: (eventPayments || []).length,
+            sample: (eventPayments || []).slice(0, 2).map((r: any) => ({ event_id: r.event_id, base_rate: r.base_rate })),
+          });
+        }
+      }
+    }
 
     // For each event, fetch assigned workers and their payment data
     const eventsWithPaymentData = await Promise.all(
@@ -52,13 +90,112 @@ export async function GET(req: NextRequest) {
           return { ...event, workers: [] };
         }
 
+        const vendorIds = Array.from(new Set((eventTeams || []).map((t: any) => t.vendor_id).filter(Boolean)));
+
+        // Payment adjustments (aka "Other" in HR Payroll tab)
+        const adjustmentByVendorId: Record<string, number> = {};
+        if (vendorIds.length > 0) {
+          try {
+            const { data: adjustments, error: adjustmentsError } = await supabaseAdmin
+              .from('payment_adjustments')
+              .select('user_id, adjustment_amount')
+              .eq('event_id', event.id)
+              .in('user_id', vendorIds);
+
+            if (adjustmentsError) {
+              console.error('Error fetching payment adjustments:', adjustmentsError);
+            } else {
+              for (const row of adjustments || []) {
+                if (!row?.user_id) continue;
+                adjustmentByVendorId[row.user_id] = Number((row as any).adjustment_amount || 0);
+              }
+              if (debug) {
+                console.log('[EVENTS-BY-DATE][debug] adjustments fetched', {
+                  eventId: event.id,
+                  count: (adjustments || []).length,
+                  sample: (adjustments || []).slice(0, 5).map((r: any) => ({ user_id: r.user_id, amount: r.adjustment_amount })),
+                });
+              }
+            }
+          } catch (error) {
+            console.error('Error loading payment adjustments:', error);
+          }
+        }
+
+        // Compute worked hours from time_entries (matches HR Dashboard payroll tab fallback logic)
+        const workedHoursByVendorId: Record<string, number> = {};
+        if (includeHours && vendorIds.length > 0) {
+          try {
+            const dateStr = (event.event_date || '').toString().split('T')[0];
+            if (dateStr) {
+              const startIso = new Date(`${dateStr}T00:00:00Z`).toISOString();
+              const endIso = new Date(`${dateStr}T23:59:59.999Z`).toISOString();
+
+              const { data: entries } = await supabaseAdmin
+                .from('time_entries')
+                .select('user_id, action, timestamp')
+                .in('user_id', vendorIds)
+                .gte('timestamp', startIso)
+                .lte('timestamp', endIso)
+                .order('timestamp', { ascending: true });
+              if (debug) {
+                console.log('[EVENTS-BY-DATE][debug] time_entries window', {
+                  eventId: event.id,
+                  dateStr,
+                  vendorCount: vendorIds.length,
+                  entriesCount: (entries || []).length,
+                });
+              }
+
+              const entriesByUserId: Record<string, any[]> = {};
+              for (const uid of vendorIds) entriesByUserId[uid] = [];
+              for (const row of entries || []) {
+                if (!entriesByUserId[row.user_id]) entriesByUserId[row.user_id] = [];
+                entriesByUserId[row.user_id].push(row);
+              }
+
+              for (const uid of vendorIds) {
+                const uEntries = entriesByUserId[uid] || [];
+                let currentIn: string | null = null;
+                let ms = 0;
+                for (const row of uEntries) {
+                  if (row.action === 'clock_in') {
+                    if (!currentIn) currentIn = row.timestamp as any;
+                  } else if (row.action === 'clock_out') {
+                    if (currentIn) {
+                      const start = new Date(currentIn).getTime();
+                      const end = new Date(row.timestamp as any).getTime();
+                      const dur = end - start;
+                      if (dur > 0) ms += dur;
+                      currentIn = null;
+                    }
+                  }
+                }
+                workedHoursByVendorId[uid] = ms / (1000 * 60 * 60);
+              }
+              if (debug) {
+                const sample = vendorIds.slice(0, 5).map((uid) => ({
+                  user_id: uid,
+                  worked_hours: workedHoursByVendorId[uid] ?? 0,
+                }));
+                console.log('[EVENTS-BY-DATE][debug] worked hours computed', {
+                  eventId: event.id,
+                  sample,
+                });
+              }
+            }
+          } catch (error) {
+            console.error('Error computing worked hours from time_entries:', error);
+          }
+        }
+
         // For each vendor, get their user info and payment data
         const workersWithPayment = await Promise.all(
           (eventTeams || []).map(async (team: any) => {
-            // Get user email
+            // Get user email + division (needed for AZ/NY commission eligibility logic)
             const { data: userData } = await supabaseAdmin
               .from('users')
-              .select('email')
+              .select('email, division')
               .eq('id', team.vendor_id)
               .single();
 
@@ -106,16 +243,20 @@ export async function GET(req: NextRequest) {
               user_id: team.vendor_id,
               user_name: fullName || 'Unknown',
               user_email: userData?.email || '',
+              division: (userData as any)?.division ?? null,
               phone: phone,
               address: address,
               status: team.status,
-              payment_data: paymentData || null
+              payment_data: paymentData || null,
+              adjustment_amount: adjustmentByVendorId[team.vendor_id] ?? 0,
+              worked_hours: includeHours ? (workedHoursByVendorId[team.vendor_id] ?? 0) : undefined
             };
           })
         );
 
         return {
           ...event,
+          event_payment: eventPaymentsByEventId[event.id] || null,
           workers: workersWithPayment
         };
       })

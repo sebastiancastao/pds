@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
-import { isWithinRegion, calculateDistanceMiles, FIXED_REGION_RADIUS_MILES } from "@/lib/geocoding";
+import { isWithinRegion, calculateDistanceMiles } from "@/lib/geocoding";
 
 export const dynamic = 'force-dynamic';
 
@@ -172,7 +172,7 @@ export async function GET(req: NextRequest) {
       console.log("[EMPLOYEES] 🌍 Applying geographic filter:", {
         region: regionData.name,
         center: `${regionData.center_lat}, ${regionData.center_lng}`,
-        radius: FIXED_REGION_RADIUS_MILES,
+        radius: regionData.radius_miles,
       });
 
       const originalCount = employees.length;
@@ -210,7 +210,7 @@ export async function GET(req: NextRequest) {
             coordinates: `${latitude}, ${longitude}`,
             distance: `${Math.round(distance * 10) / 10} miles`,
             withinRegion,
-            threshold: `${FIXED_REGION_RADIUS_MILES} miles`,
+            threshold: `${regionData.radius_miles} miles`,
           });
 
           return withinRegion;
@@ -266,7 +266,7 @@ export async function GET(req: NextRequest) {
               name: regionData.name,
               center_lat: regionData.center_lat,
               center_lng: regionData.center_lng,
-              radius_miles: FIXED_REGION_RADIUS_MILES,
+              radius_miles: regionData.radius_miles,
             }
           : null,
         geo_filtered: useGeoFilter && regionData != null,
@@ -281,4 +281,3 @@ export async function GET(req: NextRequest) {
     );
   }
 }
-

@@ -17,13 +17,6 @@ const supabaseAnon = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
-const isRateLimitError = (errorMessage: string, statusCode?: number) =>
-  statusCode === 429 || /429|too many requests|rate limit/i.test(errorMessage);
-const PAYMENTS_FROM = process.env.RESEND_FROM_PAYMENTS || process.env.RESEND_FROM || 'PDS Payments <service@pdsportal.site>';
-
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -163,12 +156,6 @@ export async function POST(req: NextRequest) {
 
     for (const [userId, data] of vendorEmailData.entries()) {
       const { email, firstName, lastName, events } = data;
-      const normalizedEmail = (email || '').toString().trim().toLowerCase();
-
-      if (!isValidEmail(normalizedEmail)) {
-        failures.push({ userId, email, error: `Invalid recipient email: ${email || 'missing'}` });
-        continue;
-      }
 
       // Calculate grand total
       const grandTotal = events.reduce((sum, e) => sum + e.finalPay, 0);
@@ -206,40 +193,16 @@ export async function POST(req: NextRequest) {
       `;
 
       try {
-        let sentThisEmail = false;
-        let lastErrorMessage = 'send failed';
-
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const { error } = await resend.emails.send({
-            from: PAYMENTS_FROM,
-            to: normalizedEmail,
-            subject,
-            html,
-          });
-
-          if (!error) {
-            sentThisEmail = true;
-            break;
-          }
-
-          const statusCode = Number((error as any)?.statusCode || (error as any)?.status || 0);
-          lastErrorMessage = (error as any)?.message || 'send failed';
-
-          if (attempt < 3 && isRateLimitError(lastErrorMessage, statusCode)) {
-            await sleep(1200 * attempt);
-            continue;
-          }
-          break;
-        }
-
-        if (!sentThisEmail) {
-          throw new Error(lastErrorMessage);
-        }
-
+        const { error } = await resend.emails.send({
+          from: 'PDS Payments <service@pdsportal.site>',
+          to: email,
+          subject,
+          html,
+        });
+        if (error) throw error;
         sent += 1;
-        await sleep(125);
       } catch (e: any) {
-        failures.push({ userId, email: normalizedEmail, error: e?.message || 'send failed' });
+        failures.push({ userId, email, error: e?.message || 'send failed' });
       }
     }
 
@@ -248,3 +211,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
   }
 }
+

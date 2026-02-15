@@ -434,17 +434,16 @@ export async function GET(
     }));
 
     const totalSickHours = sickLeaveEntries.reduce((sum, entry) => sum + (entry.duration_hours || 0), 0);
-    // Sick leave accrual: 1 hour per 30 hours worked
-    const accruedHours = Number((total_hours / 30).toFixed(2));
-    const accruedDays = Number((accruedHours / 8).toFixed(2));
+    const accruedMonths = fullMonthsBetween(employee.hire_date);
+    const accruedDays = accruedMonths;
+    const accruedHours = Number((accruedDays * 8).toFixed(2));
     const availableHours = Number(Math.max(0, accruedHours - totalSickHours).toFixed(2));
     const availableDays = Number((availableHours / 8).toFixed(2));
     const sickLeaveSummary = {
       total_hours: Number(totalSickHours.toFixed(2)),
       total_days: Number((totalSickHours / 8).toFixed(2)),
       entries: sickLeaveEntries,
-      accrued_months: 0,
-      total_hours_worked: Number(total_hours.toFixed(2)),
+      accrued_months: accruedMonths,
       accrued_hours: accruedHours,
       accrued_days: accruedDays,
       balance_hours: availableHours,
