@@ -483,6 +483,17 @@ export default function CheckInKioskPage() {
   };
 
   // ─── Helpers ───────────────────────────────────────────────────
+  const toPacificHHMM = (input: string | number | Date | null | undefined): string => {
+    if (!input) return "--";
+    const d = input instanceof Date ? input : new Date(input);
+    if (isNaN(d.getTime())) return "--";
+    return d.toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: "America/Los_Angeles",
+    });
+  };
+
   const showSuccessMessage = (msg: string) => {
     setSuccess(msg);
     if (successTimeoutRef.current) clearTimeout(successTimeoutRef.current);
@@ -501,7 +512,7 @@ export default function CheckInKioskPage() {
     if (!activeEvent && !eventIdFromUrl) return;
 
     const now = new Date();
-    const time = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = toPacificHHMM(now);
 
     setEventCheckInFlash({
       name,
@@ -827,13 +838,13 @@ export default function CheckInKioskPage() {
                 <div>
                   <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Check In</div>
                   <div className="mt-1 font-semibold text-gray-900">
-                    {worker.clockedInAt ? new Date(worker.clockedInAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "--"}
+                    {toPacificHHMM(worker.clockedInAt)}
                   </div>
                 </div>
                 <div>
                   <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Check Out</div>
                   <div className="mt-1 font-semibold text-gray-900">
-                    {new Date(attestationNowMs).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    {toPacificHHMM(attestationNowMs)}
                   </div>
                 </div>
                 <div>
@@ -984,7 +995,7 @@ export default function CheckInKioskPage() {
                   </p>
                   {worker.clockedInAt && worker.status !== "not_clocked_in" && (
                     <p className="text-blue-500 text-xs mt-1">
-                      Since {new Date(worker.clockedInAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      Since {toPacificHHMM(worker.clockedInAt)}
                     </p>
                   )}
                 </div>
@@ -1166,7 +1177,7 @@ export default function CheckInKioskPage() {
                     <div className="text-right">
                       <div className="text-[11px] text-gray-500">Ends</div>
                       <div className="text-xs font-semibold text-gray-700">
-                        {new Date(eventCheckInFlash.eventEndIso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        {toPacificHHMM(eventCheckInFlash.eventEndIso)}
                       </div>
                     </div>
                   )}
