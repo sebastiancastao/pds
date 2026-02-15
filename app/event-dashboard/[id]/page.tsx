@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -148,7 +148,7 @@ export default function EventDashboardPage() {
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
 
   // Derived: filtered team members based on search and role filter
-  const filteredTeamListMembers = (teamMembers || []).filter((member: any) => {
+  const filteredTeamListMembers = useMemo(() => (teamMembers || []).filter((member: any) => {
     const q = teamSearch.trim().toLowerCase();
     if (!q) return true;
 
@@ -168,9 +168,9 @@ export default function EventDashboardPage() {
       division.includes(q) ||
       status.includes(q)
     );
-  });
+  }), [teamMembers, teamSearch]);
 
-  const filteredTeamMembers = (teamMembers || []).filter((member: any) => {
+  const filteredTeamMembers = useMemo(() => (teamMembers || []).filter((member: any) => {
     try {
       const division = (member?.users?.division || '').toString().toLowerCase();
       const email = (member?.users?.email || '').toString().toLowerCase();
@@ -195,15 +195,16 @@ export default function EventDashboardPage() {
     } catch {
       return true;
     }
-  });
+  }), [teamMembers, staffRoleFilter, staffSearch]);
+
   const isVendorDivision = (division?: string | null) => {
     const normalized = (division || '').toString().toLowerCase();
     return normalized === 'vendor' || normalized === 'both';
   };
 
-  const vendorCount = teamMembers.reduce((count: number, member: any) => {
+  const vendorCount = useMemo(() => teamMembers.reduce((count: number, member: any) => {
     return isVendorDivision(member.users?.division) ? count + 1 : count;
-  }, 0);
+  }, 0), [teamMembers]);
 
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
@@ -259,7 +260,11 @@ export default function EventDashboardPage() {
     if (!eventId) return;
 
     if (activeTab === "team") {
-      if (!teamLoaded) loadTeam();
+      if (!teamLoaded) loadTeam(false); // Include photos for team tab
+      // Prefetch timesheet data in background while user is on team tab
+      if (!timesheetLoaded) {
+        loadTimesheetTotals();
+      }
       return;
     }
 
@@ -271,13 +276,17 @@ export default function EventDashboardPage() {
         setLoadingTimesheetTab(true);
         try {
           const promises: Promise<void>[] = [];
-          if (needsTeam) promises.push(loadTeam());
+          if (needsTeam) promises.push(loadTeam(true)); // Skip photos for timesheet tab
           if (needsTimesheet) promises.push(loadTimesheetTotals());
           await Promise.all(promises);
         } finally {
           setLoadingTimesheetTab(false);
         }
       })();
+      // Prefetch adjustments in background for HR tab
+      if (!adjustmentsLoaded) {
+        loadAdjustmentsFromPayments();
+      }
       return;
     }
 
@@ -290,7 +299,7 @@ export default function EventDashboardPage() {
         setLoadingPaymentTab(true);
         try {
           const promises: Promise<void>[] = [];
-          if (needsTeam) promises.push(loadTeam());
+          if (needsTeam) promises.push(loadTeam(true)); // Skip photos for HR tab
           if (needsTimesheet) promises.push(loadTimesheetTotals());
           if (needsAdjustments) promises.push(loadAdjustmentsFromPayments());
           await Promise.all(promises);
@@ -469,18 +478,28 @@ export default function EventDashboardPage() {
     setLoading(false);
   };
 
-  const loadTeam = async () => {
+  // Cache session token to avoid redundant getSession() calls within the same tab load
+  const sessionTokenRef = useRef<string | null>(null);
+  const getSessionToken = async (): Promise<string | null> => {
+    if (sessionTokenRef.current) return sessionTokenRef.current;
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token || null;
+    sessionTokenRef.current = token;
+    // Invalidate cache after 50 seconds (tokens are short-lived)
+    setTimeout(() => { sessionTokenRef.current = null; }, 50000);
+    return token;
+  };
+
+  const loadTeam = async (skipPhotos = false) => {
     if (!eventId) return;
     setLoadingTeam(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const url = `/api/events/${eventId}/team`;
+      const token = await getSessionToken();
+      const url = `/api/events/${eventId}/team${skipPhotos ? '?skip_photos=true' : ''}`;
       const res = await fetch(url, {
         method: "GET",
         headers: {
-          ...(session?.access_token
-            ? { Authorization: `Bearer ${session.access_token}` }
-            : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
       if (res.ok) {
@@ -500,22 +519,16 @@ export default function EventDashboardPage() {
   const loadAdjustmentsFromPayments = async () => {
     try {
       if (!eventId) return;
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/payment-adjustments?event_id=${encodeURIComponent(eventId)}`, {
         method: 'GET',
         headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
       if (!res.ok) return;
       const json = await res.json();
-      const payments = json?.paymentsByEvent?.[eventId]?.vendorPayments || [];
-      const map: Record<string, number> = {};
-      for (const vp of payments) {
-        const uid = (vp.user_id || vp.vendor_id || vp.users?.id || '').toString();
-        if (uid) map[uid] = Number(vp.adjustment_amount || 0);
-      }
-      setAdjustments(map);
+      setAdjustments(json.adjustments || {});
       setAdjustmentsLoaded(true);
     } catch (e) {
       // ignore
@@ -551,14 +564,12 @@ export default function EventDashboardPage() {
   const loadTimesheetTotals = async () => {
     if (!eventId) return;
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const token = await getSessionToken();
       const url = `/api/events/${eventId}/timesheet`;
       const res = await fetch(url, {
         method: "GET",
         headers: {
-          ...(session?.access_token
-            ? { Authorization: `Bearer ${session.access_token}` }
-            : {}),
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
 
@@ -793,16 +804,17 @@ export default function EventDashboardPage() {
     } catch {}
   }, [ticketSales, tips, manualTaxAmount]);
 
+  // Memoize shares calculation - used across sales tab, payment tab, and save logic
+  const sharesData = useMemo(() => calculateShares(), [event, ticketSales, tips, manualTaxAmount, stateTaxRate]);
+
   // Calculate commission amount - updates reactively when inputs change
-  const calculatedCommission = (() => {
-    const s = calculateShares();
-    if (!s) return 0;
-    // Use commissionPool state if set, otherwise fallback to event.commission_pool
-    const pool = commissionPool !== "" 
-      ? Number(commissionPool) 
+  const calculatedCommission = useMemo(() => {
+    if (!sharesData) return 0;
+    const pool = commissionPool !== ""
+      ? Number(commissionPool)
       : (event?.commission_pool || 0);
-    return s.netSales * pool;
-  })();
+    return sharesData.netSales * pool;
+  }, [sharesData, commissionPool, event?.commission_pool]);
 
   // Helper to format ISO -> "HH:mm" for inputs
   const isoToHHMM = (iso: string | null): string => {
@@ -962,7 +974,7 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const sharesData = calculateShares();
+      const currentShares = sharesData;
       const netSales = sharesData?.netSales || 0;
       const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
       const totalCommissionPool = netSales * poolPercent;
@@ -1076,7 +1088,7 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const sharesData = calculateShares();
+      const currentShares = sharesData;
       const netSales = sharesData?.netSales || 0;
       const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
       const totalCommissionPool = netSales * poolPercent;
@@ -1197,7 +1209,7 @@ export default function EventDashboardPage() {
     );
   }
 
-  const shares = calculateShares();
+  const shares = sharesData;
   const percentTotal =
     ((event.artist_share_percent || 0) +
     (event.venue_share_percent || 0) +
@@ -2301,7 +2313,7 @@ export default function EventDashboardPage() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
                 <button
-                  onClick={loadTeam}
+                  onClick={() => loadTeam(false)}
                   disabled={loadingTeam}
                   className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                 >
@@ -2568,7 +2580,16 @@ export default function EventDashboardPage() {
                 secondMealEnd,
               };
 
-              const totalMs = timesheetTotals[uid] || 0;
+              let totalMs = timesheetTotals[uid] || 0;
+              // Deduct meal times from total hours
+              if (span.firstMealStart && span.lastMealEnd) {
+                const meal1Ms = new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
+                if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
+              }
+              if (span.secondMealStart && span.secondMealEnd) {
+                const meal2Ms = new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
+                if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
+              }
               const totalMinutes = Math.floor(totalMs / 60000);
               const hh = Math.floor(totalMinutes / 60);
               const mm = totalMinutes % 60;
@@ -2755,7 +2776,20 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-green-900">
                     {(() => {
-                      const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
+                      let totalMs = 0;
+                      for (const uid of Object.keys(timesheetTotals)) {
+                        let ms = timesheetTotals[uid] || 0;
+                        const sp = timesheetSpans[uid];
+                        if (sp?.firstMealStart && sp?.lastMealEnd) {
+                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
+                        }
+                        if (sp?.secondMealStart && sp?.secondMealEnd) {
+                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
+                        }
+                        totalMs += ms;
+                      }
                       const totalMinutes = Math.floor(totalMs / 60000);
                       const hh = Math.floor(totalMinutes / 60);
                       const mm = totalMinutes % 60;
@@ -2774,7 +2808,20 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-purple-900">
                     ${(() => {
-                      const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
+                      let totalMs = 0;
+                      for (const uid of Object.keys(timesheetTotals)) {
+                        let ms = timesheetTotals[uid] || 0;
+                        const sp = timesheetSpans[uid];
+                        if (sp?.firstMealStart && sp?.lastMealEnd) {
+                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
+                        }
+                        if (sp?.secondMealStart && sp?.secondMealEnd) {
+                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
+                        }
+                        totalMs += ms;
+                      }
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state
@@ -2878,21 +2925,22 @@ export default function EventDashboardPage() {
                           // Worked hours for member & all
                           // Prefer server-computed totals; fall back to span-based calc if missing
                           let totalMs = timesheetTotals[uid] || 0;
+                          const memberSpan = timesheetSpans[uid] || {} as any;
                           if (!totalMs || totalMs <= 0) {
-                            const span = timesheetSpans[uid] || {} as any;
-                            if (span.firstIn && span.lastOut) {
+                            if (memberSpan.firstIn && memberSpan.lastOut) {
                               try {
-                                let ms = new Date(span.lastOut).getTime() - new Date(span.firstIn).getTime();
-                                let mealMs = 0;
-                                if (span.firstMealStart && span.lastMealEnd) {
-                                  mealMs += new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
-                                }
-                                if (span.secondMealStart && span.secondMealEnd) {
-                                  mealMs += new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
-                                }
-                                if (ms > 0) totalMs = Math.max(ms - mealMs, 0);
+                                totalMs = Math.max(new Date(memberSpan.lastOut).getTime() - new Date(memberSpan.firstIn).getTime(), 0);
                               } catch {}
                             }
+                          }
+                          // Deduct meal times to match timesheet tab
+                          if (memberSpan.firstMealStart && memberSpan.lastMealEnd) {
+                            const meal1Ms = new Date(memberSpan.lastMealEnd).getTime() - new Date(memberSpan.firstMealStart).getTime();
+                            if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
+                          }
+                          if (memberSpan.secondMealStart && memberSpan.secondMealEnd) {
+                            const meal2Ms = new Date(memberSpan.secondMealEnd).getTime() - new Date(memberSpan.secondMealStart).getTime();
+                            if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
                           }
                           const actualHours = totalMs / (1000 * 60 * 60);
                           const totalMin = Math.floor(totalMs / 60000);
@@ -2900,15 +2948,28 @@ export default function EventDashboardPage() {
                           const mmDisp = totalMin % 60;
                           const hoursHHMM = `${hhDisp}:${String(mmDisp).padStart(2, "0")}`;
                           // Hours pool for prorating excludes 'trailers' division
+                          // Helper: get meal-deducted ms for a given user
+                          const getMealDeductedMs = (memberId: string) => {
+                            let ms = timesheetTotals[memberId] || 0;
+                            const sp = timesheetSpans[memberId];
+                            if (sp?.firstMealStart && sp?.lastMealEnd) {
+                              const m1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+                              if (m1 > 0) ms = Math.max(ms - m1, 0);
+                            }
+                            if (sp?.secondMealStart && sp?.secondMealEnd) {
+                              const m2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+                              if (m2 > 0) ms = Math.max(ms - m2, 0);
+                            }
+                            return ms;
+                          };
                           const totalHoursAll =
-                            Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0) /
+                            Object.keys(timesheetTotals).reduce((sum, k) => sum + getMealDeductedMs(k), 0) /
                             (1000 * 60 * 60);
                           const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
                             const mDivision = m.users?.division;
                             if (mDivision === 'trailers') return sum;
                             const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
-                            const mMs = timesheetTotals[mUid] || 0;
-                            return sum + (mMs / (1000 * 60 * 60));
+                            return sum + (getMealDeductedMs(mUid) / (1000 * 60 * 60));
                           }, 0);
 
                           // Use rates from database based on venue state
@@ -2923,7 +2984,7 @@ export default function EventDashboardPage() {
                           const extAmtOnRegRate = actualHours * baseRate * 1.5;
 
                           // Commission pool (Net Sales × pool fraction)
-                          const sharesData = calculateShares();
+                          const currentShares = sharesData;
                           const netSales = sharesData?.netSales || 0;
 
                           // Prefer current input value; fallback to event.commission_pool
@@ -3171,7 +3232,20 @@ export default function EventDashboardPage() {
                   <div className="flex justify-between items-center pb-3 border-b">
                     <span className="text-gray-600">Base Pay</span>
                     <span className="font-semibold text-gray-900"> ${(() => {
-                      const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
+                      let totalMs = 0;
+                      for (const uid of Object.keys(timesheetTotals)) {
+                        let ms = timesheetTotals[uid] || 0;
+                        const sp = timesheetSpans[uid];
+                        if (sp?.firstMealStart && sp?.lastMealEnd) {
+                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
+                        }
+                        if (sp?.secondMealStart && sp?.secondMealEnd) {
+                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
+                        }
+                        totalMs += ms;
+                      }
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state
