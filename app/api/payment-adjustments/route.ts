@@ -27,6 +27,36 @@ async function getAuthedUser(req: NextRequest) {
   return null;
 }
 
+export async function GET(req: NextRequest) {
+  try {
+    const user = await getAuthedUser(req);
+    if (!user?.id) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+    const { searchParams } = new URL(req.url);
+    const eventId = searchParams.get('event_id');
+    if (!eventId) {
+      return NextResponse.json({ error: 'event_id is required' }, { status: 400 });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('payment_adjustments')
+      .select('user_id, adjustment_amount')
+      .eq('event_id', eventId);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+    // Return as a map of user_id -> adjustment_amount for easy consumption
+    const adjustmentsMap: Record<string, number> = {};
+    for (const row of data || []) {
+      adjustmentsMap[row.user_id] = Number(row.adjustment_amount || 0);
+    }
+
+    return NextResponse.json({ success: true, adjustments: adjustmentsMap });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const user = await getAuthedUser(req);

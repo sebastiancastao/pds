@@ -46,89 +46,58 @@ export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
 ) {
-  console.log('🚀 Timesheet API called', { eventId: params.id, url: req.url });
-
   try {
     const user = await getAuthedUser(req);
-    console.log('👤 Authenticated user:', { userId: user?.id, userEmail: user?.email });
-
     if (!user?.id) {
-      console.log('❌ Authentication failed');
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
     const eventId = params.id;
     if (!eventId) {
-      console.log('❌ No event ID provided');
       return NextResponse.json({ error: 'Event ID is required' }, { status: 400 });
     }
 
-    // Ensure requester owns the event
-    console.log('🔍 Querying event:', { eventId, userId: user.id });
-    const { data: event, error: evtErr } = await supabaseAdmin
-      .from('events')
-      .select('id, event_date, start_time, end_time, ends_next_day, created_by')
-      .eq('id', eventId)
-      .maybeSingle();
+    // Fetch event and team in parallel to reduce latency
+    const [eventResult, teamResult] = await Promise.all([
+      supabaseAdmin
+        .from('events')
+        .select('id, event_date, start_time, end_time, ends_next_day, created_by')
+        .eq('id', eventId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('event_teams')
+        .select('vendor_id')
+        .eq('event_id', eventId),
+    ]);
 
-    console.log('📋 Event query result:', { event, error: evtErr });
-
-    if (evtErr) {
-      console.error('❌ Event query error:', evtErr);
-      return NextResponse.json({ error: evtErr.message }, { status: 500 });
+    if (eventResult.error) {
+      return NextResponse.json({ error: eventResult.error.message }, { status: 500 });
     }
+    const event = eventResult.data;
     if (!event) {
-      console.log('❌ Event not found or not owned by user');
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    console.log('✅ Event found:', event);
-
-    // Get team members (user ids) - only confirmed members
-    console.log('🔍 Querying event_teams for event:', eventId);
-    const { data: team, error: teamErr } = await supabaseAdmin
-      .from('event_teams')
-      .select('vendor_id')
-      .eq('event_id', eventId)
-      
-
-    console.log('👥 Team query result:', { team, error: teamErr, teamCount: team?.length || 0 });
-
-    if (teamErr) {
-      console.error('❌ Team query error:', teamErr);
-      return NextResponse.json({ error: teamErr.message }, { status: 500 });
+    if (teamResult.error) {
+      return NextResponse.json({ error: teamResult.error.message }, { status: 500 });
     }
 
-    // Build event window - USE FULL DAY to catch all clock ins/outs
-    // Workers may clock in before/after scheduled event times
+    // Build event window
     let date = event.event_date;
-
-    const userIds = (team || []).map(t => t.vendor_id).filter(Boolean);
-    console.log('👥 Extracted vendor IDs (user IDs):', userIds);
+    const userIds = (teamResult.data || []).map(t => t.vendor_id).filter(Boolean);
 
     if (userIds.length === 0) {
-      console.log('⚠️ No team members found, returning empty data');
       return NextResponse.json({
         totals: {},
         spans: {},
-        entries: {},
         summary: { totalWorkers: 0, totalEntriesFound: 0, dateQueried: date }
       });
     }
 
     // Normalize date to YYYY-MM-DD format
     if (date && typeof date === 'string') {
-      // If it's a full timestamp, extract just the date part
       date = date.split('T')[0];
     }
-
-    console.log('📅 Event details:', {
-      event_date: event.event_date,
-      normalized_date: date,
-      start_time: event.start_time,
-      end_time: event.end_time,
-      ends_next_day: (event as any).ends_next_day
-    });
 
     const startSec = timeToSeconds((event as any).start_time);
     const endSec = timeToSeconds((event as any).end_time);
@@ -136,8 +105,6 @@ export async function GET(
       Boolean((event as any).ends_next_day) ||
       (startSec !== null && endSec !== null && endSec <= startSec);
 
-    // Query for ENTIRE DAY (and include the next day if the event crosses midnight).
-    // This is only used for the timestamp-range fallbacks when entries are missing event_id.
     const startDate = new Date(`${date}T00:00:00Z`);
     const endDate = new Date(`${date}T23:59:59.999Z`);
     if (endsNextDay) {
@@ -146,9 +113,7 @@ export async function GET(
     const startIso = startDate.toISOString();
     const endIso = endDate.toISOString();
 
-    console.log('⏰ Query window (FULL DAY):', { startIso, endIso });
-
-    // Fetch all time entries for these users for this event (prefer event_id over date window)
+    // Fetch time entries by event_id (primary strategy)
     let { data: entries, error: teErr } = await supabaseAdmin
       .from('time_entries')
       .select('id, user_id, action, timestamp, started_at, event_id')
@@ -157,8 +122,7 @@ export async function GET(
       .order('timestamp', { ascending: true });
     if (teErr) return NextResponse.json({ error: teErr.message }, { status: 500 });
 
-    // If the event crosses midnight, also pull any untagged entries in the extended window and merge them in.
-    // This fixes cases where clock_out happens after midnight but the entry wasn't written with event_id.
+    // If the event crosses midnight, also pull untagged entries in the extended window
     if (endsNextDay) {
       const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
@@ -172,7 +136,6 @@ export async function GET(
       const merged: any[] = [];
       const seen = new Set<string>();
       for (const row of [...(entries || []), ...(byTimestamp || [])]) {
-        // Drop entries that are explicitly tied to a different event.
         if (row?.event_id && row.event_id !== eventId) continue;
         const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp}`;
         if (seen.has(key)) continue;
@@ -182,20 +145,8 @@ export async function GET(
       entries = merged;
     }
 
-    console.log('🔍 DEBUG - Timesheet query:', {
-      eventId,
-      date,
-      startIso,
-      endIso,
-      userIds,
-      entriesCount: entries?.length || 0,
-      entries: entries || [],
-      queryError: teErr
-    });
-
-        // Fallback 1: try date window on timestamp
+    // Fallback 1: try date window on timestamp
     if (!entries || entries.length === 0) {
-      console.log('[TIMESHEET] No entries with event_id, trying timestamp range fallback');
       const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
         .select('id, user_id, action, timestamp, started_at, event_id')
@@ -204,21 +155,10 @@ export async function GET(
         .lte('timestamp', endIso)
         .order('timestamp', { ascending: true });
 
-      console.log('[TIMESHEET] Timestamp range query:', {
-        startIso,
-        endIso,
-        userIds,
-        foundCount: byTimestamp?.length || 0,
-        error: tsErr,
-        sample: byTimestamp?.slice(0, 3)
-      });
-
       if (byTimestamp && byTimestamp.length > 0) {
         entries = byTimestamp;
-        console.log('[TIMESHEET] ✅ Using timestamp range fallback');
       } else {
         // Fallback 2: try date window on started_at
-        console.log('[TIMESHEET] Trying started_at range fallback');
         const { data: byStarted } = await supabaseAdmin
           .from('time_entries')
           .select('id, user_id, action, timestamp, started_at, event_id')
@@ -226,34 +166,21 @@ export async function GET(
           .gte('started_at', startIso)
           .lte('started_at', endIso)
           .order('started_at', { ascending: true });
-        console.log('[TIMESHEET] Started_at range query found:', byStarted?.length || 0);
         if (byStarted && byStarted.length > 0) {
           entries = byStarted;
-          console.log('[TIMESHEET] ✅ Using started_at range fallback');
         }
       }
-    }if (!entries || entries.length === 0) {
-      console.log('⚠️ No time entries found for this event');
-      console.log('💡 TIP: Check that time_entries exist for:');
-      console.log(`   - User IDs: ${userIds.join(', ')}`);
-      console.log(`   - Date range: ${startIso} to ${endIso}`);
-      console.log(`   - Event date: ${date}`);
     }
 
     // Group entries by user for easier processing
     const entriesByUser: Record<string, any[]> = {};
     for (const uid of userIds) {
-      entriesByUser[uid] = (entries || []).filter(e => e.user_id === uid);
+      entriesByUser[uid] = [];
     }
-
-    // Log all entries for each user for debugging
-    console.log('[TIMESHEET] All entries by user:');
-    for (const uid of userIds) {
-      const userEntries = entriesByUser[uid] || [];
-      console.log(`  User ${uid}: ${userEntries.length} entries`);
-      userEntries.forEach((entry, idx) => {
-        console.log(`    ${idx + 1}. ${entry.action} at ${entry.timestamp}`);
-      });
+    for (const e of entries || []) {
+      if (entriesByUser[e.user_id]) {
+        entriesByUser[e.user_id].push(e);
+      }
     }
 
     // Calculate totals and spans per user
@@ -266,11 +193,9 @@ export async function GET(
       secondMealStart: string | null;
       secondMealEnd: string | null;
     }> = {};
-    const allEntries: Record<string, any[]> = {};
 
     for (const uid of userIds) {
       const userEntries = entriesByUser[uid] || [];
-      allEntries[uid] = userEntries;
 
       totals[uid] = 0;
       spans[uid] = {
@@ -310,7 +235,6 @@ export async function GET(
       }
 
       // Calculate total worked time by pairing clock_in with clock_out
-      // Handle imperfect data gracefully
       let currentClockIn: string | null = null;
       const workIntervals: Array<{ start: Date; end: Date }> = [];
 
@@ -318,8 +242,6 @@ export async function GET(
         if (entry.action === 'clock_in') {
           if (!currentClockIn) {
             currentClockIn = entry.timestamp;
-          } else {
-            console.warn(`⚠️ User ${uid}: Found clock_in without matching clock_out`);
           }
         } else if (entry.action === 'clock_out') {
           if (currentClockIn) {
@@ -331,27 +253,15 @@ export async function GET(
               workIntervals.push({ start: new Date(currentClockIn), end: new Date(entry.timestamp) });
             }
             currentClockIn = null;
-          } else {
-            console.warn(`⚠️ User ${uid}: Found clock_out without matching clock_in`);
           }
         }
       }
 
-      // If still clocked in by end of day, don't count it
-      if (currentClockIn) {
-        console.warn(`⚠️ User ${uid}: Still clocked in at end of day, not counting incomplete shift`);
-      }
-
       // AUTO-DETECT MEAL BREAKS: Analyze gaps between work intervals
-      // If there are no explicit meal_start/meal_end, infer from gaps
       const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
       if (!hasExplicitMeals && workIntervals.length >= 2) {
-        console.log(`[MEAL-DETECT] User ${uid}: Analyzing ${workIntervals.length} work intervals for gaps`);
-
-        // Sort intervals by start time
         workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
-        // Find gaps between consecutive work intervals
         const gaps: Array<{ start: Date; end: Date }> = [];
         for (let i = 0; i < workIntervals.length - 1; i++) {
           const gapStart = workIntervals[i].end;
@@ -359,69 +269,33 @@ export async function GET(
           const gapMs = gapEnd.getTime() - gapStart.getTime();
 
           if (gapMs > 0) {
-            console.log(`[MEAL-DETECT] User ${uid}: Found gap ${i + 1}: ${gapStart.toISOString()} to ${gapEnd.toISOString()} (${Math.round(gapMs / 1000 / 60)} minutes)`);
             gaps.push({ start: gapStart, end: gapEnd });
           }
-
-          // Limit to 2 meal breaks
           if (gaps.length >= 2) break;
         }
 
-        // Apply detected gaps as meal breaks
         if (gaps[0]) {
           spans[uid].firstMealStart = gaps[0].start.toISOString();
           spans[uid].lastMealEnd = gaps[0].end.toISOString();
-          console.log(`[MEAL-DETECT] User ${uid}: Set first meal break: ${spans[uid].firstMealStart} to ${spans[uid].lastMealEnd}`);
         }
         if (gaps[1]) {
           spans[uid].secondMealStart = gaps[1].start.toISOString();
           spans[uid].secondMealEnd = gaps[1].end.toISOString();
-          console.log(`[MEAL-DETECT] User ${uid}: Set second meal break: ${spans[uid].secondMealStart} to ${spans[uid].secondMealEnd}`);
         }
-
-        if (gaps.length > 0) {
-          console.log(`[MEAL-DETECT] User ${uid}: Detected ${gaps.length} meal break(s) from gaps`);
-        } else {
-          console.log(`[MEAL-DETECT] User ${uid}: No gaps found (continuous work or single interval)`);
-        }
-      } else if (hasExplicitMeals) {
-        console.log(`[MEAL-DETECT] User ${uid}: Using explicit meal_start/meal_end entries`);
-      } else {
-        console.log(`[MEAL-DETECT] User ${uid}: Not enough work intervals (${workIntervals.length}) to detect meal breaks`);
       }
     }
 
-    const responseData = {
+    return NextResponse.json({
       totals,
       spans,
-      entries: allEntries, // Include raw entries for each user
       summary: {
         totalWorkers: userIds.length,
         totalEntriesFound: entries?.length || 0,
         dateQueried: date
       }
-    };
-
-    console.log('✅ Returning timesheet data:', {
-      totals,
-      spans,
-      totalsCount: Object.keys(totals).length,
-      spansCount: Object.keys(spans).length,
-      entriesCount: entries?.length || 0,
-      summary: responseData.summary
     });
-
-    return NextResponse.json(responseData);
   } catch (err: any) {
-    console.error('❌ Error in timesheet endpoint:', err);
+    console.error('Error in timesheet endpoint:', err);
     return NextResponse.json({ error: err.message || 'Unhandled error' }, { status: 500 });
   }
 }
-
-
-
-
-
-
-
-
