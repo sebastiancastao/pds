@@ -239,34 +239,25 @@ export default function EmployeeProfilePage() {
     const loadI9Documents = async () => {
       if (!employee?.id) return;
 
-      console.log("🔵 [DEBUG] Fetching I-9 documents for user:", employee.id);
       setI9Loading(true);
 
       try {
-        // Query i9_documents table directly - returns single record per user
-        const { data, error } = await supabase
-          .from('i9_documents')
-          .select('*')
-          .eq('user_id', employee.id)
-          .maybeSingle();
+        const { data: { session } } = await supabase.auth.getSession();
 
-        if (error) {
-          console.error("🔴 [DEBUG] Error querying i9_documents:", error);
-          setI9Documents(null);
-          return;
-        }
+        const response = await fetch(`/api/i9-documents/${employee.id}`, {
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
 
-        console.log("🟢 [DEBUG] I-9 documents loaded:", data);
-
-        // Set the documents directly (already in correct format)
-        if (data) {
-          setI9Documents(data);
+        if (response.ok) {
+          const result = await response.json();
+          setI9Documents(result.document || null);
         } else {
-          console.log("⚠️ [DEBUG] No I-9 documents found for user");
           setI9Documents(null);
         }
       } catch (error) {
-        console.error("🔴 [DEBUG] Error loading I-9 documents:", error);
+        console.error("Error loading I-9 documents:", error);
         setI9Documents(null);
       } finally {
         setI9Loading(false);
@@ -287,7 +278,7 @@ export default function EmployeeProfilePage() {
       try {
         const { data: { session } } = await supabase.auth.getSession();
 
-        const response = await fetch(`/api/pdf-form-progress/user/${employee.id}`, {
+        const response = await fetch(`/api/pdf-form-progress/user-list/${employee.id}`, {
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
