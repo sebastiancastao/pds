@@ -26,14 +26,15 @@ type ActiveKiosk = {
   lastSeen: string;
 };
 
-type CheckedInUser = {
+type EventWorkerDetail = {
   userId: string;
   name: string;
-  eventId: string | null;
-  eventName: string | null;
-  venue: string | null;
-  clockedInAt: string;
   division: string;
+  clockInAt: string | null;
+  clockOutAt: string | null;
+  totalMealMs: number;
+  totalHoursMs: number;
+  status: "clocked_in" | "clocked_out" | "on_meal";
 };
 
 type ActiveEvent = {
@@ -45,8 +46,7 @@ type ActiveEvent = {
   date: string;
   startTime: string;
   endTime: string;
-  checkedInCount: number;
-  checkedInUsers: Array<{ userId: string; name: string; clockedInAt: string; division: string }>;
+  workers: EventWorkerDetail[];
 };
 
 type AttestationWithSignature = {
@@ -65,7 +65,7 @@ type MonitorExportData = {
   timestamp: string;
   activeKiosks: ActiveKiosk[];
   activeEvents: ActiveEvent[];
-  checkedInUsers: CheckedInUser[];
+  unassignedWorkers: EventWorkerDetail[];
   attestations: AttestationWithSignature[];
   summary: {
     totalActiveKiosks: number;
@@ -219,7 +219,7 @@ async function getMonitorDataWithSignatures(): Promise<MonitorExportData> {
     supabaseAdmin
       .from("time_entries")
       .select("user_id, action, timestamp, event_id, division")
-      .in("action", ["clock_in", "clock_out"] as any)
+      .in("action", ["clock_in", "clock_out", "meal_start", "meal_end"] as any)
       .gte("timestamp", `${yesterday}T00:00:00`)
       .order("timestamp", { ascending: true })
       .limit(5000),
@@ -285,58 +285,108 @@ async function getMonitorDataWithSignatures(): Promise<MonitorExportData> {
       date: evt.event_date,
       startTime: evt.start_time,
       endTime: evt.end_time,
-      checkedInCount: 0,
-      checkedInUsers: [],
+      workers: [],
     });
   }
 
-  const userClockStatus = new Map<
-    string,
-    {
-      lastAction: string;
-      lastTimestamp: string;
-      eventId: string | null;
-      division: string;
-    }
-  >();
+  // Group time entries by (userId, eventId) to build full shift details
+  const shiftKey = (userId: string, eventId: string | null) => `${userId}::${eventId || "__none__"}`;
+  const shiftEntries = new Map<string, { userId: string; eventId: string | null; division: string; entries: Array<{ action: string; timestamp: string }> }>();
 
   for (const te of timeEntriesResult.data || []) {
     const uid = String(te.user_id || "");
     if (!uid) continue;
-    userClockStatus.set(uid, {
-      lastAction: te.action,
-      lastTimestamp: te.timestamp,
-      eventId: te.event_id || null,
-      division: te.division || "",
-    });
+    const evtId = te.event_id || null;
+    const key = shiftKey(uid, evtId);
+    if (!shiftEntries.has(key)) {
+      shiftEntries.set(key, { userId: uid, eventId: evtId, division: te.division || "", entries: [] });
+    }
+    shiftEntries.get(key)!.entries.push({ action: te.action, timestamp: te.timestamp });
   }
 
-  const checkedInUsers: CheckedInUser[] = [];
-  for (const [userId, status] of userClockStatus) {
-    if (status.lastAction !== "clock_in") continue;
+  // Compute per-worker details from their time entries
+  const computeWorkerDetail = (
+    userId: string,
+    division: string,
+    entries: Array<{ action: string; timestamp: string }>
+  ): EventWorkerDetail => {
+    let clockInAt: string | null = null;
+    let clockOutAt: string | null = null;
+    let lastAction = "";
+    let mealMs = 0;
+    let openMealStartMs: number | null = null;
 
-    const eventData = status.eventId ? eventsMap.get(status.eventId) : null;
-    checkedInUsers.push({
+    for (const entry of entries) {
+      const tsMs = Date.parse(entry.timestamp);
+      if (Number.isNaN(tsMs)) continue;
+
+      if (entry.action === "clock_in") {
+        if (!clockInAt) clockInAt = entry.timestamp;
+        lastAction = "clock_in";
+      } else if (entry.action === "clock_out") {
+        clockOutAt = entry.timestamp;
+        // Close any open meal
+        if (openMealStartMs !== null) {
+          mealMs += Math.max(0, tsMs - openMealStartMs);
+          openMealStartMs = null;
+        }
+        lastAction = "clock_out";
+      } else if (entry.action === "meal_start") {
+        if (openMealStartMs === null) openMealStartMs = tsMs;
+        lastAction = "meal_start";
+      } else if (entry.action === "meal_end") {
+        if (openMealStartMs !== null) {
+          mealMs += Math.max(0, tsMs - openMealStartMs);
+          openMealStartMs = null;
+        }
+        lastAction = "meal_end";
+      }
+    }
+
+    // If currently on meal, count up to now
+    if (openMealStartMs !== null) {
+      mealMs += Math.max(0, now.getTime() - openMealStartMs);
+    }
+
+    let totalHoursMs = 0;
+    if (clockInAt) {
+      const endMs = clockOutAt ? Date.parse(clockOutAt) : now.getTime();
+      const startMs = Date.parse(clockInAt);
+      if (!Number.isNaN(startMs) && !Number.isNaN(endMs)) {
+        totalHoursMs = Math.max(0, endMs - startMs - mealMs);
+      }
+    }
+
+    let status: EventWorkerDetail["status"] = "clocked_out";
+    if (lastAction === "clock_in" || lastAction === "meal_end") status = "clocked_in";
+    else if (lastAction === "meal_start") status = "on_meal";
+
+    return {
       userId,
       name: getName(userId),
-      eventId: status.eventId,
-      eventName: eventData?.name || null,
-      venue: eventData?.venue || null,
-      clockedInAt: status.lastTimestamp,
-      division: status.division,
-    });
+      division,
+      clockInAt,
+      clockOutAt,
+      totalMealMs: Math.round(mealMs),
+      totalHoursMs: Math.round(totalHoursMs),
+      status,
+    };
+  };
 
-    if (status.eventId && eventsMap.has(status.eventId)) {
-      const eventEntry = eventsMap.get(status.eventId)!;
-      eventEntry.checkedInCount += 1;
-      eventEntry.checkedInUsers.push({
-        userId,
-        name: getName(userId),
-        clockedInAt: status.lastTimestamp,
-        division: status.division,
-      });
+  // Assign workers to events
+  const unassignedWorkers: EventWorkerDetail[] = [];
+  let totalCheckedIn = 0;
+
+  shiftEntries.forEach((shift) => {
+    const detail = computeWorkerDetail(shift.userId, shift.division, shift.entries);
+    if (detail.status !== "clocked_out") totalCheckedIn++;
+
+    if (shift.eventId && eventsMap.has(shift.eventId)) {
+      eventsMap.get(shift.eventId)!.workers.push(detail);
+    } else {
+      unassignedWorkers.push(detail);
     }
-  }
+  });
 
   const attestations = (attestationsResult.data || []).map((sig: any): AttestationWithSignature => ({
     id: sig.id,
@@ -354,11 +404,11 @@ async function getMonitorDataWithSignatures(): Promise<MonitorExportData> {
     timestamp: now.toISOString(),
     activeKiosks: Array.from(kiosksByIp.values()),
     activeEvents: Array.from(eventsMap.values()),
-    checkedInUsers,
+    unassignedWorkers,
     attestations,
     summary: {
       totalActiveKiosks: kiosksByIp.size,
-      totalCheckedIn: checkedInUsers.length,
+      totalCheckedIn,
       totalAttestationsToday: attestations.length,
       totalActiveEvents: eventsMap.size,
     },
@@ -461,72 +511,51 @@ async function createMonitorPdf(data: MonitorExportData): Promise<Uint8Array> {
   }
   y -= 6;
 
-  drawSectionTitle(`Event Check-Ins (${data.activeEvents.length})`);
-  if (data.activeEvents.length === 0) {
-    drawBullet("No active events.");
-  } else {
-    data.activeEvents.forEach((eventData, index) => {
-      drawWrapped(`${index + 1}. ${eventData.name || "Unnamed Event"} (${eventData.checkedInCount} checked in)`, {
-        fontOverride: boldFont,
-      });
-      drawWrapped(
-        `Venue: ${eventData.venue || "--"} | Location: ${eventData.city || "--"}${
-          eventData.state ? `, ${eventData.state}` : ""
-        } | Date: ${eventData.date}`,
-        { size: 9, x: leftMargin + 14 }
-      );
-      if (eventData.checkedInUsers.length === 0) {
-        drawWrapped("No workers currently checked in for this event.", { size: 9, x: leftMargin + 14 });
-      } else {
-        eventData.checkedInUsers.forEach((worker, workerIndex) => {
-          drawWrapped(
-            `${workerIndex + 1}. ${worker.name} | Clocked in: ${formatTime(worker.clockedInAt)} | Division: ${
-              worker.division || "--"
-            }`,
-            { size: 9, x: leftMargin + 22 }
-          );
-        });
-      }
-      y -= 4;
-    });
+  // ─── Helper to render a worker detail row ───
+  const formatDurationFromMs = (ms: number): string => {
+    if (!Number.isFinite(ms) || ms < 0) return "--";
+    const totalMinutes = Math.floor(ms / 60_000);
+    const h = Math.floor(totalMinutes / 60);
+    const m = totalMinutes % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  };
+
+  // Build attestation lookup by userId (most recent per user)
+  const attestationByUserId = new Map<string, AttestationWithSignature>();
+  for (const att of data.attestations) {
+    if (!attestationByUserId.has(att.userId)) {
+      attestationByUserId.set(att.userId, att);
+    }
   }
-  y -= 6;
 
-  drawSectionTitle(`Currently Checked In (${data.checkedInUsers.length})`);
-  if (data.checkedInUsers.length === 0) {
-    drawBullet("No users currently checked in.");
-  } else {
-    data.checkedInUsers.forEach((worker, index) => {
-      drawWrapped(
-        `${index + 1}. ${worker.name} | ${worker.eventName || "No event linked"} | Clocked in: ${formatDateTime(
-          worker.clockedInAt
-        )} | Division: ${worker.division || "--"}`,
-        { size: 9 }
-      );
-    });
-  }
-  y -= 6;
+  const drawAttestationBlock = async (att: AttestationWithSignature) => {
+    // Attestation verbiage
+    drawWrapped(
+      `I, ${att.name}, hereby attest that:`,
+      { size: 8.5, x: leftMargin + 22, fontOverride: boldFont }
+    );
+    drawWrapped(
+      `- I have accurately reported all hours worked`,
+      { size: 8, x: leftMargin + 30 }
+    );
+    drawWrapped(
+      `- I have taken all required meal and rest breaks`,
+      { size: 8, x: leftMargin + 30 }
+    );
+    drawWrapped(
+      `- I am clocking out at the correct time`,
+      { size: 8, x: leftMargin + 30 }
+    );
+    drawWrapped(
+      `Signed At: ${formatDateTime(att.signedAt)}  |  Valid: ${att.isValid ? "Yes" : "No"}`,
+      { size: 8, x: leftMargin + 22, color: { r: 0.35, g: 0.35, b: 0.35 } }
+    );
 
-  drawSectionTitle(`Clock-Out Attestations (${data.attestations.length})`);
-  if (data.attestations.length === 0) {
-    drawBullet("No attestations in the last 24 hours.");
-  } else {
-    for (const [index, att] of data.attestations.entries()) {
-      drawWrapped(`${index + 1}. ${att.name}`, { fontOverride: boldFont, size: 10.5 });
-      drawWrapped(
-        `Signed At: ${formatDateTime(att.signedAt)} | Valid: ${
-          att.isValid ? "Yes" : "No"
-        } | IP: ${att.ipAddress} | Form ID: ${att.formId}`,
-        { size: 9, x: leftMargin + 12 }
-      );
-
-      const signatureRaw = (att.signatureData || "").trim();
-      if (!signatureRaw) {
-        drawWrapped("Signature: (missing)", { size: 9, x: leftMargin + 12, color: { r: 0.55, g: 0.1, b: 0.1 } });
-        y -= 4;
-        continue;
-      }
-
+    // Signature image
+    const signatureRaw = (att.signatureData || "").trim();
+    if (!signatureRaw) {
+      drawWrapped("Signature: (missing)", { size: 8, x: leftMargin + 22, color: { r: 0.55, g: 0.1, b: 0.1 } });
+    } else {
       const parsedImage = parseSignatureDataUrl(signatureRaw);
       if (parsedImage) {
         try {
@@ -539,47 +568,107 @@ async function createMonitorPdf(data: MonitorExportData): Promise<Uint8Array> {
             imageCache.set(signatureRaw, embedded);
           }
 
-          const maxSignatureWidth = Math.min(240, contentWidth - 24);
-          const maxSignatureHeight = 62;
+          const maxSignatureWidth = Math.min(200, contentWidth - 44);
+          const maxSignatureHeight = 50;
           const widthRatio = maxSignatureWidth / embedded.width;
           const heightRatio = maxSignatureHeight / embedded.height;
           const scale = Math.min(widthRatio, heightRatio, 1);
           const drawWidth = embedded.width * scale;
           const drawHeight = embedded.height * scale;
 
-          ensureSpace(drawHeight + 16);
+          ensureSpace(drawHeight + 14);
           page.drawText("Signature:", {
-            x: leftMargin + 12,
+            x: leftMargin + 22,
             y,
-            size: 9,
+            size: 8,
             font,
             color: rgb(0.35, 0.35, 0.35),
           });
-          y -= 10;
+          y -= 8;
           page.drawImage(embedded, {
-            x: leftMargin + 12,
+            x: leftMargin + 22,
             y: y - drawHeight,
             width: drawWidth,
             height: drawHeight,
           });
-          y -= drawHeight + 8;
+          y -= drawHeight + 6;
         } catch (imageError) {
           console.warn("Failed to embed attestation signature image", imageError);
-          drawWrapped(`Signature (image decode failed)`, {
-            size: 9,
-            x: leftMargin + 12,
+          drawWrapped("Signature (image decode failed)", {
+            size: 8,
+            x: leftMargin + 22,
             color: { r: 0.55, g: 0.1, b: 0.1 },
           });
-          y -= 4;
         }
       } else {
         drawWrapped(`Signature (${att.signatureType || "text"}): ${signatureRaw}`, {
-          size: 9,
-          x: leftMargin + 12,
+          size: 8,
+          x: leftMargin + 22,
         });
-        y -= 4;
       }
     }
+  };
+
+  const drawWorkerRow = async (w: typeof data.activeEvents[0]["workers"][0], idx: number) => {
+    const checkIn = w.clockInAt ? formatTime(w.clockInAt) : "--";
+    const checkOut = w.clockOutAt ? formatTime(w.clockOutAt) : (w.status !== "clocked_out" ? "Still in" : "--");
+    const mealTime = w.totalMealMs > 0 ? formatDurationFromMs(w.totalMealMs) : "0h 00m";
+    const totalHours = formatDurationFromMs(w.totalHoursMs);
+    const statusLabel = w.status === "on_meal" ? " (On Meal)" : w.status === "clocked_in" ? " (Active)" : "";
+
+    drawWrapped(`${idx + 1}. ${w.name}${statusLabel}`, { fontOverride: boldFont, size: 9.5, x: leftMargin + 14 });
+    drawWrapped(
+      `Division: ${w.division || "--"}  |  Check In: ${checkIn}  |  Check Out: ${checkOut}  |  Meal Time: ${mealTime}  |  Total Hours: ${totalHours}`,
+      { size: 8.5, x: leftMargin + 22 }
+    );
+
+    // Show attestation if this worker has clocked out
+    const att = attestationByUserId.get(w.userId);
+    if (att && w.status === "clocked_out") {
+      y -= 2;
+      await drawAttestationBlock(att);
+    }
+
+    y -= 4;
+  };
+
+  // ─── Event sections ───
+  if (data.activeEvents.length === 0) {
+    drawSectionTitle("Events");
+    drawBullet("No active events.");
+    y -= 6;
+  } else {
+    for (const eventData of data.activeEvents) {
+      const currentlyIn = eventData.workers.filter((w) => w.status !== "clocked_out").length;
+      drawSectionTitle(
+        `${eventData.name || "Unnamed Event"} (${eventData.workers.length} worker${eventData.workers.length !== 1 ? "s" : ""}, ${currentlyIn} active)`
+      );
+      drawWrapped(
+        `Venue: ${eventData.venue || "--"}  |  Location: ${eventData.city || "--"}${
+          eventData.state ? `, ${eventData.state}` : ""
+        }  |  Date: ${eventData.date}  |  Schedule: ${eventData.startTime || "--"} - ${eventData.endTime || "--"}`,
+        { size: 9, color: { r: 0.35, g: 0.35, b: 0.35 } }
+      );
+      y -= 4;
+
+      if (eventData.workers.length === 0) {
+        drawWrapped("No workers recorded for this event.", { size: 9, x: leftMargin + 14 });
+      } else {
+        for (let wIdx = 0; wIdx < eventData.workers.length; wIdx++) {
+          await drawWorkerRow(eventData.workers[wIdx], wIdx);
+        }
+      }
+      y -= 8;
+    }
+  }
+
+  // ─── Unassigned workers (no event linked) ───
+  if (data.unassignedWorkers.length > 0) {
+    drawSectionTitle(`Workers Without Event (${data.unassignedWorkers.length})`);
+    for (let wIdx = 0; wIdx < data.unassignedWorkers.length; wIdx++) {
+      await drawWorkerRow(data.unassignedWorkers[wIdx], wIdx);
+    }
+    y -= 6;
   }
 
   return pdfDoc.save();

@@ -2666,12 +2666,43 @@ export default function EventDashboardPage() {
                           </button>
                         </>
                       ) : (
-                        <button
-                          onClick={() => startTimesheetEdit(uid, span)}
-                          className="text-blue-600 hover:text-blue-700 font-medium text-xs"
-                        >
-                          Edit
-                        </button>
+                        <>
+                          <button
+                            onClick={() => startTimesheetEdit(uid, span)}
+                            className="text-blue-600 hover:text-blue-700 font-medium text-xs"
+                          >
+                            Edit
+                          </button>
+                          {userRole === "exec" && (
+                            <button
+                              onClick={async () => {
+                                try {
+                                  const { data: sess } = await supabase.auth.getSession();
+                                  const token = sess?.session?.access_token;
+                                  if (!token) return;
+                                  const res = await fetch(
+                                    `/api/events/${eventId}/attestation-pdf?userId=${encodeURIComponent(uid)}`,
+                                    { headers: { Authorization: `Bearer ${token}` } }
+                                  );
+                                  if (!res.ok) return;
+                                  const blob = await res.blob();
+                                  const blobUrl = URL.createObjectURL(blob);
+                                  const a = document.createElement("a");
+                                  a.href = blobUrl;
+                                  a.download = `attestation-${firstName}_${lastName}.pdf`;
+                                  document.body.appendChild(a);
+                                  a.click();
+                                  a.remove();
+                                  URL.revokeObjectURL(blobUrl);
+                                } catch { /* silent */ }
+                              }}
+                              className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
+                              title="Download attestation PDF"
+                            >
+                              Attestation
+                            </button>
+                          )}
+                        </>
                       )
                     ) : (
                       <span className="text-xs text-gray-400">View only</span>
