@@ -226,7 +226,7 @@ CREATE TABLE public.events (
   end_time TIME NOT NULL,
   
   -- Financial
-  ticket_sales INTEGER DEFAULT 0,
+  ticket_sales DECIMAL(12, 2) DEFAULT 0,
   artist_share_percent DECIMAL(5, 2),
   venue_share_percent DECIMAL(5, 2),
   pds_share_percent DECIMAL(5, 2),

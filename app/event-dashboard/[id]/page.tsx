@@ -1593,7 +1593,7 @@ export default function EventDashboardPage() {
                         value={ticketSales}
                         onChange={(e) => setTicketSales(e.target.value)}
                         placeholder="0"
-                        step="1"
+                        step="0.01"
                         min="0"
                         className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                       />
@@ -1621,7 +1621,7 @@ export default function EventDashboardPage() {
                         value={manualTaxAmount}
                         onChange={(e) => setManualTaxAmount(e.target.value)}
                         placeholder="0"
-                        step="1"
+                        step="0.01"
                         min="0"
                         className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                       />
@@ -1637,7 +1637,7 @@ export default function EventDashboardPage() {
                         value={tips}
                         onChange={(e) => setTips(e.target.value)}
                         placeholder="0"
-                        step="1"
+                        step="0.01"
                         min="0"
                         className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
                       />
