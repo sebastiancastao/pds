@@ -89,7 +89,8 @@ export async function POST(
     }
 
     // Format event date for display
-    const eventDate = new Date(eventData.event_date).toLocaleDateString('en-US', {
+    const rawDate = eventData.event_date || new Date().toISOString().split('T')[0];
+    const eventDate = new Date(rawDate + 'T00:00:00').toLocaleDateString('en-US', {
       weekday: 'long',
       year: 'numeric',
       month: 'long',

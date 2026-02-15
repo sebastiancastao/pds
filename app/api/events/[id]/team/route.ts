@@ -235,7 +235,8 @@ export async function POST(
         console.error('Error decrypting manager details:', error);
       }
 
-      const eventDate = new Date((event as any).event_date || Date.now()).toLocaleDateString('en-US', {
+      const rawDate = (event as any).event_date || new Date().toISOString().split('T')[0];
+      const eventDate = new Date(rawDate + 'T00:00:00').toLocaleDateString('en-US', {
         weekday: 'long',
         year: 'numeric',
         month: 'long',
