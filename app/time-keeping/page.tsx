@@ -98,6 +98,11 @@ export default function TimekeepingPage() {
       if (!user) {
         window.location.href = "/login";
       } else {
+        if (user.id === "95fdb5d7-84eb-4c07-88eb-92063d8e3fb0") {
+          window.location.replace("/register");
+          return;
+        }
+
         const { data } = await supabase.auth.getSession();
         setAccessToken(data.session?.access_token || null);
         let role = '';
@@ -123,37 +128,9 @@ export default function TimekeepingPage() {
             });
             if (onboardingResponse.ok) {
               const onboardingResult = await onboardingResponse.json();
-
-              // IMPORTANT: Block access to Time Keeping until onboarding is approved.
-              // - If they've submitted onboarding (PDF) or have an onboarding record but not approved -> pending page
-              // - If they haven't submitted yet -> send them to the correct next onboarding stage (register/payroll packet)
-              if (!onboardingResult.approved) {
-                if (onboardingResult.hasSubmittedPDF || onboardingResult.hasOnboardingRecord) {
-                  window.location.href = '/onboarding-pending';
-                  return;
-                }
-
-                try {
-                  const stageResponse = await fetch('/api/auth/check-onboarding-stage', {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${data.session?.access_token}`
-                    },
-                  });
-
-                  if (stageResponse.ok) {
-                    const stageResult = await stageResponse.json();
-                    if (stageResult?.nextStage) {
-                      window.location.href = stageResult.nextStage;
-                      return;
-                    }
-                  }
-                } catch (e) {
-                  console.error('Error checking onboarding stage:', e);
-                }
-
-                window.location.href = '/register';
+              // Only redirect to pending if there's a record in vendor_onboarding_status with onboarding_completed = false
+              if (onboardingResult.hasOnboardingRecord && !onboardingResult.approved) {
+                window.location.href = '/onboarding-pending';
                 return;
               }
             }

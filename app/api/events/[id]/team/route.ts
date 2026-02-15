@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, decryptData } from "@/lib/encryption";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -15,11 +15,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
-const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 
 /**
  * POST /api/events/[id]/team
@@ -51,26 +46,6 @@ export async function POST(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Role-based authorization:
-    // - exec/admin: can create teams for any event
-    // - manager: can create teams for own events
-    const { data: requester, error: requesterError } = await supabaseAdmin
-      .from('users')
-      .select('role')
-      .eq('id', user.id)
-      .single();
-
-    if (requesterError || !requester) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-    }
-    const requesterRole = String(requester.role || '').toLowerCase();
-    const canManageAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
-    const canManageOwnedEvents = requesterRole === 'manager';
-
-    if (!canManageAllEvents && !canManageOwnedEvents) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-    }
-
     // Get request body
     const body = await req.json();
     const { vendorIds } = body;
@@ -82,7 +57,7 @@ export async function POST(
     // Verify event exists and user owns it
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('id, created_by, event_name, event_date')
+      .select('id, created_by, event_name')
       .eq('id', eventId)
       .single();
 
@@ -90,7 +65,7 @@ export async function POST(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    if (!canManageAllEvents && event.created_by !== user.id) {
+    if (event.created_by !== user.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
@@ -186,96 +161,68 @@ export async function POST(
 
     // Send confirmation emails only to newly added vendors
     const newVendors = vendors.filter((v: any) => newVendorIds.includes(v.id));
-    let emailsSent = 0;
-    let emailsFailed = 0;
+    const emailResults = await Promise.allSettled(
+      newVendors.map(async (vendor: any) => {
+        const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
+        if (!teamMember) return null;
 
-    for (const vendor of newVendors as any[]) {
-      const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
-      if (!teamMember) {
-        emailsFailed++;
-        continue;
-      }
-
-      const normalizedEmail = (vendor.email || "").toString().trim().toLowerCase();
-      if (!isValidEmail(normalizedEmail)) {
-        console.warn('Skipping team confirmation email due to invalid address:', vendor.email);
-        emailsFailed++;
-        continue;
-      }
-
-      let vendorFirstName = 'Vendor';
-      let vendorLastName = '';
-      try {
-        vendorFirstName = vendor.profiles?.first_name
-          ? decrypt(vendor.profiles.first_name)
-          : 'Vendor';
-        vendorLastName = vendor.profiles?.last_name
-          ? decrypt(vendor.profiles.last_name)
-          : '';
-      } catch (error) {
-        console.error('Error decrypting vendor name for email:', error);
-      }
-
-      let managerName = 'Event Manager';
-      let managerPhone = '';
-      try {
-        if (managerProfile) {
-          const managerFirst = managerProfile.first_name
-            ? decrypt(managerProfile.first_name)
+        // Decrypt vendor names
+        let vendorFirstName = 'Vendor';
+        let vendorLastName = '';
+        try {
+          vendorFirstName = vendor.profiles?.first_name
+            ? decrypt(vendor.profiles.first_name)
+            : 'Vendor';
+          vendorLastName = vendor.profiles?.last_name
+            ? decrypt(vendor.profiles.last_name)
             : '';
-          const managerLast = managerProfile.last_name
-            ? decrypt(managerProfile.last_name)
-            : '';
-          managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
-          managerPhone = managerProfile.phone
-            ? decrypt(managerProfile.phone)
-            : '';
+        } catch (error) {
+          console.error('❌ Error decrypting vendor name for email:', error);
         }
-      } catch (error) {
-        console.error('Error decrypting manager details:', error);
-      }
 
-      const rawDate = (event as any).event_date || new Date().toISOString().split('T')[0];
-      const eventDate = new Date(rawDate + 'T00:00:00').toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric'
-      });
+        // Decrypt manager names
+        let managerName = 'Event Manager';
+        let managerPhone = '';
+        try {
+          if (managerProfile) {
+            const managerFirst = managerProfile.first_name
+              ? decrypt(managerProfile.first_name)
+              : '';
+            const managerLast = managerProfile.last_name
+              ? decrypt(managerProfile.last_name)
+              : '';
+            managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
+            managerPhone = managerProfile.phone
+              ? decrypt(managerProfile.phone)
+              : '';
+          }
+        } catch (error) {
+          console.error('❌ Error decrypting manager details:', error);
+        }
 
-      let sent = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const emailResult = await sendTeamConfirmationEmail({
-          email: normalizedEmail,
+        // Format event date
+        const eventDate = new Date(event.event_name).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        });
+
+        return await sendTeamConfirmationEmail({
+          email: vendor.email,
           firstName: vendorFirstName,
           lastName: vendorLastName,
           eventName: event.event_name,
-          eventDate,
-          managerName,
-          managerPhone,
+          eventDate: eventDate,
+          managerName: managerName,
+          managerPhone: managerPhone,
           confirmationToken: teamMember.confirmation_token
         });
+      })
+    );
 
-        if (emailResult.success) {
-          sent = true;
-          break;
-        }
-
-        const err = emailResult.error || "Unknown email error";
-        if (attempt < 3 && isRateLimitError(err)) {
-          await sleep(1200 * attempt);
-          continue;
-        }
-
-        console.error(`Failed to send team confirmation email to ${normalizedEmail}:`, err);
-        break;
-      }
-
-      if (sent) emailsSent++;
-      else emailsFailed++;
-
-      await sleep(125);
-    }
+    const emailsSent = emailResults.filter(r => r.status === 'fulfilled').length;
+    const emailsFailed = emailResults.filter(r => r.status === 'rejected').length;
 
     console.log(`📧 Sent ${emailsSent} confirmation emails, ${emailsFailed} failed`);
 
@@ -334,71 +281,112 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Fetch role, event, and team members in parallel to reduce latency
-    const [requesterResult, eventResult, teamResult] = await Promise.all([
-      supabaseAdmin
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .single(),
-      supabaseAdmin
-        .from('events')
-        .select('id, created_by')
-        .eq('id', eventId)
-        .single(),
-      supabaseAdmin
-        .from('event_teams')
-        .select(`
+    // Get team members for this event
+    const { data: teamMembers, error: teamError } = await supabaseAdmin
+      .from('event_teams')
+      .select(`
+        id,
+        vendor_id,
+        status,
+        created_at,
+        users!event_teams_vendor_id_fkey (
           id,
-          vendor_id,
-          status,
-          created_at,
-          users!event_teams_vendor_id_fkey (
-            id,
-            email,
-            division,
-            profiles (
-              first_name,
-              last_name,
-              phone
-            )
+          email,
+          division,
+          profiles (
+            first_name,
+            last_name,
+            phone,
+            profile_photo_data
           )
-        `)
-        .eq('event_id', eventId),
-    ]);
+        )
+      `)
+      .eq('event_id', eventId);
 
-    const { data: requester, error: requesterError } = requesterResult;
-    if (requesterError || !requester) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-    }
-    const requesterRole = String(requester.role || '').toLowerCase();
-    const canManageAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
-    const canManageOwnedEvents = requesterRole === 'manager';
-    if (!canManageAllEvents && !canManageOwnedEvents) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-    }
-
-    const { data: event, error: eventError } = eventResult;
-    if (eventError || !event) {
-      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
-    }
-    if (!canManageAllEvents && event.created_by !== user.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
-    }
-
-    const { data: teamMembers, error: teamError } = teamResult;
+    console.log('🔍 DEBUG - Team members query result:', teamMembers);
+    console.log('🔍 DEBUG - Team members query error:', teamError);
 
     if (teamError) {
+      console.error('❌ Error fetching team:', teamError);
       return NextResponse.json({
         team: [],
         error: teamError.message
       }, { status: 200 });
     }
 
-    // Decrypt sensitive profile data (names and phone only — photos loaded separately)
+    // Decrypt sensitive profile data and convert binary photo to data URL
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (member.users?.profiles) {
         try {
+          let profilePhotoUrl = null;
+
+          // Convert binary profile photo (bytea) to data URL if exists
+          if (member.users.profiles.profile_photo_data) {
+            try {
+              let photoData = member.users.profiles.profile_photo_data;
+              console.log('🔍 DEBUG - Photo data type:', typeof photoData);
+              console.log('🔍 DEBUG - Is Buffer?:', Buffer.isBuffer(photoData));
+
+              // First, convert hex bytea to string if needed
+              if (typeof photoData === 'string' && photoData.startsWith('\\x')) {
+                console.log('🔍 DEBUG - Photo is hex bytea, converting to string');
+                const hexString = photoData.slice(2); // Remove \x prefix
+                const buffer = Buffer.from(hexString, 'hex');
+                photoData = buffer.toString('utf-8'); // Convert to string for decryption
+                console.log('🔍 DEBUG - Converted hex to string, sample:', photoData.substring(0, 50));
+              }
+
+              // Check if photo data is encrypted (starts with U2FsdGVk = "Salted__" in base64)
+              if (typeof photoData === 'string' && (photoData.startsWith('U2FsdGVk') || photoData.includes('Salted'))) {
+                console.log('🔍 DEBUG - Photo appears to be encrypted, decrypting binary data...');
+                try {
+                  // Decrypt the binary photo data using decryptData() for binary data
+                  const decryptedBytes = decryptData(photoData);
+                  console.log('✅ Decrypted photo binary data, size:', decryptedBytes.length, 'bytes');
+
+                  // Convert Uint8Array to base64
+                  const base64 = Buffer.from(decryptedBytes).toString('base64');
+                  profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
+                  console.log('✅ Converted decrypted bytes to data URL');
+                } catch (decryptError) {
+                  console.error('❌ Error decrypting photo:', decryptError);
+                  // Fallback: try treating it as a data URL string instead of binary
+                  try {
+                    console.log('🔄 Trying to decrypt as text data URL...');
+                    const decryptedText = decrypt(photoData);
+                    if (decryptedText.startsWith('data:')) {
+                      profilePhotoUrl = decryptedText;
+                      console.log('✅ Decrypted text data URL');
+                    }
+                  } catch (fallbackError) {
+                    console.error('❌ Fallback decryption also failed:', fallbackError);
+                  }
+                }
+              } else if (Buffer.isBuffer(photoData)) {
+                // Raw buffer - convert directly
+                const base64 = photoData.toString('base64');
+                profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
+                console.log('✅ Converted raw buffer to data URL, size:', photoData.length, 'bytes');
+              } else if (typeof photoData === 'string') {
+                // String that's not encrypted
+                if (photoData.startsWith('data:')) {
+                  profilePhotoUrl = photoData;
+                  console.log('✅ Photo is already a data URL');
+                } else {
+                  // Assume base64
+                  profilePhotoUrl = `data:image/jpeg;base64,${photoData}`;
+                  console.log('✅ Added data URL prefix to base64 string');
+                }
+              } else {
+                console.log('⚠️ Unknown photo data format:', typeof photoData);
+              }
+            } catch (photoError) {
+              console.error('❌ Error processing profile photo:', photoError);
+            }
+          } else {
+            console.log('⚠️ No profile_photo_data found for this member');
+          }
+
           return {
             ...member,
             users: {
@@ -414,15 +402,19 @@ export async function GET(
                 phone: member.users.profiles.phone
                   ? decrypt(member.users.profiles.phone)
                   : '',
+                profile_photo_url: profilePhotoUrl, // Add converted photo URL
               }
             }
           };
         } catch (error) {
+          console.error('❌ Error decrypting profile data:', error);
           return member;
         }
       }
       return member;
     });
+
+    console.log('✅ Decrypted team members ready to send');
 
     return NextResponse.json({
       team: decryptedTeamMembers || []
@@ -435,4 +427,3 @@ export async function GET(
     }, { status: 500 });
   }
 }
-
