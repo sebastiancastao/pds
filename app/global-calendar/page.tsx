@@ -174,6 +174,41 @@ export default function DashboardPage() {
   // Staff predictions for events
   const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
 
+  // Check-in confusion warning
+  const [checkInWarning, setCheckInWarning] = useState<{ event: EventItem; similarEvents: EventItem[] } | null>(null);
+
+  const handleCheckInClick = useCallback((ev: EventItem) => {
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+    // Check if event is today
+    if (ev.event_date === todayStr) {
+      router.push(`/check-in?eventId=${ev.id}`);
+      return;
+    }
+
+    // Check if event crosses midnight and today is the next day (still active)
+    const eventDate = new Date(ev.event_date + "T00:00:00");
+    const nextDay = new Date(eventDate);
+    nextDay.setDate(nextDay.getDate() + 1);
+    const nextDayStr = `${nextDay.getFullYear()}-${String(nextDay.getMonth() + 1).padStart(2, "0")}-${String(nextDay.getDate()).padStart(2, "0")}`;
+    const crossesMidnight = ev.start_time && ev.end_time && ev.end_time <= ev.start_time;
+    if (crossesMidnight && todayStr === nextDayStr) {
+      router.push(`/check-in?eventId=${ev.id}`);
+      return;
+    }
+
+    // Collect: same-name events + the closest previous event by date
+    const sameName = events.filter((o) => o.id !== ev.id && o.event_name === ev.event_name);
+    const previous = events
+      .filter((o) => o.id !== ev.id && o.event_date < ev.event_date)
+      .sort((a, b) => b.event_date.localeCompare(a.event_date))[0];
+    const similar = [...sameName];
+    if (previous && !similar.some((s) => s.id === previous.id)) similar.push(previous);
+
+    setCheckInWarning({ event: ev, similarEvents: similar });
+  }, [events, router]);
+
   const hasActiveAvailability = useCallback((vendor: Vendor) => {
     const hasInvitationAvailability = !!(vendor.has_submitted_availability || vendor.availability_responded_at);
     if (!hasInvitationAvailability || !vendor.availability_scope_start || !vendor.availability_scope_end) {
@@ -1588,14 +1623,12 @@ export default function DashboardPage() {
                         </div>
                         {userRole === "exec" && (
                           <div className="flex items-center gap-2">
-                            <Link href={`/check-in?eventId=${ev.id}`}>
-                              <button className="apple-button apple-button-secondary text-sm py-2 px-4">
-                                <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                </svg>
-                                Check In
-                              </button>
-                            </Link>
+                            <button onClick={() => handleCheckInClick(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
+                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              Check In
+                            </button>
                             <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
                               <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
@@ -2663,6 +2696,44 @@ export default function DashboardPage() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Check-In Warning Modal */}
+      {checkInWarning && (
+        <div className="apple-modal-overlay" onClick={() => setCheckInWarning(null)}>
+          <div className="apple-modal" style={{ maxWidth: "28rem" }} onClick={(e) => e.stopPropagation()}>
+            <div className="apple-modal-header">
+              <h2 className="text-lg font-semibold text-gray-900">Wrong event?</h2>
+              <button className="apple-close-button" onClick={() => setCheckInWarning(null)}>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div style={{ padding: "1.25rem" }}>
+              <p style={{ color: "#92400E", fontSize: 14, background: "#FEF3C7", border: "1px solid #F59E0B", borderRadius: 8, padding: "0.75rem", marginBottom: "0.75rem" }}>
+                <strong>{checkInWarning.event.event_name}</strong> is on <strong>{checkInWarning.event.event_date}</strong>, not today. Did you mean one of these?
+              </p>
+              {checkInWarning.similarEvents.map((sim) => (
+                <button
+                  key={sim.id}
+                  className="apple-button apple-button-secondary"
+                  style={{ width: "100%", justifyContent: "space-between", marginBottom: 6, fontSize: 13 }}
+                  onClick={() => { setCheckInWarning(null); router.push(`/check-in?eventId=${sim.id}`); }}
+                >
+                  <span style={{ fontWeight: 600 }}>{sim.event_name}</span>
+                  <span style={{ color: "#6B7280" }}>{sim.event_date} {sim.start_time?.slice(0, 5)}</span>
+                </button>
+              ))}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="apple-button apple-button-secondary" style={{ flex: 1 }} onClick={() => setCheckInWarning(null)}>Cancel</button>
+                <button className="apple-button apple-button-primary" style={{ flex: 1, background: "#DC2626" }} onClick={() => { const id = checkInWarning.event.id; setCheckInWarning(null); router.push(`/check-in?eventId=${id}`); }}>
+                  Use {checkInWarning.event.event_date}
+                </button>
+              </div>
             </div>
           </div>
         </div>

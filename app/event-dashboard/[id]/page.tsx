@@ -832,7 +832,7 @@ export default function EventDashboardPage() {
     const parts = new Intl.DateTimeFormat("en-US", {
       hour: "2-digit",
       minute: "2-digit",
-      hour12: false,
+      hourCycle: "h23",
       timeZone: "America/Los_Angeles",
     }).formatToParts(d);
     const hh = (parts.find((p) => p.type === "hour")?.value || "00").padStart(2, "0");

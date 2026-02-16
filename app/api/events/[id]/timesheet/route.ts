@@ -317,8 +317,10 @@ type TimesheetSpanPayload = {
 const toEventIso = (eventDate: string, hhmm?: string) => {
   const value = (hhmm || "").trim();
   if (!value) return null;
-  const [hh, mm] = value.split(":").map(Number);
+  let [hh, mm] = value.split(":").map(Number);
   if (isNaN(hh) || isNaN(mm)) return null;
+  // Normalize "24:00" → "00:00" (some Intl formatters produce this for midnight)
+  if (hh === 24) hh = 0;
 
   // Determine if PDT or PST applies on this event date
   const testDate = new Date(`${eventDate}T12:00:00Z`);
@@ -371,6 +373,7 @@ export async function PUT(
     const body = await req.json().catch(() => null);
     const targetUserId = String(body?.userId || "").trim();
     const spans: TimesheetSpanPayload = body?.spans || {};
+    console.log("[timesheet-PUT] received:", { userId: targetUserId, spans });
     if (!targetUserId) {
       return NextResponse.json({ error: "userId is required" }, { status: 400 });
     }
@@ -411,12 +414,28 @@ export async function PUT(
     }
     const division = targetUser?.division || "vendor";
 
+    // Strip incomplete meal pairs instead of rejecting
+    const meal1Start = (spans.firstMealStart || "").trim();
+    const meal1End = (spans.lastMealEnd || "").trim();
+    const meal2Start = (spans.secondMealStart || "").trim();
+    const meal2End = (spans.secondMealEnd || "").trim();
+    const useMeal1 = !!(meal1Start && meal1End);
+    const useMeal2 = !!(meal2Start && meal2End);
+
     const timeline = [
       { action: "clock_in", timestamp: toEventIso(eventDate, spans.firstIn) },
-      { action: "meal_start", timestamp: toEventIso(eventDate, spans.firstMealStart) },
-      { action: "meal_end", timestamp: toEventIso(eventDate, spans.lastMealEnd) },
-      { action: "meal_start", timestamp: toEventIso(eventDate, spans.secondMealStart) },
-      { action: "meal_end", timestamp: toEventIso(eventDate, spans.secondMealEnd) },
+      ...(useMeal1
+        ? [
+            { action: "meal_start", timestamp: toEventIso(eventDate, meal1Start) },
+            { action: "meal_end", timestamp: toEventIso(eventDate, meal1End) },
+          ]
+        : []),
+      ...(useMeal2
+        ? [
+            { action: "meal_start", timestamp: toEventIso(eventDate, meal2Start) },
+            { action: "meal_end", timestamp: toEventIso(eventDate, meal2End) },
+          ]
+        : []),
       { action: "clock_out", timestamp: toEventIso(eventDate, spans.lastOut) },
     ].filter((entry) => !!entry.timestamp);
 
@@ -430,29 +449,19 @@ export async function PUT(
       }
     }
 
-    const hasMeal1Start = !!spans.firstMealStart;
-    const hasMeal1End = !!spans.lastMealEnd;
-    if (hasMeal1Start !== hasMeal1End) {
-      return NextResponse.json(
-        { error: "Meal 1 Start and Meal 1 End must both be set." },
-        { status: 400 }
-      );
-    }
-    const hasMeal2Start = !!spans.secondMealStart;
-    const hasMeal2End = !!spans.secondMealEnd;
-    if (hasMeal2Start !== hasMeal2End) {
-      return NextResponse.json(
-        { error: "Meal 2 Start and Meal 2 End must both be set." },
-        { status: 400 }
-      );
-    }
-
     for (let i = 1; i < timeline.length; i++) {
       const prev = new Date(String(timeline[i - 1].timestamp)).getTime();
       const curr = new Date(String(timeline[i].timestamp)).getTime();
       if (!(curr > prev)) {
+        console.error("[timesheet-PUT] Order validation failed:", {
+          spans,
+          timeline: timeline.map((t) => `${t.action} → ${t.timestamp}`),
+          failedIndex: i,
+        });
         return NextResponse.json(
-          { error: "Times must be strictly increasing from Clock In to Clock Out." },
+          {
+            error: `Times must be strictly increasing: ${timeline[i - 1].action} (${spans.firstIn || spans.lastOut}) and ${timeline[i].action} conflict.`,
+          },
           { status: 400 }
         );
       }
