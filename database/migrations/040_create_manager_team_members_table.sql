@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS manager_team_members (
     UNIQUE(manager_id, member_id)
 );
 
+
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_manager_team_members_manager ON manager_team_members(manager_id);
 CREATE INDEX IF NOT EXISTS idx_manager_team_members_member ON manager_team_members(member_id);

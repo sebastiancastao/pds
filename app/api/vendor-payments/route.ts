@@ -724,8 +724,10 @@ export async function GET(req: NextRequest) {
           adjustment_amount: adjustment?.adjustment_amount || 0,
           adjustment_note: adjustment?.adjustment_note || '',
         });
-        // Deduct meal time from ALL hour fields to match timesheet tab display
+        // Attach meal deduction hours so HR dashboard can apply it to all calculations
         const mealDeduct = eventMealDeductions[row.user_id] || 0;
+        row.meal_deduction_hours = mealDeduct;
+        // Also deduct from hour fields directly
         if (mealDeduct > 0) {
           if (Number(row.actual_hours || 0) > 0) {
             row.actual_hours = Math.max(Number(row.actual_hours) - mealDeduct, 0);
