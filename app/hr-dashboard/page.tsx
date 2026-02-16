@@ -85,6 +85,12 @@ function HRDashboardContent() {
     if (actualHours <= 0) return 0;
     return actualHours >= 10 ? 12 : 9;
   };
+  const formatHoursHHMM = (decimalHours: number): string => {
+    const totalMinutes = Math.floor(Math.abs(decimalHours) * 60);
+    const hh = Math.floor(totalMinutes / 60);
+    const mm = totalMinutes % 60;
+    return `${hh}:${String(mm).padStart(2, "0")}`;
+  };
   const getEffectiveHours = (payment: any): number => {
     const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
     if (actual > 0) return actual;
@@ -832,7 +838,7 @@ function HRDashboardContent() {
               'Email': p.email || '',
               'Reg Rate': regRate.toFixed(2),
               'Loaded Rate': loadedRate.toFixed(2),
-              'Hours': hours.toFixed(2),
+              'Hours': formatHoursHHMM(hours),
               'Ext Amt on Reg Rate': extAmtOnRegRate.toFixed(2),
               'Commission Amt': commissionAmt.toFixed(2),
               'Total Final Commission Amt': totalFinalCommissionAmt.toFixed(2),
@@ -1317,7 +1323,7 @@ function HRDashboardContent() {
                       </div>
                       <div className="text-right">
                         <div className="text-2xl font-bold text-gray-900">${v.totalPayment.toFixed(2)}</div>
-                        <div className="text-sm text-gray-500">{v.totalHours.toFixed(1)} hrs</div>
+                        <div className="text-sm text-gray-500">{formatHoursHHMM(v.totalHours)} hrs</div>
                       </div>
                     </div>
                     <div className="overflow-x-auto">
@@ -1341,7 +1347,7 @@ function HRDashboardContent() {
                               <tr key={ev.id} className="bg-white">
                                 <td className="px-4 py-2 text-sm text-gray-900">{ev.name}</td>
                                 <td className="px-4 py-2 text-sm text-gray-500">{ev.date || '—'}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">{(ev.eventHours || 0).toFixed(1)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">{formatHoursHHMM(ev.eventHours || 0)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
@@ -1421,7 +1427,7 @@ function HRDashboardContent() {
                                                   <>
                                                     <td className="p-2 text-sm">${regRate.toFixed(2)}/hr</td>
                                                     <td className="p-2 text-sm">${loadedRate.toFixed(2)}/hr</td>
-                                                    <td className="p-2 text-sm">{hours.toFixed(2)}h</td>
+                                                    <td className="p-2 text-sm">{formatHoursHHMM(hours)}</td>
                                                     {showOT && (
                                                       <td className="p-2 text-sm">{otRate > 0 ? `$${otRate.toFixed(2)}/hr` : '\u2014'}</td>
                                                     )}

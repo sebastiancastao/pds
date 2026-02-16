@@ -313,6 +313,54 @@ export async function GET(req: NextRequest) {
             }
           }
         }
+        // Detect meals (explicit or auto from gaps) and deduct from ms
+        const mealStarts = uEntries.filter(r => r.action === 'meal_start');
+        const mealEndsArr = uEntries.filter(r => r.action === 'meal_end');
+        let fMealStart: string | null = null;
+        let lMealEnd: string | null = null;
+        let sMealStart: string | null = null;
+        let sMealEnd: string | null = null;
+        if (mealStarts.length > 0) {
+          fMealStart = mealStarts[0]?.timestamp || mealStarts[0]?.started_at || null;
+          if (mealStarts.length > 1) sMealStart = mealStarts[1]?.timestamp || mealStarts[1]?.started_at || null;
+        }
+        if (mealEndsArr.length > 0) {
+          lMealEnd = mealEndsArr[0]?.timestamp || mealEndsArr[0]?.started_at || null;
+          if (mealEndsArr.length > 1) sMealEnd = mealEndsArr[1]?.timestamp || mealEndsArr[1]?.started_at || null;
+        }
+        // Auto-detect meals from gaps if no explicit meal actions
+        if (mealStarts.length === 0 && mealEndsArr.length === 0) {
+          const workIntervals: Array<{ start: Date; end: Date }> = [];
+          let ci: string | null = null;
+          for (const row of uEntries) {
+            const ts = row?.timestamp || row?.started_at || null;
+            if (!ts) continue;
+            if (row.action === 'clock_in') { if (!ci) ci = ts; }
+            else if (row.action === 'clock_out' && ci) {
+              workIntervals.push({ start: new Date(ci), end: new Date(ts) });
+              ci = null;
+            }
+          }
+          if (workIntervals.length >= 2) {
+            workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+            const gaps: Array<{ start: Date; end: Date }> = [];
+            for (let gi = 0; gi < workIntervals.length - 1 && gaps.length < 2; gi++) {
+              const gapMs = workIntervals[gi + 1].start.getTime() - workIntervals[gi].end.getTime();
+              if (gapMs > 0) gaps.push({ start: workIntervals[gi].end, end: workIntervals[gi + 1].start });
+            }
+            if (gaps[0]) { fMealStart = gaps[0].start.toISOString(); lMealEnd = gaps[0].end.toISOString(); }
+            if (gaps[1]) { sMealStart = gaps[1].start.toISOString(); sMealEnd = gaps[1].end.toISOString(); }
+          }
+        }
+        if (fMealStart && lMealEnd) {
+          const m1 = new Date(lMealEnd).getTime() - new Date(fMealStart).getTime();
+          if (m1 > 0) ms = Math.max(ms - m1, 0);
+        }
+        if (sMealStart && sMealEnd) {
+          const m2 = new Date(sMealEnd).getTime() - new Date(sMealStart).getTime();
+          if (m2 > 0) ms = Math.max(ms - m2, 0);
+        }
+
         totalsHours[uid] = ms / (1000 * 60 * 60);
       }
 
@@ -443,6 +491,143 @@ export async function GET(req: NextRequest) {
       return rows;
     }
 
+    // ── Compute meal deductions per user per event ──
+    // Fetch time_entries for meal_start/meal_end + clock_in/clock_out to detect auto-meals
+    const allEventIdsForMeals = fetchAllEvents
+      ? Array.from(new Set([
+          ...(vendorPayments || []).map((vp: any) => vp.event_id),
+          ...(eventPayments || []).map((ep: any) => ep.event_id),
+          ...(adjustments || []).map((a: any) => a.event_id),
+        ].filter(Boolean)))
+      : eventIds;
+
+    // mealDeductionHours[eventId][userId] = hours to deduct
+    const mealDeductionHours: Record<string, Record<string, number>> = {};
+
+    if (allEventIdsForMeals.length > 0) {
+      // Fetch events metadata for date windows
+      const { data: eventsForMeals } = await supabaseAdmin
+        .from('events')
+        .select('id, event_date, start_time, end_time, ends_next_day')
+        .in('id', allEventIdsForMeals);
+
+      for (const evt of eventsForMeals || []) {
+        const eid = evt.id;
+        const dateStr = (evt.event_date || '').toString().split('T')[0];
+        if (!dateStr) continue;
+
+        const startSec = timeToSeconds((evt as any)?.start_time);
+        const endSec = timeToSeconds((evt as any)?.end_time);
+        const endsNextDay = Boolean((evt as any)?.ends_next_day) ||
+          (startSec !== null && endSec !== null && endSec <= startSec);
+        const startDate = new Date(`${dateStr}T00:00:00Z`);
+        const endDate = new Date(`${dateStr}T23:59:59.999Z`);
+        if (endsNextDay) endDate.setUTCDate(endDate.getUTCDate() + 1);
+
+        // Fetch time entries for this event (by event_id + by date range)
+        const { data: byEventId } = await supabaseAdmin
+          .from('time_entries')
+          .select('id, user_id, action, timestamp, event_id')
+          .eq('event_id', eid)
+          .order('timestamp', { ascending: true });
+
+        let entries: any[] = byEventId || [];
+
+        if (endsNextDay || entries.length === 0) {
+          const { data: byTs } = await supabaseAdmin
+            .from('time_entries')
+            .select('id, user_id, action, timestamp, event_id')
+            .gte('timestamp', startDate.toISOString())
+            .lte('timestamp', endDate.toISOString())
+            .order('timestamp', { ascending: true });
+          const seen = new Set<string>();
+          const merged: any[] = [];
+          for (const row of [...entries, ...(byTs || [])]) {
+            if (row?.event_id && row.event_id !== eid) continue;
+            const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp || ''}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            merged.push(row);
+          }
+          entries = merged;
+        }
+
+        // Group by user
+        const byUser: Record<string, any[]> = {};
+        for (const e of entries) {
+          if (!byUser[e.user_id]) byUser[e.user_id] = [];
+          byUser[e.user_id].push(e);
+        }
+
+        mealDeductionHours[eid] = {};
+
+        for (const [uid, userEntries] of Object.entries(byUser)) {
+          const sorted = [...userEntries].sort((a, b) =>
+            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          const mealStarts = sorted.filter(e => e.action === 'meal_start');
+          const mealEnds = sorted.filter(e => e.action === 'meal_end');
+
+          let firstMealStart: string | null = null;
+          let lastMealEnd: string | null = null;
+          let secondMealStart: string | null = null;
+          let secondMealEnd: string | null = null;
+
+          if (mealStarts.length > 0) {
+            firstMealStart = mealStarts[0].timestamp;
+            if (mealStarts.length > 1) secondMealStart = mealStarts[1].timestamp;
+          }
+          if (mealEnds.length > 0) {
+            lastMealEnd = mealEnds[0].timestamp;
+            if (mealEnds.length > 1) secondMealEnd = mealEnds[1].timestamp;
+          }
+
+          // Auto-detect meals from gaps if no explicit meal actions
+          const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
+          if (!hasExplicitMeals) {
+            const clockEntries = sorted.filter(e => e.action === 'clock_in' || e.action === 'clock_out');
+            const workIntervals: Array<{ start: Date; end: Date }> = [];
+            let currentIn: string | null = null;
+            for (const ce of clockEntries) {
+              if (ce.action === 'clock_in') {
+                if (!currentIn) currentIn = ce.timestamp;
+              } else if (ce.action === 'clock_out' && currentIn) {
+                workIntervals.push({ start: new Date(currentIn), end: new Date(ce.timestamp) });
+                currentIn = null;
+              }
+            }
+            if (workIntervals.length >= 2) {
+              workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+              const gaps: Array<{ start: Date; end: Date }> = [];
+              for (let i = 0; i < workIntervals.length - 1 && gaps.length < 2; i++) {
+                const gapMs = workIntervals[i + 1].start.getTime() - workIntervals[i].end.getTime();
+                if (gapMs > 0) gaps.push({ start: workIntervals[i].end, end: workIntervals[i + 1].start });
+              }
+              if (gaps[0]) { firstMealStart = gaps[0].start.toISOString(); lastMealEnd = gaps[0].end.toISOString(); }
+              if (gaps[1]) { secondMealStart = gaps[1].start.toISOString(); secondMealEnd = gaps[1].end.toISOString(); }
+            }
+          }
+
+          // Calculate deduction in hours
+          let deductMs = 0;
+          if (firstMealStart && lastMealEnd) {
+            const m1 = new Date(lastMealEnd).getTime() - new Date(firstMealStart).getTime();
+            if (m1 > 0) deductMs += m1;
+          }
+          if (secondMealStart && secondMealEnd) {
+            const m2 = new Date(secondMealEnd).getTime() - new Date(secondMealStart).getTime();
+            if (m2 > 0) deductMs += m2;
+          }
+          if (deductMs > 0) {
+            mealDeductionHours[eid][uid] = deductMs / (1000 * 60 * 60);
+          }
+        }
+      }
+    }
+    console.log('[VENDOR-PAYMENTS] meal deductions computed', {
+      eventsWithDeductions: Object.keys(mealDeductionHours).filter(k => Object.keys(mealDeductionHours[k]).length > 0).length,
+    });
+
     // Group by event_id and merge adjustments
     const paymentsByEvent: Record<string, any> = {};
     const eventIdsToGroup = fetchAllEvents
@@ -531,13 +716,20 @@ export async function GET(req: NextRequest) {
       }
 
       const eventAdjustments = (adjustments || []).filter((adj: any) => adj.event_id === eventId);
+      const eventMealDeductions = mealDeductionHours[eventId] || {};
       const paymentsWithAdjustments = (eventVendorPayments || []).map((vp: any) => {
         const adjustment = eventAdjustments.find((adj: any) => adj.user_id === vp.user_id);
-        return normalizePaymentHours({
+        const row = normalizePaymentHours({
           ...vp,
           adjustment_amount: adjustment?.adjustment_amount || 0,
           adjustment_note: adjustment?.adjustment_note || '',
         });
+        // Deduct meal time from actual_hours to match timesheet tab display
+        const mealDeduct = eventMealDeductions[row.user_id] || 0;
+        if (mealDeduct > 0 && Number(row.actual_hours || 0) > 0) {
+          row.actual_hours = Math.max(Number(row.actual_hours) - mealDeduct, 0);
+        }
+        return row;
       });
 
       const adjustedCount = paymentsWithAdjustments.filter((p: any) => Number(p.adjustment_amount || 0) !== 0).length;

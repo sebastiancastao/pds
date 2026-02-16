@@ -956,6 +956,21 @@ export default function EventDashboardPage() {
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
 
+  // Helper: deduct meal times from raw ms to match timesheet tab display
+  const getMealDeductedMsForSave = (uid: string) => {
+    let ms = timesheetTotals[uid] || 0;
+    const sp = timesheetSpans[uid];
+    if (sp?.firstMealStart && sp?.lastMealEnd) {
+      const m1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+      if (m1 > 0) ms = Math.max(ms - m1, 0);
+    }
+    if (sp?.secondMealStart && sp?.secondMealEnd) {
+      const m2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+      if (m2 > 0) ms = Math.max(ms - m2, 0);
+    }
+    return ms;
+  };
+
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -985,7 +1000,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
         if (memberDivision === 'trailers') return sum;
-        const ms = timesheetTotals[uid] || 0;
+        const ms = getMealDeductedMsForSave(uid);
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
@@ -995,7 +1010,7 @@ export default function EventDashboardPage() {
       // Build vendor payments array
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = timesheetTotals[uid] || 0;
+        const totalMs = getMealDeductedMsForSave(uid);
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
@@ -1099,7 +1114,7 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
         if (memberDivision === 'trailers') return sum;
-        const ms = timesheetTotals[uid] || 0;
+        const ms = getMealDeductedMsForSave(uid);
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
@@ -1109,7 +1124,7 @@ export default function EventDashboardPage() {
       const payrollData = teamMembers.map((member: any) => {
         const profile = member.users?.profiles;
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = timesheetTotals[uid] || 0;
+        const totalMs = getMealDeductedMsForSave(uid);
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
