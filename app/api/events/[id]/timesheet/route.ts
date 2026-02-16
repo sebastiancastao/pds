@@ -128,6 +128,7 @@ export async function GET(
         .from('time_entries')
         .select('id, user_id, action, timestamp, started_at, event_id')
         .in('user_id', userIds)
+        .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
         .lte('timestamp', endIso)
         .order('timestamp', { ascending: true });
@@ -145,12 +146,13 @@ export async function GET(
       entries = merged;
     }
 
-    // Fallback 1: try date window on timestamp
+    // Fallback 1: try date window on timestamp (only this event or untagged entries)
     if (!entries || entries.length === 0) {
       const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
         .select('id, user_id, action, timestamp, started_at, event_id')
         .in('user_id', userIds)
+        .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
         .lte('timestamp', endIso)
         .order('timestamp', { ascending: true });
@@ -158,11 +160,12 @@ export async function GET(
       if (byTimestamp && byTimestamp.length > 0) {
         entries = byTimestamp;
       } else {
-        // Fallback 2: try date window on started_at
+        // Fallback 2: try date window on started_at (only this event or untagged entries)
         const { data: byStarted } = await supabaseAdmin
           .from('time_entries')
           .select('id, user_id, action, timestamp, started_at, event_id')
           .in('user_id', userIds)
+          .or(`event_id.eq.${eventId},event_id.is.null`)
           .gte('started_at', startIso)
           .lte('started_at', endIso)
           .order('started_at', { ascending: true });
