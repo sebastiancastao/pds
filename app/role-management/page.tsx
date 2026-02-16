@@ -29,6 +29,7 @@ type UserRoleRow = Pick<User, "role">;
 const AVAILABLE_ROLES = [
   { value: "worker", label: "Worker" },
   { value: "supervisor", label: "Supervisor" },
+  { value: "supervisor2", label: "Supervisor 2 (Read-Only)" },
   { value: "manager", label: "Manager" },
   { value: "finance", label: "Finance" },
   { value: "exec", label: "Exec" },
@@ -39,6 +40,7 @@ const AVAILABLE_ROLES = [
 const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   worker: { bg: "#f3f4f6", text: "#374151" },
   supervisor: { bg: "#fef3c7", text: "#92400e" },
+  supervisor2: { bg: "#fef9c3", text: "#854d0e" },
   manager: { bg: "#dbeafe", text: "#1d4ed8" },
   finance: { bg: "#dcfce7", text: "#15803d" },
   exec: { bg: "#ede9fe", text: "#6d28d9" },

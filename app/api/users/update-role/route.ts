@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-const ALLOWED_ROLES = ['worker', 'supervisor', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
+const ALLOWED_ROLES = ['worker', 'supervisor', 'supervisor2', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
 
 const isValidUUID = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);

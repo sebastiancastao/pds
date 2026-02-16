@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
     // Collect all user IDs whose events this user can see
     const creatorIds: string[] = [user.id];
 
-    if (userRole === 'supervisor') {
+    if (userRole === 'supervisor' || userRole === 'supervisor2') {
       // Look up which managers this supervisor is assigned to
       const { data: teamLinks } = await supabaseAdmin
         .from('manager_team_members')

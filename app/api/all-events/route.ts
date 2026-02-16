@@ -50,7 +50,7 @@ export async function GET(req: NextRequest) {
     }
 
     const userRole = (userData.role as string) || '';
-    if (userRole !== 'admin' && userRole !== 'exec' && userRole !== 'hr' && userRole !== 'manager' && userRole !== 'supervisor') {
+    if (userRole !== 'admin' && userRole !== 'exec' && userRole !== 'hr' && userRole !== 'manager' && userRole !== 'supervisor' && userRole !== 'supervisor2') {
       console.error('[ALL-EVENTS] Access denied - user role:', userRole);
       return NextResponse.json({ error: 'Access denied. Only admin, exec, hr, manager, and supervisor users can view all events.' }, { status: 403 });
     }

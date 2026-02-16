@@ -681,7 +681,7 @@ export async function GET(req: NextRequest) {
 
     const { data: userData } = await supabaseAdmin.from("users").select("role").eq("id", user.id).single();
     const role = (userData?.role || "").toString().trim().toLowerCase();
-    if (!["admin", "exec", "hr", "manager", "supervisor"].includes(role)) {
+    if (!["admin", "exec", "hr", "manager", "supervisor", "supervisor2"].includes(role)) {
       return jsonError("Unauthorized", 403);
     }
 

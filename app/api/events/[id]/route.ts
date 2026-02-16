@@ -54,9 +54,9 @@ export async function GET(
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
-    // For supervisors, look up their lead manager(s) to grant access to those events
+    // For supervisors/supervisor2, look up their lead manager(s) to grant access to those events
     let allowedCreatorIds: string[] = [user.id];
-    if (userRole === "supervisor") {
+    if (userRole === "supervisor" || userRole === "supervisor2") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
         .select("manager_id")
