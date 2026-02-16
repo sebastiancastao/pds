@@ -57,7 +57,7 @@ export async function POST(
     // Verify event exists and user owns it
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('id, created_by, event_name')
+      .select('id, created_by, event_name, event_date')
       .eq('id', eventId)
       .single();
 
@@ -65,8 +65,17 @@ export async function POST(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
+    // Allow event creator, exec, or manager roles
     if (event.created_by !== user.id) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      const { data: requester } = await supabaseAdmin
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .maybeSingle();
+      const role = String(requester?.role || '').toLowerCase().trim();
+      if (role !== 'exec' && role !== 'manager') {
+        return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      }
     }
 
     // Get vendor details for sending emails
@@ -201,12 +210,14 @@ export async function POST(
         }
 
         // Format event date
-        const eventDate = new Date(event.event_name).toLocaleDateString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
+        const eventDate = event.event_date
+          ? new Date(event.event_date + 'T00:00:00').toLocaleDateString('en-US', {
+              weekday: 'long',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric'
+            })
+          : 'Date TBD';
 
         return await sendTeamConfirmationEmail({
           email: vendor.email,
