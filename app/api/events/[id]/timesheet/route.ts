@@ -470,10 +470,12 @@ export async function PUT(
     const dayStart = dayStartUTC.toISOString();
     const dayEnd = dayEndUTC.toISOString();
 
+    // Delete entries matching this event_id OR entries with no event_id
+    // (the GET fallback finds untagged entries by timestamp, so we must delete those too)
     const { error: deleteError } = await supabaseAdmin
       .from("time_entries")
       .delete()
-      .eq("event_id", eventId)
+      .or(`event_id.eq.${eventId},event_id.is.null`)
       .eq("user_id", targetUserId)
       .gte("timestamp", dayStart)
       .lte("timestamp", dayEnd);
