@@ -3291,7 +3291,20 @@ export default function EventDashboardPage() {
                   <div className="flex justify-between items-center pt-2">
                     <span className="text-lg font-bold text-gray-900">Total Payroll</span>
                     <span className="text-2xl font-bold text-green-600">${(() => {
-                      const totalMs = Object.values(timesheetTotals).reduce((sum, ms) => sum + ms, 0);
+                      let totalMs = 0;
+                      for (const uid of Object.keys(timesheetTotals)) {
+                        let ms = timesheetTotals[uid] || 0;
+                        const sp = timesheetSpans[uid];
+                        if (sp?.firstMealStart && sp?.lastMealEnd) {
+                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
+                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
+                        }
+                        if (sp?.secondMealStart && sp?.secondMealEnd) {
+                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
+                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
+                        }
+                        totalMs += ms;
+                      }
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state

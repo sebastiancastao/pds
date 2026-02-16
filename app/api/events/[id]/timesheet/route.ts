@@ -427,14 +427,6 @@ export async function PUT(
       }
     }
 
-    const hasClockIn = !!spans.firstIn;
-    const hasClockOut = !!spans.lastOut;
-    if (hasClockIn !== hasClockOut) {
-      return NextResponse.json(
-        { error: "Clock In and Clock Out are both required when editing a shift." },
-        { status: 400 }
-      );
-    }
     const hasMeal1Start = !!spans.firstMealStart;
     const hasMeal1End = !!spans.lastMealEnd;
     if (hasMeal1Start !== hasMeal1End) {
