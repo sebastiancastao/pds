@@ -361,8 +361,8 @@ export async function PUT(
       return NextResponse.json({ error: requesterError.message }, { status: 500 });
     }
     const requesterRole = String(requester?.role || "").toLowerCase().trim();
-    if (requesterRole !== "exec" && requesterRole !== "manager") {
-      return NextResponse.json({ error: "Only exec or manager can edit timesheets." }, { status: 403 });
+    if (requesterRole !== "exec" && requesterRole !== "manager" && requesterRole !== "supervisor") {
+      return NextResponse.json({ error: "Only exec, manager, or supervisor can edit timesheets." }, { status: 403 });
     }
 
     const body = await req.json().catch(() => null);

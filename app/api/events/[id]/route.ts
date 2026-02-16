@@ -54,14 +54,31 @@ export async function GET(
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
-    // Build query - admin/exec can see any event, others only their own
+    // For supervisors, look up their lead manager(s) to grant access to those events
+    let allowedCreatorIds: string[] = [user.id];
+    if (userRole === "supervisor") {
+      const { data: teamLinks } = await supabaseAdmin
+        .from("manager_team_members")
+        .select("manager_id")
+        .eq("member_id", user.id)
+        .eq("is_active", true);
+      if (teamLinks) {
+        for (const link of teamLinks) {
+          if (!allowedCreatorIds.includes(link.manager_id)) {
+            allowedCreatorIds.push(link.manager_id);
+          }
+        }
+      }
+    }
+
+    // Build query - admin/exec can see any event, supervisors see own + manager's, others only their own
     let query = supabaseAdmin
       .from("events")
       .select("*")
       .eq("id", eventId);
 
     if (!isAdminOrExec) {
-      query = query.eq("created_by", user.id);
+      query = query.in("created_by", allowedCreatorIds);
     }
 
     const { data, error } = await query.single();
@@ -132,6 +149,23 @@ export async function PUT(
 
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
+
+    // For supervisors, look up their lead manager(s) to grant edit access
+    let allowedCreatorIds: string[] = [user.id];
+    if (userRole === "supervisor") {
+      const { data: teamLinks } = await supabaseAdmin
+        .from("manager_team_members")
+        .select("manager_id")
+        .eq("member_id", user.id)
+        .eq("is_active", true);
+      if (teamLinks) {
+        for (const link of teamLinks) {
+          if (!allowedCreatorIds.includes(link.manager_id)) {
+            allowedCreatorIds.push(link.manager_id);
+          }
+        }
+      }
+    }
 
     const body = await req.json();
 
@@ -244,14 +278,14 @@ export async function PUT(
       updatePayload.tips = tips;
     }
 
-    // Build update query - admin/exec can edit any event, others only their own
+    // Build update query - admin/exec can edit any event, supervisors own + manager's, others only their own
     let updateQuery = supabaseAdmin
       .from("events")
       .update(updatePayload)
       .eq("id", eventId);
 
     if (!isAdminOrExec) {
-      updateQuery = updateQuery.eq("created_by", user.id);
+      updateQuery = updateQuery.in("created_by", allowedCreatorIds);
     }
 
     const { data, error } = await updateQuery.select();

@@ -80,7 +80,7 @@ export default function EventDashboardPage() {
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
-  const canEditTimesheets = userRole === "exec" || userRole === "manager";
+  const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor";
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");

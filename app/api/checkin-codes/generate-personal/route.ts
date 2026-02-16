@@ -42,7 +42,7 @@ async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> 
 }
 
 function canManageCodes(role: string | null | undefined) {
-  return ["manager", "hr", "exec", "admin"].includes(String(role || ""));
+  return ["manager", "supervisor", "hr", "exec", "admin"].includes(String(role || ""));
 }
 
 async function listAllAuthUsers(): Promise<Map<string, string>> {

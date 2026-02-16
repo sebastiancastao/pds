@@ -52,7 +52,8 @@
       "Bash(sort:*)",
       "Bash(GIT_TRACE=1 git push:*)",
       "Bash(git repack:*)",
-      "Bash(npx eslint:*)"
+      "Bash(npx eslint:*)",
+      "Bash(git status:*)"
     ],
     "deny": [],
     "ask": []

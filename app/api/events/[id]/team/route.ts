@@ -73,7 +73,7 @@ export async function POST(
         .eq('id', user.id)
         .maybeSingle();
       const role = String(requester?.role || '').toLowerCase().trim();
-      if (role !== 'exec' && role !== 'manager') {
+      if (role !== 'exec' && role !== 'manager' && role !== 'supervisor') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
       }
     }

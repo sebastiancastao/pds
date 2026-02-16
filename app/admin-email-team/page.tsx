@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
 
-const allowedRoles = new Set(['admin', 'exec', 'manager']);
+const allowedRoles = new Set(['admin', 'exec', 'manager', 'supervisor']);
 
 type AccessState = 'checking' | 'allowed' | 'forbidden';
 

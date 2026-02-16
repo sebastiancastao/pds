@@ -134,11 +134,40 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const isActiveParam = searchParams.get('is_active');
 
-    // Filter events by the current user (only show events they created)
+    // Check if user is a supervisor — if so, also include their lead manager's events
+    const { data: userData } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    const userRole = userData?.role || '';
+
+    // Collect all user IDs whose events this user can see
+    const creatorIds: string[] = [user.id];
+
+    if (userRole === 'supervisor') {
+      // Look up which managers this supervisor is assigned to
+      const { data: teamLinks } = await supabaseAdmin
+        .from('manager_team_members')
+        .select('manager_id')
+        .eq('member_id', user.id)
+        .eq('is_active', true);
+
+      if (teamLinks && teamLinks.length > 0) {
+        for (const link of teamLinks) {
+          if (!creatorIds.includes(link.manager_id)) {
+            creatorIds.push(link.manager_id);
+          }
+        }
+      }
+    }
+
+    // Filter events by the current user and their lead managers (for supervisors)
     let query = supabaseAdmin
       .from('events')
       .select('*')
-      .eq('created_by', user.id)
+      .in('created_by', creatorIds)
       .order('event_date', { ascending: false })
       .order('start_time', { ascending: false });
 

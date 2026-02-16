@@ -43,7 +43,7 @@ export async function GET(req: NextRequest) {
       .eq("id", user.id)
       .single();
 
-    if (!userData || !["manager", "hr", "exec"].includes(userData.role)) {
+    if (!userData || !["manager", "supervisor", "hr", "exec"].includes(userData.role)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 

@@ -708,7 +708,7 @@ export default function DashboardPage() {
 
         // Only allow admin, exec, and manager users
         const role = userData.role as string;
-        if (role !== 'admin' && role !== 'exec' && role !== 'manager') {
+        if (role !== 'admin' && role !== 'exec' && role !== 'manager' && role !== 'supervisor') {
           console.error('[GLOBAL-CALENDAR] Access denied - user role:', role);
           router.replace('/dashboard');
           return;

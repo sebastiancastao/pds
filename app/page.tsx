@@ -87,8 +87,8 @@ export default function Home() {
     const userRole = userData?.role;
     console.log('[DEBUG] Home - User role:', userRole);
 
-    if (userRole === 'manager') {
-      console.log('[DEBUG] Home - Manager role detected, redirecting to /dashboard');
+    if (userRole === 'manager' || userRole === 'supervisor') {
+      console.log('[DEBUG] Home - Manager/Supervisor role detected, redirecting to /dashboard');
       router.push('/dashboard');
       return;
     }

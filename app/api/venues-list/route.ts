@@ -52,26 +52,53 @@ export async function GET(req: NextRequest) {
     let venues;
     let error;
 
-    // If user is a manager, only return venues they are assigned to
-    if (userData.role === 'manager') {
-      const { data: managerVenues, error: managerError } = await supabaseAdmin
-        .from('venue_managers')
-        .select(`
-          venue:venue_reference(*)
-        `)
-        .eq('manager_id', user.id)
-        .eq('is_active', true);
-
-      if (managerError) {
-        console.error('SUPABASE SELECT ERROR (manager venues):', managerError);
-        return NextResponse.json({ error: managerError.message || managerError.code || managerError }, { status: 500 });
+    // If user is a manager or supervisor, only return assigned venues
+    // Supervisors see the same venues as their lead manager(s)
+    if (userData.role === 'manager' || userData.role === 'supervisor') {
+      // For supervisors, look up their manager IDs to get their venue access
+      const managerIds: string[] = [];
+      if (userData.role === 'supervisor') {
+        const { data: teamLinks } = await supabaseAdmin
+          .from('manager_team_members')
+          .select('manager_id')
+          .eq('member_id', user.id)
+          .eq('is_active', true);
+        if (teamLinks) {
+          for (const link of teamLinks) {
+            managerIds.push(link.manager_id);
+          }
+        }
+      } else {
+        managerIds.push(user.id);
       }
 
-      // Extract venues from the joined data and filter out nulls
-      venues = (managerVenues || [])
-        .map((mv: any) => mv.venue)
-        .filter((v: any) => v !== null)
-        .sort((a: any, b: any) => a.venue_name.localeCompare(b.venue_name));
+      if (managerIds.length === 0) {
+        venues = [];
+      } else {
+        const { data: managerVenues, error: managerError } = await supabaseAdmin
+          .from('venue_managers')
+          .select(`
+            venue:venue_reference(*)
+          `)
+          .in('manager_id', managerIds)
+          .eq('is_active', true);
+
+        if (managerError) {
+          console.error('SUPABASE SELECT ERROR (manager venues):', managerError);
+          return NextResponse.json({ error: managerError.message || managerError.code || managerError }, { status: 500 });
+        }
+
+        // Extract venues, deduplicate, and sort
+        const venueMap = new Map();
+        for (const mv of (managerVenues || [])) {
+          const v = (mv as any).venue;
+          if (v && !venueMap.has(v.id)) {
+            venueMap.set(v.id, v);
+          }
+        }
+        venues = Array.from(venueMap.values())
+          .sort((a: any, b: any) => a.venue_name.localeCompare(b.venue_name));
+      }
     } else {
       // For exec, admin, and other roles, return all venues
       const { data: allVenues, error: venuesError } = await supabaseAdmin

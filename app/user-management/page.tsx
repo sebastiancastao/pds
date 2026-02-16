@@ -433,6 +433,19 @@ export default function UserManagementPage() {
             Reset User Password
           </Link>
           <Link
+            href="/role-management"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#8b5cf6',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Role Management
+          </Link>
+          <Link
             href="/admin-email"
             style={{
               padding: '0.5rem 1rem',

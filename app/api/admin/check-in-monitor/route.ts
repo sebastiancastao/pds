@@ -118,7 +118,7 @@ export async function GET(req: NextRequest) {
       .single();
 
     const role = (userData?.role || "").toString().trim().toLowerCase();
-    if (!["admin", "exec", "hr", "manager"].includes(role)) {
+    if (!["admin", "exec", "hr", "manager", "supervisor"].includes(role)) {
       return jsonError("Unauthorized", 403);
     }
 
