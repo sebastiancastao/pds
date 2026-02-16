@@ -724,10 +724,18 @@ export async function GET(req: NextRequest) {
           adjustment_amount: adjustment?.adjustment_amount || 0,
           adjustment_note: adjustment?.adjustment_note || '',
         });
-        // Deduct meal time from actual_hours to match timesheet tab display
+        // Deduct meal time from ALL hour fields to match timesheet tab display
         const mealDeduct = eventMealDeductions[row.user_id] || 0;
-        if (mealDeduct > 0 && Number(row.actual_hours || 0) > 0) {
-          row.actual_hours = Math.max(Number(row.actual_hours) - mealDeduct, 0);
+        if (mealDeduct > 0) {
+          if (Number(row.actual_hours || 0) > 0) {
+            row.actual_hours = Math.max(Number(row.actual_hours) - mealDeduct, 0);
+          }
+          if (Number(row.regular_hours || 0) > 0) {
+            row.regular_hours = Math.max(Number(row.regular_hours) - mealDeduct, 0);
+          }
+          if (Number(row.worked_hours || 0) > 0) {
+            row.worked_hours = Math.max(Number(row.worked_hours) - mealDeduct, 0);
+          }
         }
         return row;
       });

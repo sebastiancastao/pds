@@ -1000,17 +1000,17 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
         if (memberDivision === 'trailers') return sum;
-        const ms = getMealDeductedMsForSave(uid);
+        const ms = timesheetTotals[uid] || 0;
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
       const perVendorCommissionShare =
         vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
-      // Build vendor payments array
+      // Build vendor payments array (save RAW hours; meal deduction applied at display/API level)
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = getMealDeductedMsForSave(uid);
+        const totalMs = timesheetTotals[uid] || 0;
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
