@@ -28,6 +28,8 @@ type RecipientUser = {
   first_name: string;
   last_name: string;
   onboarding_completed: boolean;
+  email_sent: boolean;
+  last_sent_at: string | null;
 };
 
 export default function CheckInCodesPage() {
@@ -93,7 +95,7 @@ export default function CheckInCodesPage() {
 
     if (filterOnboardedNotSent) {
       result = result.filter((u) =>
-        u.onboarding_completed && !personalCodeByUserId.has(u.id)
+        u.onboarding_completed && !u.email_sent
       );
     }
 
@@ -106,7 +108,7 @@ export default function CheckInCodesPage() {
     }
 
     return result;
-  }, [recipients, searchQuery, filterOnboardedNotSent, personalCodeByUserId]);
+  }, [recipients, searchQuery, filterOnboardedNotSent]);
 
   useEffect(() => {
     checkAuth();
@@ -193,7 +195,18 @@ export default function CheckInCodesPage() {
       if (!res.ok) return;
 
       const users = Array.isArray(data?.users) ? (data.users as any[]) : [];
-      setRecipients(users);
+      setRecipients(
+        users.map((u: any) => ({
+          id: String(u.id || ""),
+          email: String(u.email || ""),
+          role: String(u.role || ""),
+          first_name: String(u.first_name || ""),
+          last_name: String(u.last_name || ""),
+          onboarding_completed: Boolean(u.onboarding_completed),
+          email_sent: Boolean(u.email_sent),
+          last_sent_at: u.last_sent_at ? String(u.last_sent_at) : null,
+        }))
+      );
     } catch (err) {
       console.error("Error fetching recipients:", err);
     } finally {
@@ -307,6 +320,7 @@ export default function CheckInCodesPage() {
 
       const sentTo = Number(data?.sentTo || 0);
       setEmailSuccess(`Email sent to all users (${sentTo} recipients)`);
+      await fetchRecipients();
     } catch (err) {
       setEmailError("An unexpected error occurred while sending the email");
     } finally {
@@ -386,6 +400,9 @@ export default function CheckInCodesPage() {
             ? `Sent to ${sentTo}, failed ${failedCount}: ${firstFailure}`
             : `Sent to ${sentTo}, failed ${failedCount}`
         );
+        if (sentTo > 0) {
+          await fetchRecipients();
+        }
         return;
       }
 
@@ -398,6 +415,7 @@ export default function CheckInCodesPage() {
       setEmailSuccess(
         `Email sent to onboarding-completed users (${sentTo} recipients)`
       );
+      await fetchRecipients();
     } catch (err) {
       setEmailError("An unexpected error occurred while sending the email");
     } finally {
@@ -439,10 +457,16 @@ export default function CheckInCodesPage() {
       const failedCount = Number(data?.failedCount || 0);
       if (failedCount > 0) {
         setEmailError(`Test send: sent ${sentTo}, failed ${failedCount}`);
+        if (sentTo > 0) {
+          await fetchRecipients();
+        }
         return;
       }
 
       setEmailSuccess(`Test emails sent (${sentTo} recipients)`);
+      if (sentTo > 0) {
+        await fetchRecipients();
+      }
     } catch (err) {
       setEmailError("An unexpected error occurred while sending test emails");
     } finally {
@@ -482,6 +506,7 @@ export default function CheckInCodesPage() {
       }
 
       setEmailSuccess("Email sent successfully");
+      await fetchRecipients();
     } catch (err) {
       setEmailError("An unexpected error occurred while sending the email");
     } finally {
@@ -834,7 +859,7 @@ export default function CheckInCodesPage() {
                     : "bg-white text-gray-700 border-gray-300 hover:bg-gray-50"
                 }`}
                 type="button"
-                title="Show only users who completed onboarding and don't have a code yet"
+                title="Show only users who completed onboarding and have not been emailed yet"
               >
                 Onboarded &amp; Not Sent
               </button>
@@ -852,18 +877,30 @@ export default function CheckInCodesPage() {
                     className="flex items-center justify-between gap-3 border border-gray-100 rounded-xl p-3 bg-white"
                   >
                     <div className="min-w-0">
-                      <div className="text-sm font-medium text-gray-900 truncate">
-                        {(u.first_name || u.last_name
-                          ? `${u.first_name} ${u.last_name}`.trim()
-                          : u.email) || "User"}
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {(u.first_name || u.last_name
+                            ? `${u.first_name} ${u.last_name}`.trim()
+                            : u.email) || "User"}
+                        </div>
+                        {u.email_sent && (
+                          <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-700 uppercase">
+                            Sent
+                          </span>
+                        )}
                       </div>
                       <div className="text-xs text-gray-500 truncate">
-                        {u.email} • {u.role}
+                        {u.email} | {u.role}
                       </div>
+                      {u.last_sent_at && (
+                        <div className="text-xs text-emerald-700 mt-1">
+                          Last sent: {new Date(u.last_sent_at).toLocaleString()}
+                        </div>
+                      )}
                       <div className="text-xs text-gray-600 mt-1">
                         Code:{" "}
                         <span className="font-mono font-semibold tracking-widest text-gray-900">
-                          {personalCodeByUserId.get(u.id)?.code || "—"}
+                          {personalCodeByUserId.get(u.id)?.code || "-"}
                         </span>
                       </div>
                     </div>

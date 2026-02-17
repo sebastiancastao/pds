@@ -341,6 +341,11 @@ export default function EventDashboardPage() {
     return hasTimesheetForMember(member) ? count + 1 : count;
   }, 0), [teamMembers, timesheetTotals, timesheetSpans]);
 
+  const assignedVendorCount = useMemo(() => teamMembers.reduce((count: number, member: any) => {
+    if (!isVendorDivision(member.users?.division)) return count;
+    return count + 1;
+  }, 0), [teamMembers]);
+
   const assignedLocationRecipientCount = useMemo(() => {
     const uniqueUserIds = new Set<string>();
     Object.values(locationAssignments).forEach((ids) => {
@@ -3468,11 +3473,19 @@ export default function EventDashboardPage() {
   <div className="space-y-6">
     <div className="flex items-center justify-between">
       <h2 className="text-2xl font-bold">TimeSheet</h2>
-      <div className="text-sm text-gray-500">
-        Event window (CA time):{" "}
-        {isoToPacificHHMM(event?.start_time)}{" "}
-        – {isoToPacificHHMM(event?.end_time)}{" "}
-        {getPacificTzAbbr(event?.start_time || event?.end_time)}
+      <div className="text-sm text-gray-500 text-right">
+        <div className="font-medium text-gray-700">
+          Vendors: {assignedVendorCount}
+          {vendorCount !== assignedVendorCount && (
+            <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
+          )}
+        </div>
+        <div>
+          Event window (CA time):{" "}
+          {isoToPacificHHMM(event?.start_time)}{" "}
+          – {isoToPacificHHMM(event?.end_time)}{" "}
+          {getPacificTzAbbr(event?.start_time || event?.end_time)}
+        </div>
       </div>
     </div>
 
@@ -3735,7 +3748,15 @@ export default function EventDashboardPage() {
           {/* HR TAB */}
           {activeTab === "hr" && (
             <div className="space-y-6">
-              <h2 className="text-2xl font-bold mb-6">HR Management</h2>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-2xl font-bold">HR Management</h2>
+                <div className="text-sm text-gray-600">
+                  Vendors: {assignedVendorCount}
+                  {vendorCount !== assignedVendorCount && (
+                    <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
+                  )}
+                </div>
+              </div>
 
               {loadingPaymentTab && (
                 <div className="text-center py-6 bg-white border rounded-lg">
