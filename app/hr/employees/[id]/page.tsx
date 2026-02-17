@@ -166,8 +166,6 @@ export default function EmployeeProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
-  const [onboardingTemplates, setOnboardingTemplates] = useState<OnboardingTemplate[]>([]);
-  const [templatesLoading, setTemplatesLoading] = useState(false);
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -306,41 +304,6 @@ export default function EmployeeProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
-  // Fetch onboarding form templates after employee is loaded
-  useEffect(() => {
-    const loadOnboardingTemplates = async () => {
-      if (!employee?.state) return;
-
-      console.log("🔵 [DEBUG] Fetching onboarding templates for state:", employee.state);
-      setTemplatesLoading(true);
-
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-
-        const response = await fetch(`/api/onboarding-forms?state=${employee.state}`, {
-          headers: {
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-          },
-        });
-
-        if (response.ok) {
-          const result = await response.json();
-          console.log("🟢 [DEBUG] Onboarding templates loaded:", result.forms?.length || 0);
-          setOnboardingTemplates(result.forms || []);
-        } else {
-          console.log("⚠️ [DEBUG] No onboarding templates found or error:", response.status);
-          setOnboardingTemplates([]);
-        }
-      } catch (error) {
-        console.error("🔴 [DEBUG] Error loading onboarding templates:", error);
-        setOnboardingTemplates([]);
-      } finally {
-        setTemplatesLoading(false);
-      }
-    };
-
-    loadOnboardingTemplates();
-  }, [employee?.state]);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -374,28 +337,37 @@ export default function EmployeeProfilePage() {
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
-  const sickLeaveTotalDays = sickLeaveSummary?.total_days ?? 0;
-  const sickLeaveAccruedMonths = sickLeaveSummary?.accrued_months ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
-  const sickLeaveAccruedDays = sickLeaveSummary?.accrued_days ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
-  const sickLeaveBalanceDays = sickLeaveSummary?.balance_days ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
+
+  const createPdfBlobUrl = (base64Data: string) => {
+    const byteCharacters = atob(base64Data);
+    const byteNumbers = new Array(byteCharacters.length);
+    for (let i = 0; i < byteCharacters.length; i++) {
+      byteNumbers[i] = byteCharacters.charCodeAt(i);
+    }
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], { type: 'application/pdf' });
+    return window.URL.createObjectURL(blob);
+  };
+
+  const openPdfInNewTab = (base64Data: string) => {
+    const url = createPdfBlobUrl(base64Data);
+    const popup = window.open(url, '_blank');
+    if (!popup) {
+      window.URL.revokeObjectURL(url);
+      throw new Error('Popup blocked');
+    }
+    popup.opener = null;
+    setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
 
   // Download a single PDF form
   const downloadPDFForm = (form: PDFForm) => {
     try {
-      // Convert base64 to blob
-      const byteCharacters = atob(form.form_data);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'application/pdf' });
-
       // Create download link
-      const url = window.URL.createObjectURL(blob);
+      const url = createPdfBlobUrl(form.form_data);
       const link = document.createElement('a');
       link.href = url;
       link.download = `${form.display_name}.pdf`;
@@ -406,6 +378,15 @@ export default function EmployeeProfilePage() {
     } catch (error) {
       console.error('Error downloading PDF:', error);
       alert('Failed to download PDF form');
+    }
+  };
+
+  const viewPDFForm = (form: PDFForm) => {
+    try {
+      openPdfInNewTab(form.form_data);
+    } catch (error) {
+      console.error('Error viewing PDF:', error);
+      alert('Failed to open PDF form');
     }
   };
 
@@ -428,46 +409,13 @@ export default function EmployeeProfilePage() {
     }
   };
 
-  // Download an onboarding template
-  const downloadTemplate = (template: OnboardingTemplate) => {
-    try {
-      // Convert base64 to blob
-      const byteCharacters = atob(template.pdf_data);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
-      }
-      const byteArray = new Uint8Array(byteNumbers);
-      const blob = new Blob([byteArray], { type: 'application/pdf' });
-
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${template.form_display_name}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Error downloading template:', error);
-      alert('Failed to download template');
-    }
-  };
-
-  // Download all documents (PDFs + I-9 documents + Templates)
+  // Download all documents (PDF forms + I-9 documents)
   const downloadAllDocuments = async () => {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
         downloadPDFForm(form);
         // Small delay between downloads to avoid browser blocking
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-
-      // Download all onboarding templates
-      for (const template of onboardingTemplates) {
-        downloadTemplate(template);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -490,8 +438,8 @@ export default function EmployeeProfilePage() {
         }
       }
 
-      const totalCount = pdfForms.length + onboardingTemplates.length + i9Count;
-      alert(`Downloaded ${totalCount} documents (${pdfForms.length} filled forms, ${onboardingTemplates.length} templates, ${i9Count} I-9 documents)`);
+      const totalCount = pdfForms.length + i9Count;
+      alert(`Downloaded ${totalCount} documents (${pdfForms.length} onboarding forms, ${i9Count} I-9 documents)`);
     } catch (error) {
       console.error('Error downloading all documents:', error);
       alert('Some documents may have failed to download');
@@ -781,19 +729,16 @@ export default function EmployeeProfilePage() {
                   <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
                     <div className="text-sm font-medium text-pink-700">Used</div>
                     <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
-                    <div className="text-xs text-pink-500 mt-1">{sickLeaveTotalDays.toFixed(2)} days</div>
                   </div>
                   <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
                     <div className="text-sm font-medium text-indigo-700">Earned</div>
                     <div className="text-3xl font-bold text-indigo-900">
                       {formatHours(sickLeaveAccruedHours)} hrs
                     </div>
-                    <div className="text-xs text-indigo-500 mt-1">{sickLeaveAccruedDays.toFixed(2)} days</div>
                   </div>
                   <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
                     <div className="text-sm font-medium text-amber-700">Balance</div>
                     <div className="text-3xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
-                    <div className="text-xs text-amber-500 mt-1">{sickLeaveBalanceDays.toFixed(2)} days</div>
                   </div>
                 </div>
 
@@ -801,7 +746,7 @@ export default function EmployeeProfilePage() {
                   <div>
                     <p className="text-xs uppercase keeping-wide text-gray-400">Earned</p>
                     <p className="text-lg font-semibold text-gray-900">
-                      {sickLeaveAccruedDays.toFixed(2)} days ({formatHours(sickLeaveAccruedHours)})
+                      {formatHours(sickLeaveAccruedHours)} hours
                     </p>
                     <p className="text-xs text-gray-400">
                       Based on {formatHours(summary?.total_hours ?? 0)} total hours worked
@@ -810,7 +755,7 @@ export default function EmployeeProfilePage() {
                   <div>
                     <p className="text-xs uppercase keeping-wide text-gray-400">Available balance</p>
                     <p className="text-lg font-semibold text-gray-900">
-                      {sickLeaveBalanceDays.toFixed(2)} days ({formatHours(sickLeaveBalanceHours)})
+                      {formatHours(sickLeaveBalanceHours)} hours
                     </p>
                     <p className="text-xs text-gray-400">
                       {sickLeaveBalanceHours > 0 ? "Ready to use" : "No balance available yet"}
@@ -1159,7 +1104,7 @@ export default function EmployeeProfilePage() {
                     </svg>
                     Manage Onboarding Forms
                   </Link>
-                  {(pdfForms.length > 0 || onboardingTemplates.length > 0 || i9Documents) && (
+                  {(pdfForms.length > 0 || i9Documents) && (
                     <button
                       onClick={downloadAllDocuments}
                       className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
@@ -1173,26 +1118,18 @@ export default function EmployeeProfilePage() {
                 </div>
               </div>
               <div className="apple-card p-6">
-                {(pdfLoading || templatesLoading) ? (
+                {pdfLoading ? (
                   <div className="flex items-center justify-center py-8">
                     <div className="apple-spinner" />
                     <span className="ml-3 text-gray-600">Loading forms…</span>
                   </div>
-                ) : (pdfForms.length === 0 && onboardingTemplates.length === 0) ? (
+                ) : (pdfForms.length === 0) ? (
                   <div className="text-center py-8">
                     <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    <p className="text-gray-500 font-medium">No onboarding forms available</p>
-                    <p className="text-sm text-gray-400 mt-1">
-                      {!employee?.state
-                        ? 'Employee has no state assigned'
-                        : 'No templates configured for this state or employee has not submitted forms yet'
-                      }
-                    </p>
-                    <p className="text-xs text-gray-400 mt-2">
-                      Check browser console for debugging information
-                    </p>
+                    <p className="text-gray-500 font-medium">No onboarding forms submitted yet</p>
+                    <p className="text-sm text-gray-400 mt-1">This section shows user rows from `pdf_form_progress`.</p>
                   </div>
                 ) : (
                   <div className="space-y-6">
@@ -1231,15 +1168,27 @@ export default function EmployeeProfilePage() {
                                   </svg>
                                   {formatDate(form.updated_at)}
                                 </div>
-                                <button
-                                  onClick={() => downloadPDFForm(form)}
-                                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                                >
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                  </svg>
-                                  Download Filled PDF
-                                </button>
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => viewPDFForm(form)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                    </svg>
+                                    View
+                                  </button>
+                                  <button
+                                    onClick={() => downloadPDFForm(form)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    Download
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           ))}
@@ -1247,64 +1196,6 @@ export default function EmployeeProfilePage() {
                       </div>
                     )}
 
-                    {/* Templates Section */}
-                    {onboardingTemplates.length > 0 && (
-                      <div>
-                        <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                          <span className="inline-flex items-center justify-center w-6 h-6 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">
-                            {onboardingTemplates.length}
-                          </span>
-                          Available Templates
-                        </h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {onboardingTemplates.map((template) => (
-                            <div
-                              key={template.id}
-                              className="border border-gray-200 rounded-xl p-4 hover:border-blue-300 hover:shadow-md transition-all"
-                            >
-                              <div className="flex items-start justify-between mb-3">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-10 h-10 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center flex-shrink-0">
-                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                    </svg>
-                                  </div>
-                                  <div>
-                                    <h3 className="font-semibold text-gray-900 text-sm">{template.form_display_name}</h3>
-                                    <p className="text-xs text-gray-500">
-                                      {template.state_code ? `${template.state_code} Form` : 'Universal Form'}
-                                      {template.is_required && <span className="text-red-600 ml-1">*</span>}
-                                    </p>
-                                  </div>
-                                </div>
-                              </div>
-                              {template.form_description && (
-                                <p className="text-xs text-gray-600 mb-2 line-clamp-2">{template.form_description}</p>
-                              )}
-                              <div className="space-y-2">
-                                <div className="flex items-center justify-between text-xs text-gray-500">
-                                  <span className="px-2 py-1 bg-gray-100 rounded text-xs font-medium capitalize">
-                                    {template.form_category.replace('_', ' ')}
-                                  </span>
-                                  {template.file_size && (
-                                    <span>{(template.file_size / 1024).toFixed(1)} KB</span>
-                                  )}
-                                </div>
-                                <button
-                                  onClick={() => downloadTemplate(template)}
-                                  className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                                >
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                  </svg>
-                                  Download Template
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
                   </div>
                 )}
               </div>

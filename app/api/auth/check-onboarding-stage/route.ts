@@ -111,7 +111,7 @@ export async function POST(req: NextRequest) {
     // Get profile ID and check if user has completed registration
     const { data: profile, error: profileError } = await adminClient
       .from('profiles')
-      .select('id, state, first_name, last_name, address')
+      .select('id, state, first_name, last_name, address, onboarding_completed_at')
       .eq('user_id', user.id)
       .single();
 
@@ -267,7 +267,7 @@ export async function POST(req: NextRequest) {
     if (allFormsCompleted) {
       console.log('[Check Onboarding Stage API] ===== ALL FORMS COMPLETED =====');
       console.log('[Check Onboarding Stage API] All', formSequence.length, 'forms in sequence are completed');
-      console.log('[Check Onboarding Stage API] Checking if admin has approved onboarding...');
+      console.log('[Check Onboarding Stage API] Checking if onboarding has been submitted/approved...');
 
       // Check if onboarding has been approved
       const { data: onboardingStatus, error: statusError } = await adminClient
@@ -298,19 +298,28 @@ export async function POST(req: NextRequest) {
         }, { status: 200 });
       }
 
-      // Forms completed but not approved - redirect to pending page
+      // Keep users on pending only when there is a submission marker.
+      // If there is no submission marker, allow re-editing even when all forms are present.
+      const hasSubmissionMarker = !!onboardingStatus || !!profile.onboarding_completed_at;
+      if (hasSubmissionMarker) {
+        console.log('[Check Onboarding Stage API] ========================================');
+        console.log('[Check Onboarding Stage API] FORMS COMPLETED BUT NOT APPROVED');
+        console.log('[Check Onboarding Stage API] User has completed/submitted forms but admin has not approved');
+        console.log('[Check Onboarding Stage API] Returning: nextStage = /onboarding-pending');
+        console.log('[Check Onboarding Stage API] ========================================');
+        return NextResponse.json({
+          nextStage: '/onboarding-pending',
+          completedCount: completedFormNames.size,
+          totalCount: formSequence.length,
+          percentComplete: 100,
+          approved: false
+        }, { status: 200 });
+      }
+
       console.log('[Check Onboarding Stage API] ========================================');
-      console.log('[Check Onboarding Stage API] ⚠️ FORMS COMPLETED BUT NOT APPROVED');
-      console.log('[Check Onboarding Stage API] User has completed all forms but admin has not approved');
-      console.log('[Check Onboarding Stage API] Returning: nextStage = /onboarding-pending');
+      console.log('[Check Onboarding Stage API] All forms exist but no submission marker was found');
+      console.log('[Check Onboarding Stage API] Allowing user back into editable onboarding flow');
       console.log('[Check Onboarding Stage API] ========================================');
-      return NextResponse.json({
-        nextStage: '/onboarding-pending',
-        completedCount: completedFormNames.size,
-        totalCount: formSequence.length,
-        percentComplete: 100,
-        approved: false
-      }, { status: 200 });
     }
 
     // Not all forms completed - redirect to most recently updated form

@@ -15,6 +15,9 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const SICK_LEAVE_ACCRUAL_HOURS_WORKED = 30;
+const HOURS_PER_WORKDAY = 8;
+
 // ---------- Utilities ----------
 function toDateSafe(v: any): Date | null {
   if (!v) return null;
@@ -434,16 +437,18 @@ export async function GET(
     }));
 
     const totalSickHours = sickLeaveEntries.reduce((sum, entry) => sum + (entry.duration_hours || 0), 0);
-    const accruedMonths = fullMonthsBetween(employee.hire_date);
-    const accruedDays = accruedMonths;
-    const accruedHours = Number((accruedDays * 8).toFixed(2));
+    const tenureMonths = fullMonthsBetween(employee.hire_date);
+    const accruedHours = Number(
+      (totalHoursForTeamEvents / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2)
+    );
+    const accruedDays = Number((accruedHours / HOURS_PER_WORKDAY).toFixed(2));
     const availableHours = Number(Math.max(0, accruedHours - totalSickHours).toFixed(2));
-    const availableDays = Number((availableHours / 8).toFixed(2));
+    const availableDays = Number((availableHours / HOURS_PER_WORKDAY).toFixed(2));
     const sickLeaveSummary = {
       total_hours: Number(totalSickHours.toFixed(2)),
-      total_days: Number((totalSickHours / 8).toFixed(2)),
+      total_days: Number((totalSickHours / HOURS_PER_WORKDAY).toFixed(2)),
       entries: sickLeaveEntries,
-      accrued_months: accruedMonths,
+      accrued_months: tenureMonths,
       accrued_hours: accruedHours,
       accrued_days: accruedDays,
       balance_hours: availableHours,

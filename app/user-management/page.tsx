@@ -265,7 +265,12 @@ export default function UserManagementPage() {
       setUsers(prevUsers =>
         prevUsers.map(user =>
           user.id === userId
-            ? { ...user, has_vendor_onboarding_record: false, vendor_onboarding_completed: null }
+            ? {
+                ...user,
+                has_vendor_onboarding_record: false,
+                vendor_onboarding_completed: null,
+                onboarding_completed_at: null
+              }
             : user
         )
       );
@@ -276,6 +281,12 @@ export default function UserManagementPage() {
       setResettingOnboarding(null);
     }
   };
+
+  const hasOnboardingSubmission = (user: User) =>
+    user.has_vendor_onboarding_record || !!user.onboarding_completed_at;
+
+  const isOnboardingApproved = (user: User) =>
+    user.vendor_onboarding_completed === true;
 
   const exportToExcel = () => {
     if (filteredUsers.length === 0) {
@@ -618,16 +629,16 @@ export default function UserManagementPage() {
                       </span>
                     </td>
                     <td style={{ padding: '0.75rem' }}>
-                      {user.has_vendor_onboarding_record ? (
+                      {hasOnboardingSubmission(user) ? (
                         <span style={{
                           padding: '0.25rem 0.5rem',
-                          backgroundColor: user.vendor_onboarding_completed ? '#dcfce7' : '#fef3c7',
-                          color: user.vendor_onboarding_completed ? '#15803d' : '#92400e',
+                          backgroundColor: isOnboardingApproved(user) ? '#dcfce7' : '#fef3c7',
+                          color: isOnboardingApproved(user) ? '#15803d' : '#92400e',
                           borderRadius: '0.25rem',
                           fontSize: '0.875rem',
                           fontWeight: '500'
                         }}>
-                          {user.vendor_onboarding_completed ? 'Approved' : 'Pending Approval'}
+                          {isOnboardingApproved(user) ? 'Approved' : 'Pending Approval'}
                         </span>
                       ) : (
                         <span style={{
@@ -684,7 +695,7 @@ export default function UserManagementPage() {
                             {resettingDownloads === user.id ? 'Resetting...' : 'Reset Downloaded'}
                           </button>
                         )}
-                        {user.has_vendor_onboarding_record && (
+                        {hasOnboardingSubmission(user) && (
                           <button
                             onClick={() => resetOnboarding(user.id)}
                             disabled={resettingOnboarding === user.id}

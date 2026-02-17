@@ -91,6 +91,14 @@ function HRDashboardContent() {
     const mm = totalMinutes % 60;
     return `${hh}:${String(mm).padStart(2, "0")}`;
   };
+  const roundUpThousandsToNextHundred = (amount: number): number => {
+    if (!Number.isFinite(amount)) return 0;
+    if (Math.abs(amount) < 1000) return amount;
+    const roundedMagnitude = Math.ceil(Math.abs(amount) / 100) * 100;
+    return amount < 0 ? -roundedMagnitude : roundedMagnitude;
+  };
+  const formatPayrollMoney = (amount: number): string =>
+    roundUpThousandsToNextHundred(amount).toFixed(2);
   const getEffectiveHours = (payment: any): number => {
     if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
       const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
@@ -105,6 +113,19 @@ function HRDashboardContent() {
     const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
     const summed = reg + ot + dt;
     return summed > 0 ? summed : 0;
+  };
+  const sortPaymentsAlphabetically = (payments: any[]) => {
+    return [...payments].sort((a, b) => {
+      const aFirst = (a?.firstName || "").toString().trim();
+      const bFirst = (b?.firstName || "").toString().trim();
+      const aLast = (a?.lastName || "").toString().trim();
+      const bLast = (b?.lastName || "").toString().trim();
+      const aEmail = (a?.email || "").toString().trim();
+      const bEmail = (b?.email || "").toString().trim();
+      const aKey = `${aLast} ${aFirst}`.trim() || aEmail;
+      const bKey = `${bLast} ${bFirst}`.trim() || bEmail;
+      return aKey.localeCompare(bKey, undefined, { sensitivity: "base" });
+    });
   };
 
   type AzNyCommissionCalcItem = {
@@ -484,32 +505,34 @@ function HRDashboardContent() {
                 const commissionPerVendor = vendorsWithHours > 0 ? (eventCommissionDollars / vendorsWithHours) : 0;
 
                 // Map team members to payment format with zeros
-                const teamPayments = teamMembers.map((member: any) => {
-                  const user = member.users;
-                  const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
-                  const firstName = profile?.first_name || 'N/A';
-                  const lastName = profile?.last_name || '';
+                const teamPayments = sortPaymentsAlphabetically(
+                  teamMembers.map((member: any) => {
+                    const user = member.users;
+                    const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+                    const firstName = profile?.first_name || 'N/A';
+                    const lastName = profile?.last_name || '';
 
-                  return {
-                    userId: member.vendor_id,
-                    firstName,
-                    lastName,
-                    email: user?.email || 'N/A',
-                    actualHours: 0,
-                    regularHours: 0,
-                    regularPay: 0,
-                    overtimeHours: 0,
-                    overtimePay: 0,
-                    doubletimeHours: 0,
-                    doubletimePay: 0,
-                    commissions: 0,
-                    tips: 0,
-                    totalPay: 0,
-                    adjustmentAmount: 0,
-                    finalPay: 0,
-                    status: member.status // Include confirmation status
-                  };
-                });
+                    return {
+                      userId: member.vendor_id,
+                      firstName,
+                      lastName,
+                      email: user?.email || 'N/A',
+                      actualHours: 0,
+                      regularHours: 0,
+                      regularPay: 0,
+                      overtimeHours: 0,
+                      overtimePay: 0,
+                      doubletimeHours: 0,
+                      doubletimePay: 0,
+                      commissions: 0,
+                      tips: 0,
+                      totalPay: 0,
+                      adjustmentAmount: 0,
+                      finalPay: 0,
+                      status: member.status // Include confirmation status
+                    };
+                  })
+                );
 
                 byVenue[eventInfo.venue].events.push({
                   id: eventId,
@@ -613,98 +636,100 @@ function HRDashboardContent() {
         });
 
         // Map vendor payments
-        const eventPayments = vendorPayments.map((payment: any) => {
-          const user = payment.users;
-          const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
-          const rawFirstName = profile?.first_name || 'N/A';
-          const rawLastName = profile?.last_name || '';
-          const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
-          const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
-          const adjustmentAmount = Number(payment.adjustment_amount || 0);
-          const actualHours = getEffectiveHours(payment);
+        const eventPayments = sortPaymentsAlphabetically(
+          vendorPayments.map((payment: any) => {
+            const user = payment.users;
+            const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+            const rawFirstName = profile?.first_name || 'N/A';
+            const rawLastName = profile?.last_name || '';
+            const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
+            const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
+            const adjustmentAmount = Number(payment.adjustment_amount || 0);
+            const actualHours = getEffectiveHours(payment);
 
-          const memberDivision = payment?.users?.division;
-          const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
+            const memberDivision = payment?.users?.division;
+            const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
 
-          const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
-          const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
-          const extAmtRegular = actualHours * baseRate;
-          const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+            const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
+            const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
+            const extAmtRegular = actualHours * baseRate;
+            const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
 
-          // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
-          let commissionAmt = 0;
-          let otRate = 0;
-          let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
-          let totalFinalCommissionAmt = 0;
-          let loadedRate = baseRate;
+            // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
+            let commissionAmt = 0;
+            let otRate = 0;
+            let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
+            let totalFinalCommissionAmt = 0;
+            let loadedRate = baseRate;
 
-          if (isAZorNY) {
-            commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
-              ? commissionPerVendorAzNy
-              : 0;
-            const totalFinalCommissionBase = actualHours > 0
-              ? Math.max(150, extAmtRegular + commissionAmt)
-              : 0;
-            const loadedRateBase = actualHours > 0
-              ? totalFinalCommissionBase / actualHours
-              : baseRate;
-            otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-            extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtRegular;
-            totalFinalCommissionAmt = actualHours > 0
-              ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
-              : 0;
-            loadedRate = loadedRateBase;
-          } else {
-            const totalFinalCommission = isTrailers
-              ? extAmtOnRegRateNonAzNy
-              : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
-            commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
-              ? Math.max(0, totalFinalCommission - extAmtOnRegRateNonAzNy)
-              : 0;
-            extAmtOnRegRate = extAmtOnRegRateNonAzNy;
-            totalFinalCommissionAmt = actualHours > 0 ? totalFinalCommission : 0;
-            // Event Dashboard displays Loaded Rate with a 28.5/hr floor in non-AZ/NY states.
-            loadedRate = actualHours > 0
-              ? Math.max(28.5, totalFinalCommissionAmt / actualHours)
-              : baseRate;
-          }
+            if (isAZorNY) {
+              commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
+                ? commissionPerVendorAzNy
+                : 0;
+              const totalFinalCommissionBase = actualHours > 0
+                ? Math.max(150, extAmtRegular + commissionAmt)
+                : 0;
+              const loadedRateBase = actualHours > 0
+                ? totalFinalCommissionBase / actualHours
+                : baseRate;
+              otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
+              extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtRegular;
+              totalFinalCommissionAmt = actualHours > 0
+                ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+                : 0;
+              loadedRate = loadedRateBase;
+            } else {
+              const totalFinalCommission = isTrailers
+                ? extAmtOnRegRateNonAzNy
+                : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
+              commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+                ? Math.max(0, totalFinalCommission - extAmtOnRegRateNonAzNy)
+                : 0;
+              extAmtOnRegRate = extAmtOnRegRateNonAzNy;
+              totalFinalCommissionAmt = actualHours > 0 ? totalFinalCommission : 0;
+              // Event Dashboard displays Loaded Rate with a 28.5/hr floor in non-AZ/NY states.
+              loadedRate = actualHours > 0
+                ? Math.max(28.5, totalFinalCommissionAmt / actualHours)
+                : baseRate;
+            }
 
-          // Tips: pro-rated by hours worked (fall back to stored per-vendor tips if summary missing)
-          const tips = (totalEventHours > 0 && totalTips > 0)
-            ? totalTips * (actualHours / totalEventHours)
-            : Number(payment.tips || 0);
+            // Tips: pro-rated by hours worked (fall back to stored per-vendor tips if summary missing)
+            const tips = (totalEventHours > 0 && totalTips > 0)
+              ? totalTips * (actualHours / totalEventHours)
+              : Number(payment.tips || 0);
 
-          const restBreak = getRestBreakAmount(actualHours, eventState);
-          const totalPay = totalFinalCommissionAmt + tips + restBreak;
-          const finalPay = totalPay + adjustmentAmount;
-          return {
-            userId: payment.user_id,
-            firstName,
-            lastName,
-            email: user?.email || 'N/A',
-            division: memberDivision,
-            actualHours,
-            regularHours: actualHours,
-            regularPay: extAmtOnRegRate,
-            overtimeHours: 0,
-            overtimePay: 0,
-            otRate,
-            doubletimeHours: 0,
-            doubletimePay: 0,
-            commissions: commissionAmt,
-            tips,
-            totalPay,
-            adjustmentAmount,
-            finalPay,
-            regRate: baseRate,
-            loadedRate,
-            extAmtOnRegRate,
-            commissionAmt,
-            totalFinalCommissionAmt,
-            restBreak,
-            totalGrossPay: finalPay,
-          };
-        });
+            const restBreak = getRestBreakAmount(actualHours, eventState);
+            const totalPay = totalFinalCommissionAmt + tips + restBreak;
+            const finalPay = totalPay + adjustmentAmount;
+            return {
+              userId: payment.user_id,
+              firstName,
+              lastName,
+              email: user?.email || 'N/A',
+              division: memberDivision,
+              actualHours,
+              regularHours: actualHours,
+              regularPay: extAmtOnRegRate,
+              overtimeHours: 0,
+              overtimePay: 0,
+              otRate,
+              doubletimeHours: 0,
+              doubletimePay: 0,
+              commissions: commissionAmt,
+              tips,
+              totalPay,
+              adjustmentAmount,
+              finalPay,
+              regRate: baseRate,
+              loadedRate,
+              extAmtOnRegRate,
+              commissionAmt,
+              totalFinalCommissionAmt,
+              restBreak,
+              totalGrossPay: finalPay,
+            };
+          })
+        );
         console.log('[HR PAYMENTS] event payments mapped', { eventId, count: eventPayments.length, sample: eventPayments.slice(0,2).map((p: any) => ({ userId: p.userId, hours: p.actualHours, total: p.totalPay })) });
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
@@ -1373,7 +1398,7 @@ function HRDashboardContent() {
                         <p className="text-sm text-gray-500">{v.city || '—'}, {v.state || ''}</p>
                       </div>
                       <div className="text-right">
-                        <div className="text-2xl font-bold text-gray-900">${v.totalPayment.toFixed(2)}</div>
+                        <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(v.totalPayment)}</div>
                         <div className="text-sm text-gray-500">{formatHoursHHMM(v.totalHours)} hrs</div>
                       </div>
                     </div>
@@ -1407,7 +1432,7 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Commission per Vendor</div>
-                                  <div>${(Number(ev.commissionPerVendor || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</div>
                                   <div className="text-[10px] text-gray-400">{Number(ev.vendorsWithHours || 0)} vendors w/ hours</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
@@ -1416,27 +1441,27 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Adjusted Gross Amount</div>
-                                  <div>${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.adjustedGrossAmount || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Commission</div>
-                                  <div>${(Number(ev.commissionDollars || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.commissionDollars || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
-                                  <div>${(Number(ev.totalTips || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.totalTips || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Rest Break</div>
-                                  <div>${(Number(ev.totalRestBreak || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.totalRestBreak || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Other</div>
-                                  <div>${(Number(ev.totalOther || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.totalOther || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total</div>
-                                  <div>${(Number(ev.eventTotal || 0)).toFixed(2)}</div>
+                                  <div>${formatPayrollMoney(Number(ev.eventTotal || 0))}</div>
                                 </td>
                               </tr>
                               <tr>
@@ -1509,18 +1534,18 @@ function HRDashboardContent() {
 
                                                 return (
                                                   <>
-                                                    <td className="p-2 text-sm">${regRate.toFixed(2)}/hr</td>
-                                                    <td className="p-2 text-sm">${loadedRate.toFixed(2)}/hr</td>
+                                                    <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
+                                                    <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
                                                     <td className="p-2 text-sm">{formatHoursHHMM(hours)}</td>
                                                     {showOT && (
-                                                      <td className="p-2 text-sm">{otRate > 0 ? `$${otRate.toFixed(2)}/hr` : '\u2014'}</td>
+                                                      <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                     )}
-                                                    <td className="p-2 text-sm text-green-600">${extAmtOnRegRate.toFixed(2)}</td>
-                                                    <td className="p-2 text-sm text-purple-600">{commissionAmt > 0 ? `$${commissionAmt.toFixed(2)}` : '\u2014'}</td>
-                                                    <td className="p-2 text-sm text-green-600">${totalFinalCommissionAmt.toFixed(2)}</td>
-                                                    <td className="p-2 text-sm text-orange-600">${tips.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm text-green-600">${formatPayrollMoney(extAmtOnRegRate)}</td>
+                                                    <td className="p-2 text-sm text-purple-600">{commissionAmt > 0 ? `$${formatPayrollMoney(commissionAmt)}` : '\u2014'}</td>
+                                                    <td className="p-2 text-sm text-green-600">${formatPayrollMoney(totalFinalCommissionAmt)}</td>
+                                                    <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
                                                     {!hideRest && (
-                                                      <td className="p-2 text-sm text-green-600">${restBreak.toFixed(2)}</td>
+                                                      <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}
                                                     <td className="p-2 text-sm text-right">
                                                       {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
@@ -1551,11 +1576,11 @@ function HRDashboardContent() {
                                                           onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
                                                           title="Click to edit"
                                                         >
-                                                          {`$${Number(p.adjustmentAmount || 0).toFixed(2)}`}
+                                                          {`$${formatPayrollMoney(Number(p.adjustmentAmount || 0))}`}
                                                         </span>
                                                       )}
                                                     </td>
-                                                    <td className="p-2 text-sm font-semibold text-right">${totalGrossPay.toFixed(2)}</td>
+                                                    <td className="p-2 text-sm font-semibold text-right">${formatPayrollMoney(totalGrossPay)}</td>
                                                   </>
                                                 );
                                               })()}

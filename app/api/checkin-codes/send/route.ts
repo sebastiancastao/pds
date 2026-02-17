@@ -31,6 +31,10 @@ type Recipient = {
   email: string;
   first_name: string;
 };
+type EmailSendLog = {
+  user_id: string;
+  sent_at: string;
+};
 const ONBOARDING_COMPLETED_TEST_EMAILS = [
   "sebastiancastao379@gmail.com",
   "sebastiancastanosepul@gmail.com",
@@ -369,6 +373,23 @@ async function getActivePersonalCodeByUserId(
   );
 }
 
+async function insertEmployeeIdEmailSendLogs(logs: EmailSendLog[]) {
+  if (logs.length === 0) return;
+
+  for (let i = 0; i < logs.length; i += DB_CHUNK_SIZE) {
+    const chunk = logs.slice(i, i + DB_CHUNK_SIZE);
+    const insertRes = await withDbRetry(
+      async () =>
+        await supabaseAdmin
+          .from("employee_id_code_email_sends")
+          .insert(chunk as any),
+      "employee_id_code_email_sends:insert"
+    );
+    const insertError = (insertRes as any)?.error;
+    if (insertError) throw insertError;
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const userId = await getAuthenticatedUserId(req);
@@ -458,6 +479,7 @@ export async function POST(req: NextRequest) {
     let sentTo = 0;
     const sentUsers: Array<{ userId: string; email: string }> = [];
     const failures: Array<{ userId: string; email: string; error: string }> = [];
+    const emailSendLogs: EmailSendLog[] = [];
 
     for (let i = 0; i < chunks.length; i += 1) {
       const chunk = chunks[i];
@@ -509,6 +531,10 @@ export async function POST(req: NextRequest) {
         } else {
           sentTo += 1;
           sentUsers.push({ userId: recipient.id, email: recipient.email });
+          emailSendLogs.push({
+            user_id: recipient.id,
+            sent_at: new Date().toISOString(),
+          });
         }
 
         if (j < chunk.length - 1 && perEmailDelayMs > 0) {
@@ -518,6 +544,16 @@ export async function POST(req: NextRequest) {
 
       if (i < chunks.length - 1 && batchDelayMs > 0) {
         await sleep(batchDelayMs);
+      }
+    }
+
+    let emailSendLogError: string | null = null;
+    if (emailSendLogs.length > 0) {
+      try {
+        await insertEmployeeIdEmailSendLogs(emailSendLogs);
+      } catch (logErr: any) {
+        emailSendLogError = logErr?.message || "Failed to save email send logs";
+        console.error("Error saving employee ID code email send logs:", logErr);
       }
     }
 
@@ -537,6 +573,8 @@ export async function POST(req: NextRequest) {
           batched: true,
           batchSize: batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE,
           batches: chunks.length,
+          emailSendLogsRecorded: emailSendLogError ? 0 : emailSendLogs.length,
+          emailSendLogError,
         },
         { status: 500 }
       );
@@ -555,6 +593,8 @@ export async function POST(req: NextRequest) {
       batchSize: resolvedBatchSize,
       perEmailDelayMs: perEmailDelayMs > 0 ? perEmailDelayMs : 0,
       batches: chunks.length,
+      emailSendLogsRecorded: emailSendLogError ? 0 : emailSendLogs.length,
+      emailSendLogError,
     });
   } catch (err: any) {
     console.error("Error sending check-in code emails:", err);

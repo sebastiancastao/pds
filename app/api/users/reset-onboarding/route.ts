@@ -72,6 +72,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to delete onboarding record' }, { status: 500 });
     }
 
+    // Clear the submission marker so the user is no longer treated as "submitted".
+    const { error: clearProfileError } = await supabaseAdmin
+      .from('profiles')
+      .update({ onboarding_completed_at: null })
+      .eq('id', profile.id);
+
+    if (clearProfileError) {
+      console.error('[RESET-ONBOARDING] Error clearing onboarding_completed_at:', clearProfileError);
+      return NextResponse.json({ error: 'Failed to clear onboarding submission marker' }, { status: 500 });
+    }
+
     console.log('[RESET-ONBOARDING] Successfully deleted onboarding record:', {
       userId,
       profileId: profile.id,

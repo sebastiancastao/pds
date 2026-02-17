@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, safeDecrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -369,34 +369,62 @@ export async function GET(
       }, { status: 200 });
     }
 
-    // Decrypt sensitive profile data
-    const decryptedTeamMembers = teamMembers?.map((member: any) => {
-      if (member.users?.profiles) {
-        try {
-          return {
-            ...member,
-            users: {
-              ...member.users,
-              profiles: {
-                ...member.users.profiles,
-                first_name: member.users.profiles.first_name
-                  ? decrypt(member.users.profiles.first_name)
-                  : '',
-                last_name: member.users.profiles.last_name
-                  ? decrypt(member.users.profiles.last_name)
-                  : '',
-                phone: member.users.profiles.phone
-                  ? decrypt(member.users.profiles.phone)
-                  : '',
-                profile_photo_url: null,
-              }
-            }
-          };
-        } catch (error) {
-          return member;
-        }
+    const teamUserIds = (teamMembers || [])
+      .map((member: any) => (member?.vendor_id || member?.users?.id || '').toString())
+      .filter((id: string) => id.length > 0);
+
+    let employeePhoneByUserId = new Map<string, string>();
+    if (teamUserIds.length > 0) {
+      const { data: employeeInfoRows, error: employeeInfoError } = await supabaseAdmin
+        .from('employee_information')
+        .select('user_id, phone')
+        .in('user_id', teamUserIds);
+
+      if (employeeInfoError) {
+        console.error('Error fetching employee info phone fallback:', employeeInfoError);
+      } else {
+        employeePhoneByUserId = new Map(
+          (employeeInfoRows || []).map((row: any) => [
+            String(row.user_id),
+            (row.phone || '').toString(),
+          ])
+        );
       }
-      return member;
+    }
+
+    // Decrypt sensitive profile data and fallback to employee_information.phone when needed
+    const decryptedTeamMembers = teamMembers?.map((member: any) => {
+      if (!member?.users) return member;
+
+      const memberUserId = (member?.vendor_id || member?.users?.id || '').toString();
+      const profile = Array.isArray(member.users?.profiles)
+        ? member.users.profiles[0]
+        : (member.users?.profiles || {});
+
+      const profilePhone = profile?.phone
+        ? safeDecrypt(String(profile.phone))
+        : '';
+      const employeeInfoPhone = memberUserId
+        ? safeDecrypt(employeePhoneByUserId.get(memberUserId) || '')
+        : '';
+
+      return {
+        ...member,
+        users: {
+          ...member.users,
+          profiles: {
+            ...profile,
+            first_name: profile?.first_name
+              ? safeDecrypt(String(profile.first_name))
+              : '',
+            last_name: profile?.last_name
+              ? safeDecrypt(String(profile.last_name))
+              : '',
+            phone: profilePhone || employeeInfoPhone,
+            profile_photo_url: null,
+          }
+        }
+      };
     });
 
     return NextResponse.json({

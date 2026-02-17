@@ -35,6 +35,7 @@ type EventItem = {
   updated_at: string;
   tax_rate_percent?: number | null;
   tips_total?: number | null;
+  is_empty?: boolean;
 };
 
 type Vendor = {
@@ -117,6 +118,13 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
+  const [deleteConfirmEvent, setDeleteConfirmEvent] = useState<EventItem | null>(null);
+  const [alertModal, setAlertModal] = useState<{
+    title: string;
+    message: string;
+    type: "success" | "error";
+  } | null>(null);
   const [selectedVenue, setSelectedVenue] = useState<string>("all");
 
   // Vendors / Regions (Calendar Availability Request)
@@ -965,6 +973,64 @@ export default function DashboardPage() {
     }
   };
 
+  const openDeleteConfirmModal = (event: EventItem) => {
+    const canDeleteByRole =
+      userRole === "manager" || userRole === "supervisor" || userRole === "supervisor2" || userRole === "exec";
+
+    if (!canDeleteByRole || !event.is_empty || deletingEventId) return;
+    setDeleteConfirmEvent(event);
+  };
+
+  const handleDeleteEvent = async () => {
+    if (!deleteConfirmEvent) return;
+
+    const event = deleteConfirmEvent;
+    const canDeleteByRole =
+      userRole === "manager" || userRole === "supervisor" || userRole === "supervisor2" || userRole === "exec";
+
+    if (!canDeleteByRole || !event.is_empty || deletingEventId) return;
+
+    setDeletingEventId(event.id);
+    setError("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${event.id}`, {
+        method: "DELETE",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to delete event");
+      }
+
+      setEvents((prev) => prev.filter((e) => e.id !== event.id));
+      setPredictions((prev) => {
+        const next = { ...prev };
+        delete next[event.id];
+        return next;
+      });
+      setDeleteConfirmEvent(null);
+      setAlertModal({
+        title: "Event Deleted",
+        message: `"${event.event_name}" was deleted successfully.`,
+        type: "success",
+      });
+    } catch (err: any) {
+      setDeleteConfirmEvent(null);
+      setAlertModal({
+        title: "Delete Failed",
+        message: err?.message || "Failed to delete event",
+        type: "error",
+      });
+    } finally {
+      setDeletingEventId(null);
+    }
+  };
+
   const loadTeamVendors = async (event: EventItem, regionId: string = "all") => {
     setLoadingAvailable(true);
     console.log('[DASHBOARD-TEAM] ð Loading team vendors for event:', event.id, 'with regionId:', regionId);
@@ -1664,6 +1730,23 @@ export default function DashboardPage() {
                           </Link>
                         </div>
                       </div>
+                      {(userRole === "manager" || userRole === "supervisor" || userRole === "supervisor2" || userRole === "exec") && ev.is_empty && (
+                        <div className="mt-4 flex justify-end">
+                          <button
+                            onClick={() => openDeleteConfirmModal(ev)}
+                            disabled={deletingEventId === ev.id}
+                            className={`apple-icon-button ${
+                              deletingEventId === ev.id ? "apple-icon-button-disabled" : "apple-icon-button-danger"
+                            }`}
+                            aria-label="Delete event"
+                            title="Delete event"
+                          >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6M9 7V4a1 1 0 011-1h4a1 1 0 011 1v3m-7 0h8" />
+                            </svg>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -2649,6 +2732,98 @@ export default function DashboardPage() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Event Confirmation Modal */}
+      {deleteConfirmEvent && (
+        <div
+          className="apple-modal-overlay"
+          onClick={() => {
+            if (!deletingEventId) setDeleteConfirmEvent(null);
+          }}
+        >
+          <div
+            className="apple-modal"
+            style={{ maxWidth: "30rem" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="apple-modal-header">
+              <h2 className="text-lg font-semibold text-gray-900">Delete Event</h2>
+              <button
+                className="apple-close-button"
+                onClick={() => setDeleteConfirmEvent(null)}
+                disabled={!!deletingEventId}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div style={{ padding: "1.25rem" }}>
+              <p className="text-sm text-gray-700 mb-2">
+                Are you sure you want to delete <strong>{deleteConfirmEvent.event_name}</strong>?
+              </p>
+              <p className="text-xs text-gray-500 mb-4">This action cannot be undone.</p>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  className="apple-button apple-button-secondary"
+                  style={{ flex: 1 }}
+                  onClick={() => setDeleteConfirmEvent(null)}
+                  disabled={!!deletingEventId}
+                >
+                  Cancel
+                </button>
+                <button
+                  className={`apple-button ${deletingEventId ? "apple-button-disabled" : "apple-button-primary"}`}
+                  style={{ flex: 1, background: deletingEventId ? undefined : "#DC2626" }}
+                  onClick={handleDeleteEvent}
+                  disabled={!!deletingEventId}
+                >
+                  {deletingEventId ? "Deleting..." : "Delete Event"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Alert Modal */}
+      {alertModal && (
+        <div className="apple-modal-overlay" onClick={() => setAlertModal(null)}>
+          <div
+            className="apple-modal"
+            style={{ maxWidth: "28rem" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="apple-modal-header">
+              <h2 className="text-lg font-semibold text-gray-900">{alertModal.title}</h2>
+              <button className="apple-close-button" onClick={() => setAlertModal(null)}>
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div style={{ padding: "1.25rem" }}>
+              <div
+                style={{
+                  fontSize: 14,
+                  borderRadius: 8,
+                  padding: "0.75rem",
+                  border: alertModal.type === "success" ? "1px solid #6EE7B7" : "1px solid #FCA5A5",
+                  background: alertModal.type === "success" ? "#D1FAE5" : "#FEE2E2",
+                  color: alertModal.type === "success" ? "#065F46" : "#991B1B",
+                }}
+              >
+                {alertModal.message}
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+                <button className="apple-button apple-button-primary" onClick={() => setAlertModal(null)}>
+                  OK
+                </button>
+              </div>
             </div>
           </div>
         </div>

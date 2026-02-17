@@ -131,6 +131,7 @@ export default function EventDashboardPage() {
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor";
   const canManageLocations =
     userRole === "exec" ||
@@ -142,6 +143,16 @@ export default function EventDashboardPage() {
     userRole === "exec" ||
     userRole === "manager" ||
     userRole === "supervisor";
+  const isEventCreator = Boolean(
+    currentUserId &&
+    event?.created_by &&
+    currentUserId === event.created_by
+  );
+  const canUninviteTeamMember =
+    canManageTeam ||
+    userRole === "admin" ||
+    userRole === "supervisor2" ||
+    isEventCreator;
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -179,6 +190,7 @@ export default function EventDashboardPage() {
   const [showAddVendorModal, setShowAddVendorModal] = useState(false);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
+  const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
   const [addVendorSearch, setAddVendorSearch] = useState<string>("");
   const [addVendorOptions, setAddVendorOptions] = useState<TeamVendorOption[]>([]);
   const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<string>("");
@@ -367,6 +379,7 @@ export default function EventDashboardPage() {
         router.replace("/login");
       } else {
         setIsAuthed(true);
+        setCurrentUserId(user.id);
         // Load current user's role for back navigation routing
         (async () => {
           try {
@@ -781,6 +794,48 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to add vendor to team");
     } finally {
       setAddingVendorToTeam(false);
+    }
+  };
+
+  const getTeamMemberDisplayName = (member: any): string => {
+    const firstName = (member?.users?.profiles?.first_name || "").toString().trim();
+    const lastName = (member?.users?.profiles?.last_name || "").toString().trim();
+    const fullName = `${firstName} ${lastName}`.trim();
+    if (fullName) return fullName;
+
+    const email = (member?.users?.email || "").toString().trim();
+    return email || "this team member";
+  };
+
+  const handleUninviteTeamMember = async (member: any) => {
+    if (!eventId || !member?.id) return;
+
+    const memberName = getTeamMemberDisplayName(member);
+    if (!window.confirm(`Uninvite ${memberName} from this event?`)) return;
+
+    setUninvitingMemberId(member.id);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
+        method: "DELETE",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to uninvite team member");
+      }
+
+      setMessage(`Success: ${memberName} was uninvited.`);
+      await loadTeam(false);
+      setLocationsLoaded(false);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to uninvite team member");
+    } finally {
+      setUninvitingMemberId(null);
     }
   };
 
@@ -1600,6 +1655,14 @@ export default function EventDashboardPage() {
     if (normalizedState === "NV" || normalizedState === "WI") return 0;
     return actualHours > 10 ? 12 : actualHours > 0 ? 9 : 0;
   };
+  const roundUpThousandsToNextHundred = (amount: number): number => {
+    if (!Number.isFinite(amount)) return 0;
+    if (Math.abs(amount) < 1000) return amount;
+    const roundedMagnitude = Math.ceil(Math.abs(amount) / 100) * 100;
+    return amount < 0 ? -roundedMagnitude : roundedMagnitude;
+  };
+  const formatPayrollMoney = (amount: number): string =>
+    roundUpThousandsToNextHundred(amount).toFixed(2);
 
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
@@ -3067,12 +3130,17 @@ export default function EventDashboardPage() {
                           <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                             Invited On
                           </th>
+                          {canUninviteTeamMember && (
+                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              Actions
+                            </th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="bg-white divide-y divide-gray-200">
                         {filteredTeamListMembers.length === 0 ? (
                           <tr>
-                            <td colSpan={5} className="px-6 py-8 text-center text-sm text-gray-500">
+                            <td colSpan={canUninviteTeamMember ? 6 : 5} className="px-6 py-8 text-center text-sm text-gray-500">
                               No team members match your search
                             </td>
                           </tr>
@@ -3137,6 +3205,19 @@ export default function EventDashboardPage() {
                                   day: "numeric",
                                 })}
                               </td>
+                              {canUninviteTeamMember && (
+                                <td className="px-6 py-4 whitespace-nowrap text-right">
+                                  <button
+                                    onClick={() => {
+                                      void handleUninviteTeamMember(member);
+                                    }}
+                                    disabled={uninvitingMemberId === member.id}
+                                    className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    {uninvitingMemberId === member.id ? "Uninviting..." : "Uninvite"}
+                                  </button>
+                                </td>
+                              )}
                             </tr>
                           );
                         })
@@ -3738,7 +3819,7 @@ export default function EventDashboardPage() {
                       const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
-                      return totalPayment.toFixed(2);
+                      return formatPayrollMoney(totalPayment);
                     })()}
                   </div>
                   <div className="text-xs text-purple-600 mt-1">based on actual hours</div>
@@ -3763,7 +3844,7 @@ export default function EventDashboardPage() {
                     </svg>
                   </div>
                   <div className="text-3xl font-bold text-indigo-900">
-                    ${commissionPerVendor.toFixed(2)}
+                    ${formatPayrollMoney(commissionPerVendor)}
                   </div>
                   <div className="text-xs text-indigo-600 mt-1">
                     {vendorCount} vendor{vendorCount === 1 ? '' : 's'} with timesheets
@@ -3783,7 +3864,7 @@ export default function EventDashboardPage() {
                   <div className="text-right">
                     <div className="text-sm font-semibold text-blue-700">Base Rate</div>
                     <div className="text-2xl font-bold text-blue-900">
-                      ${getBaseRateForState(event?.state || 'CA').toFixed(2)}/hr
+                      ${formatPayrollMoney(getBaseRateForState(event?.state || 'CA'))}/hr
                     </div>
                   </div>
                 </div>
@@ -3968,14 +4049,14 @@ export default function EventDashboardPage() {
                               {/* Reg Rate */}
                               <td className="p-4">
                                 <div className="font-medium text-gray-900">
-                                  ${baseRate.toFixed(2)}/hr
+                                  ${formatPayrollMoney(baseRate)}/hr
                                 </div>
                               </td>
 
                               {/* Loaded Rate */}
                               <td className="p-4">
                                 <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
-                                  ${finalCommissionRate.toFixed(2)}/hr
+                                  ${formatPayrollMoney(finalCommissionRate)}/hr
                                 </div>
                               </td>
 
@@ -3989,17 +4070,17 @@ export default function EventDashboardPage() {
                               {/* Ext Amt on Reg Rate */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${extAmtOnRegRate.toFixed(2)}
+                                  ${formatPayrollMoney(extAmtOnRegRate)}
                                 </div>
                                 <div className="text-[10px] text-gray-500 mt-1">
-                                  {hoursHHMM} × ${baseRate.toFixed(2)} × 1.5
+                                  {hoursHHMM} × ${formatPayrollMoney(baseRate)} × 1.5
                                 </div>
                               </td>
 
                               {/* Commission Amt */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${commissionAmount.toFixed(2)}
+                                  ${formatPayrollMoney(commissionAmount)}
                                 </div>
                                 <div className="text-[10px] text-gray-500">
                                   Pool {(poolPercent * 100).toFixed(2)}%
@@ -4009,21 +4090,21 @@ export default function EventDashboardPage() {
                               {/* Total Final Commission */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${totalFinalCommission.toFixed(2)}
+                                  ${formatPayrollMoney(totalFinalCommission)}
                                 </div>
                               </td>
 
                               {/* Tips */}
                               <td className="p-4">
                                 <div className="text-sm font-medium text-green-600">
-                                  ${proratedTips.toFixed(2)}
+                                  ${formatPayrollMoney(proratedTips)}
                                 </div>
                               </td>
 
                               {!hideRestBreakColumn && (
                                 <td className="p-4">
                                   <div className="text-sm font-medium text-green-600">
-                                    ${restBreak.toFixed(2)}
+                                    ${formatPayrollMoney(restBreak)}
                                   </div>
                                   <div className="text-[10px] text-gray-500 mt-1">
                                     {hoursHHMM} {actualHours > 10 ? '>' : '≤'} 10h
@@ -4075,7 +4156,7 @@ export default function EventDashboardPage() {
                                   >
                                     {otherAmount !== 0 ? (
                                       <span className={otherAmount >= 0 ? "text-green-600" : "text-red-600"}>
-                                        ${otherAmount >= 0 ? '+' : ''}{otherAmount.toFixed(2)}
+                                        ${otherAmount >= 0 ? '+' : ''}{formatPayrollMoney(otherAmount)}
                                       </span>
                                     ) : (
                                       <span className="text-gray-400">$0.00</span>
@@ -4090,7 +4171,7 @@ export default function EventDashboardPage() {
                               {/* Total Gross Pay */}
                               <td className="p-4">
                                 <div className="text-sm font-bold text-green-700">
-                                  ${totalGrossPay.toFixed(2)}
+                                  ${formatPayrollMoney(totalGrossPay)}
                                 </div>
                               </td>
 
@@ -4111,31 +4192,13 @@ export default function EventDashboardPage() {
                                   {editingMemberId === member.id ? 'Done' : 'Edit'}
                                 </button>
                                 <button
-                                  onClick={async () => {
-                                    if (window.confirm(`Remove ${firstName} ${lastName} from this event?`)) {
-                                      try {
-                                        const { data: { session } } = await supabase.auth.getSession();
-                                        const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
-                                          method: 'DELETE',
-                                          headers: {
-                                            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-                                          },
-                                        });
-                                        if (res.ok) {
-                                          setMessage(`${firstName} ${lastName} removed successfully`);
-                                          loadTeam(); // Reload team list
-                                        } else {
-                                          const error = await res.text();
-                                          setMessage(`Failed to remove team member: ${error}`);
-                                        }
-                                      } catch (err: any) {
-                                        setMessage(`Error: ${err.message}`);
-                                      }
-                                    }
+                                  onClick={() => {
+                                    void handleUninviteTeamMember(member);
                                   }}
-                                  className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors"
+                                  disabled={!canUninviteTeamMember || uninvitingMemberId === member.id}
+                                  className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                 >
-                                  Remove
+                                  {uninvitingMemberId === member.id ? "Removing..." : "Remove"}
                                 </button>
                               </td>
                             </tr>
@@ -4177,7 +4240,7 @@ export default function EventDashboardPage() {
                       const baseRate = getBaseRateForState(eventState);
 
                       const totalPayment = totalHours * baseRate;
-                      return totalPayment.toFixed(2);
+                      return formatPayrollMoney(totalPayment);
                     })()}</span>
                   </div>
                   <div className="flex justify-between items-center pb-3 border-b">
@@ -4186,7 +4249,7 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="flex justify-between items-center pb-3 border-b">
                     <span className="text-gray-600">Tips</span>
-                    <span className="font-semibold text-gray-900">${tips || "0.00"}</span>
+                    <span className="font-semibold text-gray-900">${formatPayrollMoney(Number(tips) || 0)}</span>
                   </div>
                   <div className="flex justify-between items-center pb-3 border-b">
                     <span className="text-gray-600">Adjustments</span>
@@ -4196,7 +4259,7 @@ export default function EventDashboardPage() {
                     })()}`}>
                       ${(() => {
                         const total = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
-                        return (total >= 0 ? '+' : '') + total.toFixed(2);
+                        return (total >= 0 ? '+' : '') + formatPayrollMoney(total);
                       })()}
                     </span>
                   </div>
@@ -4208,7 +4271,7 @@ export default function EventDashboardPage() {
                     })()}`}>
                       ${(() => {
                         const total = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
-                        return (total >= 0 ? '+' : '') + total.toFixed(2);
+                        return (total >= 0 ? '+' : '') + formatPayrollMoney(total);
                       })()}
                     </span>
                   </div>
@@ -4241,7 +4304,7 @@ export default function EventDashboardPage() {
                       const reimbursementsTotal = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
                       const totalPayroll = basePay + tipsAmount + adjustmentsTotal + reimbursementsTotal;
 
-                      return totalPayroll.toFixed(2);
+                      return formatPayrollMoney(totalPayroll);
                     })()}</span>
                   </div>
 
