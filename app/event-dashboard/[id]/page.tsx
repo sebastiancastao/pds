@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -40,7 +40,26 @@ type Venue = {
   longitude: number;
 };
 
-type TabType = "edit" | "sales" | "merchandise" | "team" | "timesheet" | "hr";
+type TabType = "edit" | "sales" | "merchandise" | "team" | "locations" | "timesheet" | "hr";
+
+type EventLocation = {
+  id: string;
+  event_id: string;
+  name: string;
+  notes: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type EventLocationAssignment = {
+  id: string;
+  event_id: string;
+  location_id: string;
+  vendor_id: string;
+  created_at: string;
+  updated_at: string;
+};
 
 type StateRateData = {
   state_code: string;
@@ -59,6 +78,19 @@ type TimesheetEditDraft = {
   lastMealEnd: string;
   secondMealStart: string;
   secondMealEnd: string;
+};
+
+type TeamVendorOption = {
+  id: string;
+  email: string;
+  role?: string | null;
+  division?: string | null;
+  distance?: number | null;
+  profiles?: {
+    first_name?: string | null;
+    last_name?: string | null;
+    phone?: string | null;
+  };
 };
 
 export default function EventDashboardPage() {
@@ -81,6 +113,16 @@ export default function EventDashboardPage() {
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor";
+  const canManageLocations =
+    userRole === "exec" ||
+    userRole === "admin" ||
+    userRole === "manager" ||
+    userRole === "supervisor" ||
+    userRole === "supervisor2";
+  const canManageTeam =
+    userRole === "exec" ||
+    userRole === "manager" ||
+    userRole === "supervisor";
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -115,10 +157,27 @@ export default function EventDashboardPage() {
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [teamSearch, setTeamSearch] = useState<string>("");
+  const [showAddVendorModal, setShowAddVendorModal] = useState(false);
+  const [loadingAddVendors, setLoadingAddVendors] = useState(false);
+  const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
+  const [addVendorSearch, setAddVendorSearch] = useState<string>("");
+  const [addVendorOptions, setAddVendorOptions] = useState<TeamVendorOption[]>([]);
+  const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<string>("");
   // Cache flags to avoid re-fetching data when switching tabs
   const [teamLoaded, setTeamLoaded] = useState(false);
+  const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [timesheetLoaded, setTimesheetLoaded] = useState(false);
   const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
+  const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
+  const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
+  const [newLocationName, setNewLocationName] = useState("");
+  const [newLocationNotes, setNewLocationNotes] = useState("");
+  const [loadingLocations, setLoadingLocations] = useState(false);
+  const [creatingLocation, setCreatingLocation] = useState(false);
+  const [savingLocationId, setSavingLocationId] = useState<string | null>(null);
+  const [deletingLocationId, setDeletingLocationId] = useState<string | null>(null);
+  const [editingLocationIds, setEditingLocationIds] = useState<Record<string, boolean>>({});
+  const [locationAssignmentDrafts, setLocationAssignmentDrafts] = useState<Record<string, string[]>>({});
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
@@ -169,6 +228,27 @@ export default function EventDashboardPage() {
       status.includes(q)
     );
   }), [teamMembers, teamSearch]);
+
+  const filteredAddVendorOptions = useMemo(() => {
+    const query = addVendorSearch.trim().toLowerCase();
+    if (!query) return addVendorOptions;
+
+    return addVendorOptions.filter((vendor) => {
+      const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
+      const lastName = (vendor.profiles?.last_name || "").toString().toLowerCase();
+      const fullName = `${firstName} ${lastName}`.trim();
+      const email = (vendor.email || "").toString().toLowerCase();
+      const phone = (vendor.profiles?.phone || "").toString().toLowerCase();
+      const division = (vendor.division || "").toString().toLowerCase();
+
+      return (
+        fullName.includes(query) ||
+        email.includes(query) ||
+        phone.includes(query) ||
+        division.includes(query)
+      );
+    });
+  }, [addVendorOptions, addVendorSearch]);
 
   const filteredTeamMembers = useMemo(() => (teamMembers || []).filter((member: any) => {
     try {
@@ -255,7 +335,7 @@ export default function EventDashboardPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router, eventId]);
 
-  // Load team & timesheet when needed (with caching to avoid re-fetching on tab switch)
+  // Load team, locations, and payroll data when needed (with caching to avoid re-fetching on tab switch)
   useEffect(() => {
     if (!eventId) return;
 
@@ -265,6 +345,19 @@ export default function EventDashboardPage() {
       if (!timesheetLoaded) {
         loadTimesheetTotals();
       }
+      return;
+    }
+
+    if (activeTab === "locations") {
+      const needsTeam = !teamLoaded;
+      const needsLocations = !locationsLoaded;
+      if (!needsTeam && !needsLocations) return;
+      (async () => {
+        const promises: Promise<void>[] = [];
+        if (needsTeam) promises.push(loadTeam(true)); // Skip photos for locations tab
+        if (needsLocations) promises.push(loadLocations());
+        await Promise.all(promises);
+      })();
       return;
     }
 
@@ -514,6 +607,394 @@ export default function EventDashboardPage() {
       console.error("Error loading team:", err);
     }
     setLoadingTeam(false);
+  };
+
+  const closeAddVendorModal = () => {
+    if (addingVendorToTeam) return;
+    setShowAddVendorModal(false);
+    setAddVendorSearch("");
+    setSelectedVendorToAdd("");
+  };
+
+  const loadVendorsForImmediateTeamAdd = async () => {
+    if (!event?.venue) {
+      setAddVendorOptions([]);
+      setSelectedVendorToAdd("");
+      return;
+    }
+
+    setLoadingAddVendors(true);
+    try {
+      const token = await getSessionToken();
+      const query = new URLSearchParams({ venue: event.venue });
+      const vendorsRes = await fetch(`/api/vendors?${query.toString()}`, {
+        method: "GET",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      let vendors: TeamVendorOption[] = [];
+      if (vendorsRes.ok) {
+        const vendorsData = await vendorsRes.json().catch(() => ({}));
+        vendors = Array.isArray(vendorsData?.vendors) ? vendorsData.vendors : [];
+      } else {
+        const fallbackRes = await fetch(`/api/all-vendors`, {
+          method: "GET",
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        });
+
+        if (!fallbackRes.ok) {
+          const vendorsError = await vendorsRes.json().catch(() => ({}));
+          const fallbackError = await fallbackRes.json().catch(() => ({}));
+          throw new Error(vendorsError?.error || fallbackError?.error || "Failed to load vendors");
+        }
+
+        const fallbackData = await fallbackRes.json().catch(() => ({}));
+        vendors = Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [];
+      }
+
+      const existingTeamIds = new Set(
+        (teamMembers || [])
+          .map((member: any) => (member?.vendor_id || member?.user_id || member?.users?.id || "").toString())
+          .filter((id: string) => id.length > 0)
+      );
+
+      const availableVendors = vendors
+        .filter((vendor: TeamVendorOption) => {
+          const vendorId = (vendor?.id || "").toString();
+          return vendorId.length > 0 && !existingTeamIds.has(vendorId);
+        })
+        .sort((a: TeamVendorOption, b: TeamVendorOption) => {
+          const aName = `${a.profiles?.first_name || ""} ${a.profiles?.last_name || ""}`.trim().toLowerCase();
+          const bName = `${b.profiles?.first_name || ""} ${b.profiles?.last_name || ""}`.trim().toLowerCase();
+          return aName.localeCompare(bName);
+        });
+
+      setAddVendorOptions(availableVendors);
+      setSelectedVendorToAdd((prev) => {
+        if (prev && availableVendors.some((vendor) => vendor.id === prev)) return prev;
+        return availableVendors[0]?.id || "";
+      });
+    } catch (err: any) {
+      setAddVendorOptions([]);
+      setSelectedVendorToAdd("");
+      setMessage(err?.message || "Failed to load vendors");
+    } finally {
+      setLoadingAddVendors(false);
+    }
+  };
+
+  const openAddVendorModal = async () => {
+    setShowAddVendorModal(true);
+    setAddVendorSearch("");
+    setSelectedVendorToAdd("");
+    await loadVendorsForImmediateTeamAdd();
+  };
+
+  const handleAddVendorToTeamImmediately = async () => {
+    if (!eventId || !selectedVendorToAdd) return;
+
+    setAddingVendorToTeam(true);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          vendorIds: [selectedVendorToAdd],
+          autoConfirm: true,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to add vendor to team");
+      }
+
+      setMessage(`Success: ${data?.message || "Vendor added to team as confirmed."}`);
+      setShowAddVendorModal(false);
+      setAddVendorSearch("");
+      setSelectedVendorToAdd("");
+      await loadTeam(false);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to add vendor to team");
+    } finally {
+      setAddingVendorToTeam(false);
+    }
+  };
+
+  const getTeamMemberId = (member: any): string => {
+    return (member?.vendor_id || member?.user_id || member?.users?.id || "").toString();
+  };
+
+  const loadLocations = async () => {
+    if (!eventId) return;
+    setLoadingLocations(true);
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "GET",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data?.error || "Failed to load locations");
+      }
+
+      const data = await res.json();
+      const locations: EventLocation[] = data?.locations || [];
+      const assignments: EventLocationAssignment[] = data?.assignments || [];
+
+      const assignmentMap: Record<string, string[]> = {};
+      for (const location of locations) {
+        assignmentMap[location.id] = [];
+      }
+      for (const assignment of assignments) {
+        if (!assignmentMap[assignment.location_id]) {
+          assignmentMap[assignment.location_id] = [];
+        }
+        assignmentMap[assignment.location_id].push(assignment.vendor_id);
+      }
+
+      setEventLocations(locations);
+      setLocationAssignments(assignmentMap);
+      setEditingLocationIds({});
+      setLocationAssignmentDrafts({});
+      setLocationsLoaded(true);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to load locations");
+    } finally {
+      setLoadingLocations(false);
+    }
+  };
+
+  const handleAddLocation = async () => {
+    const name = newLocationName.trim();
+    const notes = newLocationNotes.trim();
+    if (!eventId || !name) return;
+
+    setCreatingLocation(true);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ name, notes: notes || null }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to create location");
+      }
+
+      setNewLocationName("");
+      setNewLocationNotes("");
+      setMessage("Location added successfully");
+      await loadLocations();
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to create location");
+    } finally {
+      setCreatingLocation(false);
+    }
+  };
+
+  const startLocationAssignmentEdit = (locationId: string) => {
+    setEditingLocationIds((prev) => ({ ...prev, [locationId]: true }));
+    setLocationAssignmentDrafts((prev) => ({
+      ...prev,
+      [locationId]: [...(locationAssignments[locationId] || [])],
+    }));
+  };
+
+  const cancelLocationAssignmentEdit = (locationId: string) => {
+    setEditingLocationIds((prev) => ({ ...prev, [locationId]: false }));
+    setLocationAssignmentDrafts((prev) => {
+      const next = { ...prev };
+      delete next[locationId];
+      return next;
+    });
+  };
+
+  const toggleLocationAssignmentDraft = (locationId: string, memberId: string) => {
+    setLocationAssignmentDrafts((prev) => {
+      const current = new Set(prev[locationId] || []);
+      if (current.has(memberId)) {
+        current.delete(memberId);
+      } else {
+        current.add(memberId);
+      }
+
+      return {
+        ...prev,
+        [locationId]: Array.from(current),
+      };
+    });
+  };
+
+  const saveLocationAssignments = async (locationId: string) => {
+    if (!eventId || !locationId) return;
+
+    setSavingLocationId(locationId);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          locationId,
+          teamMemberIds: locationAssignmentDrafts[locationId] || [],
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to save location assignments");
+      }
+
+      setMessage("Location assignments saved successfully");
+      setEditingLocationIds((prev) => ({ ...prev, [locationId]: false }));
+      setLocationAssignmentDrafts((prev) => {
+        const next = { ...prev };
+        delete next[locationId];
+        return next;
+      });
+      await loadLocations();
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to save location assignments");
+    } finally {
+      setSavingLocationId(null);
+    }
+  };
+
+  const handleDeleteLocation = async (locationId: string) => {
+    if (!eventId || !locationId) return;
+    if (!window.confirm("Delete this location and all related assignments?")) return;
+
+    setDeletingLocationId(locationId);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to delete location");
+      }
+
+      setMessage("Location deleted successfully");
+      await loadLocations();
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to delete location");
+    } finally {
+      setDeletingLocationId(null);
+    }
+  };
+
+  const toCsvCell = (value: unknown): string => {
+    const raw = String(value ?? "");
+    if (/[",\n]/.test(raw)) return `"${raw.replace(/"/g, "\"\"")}"`;
+    return raw;
+  };
+
+  const handleExportLocations = () => {
+    try {
+      const headers = [
+        "event_name",
+        "event_id",
+        "station_name",
+        "station_notes",
+        "vendor_name",
+        "vendor_email",
+      ];
+
+      const lines: string[] = [headers.join(",")];
+
+      for (const loc of eventLocations) {
+        const assignedIds = locationAssignments[loc.id] || [];
+        const assignedMembers = assignedIds
+          .map((assignedId) =>
+            teamMembers.find((member: any) => getTeamMemberId(member) === assignedId)
+          )
+          .filter(Boolean);
+
+        if (assignedMembers.length === 0) {
+          lines.push(
+            [
+              toCsvCell(event?.event_name || ""),
+              toCsvCell(eventId || ""),
+              toCsvCell(loc.name),
+              toCsvCell(loc.notes || ""),
+              "",
+              "",
+            ].join(",")
+          );
+          continue;
+        }
+
+        for (const member of assignedMembers) {
+          const profile = member?.users?.profiles;
+          const firstName = profile?.first_name || "";
+          const lastName = profile?.last_name || "";
+          const fullName = `${firstName} ${lastName}`.trim();
+          const email = member?.users?.email || "";
+
+          lines.push(
+            [
+              toCsvCell(event?.event_name || ""),
+              toCsvCell(eventId || ""),
+              toCsvCell(loc.name),
+              toCsvCell(loc.notes || ""),
+              toCsvCell(fullName),
+              toCsvCell(email),
+            ].join(",")
+          );
+        }
+      }
+
+      const csvContent = lines.join("\n");
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const today = new Date().toISOString().slice(0, 10);
+      const safeEventName = (event?.event_name || "event")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+
+      link.href = url;
+      link.download = `${safeEventName || "event"}-locations-${today}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to export locations");
+    }
   };
 
   const loadAdjustmentsFromPayments = async () => {
@@ -1328,6 +1809,7 @@ export default function EventDashboardPage() {
                 ["sales", "Sales", "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"],
                 ["merchandise", "Merchandise", "M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"],
                 ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
+                ["locations", "Locations", "M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z"],
                 ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
                 ["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"],
               ].map(([key, label, icon]) => (
@@ -2327,13 +2809,24 @@ export default function EventDashboardPage() {
             <div className="space-y-6">
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
-                <button
-                  onClick={() => loadTeam(false)}
-                  disabled={loadingTeam}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                >
-                  {loadingTeam ? "Refreshing..." : "Refresh"}
-                </button>
+                <div className="flex items-center gap-2">
+                  {canManageTeam && (
+                    <button
+                      onClick={openAddVendorModal}
+                      disabled={loadingAddVendors || addingVendorToTeam}
+                      className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Add Vendor + Confirm
+                    </button>
+                  )}
+                  <button
+                    onClick={() => loadTeam(false)}
+                    disabled={loadingTeam}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    {loadingTeam ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
               </div>
 
               {loadingTeam ? (
@@ -2344,7 +2837,11 @@ export default function EventDashboardPage() {
               ) : teamMembers.length === 0 ? (
                 <div className="bg-gray-50 rounded-lg p-8 text-center">
                   <p className="text-gray-600 text-lg font-medium">No team members assigned yet</p>
-                  <p className="text-gray-500 text-sm mt-2">Create a team from the dashboard to invite vendors</p>
+                  <p className="text-gray-500 text-sm mt-2">
+                    {canManageTeam
+                      ? "Use Add Vendor + Confirm to add members instantly."
+                      : "No team members assigned to this event yet."}
+                  </p>
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -2485,8 +2982,224 @@ export default function EventDashboardPage() {
             </div>
           )}
 
-        
-         
+          {/* LOCATIONS TAB */}
+          {activeTab === "locations" && (
+            <div className="space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-bold">Locations</h2>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleExportLocations}
+                    disabled={loadingLocations || eventLocations.length === 0}
+                    className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    Export
+                  </button>
+                  <button
+                    onClick={loadLocations}
+                    disabled={loadingLocations}
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    {loadingLocations ? "Refreshing..." : "Refresh"}
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-white border rounded-lg p-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Location Name
+                    </label>
+                    <input
+                      type="text"
+                      value={newLocationName}
+                      onChange={(e) => setNewLocationName(e.target.value)}
+                      placeholder="Example: Main Gate"
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                      disabled={!canManageLocations}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Notes (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={newLocationNotes}
+                      onChange={(e) => setNewLocationNotes(e.target.value)}
+                      placeholder="Example: VIP entrance"
+                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                      disabled={!canManageLocations}
+                    />
+                  </div>
+                </div>
+                <div className="mt-4 flex justify-end">
+                  <button
+                    onClick={handleAddLocation}
+                    disabled={!canManageLocations || creatingLocation || !newLocationName.trim()}
+                    className="bg-green-600 hover:bg-green-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    {creatingLocation ? "Adding..." : "Add Location"}
+                  </button>
+                </div>
+              </div>
+
+              {!canManageLocations && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Read-only access. Only exec/admin/manager/supervisor roles can manage locations.
+                </div>
+              )}
+
+              {loadingLocations ? (
+                <div className="text-center py-12">
+                  <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-4 text-gray-600">Loading locations...</p>
+                </div>
+              ) : eventLocations.length === 0 ? (
+                <div className="bg-gray-50 rounded-lg p-8 text-center">
+                  <p className="text-gray-600 text-lg font-medium">No locations added yet</p>
+                  <p className="text-gray-500 text-sm mt-2">Add your first location and assign team members to it.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  {eventLocations.map((loc) => {
+                    const assignedIds = locationAssignments[loc.id] || [];
+                    const isEditing = !!editingLocationIds[loc.id];
+                    const selectedIds = locationAssignmentDrafts[loc.id] || [];
+                    const assignedMembers = assignedIds
+                      .map((assignedId) =>
+                        teamMembers.find((member: any) => getTeamMemberId(member) === assignedId)
+                      )
+                      .filter(Boolean);
+
+                    return (
+                      <div key={loc.id} className="bg-white border rounded-lg p-4">
+                        <div className="flex items-start justify-between gap-4 mb-4">
+                          <div>
+                            <h3 className="text-lg font-semibold text-gray-900">{loc.name}</h3>
+                            <p className="text-xs text-gray-500 mt-1">
+                              {assignedIds.length} assigned {assignedIds.length === 1 ? "member" : "members"}
+                            </p>
+                            {loc.notes && (
+                              <p className="text-sm text-gray-600 mt-2">{loc.notes}</p>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => handleDeleteLocation(loc.id)}
+                            disabled={!canManageLocations || deletingLocationId === loc.id}
+                            className="text-red-600 hover:text-red-700 text-sm font-medium disabled:text-gray-400"
+                          >
+                            {deletingLocationId === loc.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </div>
+
+                        {!isEditing ? (
+                          <div className="space-y-4">
+                            {assignedMembers.length === 0 ? (
+                              <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4">
+                                No vendors assigned to this station yet.
+                              </div>
+                            ) : (
+                              <div className="border rounded-lg overflow-hidden">
+                                {assignedMembers.map((member: any) => {
+                                  const memberId = getTeamMemberId(member);
+                                  const profile = member?.users?.profiles;
+                                  const firstName = profile?.first_name || "Unknown";
+                                  const lastName = profile?.last_name || "";
+                                  const fullName = `${firstName} ${lastName}`.trim();
+                                  const email = member?.users?.email || "No email";
+
+                                  return (
+                                    <div
+                                      key={`${loc.id}-assigned-${memberId}`}
+                                      className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0"
+                                    >
+                                      <div className="min-w-0">
+                                        <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                        <p className="text-xs text-gray-500 truncate">{email}</p>
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+
+                            <div className="flex justify-end">
+                              <button
+                                onClick={() => startLocationAssignmentEdit(loc.id)}
+                                disabled={!canManageLocations || teamMembers.length === 0}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                              >
+                                Add Vendors
+                              </button>
+                            </div>
+                          </div>
+                        ) : teamMembers.length === 0 ? (
+                          <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4">
+                            No team members available. Add team members first, then assign them here.
+                          </div>
+                        ) : (
+                          <div className="space-y-4">
+                            <div className="border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+                              {teamMembers.map((member: any) => {
+                                const memberId = getTeamMemberId(member);
+                                if (!memberId) return null;
+
+                                const profile = member?.users?.profiles;
+                                const firstName = profile?.first_name || "Unknown";
+                                const lastName = profile?.last_name || "";
+                                const fullName = `${firstName} ${lastName}`.trim();
+                                const email = member?.users?.email || "No email";
+                                const checked = selectedIds.includes(memberId);
+
+                                return (
+                                  <label
+                                    key={`${loc.id}-${memberId}`}
+                                    className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer"
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                      <p className="text-xs text-gray-500 truncate">{email}</p>
+                                    </div>
+                                    <input
+                                      type="checkbox"
+                                      checked={checked}
+                                      disabled={!canManageLocations}
+                                      onChange={() => toggleLocationAssignmentDraft(loc.id, memberId)}
+                                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                    />
+                                  </label>
+                                );
+                              })}
+                            </div>
+
+                            <div className="flex justify-end gap-2">
+                              <button
+                                onClick={() => cancelLocationAssignmentEdit(loc.id)}
+                                disabled={!canManageLocations || savingLocationId === loc.id}
+                                className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded transition disabled:bg-gray-100 disabled:text-gray-400"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                onClick={() => saveLocationAssignments(loc.id)}
+                                disabled={!canManageLocations || savingLocationId === loc.id}
+                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                              >
+                                {savingLocationId === loc.id ? "Saving..." : "Save Assignments"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
 {/* TIMESHEET TAB */}
 {activeTab === "timesheet" && (
 
@@ -3371,8 +4084,120 @@ export default function EventDashboardPage() {
           )}
           {/* END tabs */}
         </div>
-        </div>
       </div>
+      </div>
+
+      {showAddVendorModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={closeAddVendorModal}
+        >
+          <div
+            className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">Add Vendor To Team</h3>
+                <p className="text-sm text-gray-500 mt-1">The vendor will be added as confirmed immediately.</p>
+              </div>
+              <button
+                onClick={closeAddVendorModal}
+                disabled={addingVendorToTeam}
+                className="text-gray-500 hover:text-gray-700 disabled:text-gray-300"
+                aria-label="Close add vendor modal"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-4 space-y-4">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={addVendorSearch}
+                  onChange={(e) => setAddVendorSearch(e.target.value)}
+                  placeholder="Search by name, email, phone, or division"
+                  className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  disabled={loadingAddVendors || addingVendorToTeam}
+                />
+                <button
+                  onClick={loadVendorsForImmediateTeamAdd}
+                  disabled={loadingAddVendors || addingVendorToTeam}
+                  className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
+                >
+                  {loadingAddVendors ? "Loading..." : "Reload"}
+                </button>
+              </div>
+
+              {loadingAddVendors ? (
+                <div className="py-10 text-center text-gray-600">
+                  <div className="inline-block w-7 h-7 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-sm">Loading vendors...</p>
+                </div>
+              ) : filteredAddVendorOptions.length === 0 ? (
+                <div className="py-10 text-center bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-sm text-gray-600">No available vendors to add.</p>
+                </div>
+              ) : (
+                <div className="max-h-80 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                  {filteredAddVendorOptions.map((vendor) => {
+                    const firstName = (vendor.profiles?.first_name || "").toString();
+                    const lastName = (vendor.profiles?.last_name || "").toString();
+                    const phone = (vendor.profiles?.phone || "").toString();
+                    const fullName = `${firstName} ${lastName}`.trim() || vendor.email;
+                    const isSelected = selectedVendorToAdd === vendor.id;
+
+                    return (
+                      <button
+                        key={vendor.id}
+                        type="button"
+                        onClick={() => setSelectedVendorToAdd(vendor.id)}
+                        className={`w-full text-left px-4 py-3 transition ${isSelected ? "bg-blue-50" : "hover:bg-gray-50"}`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-sm font-semibold text-gray-900">{fullName}</div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              {vendor.email}
+                              {phone ? ` • ${phone}` : ""}
+                              {vendor.division ? ` • ${vendor.division}` : ""}
+                            </div>
+                          </div>
+                          {isSelected && (
+                            <span className="inline-flex items-center px-2 py-1 rounded text-xs font-semibold bg-blue-100 text-blue-700">
+                              Selected
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={closeAddVendorModal}
+                disabled={addingVendorToTeam}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddVendorToTeamImmediately}
+                disabled={!selectedVendorToAdd || loadingAddVendors || addingVendorToTeam}
+                className="px-4 py-2 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700 disabled:bg-gray-400"
+              >
+                {addingVendorToTeam ? "Adding..." : "Add + Confirm"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

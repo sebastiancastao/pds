@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
-import { decrypt, decryptData } from "@/lib/encryption";
+import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -48,7 +48,8 @@ export async function POST(
 
     // Get request body
     const body = await req.json();
-    const { vendorIds } = body;
+    const { vendorIds, autoConfirm } = body;
+    const shouldAutoConfirm = autoConfirm === true;
 
     if (!vendorIds || !Array.isArray(vendorIds) || vendorIds.length === 0) {
       return NextResponse.json({ error: 'Vendor IDs are required' }, { status: 400 });
@@ -131,7 +132,9 @@ export async function POST(
     if (newVendorIds.length === 0) {
       return NextResponse.json({
         success: true,
-        message: `All selected vendors are already on the team. No new invitations sent.`,
+        message: shouldAutoConfirm
+          ? `All selected vendors are already on the team. No new members were added.`
+          : `All selected vendors are already on the team. No new invitations sent.`,
         teamSize: existingVendorIds.size,
         emailStats: {
           sent: 0,
@@ -140,13 +143,13 @@ export async function POST(
       }, { status: 200 });
     }
 
-    // Create team assignments only for new vendors with confirmation tokens
+    // Create team assignments only for new vendors
     const teamMembers = newVendorIds.map(vendorId => ({
       event_id: eventId,
       vendor_id: vendorId,
       assigned_by: user.id,
-      status: 'pending_confirmation',
-      confirmation_token: crypto.randomBytes(32).toString('hex'),
+      status: shouldAutoConfirm ? 'confirmed' : 'pending_confirmation',
+      confirmation_token: shouldAutoConfirm ? null : crypto.randomBytes(32).toString('hex'),
       created_at: new Date().toISOString()
     }));
 
@@ -166,6 +169,22 @@ export async function POST(
       return NextResponse.json({
         error: 'Failed to create team: ' + insertError.message
       }, { status: 500 });
+    }
+
+    const totalTeamSize = existingVendorIds.size + newVendorIds.length;
+    const alreadyOnTeam = vendorIds.filter(id => existingVendorIds.has(id)).length;
+
+    if (shouldAutoConfirm) {
+      return NextResponse.json({
+        success: true,
+        message: alreadyOnTeam > 0
+          ? `Added ${newVendorIds.length} new vendor${newVendorIds.length !== 1 ? 's' : ''} as confirmed (${alreadyOnTeam} already on team). Total team size: ${totalTeamSize}.`
+          : `Added ${newVendorIds.length} vendor${newVendorIds.length !== 1 ? 's' : ''} to the team as confirmed. Total team size: ${totalTeamSize}.`,
+        teamSize: totalTeamSize,
+        newMembers: newVendorIds.length,
+        alreadyOnTeam: alreadyOnTeam,
+        autoConfirmed: true
+      }, { status: 200 });
     }
 
     // Send confirmation emails only to newly added vendors
@@ -237,9 +256,6 @@ export async function POST(
 
     console.log(`📧 Sent ${emailsSent} confirmation emails, ${emailsFailed} failed`);
 
-    const totalTeamSize = existingVendorIds.size + newVendorIds.length;
-    const alreadyOnTeam = vendorIds.filter(id => existingVendorIds.has(id)).length;
-
     return NextResponse.json({
       success: true,
       message: alreadyOnTeam > 0
@@ -292,45 +308,23 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
-    // Check if caller wants to skip expensive photo processing
-    const { searchParams } = new URL(req.url);
-    const skipPhotos = searchParams.get('skip_photos') === 'true';
-
-    // Get team members for this event
-    const selectFields = skipPhotos
-      ? `
+    // Keep payload lean and stable: do not include raw profile photo blobs here.
+    const selectFields = `
+      id,
+      vendor_id,
+      status,
+      created_at,
+      users!event_teams_vendor_id_fkey (
         id,
-        vendor_id,
-        status,
-        created_at,
-        users!event_teams_vendor_id_fkey (
-          id,
-          email,
-          division,
-          profiles (
-            first_name,
-            last_name,
-            phone
-          )
+        email,
+        division,
+        profiles (
+          first_name,
+          last_name,
+          phone
         )
-      `
-      : `
-        id,
-        vendor_id,
-        status,
-        created_at,
-        users!event_teams_vendor_id_fkey (
-          id,
-          email,
-          division,
-          profiles (
-            first_name,
-            last_name,
-            phone,
-            profile_photo_data
-          )
-        )
-      `;
+      )
+    `;
 
     const { data: teamMembers, error: teamError } = await supabaseAdmin
       .from('event_teams')
@@ -345,55 +339,10 @@ export async function GET(
       }, { status: 200 });
     }
 
-    // Decrypt sensitive profile data and optionally convert binary photo to data URL
+    // Decrypt sensitive profile data
     const decryptedTeamMembers = teamMembers?.map((member: any) => {
       if (member.users?.profiles) {
         try {
-          let profilePhotoUrl = null;
-
-          // Only process photos when not skipped (team tab needs them, timesheet/hr tabs don't)
-          if (!skipPhotos && member.users.profiles.profile_photo_data) {
-            try {
-              let photoData = member.users.profiles.profile_photo_data;
-
-              // First, convert hex bytea to string if needed
-              if (typeof photoData === 'string' && photoData.startsWith('\\x')) {
-                const hexString = photoData.slice(2);
-                const buffer = Buffer.from(hexString, 'hex');
-                photoData = buffer.toString('utf-8');
-              }
-
-              // Check if photo data is encrypted (starts with U2FsdGVk = "Salted__" in base64)
-              if (typeof photoData === 'string' && (photoData.startsWith('U2FsdGVk') || photoData.includes('Salted'))) {
-                try {
-                  const decryptedBytes = decryptData(photoData);
-                  const base64 = Buffer.from(decryptedBytes).toString('base64');
-                  profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-                } catch (decryptError) {
-                  try {
-                    const decryptedText = decrypt(photoData);
-                    if (decryptedText.startsWith('data:')) {
-                      profilePhotoUrl = decryptedText;
-                    }
-                  } catch (fallbackError) {
-                    // Photo decryption failed
-                  }
-                }
-              } else if (Buffer.isBuffer(photoData)) {
-                const base64 = photoData.toString('base64');
-                profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-              } else if (typeof photoData === 'string') {
-                if (photoData.startsWith('data:')) {
-                  profilePhotoUrl = photoData;
-                } else {
-                  profilePhotoUrl = `data:image/jpeg;base64,${photoData}`;
-                }
-              }
-            } catch (photoError) {
-              // Photo processing failed
-            }
-          }
-
           return {
             ...member,
             users: {
@@ -409,7 +358,7 @@ export async function GET(
                 phone: member.users.profiles.phone
                   ? decrypt(member.users.profiles.phone)
                   : '',
-                profile_photo_url: profilePhotoUrl,
+                profile_photo_url: null,
               }
             }
           };
