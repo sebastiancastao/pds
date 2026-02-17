@@ -92,6 +92,10 @@ function HRDashboardContent() {
     return `${hh}:${String(mm).padStart(2, "0")}`;
   };
   const getEffectiveHours = (payment: any): number => {
+    if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
+      const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
+      if (Number.isFinite(effective) && effective >= 0) return effective;
+    }
     const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
     if (actual > 0) return actual;
     const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
@@ -416,8 +420,9 @@ function HRDashboardContent() {
           Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
         const commissionPoolPercent =
           Number(eventPaymentSummary.commission_pool_percent || eventInfo.commission_pool || 0) || 0;
-        const eventCommissionDollars =
+        const eventCommissionDollarsRaw =
           Number(eventPaymentSummary.commission_pool_dollars || 0) || (adjustedGrossAmount * commissionPoolPercent);
+        const eventCommissionDollars = Number.isFinite(eventCommissionDollarsRaw) ? eventCommissionDollarsRaw : 0;
         const eventTotalTips = Number(eventPaymentSummary.total_tips || 0) || eventTips;
 
         // Initialize venue entry
@@ -449,6 +454,34 @@ function HRDashboardContent() {
 
               if (teamMembers.length > 0) {
                 console.log('[HR PAYMENTS] Found team members:', teamMembers.length);
+
+                let vendorsWithHours = 0;
+                if (eventCommissionDollars > 0) {
+                  try {
+                    const tsRes = await fetch(`/api/events/${eventId}/timesheet`, {
+                      method: 'GET',
+                      headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+                    });
+                    if (tsRes.ok) {
+                      const tsJson = await tsRes.json();
+                      const totals = tsJson?.totals || {};
+                      const byDivision = teamMembers.reduce((count: number, member: any) => {
+                        const uid = (member?.vendor_id || member?.user_id || member?.users?.id || '').toString();
+                        const ms = Number(totals?.[uid] || 0);
+                        return (isVendorDivision(member?.users?.division) && ms > 0) ? count + 1 : count;
+                      }, 0);
+                      const fallbackAny = teamMembers.reduce((count: number, member: any) => {
+                        const uid = (member?.vendor_id || member?.user_id || member?.users?.id || '').toString();
+                        const ms = Number(totals?.[uid] || 0);
+                        return ms > 0 ? count + 1 : count;
+                      }, 0);
+                      vendorsWithHours = byDivision > 0 ? byDivision : fallbackAny;
+                    }
+                  } catch (e) {
+                    console.warn('[HR PAYMENTS] Unable to load timesheet totals for commission-per-vendor fallback', { eventId, error: e });
+                  }
+                }
+                const commissionPerVendor = vendorsWithHours > 0 ? (eventCommissionDollars / vendorsWithHours) : 0;
 
                 // Map team members to payment format with zeros
                 const teamPayments = teamMembers.map((member: any) => {
@@ -482,6 +515,8 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
+                  commissionPerVendor,
+                  vendorsWithHours,
                   state: eventInfo.state,
                   baseRate: configuredBaseRate,
                   commissionDollars: eventCommissionDollars,
@@ -505,6 +540,8 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
+            commissionPerVendor: 0,
+            vendorsWithHours: 0,
             state: eventInfo.state,
             baseRate: configuredBaseRate,
             commissionDollars: eventCommissionDollars,
@@ -594,42 +631,43 @@ function HRDashboardContent() {
           const extAmtRegular = actualHours * baseRate;
           const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
 
-          // Commission Amt: AZ/NY = pool / vendors; others subtract Ext Amt
-          let commissionAmt;
+          // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
+          let commissionAmt = 0;
+          let otRate = 0;
+          let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
+          let totalFinalCommissionAmt = 0;
+          let loadedRate = baseRate;
+
           if (isAZorNY) {
-            commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0) ? commissionPerVendorAzNy : 0;
-          } else {
-            // Non-AZ/NY parity with Event Dashboard: trailers are excluded from commission allocation.
-            commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
-              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
+              ? commissionPerVendorAzNy
               : 0;
-          }
-
-          // AZ/NY weekly OT: OT Rate is 1.5x the (regular) Loaded Rate.
-          const totalFinalCommissionBase = (isAZorNY && actualHours > 0)
-            ? Math.max(150, extAmtRegular + commissionAmt)
-            : 0;
-          const loadedRateBase = (isAZorNY && actualHours > 0)
-            ? totalFinalCommissionBase / actualHours
-            : baseRate;
-          const otRate = (isAZorNY && isWeeklyOT) ? loadedRateBase * 1.5 : 0;
-
-          // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours; others = baseRate x 1.5 x hours
-          const extAmtOnRegRate = isAZorNY
-            ? (isWeeklyOT ? (otRate * actualHours) : extAmtRegular)
-            : extAmtOnRegRateNonAzNy;
-
-          // Total Final Commission Amt = Ext Amt + Commission Amt; minimum $150
-          const totalFinalCommissionAmt = actualHours > 0
-            ? isAZorNY
+            const totalFinalCommissionBase = actualHours > 0
+              ? Math.max(150, extAmtRegular + commissionAmt)
+              : 0;
+            const loadedRateBase = actualHours > 0
+              ? totalFinalCommissionBase / actualHours
+              : baseRate;
+            otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
+            extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtRegular;
+            totalFinalCommissionAmt = actualHours > 0
               ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
-              : Math.max(150, extAmtOnRegRate + commissionAmt)
-            : 0;
-
-          // Loaded Rate should remain the "regular" loaded rate for AZ/NY, since OT Rate is 1.5x Loaded Rate.
-          const loadedRate = isAZorNY
-            ? loadedRateBase
-            : (actualHours > 0 ? totalFinalCommissionAmt / actualHours : baseRate);
+              : 0;
+            loadedRate = loadedRateBase;
+          } else {
+            const totalFinalCommission = isTrailers
+              ? extAmtOnRegRateNonAzNy
+              : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
+            commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              ? Math.max(0, totalFinalCommission - extAmtOnRegRateNonAzNy)
+              : 0;
+            extAmtOnRegRate = extAmtOnRegRateNonAzNy;
+            totalFinalCommissionAmt = actualHours > 0 ? totalFinalCommission : 0;
+            // Event Dashboard displays Loaded Rate with a 28.5/hr floor in non-AZ/NY states.
+            loadedRate = actualHours > 0
+              ? Math.max(28.5, totalFinalCommissionAmt / actualHours)
+              : baseRate;
+          }
 
           // Tips: pro-rated by hours worked (fall back to stored per-vendor tips if summary missing)
           const tips = (totalEventHours > 0 && totalTips > 0)
@@ -644,6 +682,7 @@ function HRDashboardContent() {
             firstName,
             lastName,
             email: user?.email || 'N/A',
+            division: memberDivision,
             actualHours,
             regularHours: actualHours,
             regularPay: extAmtOnRegRate,
@@ -672,6 +711,16 @@ function HRDashboardContent() {
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
         const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
         const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
+        const vendorsWithHoursByDivision = eventPayments.reduce((count: number, p: any) => {
+          const hours = Number(p.actualHours || 0);
+          return (isVendorDivision(p?.division) && hours > 0) ? count + 1 : count;
+        }, 0);
+        const vendorsWithHoursFallback = eventPayments.reduce((count: number, p: any) => {
+          return Number(p.actualHours || 0) > 0 ? count + 1 : count;
+        }, 0);
+        const vendorsWithHours = vendorsWithHoursByDivision > 0 ? vendorsWithHoursByDivision : vendorsWithHoursFallback;
+        const safeCommissionPoolDollars = Number.isFinite(commissionPoolDollars) ? commissionPoolDollars : 0;
+        const commissionPerVendor = vendorsWithHours > 0 ? (safeCommissionPoolDollars / vendorsWithHours) : 0;
 
         byVenue[eventInfo.venue].totalPayment += eventTotal;
         byVenue[eventInfo.venue].totalHours += eventHours;
@@ -679,6 +728,8 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          commissionPerVendor,
+          vendorsWithHours,
           state: eventInfo.state,
           baseRate,
           commissionDollars: eventCommissionDollars,
@@ -1332,6 +1383,7 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Commission per Vendor</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Commission</th>
@@ -1345,18 +1397,50 @@ function HRDashboardContent() {
                           {v.events.map(ev => (
                             <>
                               <tr key={ev.id} className="bg-white">
-                                <td className="px-4 py-2 text-sm text-gray-900">{ev.name}</td>
-                                <td className="px-4 py-2 text-sm text-gray-500">{ev.date || '—'}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">{formatHoursHHMM(ev.eventHours || 0)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.commissionDollars || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalTips || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalRestBreak || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.totalOther || 0)).toFixed(2)}</td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">${(Number(ev.eventTotal || 0)).toFixed(2)}</td>
+                                <td className="px-4 py-2 text-sm text-gray-900">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Event</div>
+                                  <div>{ev.name}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-500">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Date</div>
+                                  <div>{ev.date || '—'}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Commission per Vendor</div>
+                                  <div>${(Number(ev.commissionPerVendor || 0)).toFixed(2)}</div>
+                                  <div className="text-[10px] text-gray-400">{Number(ev.vendorsWithHours || 0)} vendors w/ hours</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Hours</div>
+                                  <div>{formatHoursHHMM(ev.eventHours || 0)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Adjusted Gross Amount</div>
+                                  <div>${(Number(ev.adjustedGrossAmount || 0)).toFixed(2)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Commission</div>
+                                  <div>${(Number(ev.commissionDollars || 0)).toFixed(2)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
+                                  <div>${(Number(ev.totalTips || 0)).toFixed(2)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Rest Break</div>
+                                  <div>${(Number(ev.totalRestBreak || 0)).toFixed(2)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Other</div>
+                                  <div>${(Number(ev.totalOther || 0)).toFixed(2)}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total</div>
+                                  <div>${(Number(ev.eventTotal || 0)).toFixed(2)}</div>
+                                </td>
                               </tr>
                               <tr>
-                                <td colSpan={9} className="px-4 py-2">
+                                <td colSpan={10} className="px-4 py-2">
                                   {Array.isArray(ev.payments) && ev.payments.length > 0 ? (
                                     <div className="overflow-x-auto border rounded">
                                       <table className="min-w-full">

@@ -502,7 +502,9 @@ export async function GET(req: NextRequest) {
       : eventIds;
 
     // mealDeductionHours[eventId][userId] = hours to deduct
+    // effectiveHoursFromTimesheet[eventId][userId] = worked hours after meal deductions
     const mealDeductionHours: Record<string, Record<string, number>> = {};
+    const effectiveHoursFromTimesheet: Record<string, Record<string, number>> = {};
 
     if (allEventIdsForMeals.length > 0) {
       // Fetch events metadata for date windows
@@ -560,11 +562,31 @@ export async function GET(req: NextRequest) {
         }
 
         mealDeductionHours[eid] = {};
+        effectiveHoursFromTimesheet[eid] = {};
 
         for (const [uid, userEntries] of Object.entries(byUser)) {
           const sorted = [...userEntries].sort((a, b) =>
             new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
           );
+          const clockEntries = sorted.filter(e => e.action === 'clock_in' || e.action === 'clock_out');
+          const workIntervals: Array<{ start: Date; end: Date }> = [];
+          let currentIn: string | null = null;
+          let workedMs = 0;
+          for (const ce of clockEntries) {
+            if (ce.action === 'clock_in') {
+              if (!currentIn) currentIn = ce.timestamp;
+            } else if (ce.action === 'clock_out' && currentIn) {
+              const startMs = new Date(currentIn).getTime();
+              const endMs = new Date(ce.timestamp).getTime();
+              const duration = endMs - startMs;
+              if (duration > 0) {
+                workedMs += duration;
+                workIntervals.push({ start: new Date(currentIn), end: new Date(ce.timestamp) });
+              }
+              currentIn = null;
+            }
+          }
+
           const mealStarts = sorted.filter(e => e.action === 'meal_start');
           const mealEnds = sorted.filter(e => e.action === 'meal_end');
 
@@ -585,17 +607,6 @@ export async function GET(req: NextRequest) {
           // Auto-detect meals from gaps if no explicit meal actions
           const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
           if (!hasExplicitMeals) {
-            const clockEntries = sorted.filter(e => e.action === 'clock_in' || e.action === 'clock_out');
-            const workIntervals: Array<{ start: Date; end: Date }> = [];
-            let currentIn: string | null = null;
-            for (const ce of clockEntries) {
-              if (ce.action === 'clock_in') {
-                if (!currentIn) currentIn = ce.timestamp;
-              } else if (ce.action === 'clock_out' && currentIn) {
-                workIntervals.push({ start: new Date(currentIn), end: new Date(ce.timestamp) });
-                currentIn = null;
-              }
-            }
             if (workIntervals.length >= 2) {
               workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
               const gaps: Array<{ start: Date; end: Date }> = [];
@@ -621,6 +632,7 @@ export async function GET(req: NextRequest) {
           if (deductMs > 0) {
             mealDeductionHours[eid][uid] = deductMs / (1000 * 60 * 60);
           }
+          effectiveHoursFromTimesheet[eid][uid] = Math.max(workedMs - deductMs, 0) / (1000 * 60 * 60);
         }
       }
     }
@@ -717,6 +729,7 @@ export async function GET(req: NextRequest) {
 
       const eventAdjustments = (adjustments || []).filter((adj: any) => adj.event_id === eventId);
       const eventMealDeductions = mealDeductionHours[eventId] || {};
+      const eventEffectiveHours = effectiveHoursFromTimesheet[eventId] || {};
       const paymentsWithAdjustments = (eventVendorPayments || []).map((vp: any) => {
         const adjustment = eventAdjustments.find((adj: any) => adj.user_id === vp.user_id);
         const row = normalizePaymentHours({
@@ -727,7 +740,18 @@ export async function GET(req: NextRequest) {
         // Attach meal deduction hours so HR dashboard can apply it to all calculations
         const mealDeduct = eventMealDeductions[row.user_id] || 0;
         row.meal_deduction_hours = mealDeduct;
-        // Also deduct from hour fields directly
+
+        const hasTimesheetHours = Object.prototype.hasOwnProperty.call(eventEffectiveHours, row.user_id);
+        if (hasTimesheetHours) {
+          const effectiveHours = Math.max(Number(eventEffectiveHours[row.user_id] || 0), 0);
+          row.actual_hours = effectiveHours;
+          row.regular_hours = effectiveHours;
+          row.worked_hours = effectiveHours;
+          row.effective_hours = effectiveHours;
+          return row;
+        }
+
+        // Fallback for older events with no usable time_entries
         if (mealDeduct > 0) {
           if (Number(row.actual_hours || 0) > 0) {
             row.actual_hours = Math.max(Number(row.actual_hours) - mealDeduct, 0);

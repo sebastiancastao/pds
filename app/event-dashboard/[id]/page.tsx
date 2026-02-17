@@ -314,9 +314,19 @@ export default function EventDashboardPage() {
     return normalized === 'vendor' || normalized === 'both';
   };
 
+  const hasTimesheetForMember = (member: any) => {
+    const uid = (member?.user_id || member?.vendor_id || member?.users?.id || '').toString();
+    if (!uid) return false;
+    const totalMs = Number(timesheetTotals[uid] || 0);
+    if (totalMs > 0) return true;
+    const span = timesheetSpans[uid];
+    return Boolean(span?.firstIn && span?.lastOut);
+  };
+
   const vendorCount = useMemo(() => teamMembers.reduce((count: number, member: any) => {
-    return isVendorDivision(member.users?.division) ? count + 1 : count;
-  }, 0), [teamMembers]);
+    if (!isVendorDivision(member.users?.division)) return count;
+    return hasTimesheetForMember(member) ? count + 1 : count;
+  }, 0), [teamMembers, timesheetTotals, timesheetSpans]);
 
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
@@ -1392,6 +1402,10 @@ export default function EventDashboardPage() {
     return sharesData.netSales * pool;
   }, [sharesData, commissionPool, event?.commission_pool]);
 
+  const commissionPerVendor = useMemo(() => {
+    return vendorCount > 0 ? (calculatedCommission / vendorCount) : 0;
+  }, [calculatedCommission, vendorCount]);
+
   // Helper to format ISO -> "HH:mm" for inputs
   const isoToHHMM = (iso: string | null): string => {
     if (!iso) return "";
@@ -1606,7 +1620,7 @@ export default function EventDashboardPage() {
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
         const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
         const commissionAmount =
-          !isTrailersDivision && vendorCount > 0
+          !isTrailersDivision && actualHours > 0 && vendorCount > 0
             ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
             : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
@@ -1720,7 +1734,7 @@ export default function EventDashboardPage() {
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
         const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
         const commissionAmount =
-          !isTrailersDivision && vendorCount > 0
+          !isTrailersDivision && actualHours > 0 && vendorCount > 0
             ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
             : 0;
         const proratedTips = !isTrailersDivision && totalEligibleHoursEmail > 0 ? (totalTips * actualHours) / totalEligibleHoursEmail : 0;
@@ -3578,7 +3592,7 @@ export default function EventDashboardPage() {
               )}
 
               {/* Quick Stats */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mb-6">
                 <div className="bg-blue-50 rounded-lg p-6">
                   <div className="flex items-center justify-between mb-2">
                     <div className="text-sm font-medium text-blue-600">Staff Assigned</div>
@@ -3667,6 +3681,21 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-orange-900">0%</div>
                   <div className="text-xs text-orange-600 mt-1">checked in</div>
+                </div>
+
+                <div className="bg-indigo-50 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium text-indigo-600">Commission per Vendor</div>
+                    <svg className="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8V7m0 1v8m0 0v1" />
+                    </svg>
+                  </div>
+                  <div className="text-3xl font-bold text-indigo-900">
+                    ${commissionPerVendor.toFixed(2)}
+                  </div>
+                  <div className="text-xs text-indigo-600 mt-1">
+                    {vendorCount} vendor{vendorCount === 1 ? '' : 's'} with timesheets
+                  </div>
                 </div>
               </div>
 
@@ -3824,7 +3853,7 @@ export default function EventDashboardPage() {
                             ? extAmtOnRegRate
                             : Math.max(extAmtOnRegRate, perVendorCommissionShare);
                           const commissionAmount =
-                            !isTrailersDivision && vendorCount > 0
+                            !isTrailersDivision && actualHours > 0 && vendorCount > 0
                               ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
                               : 0;
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
