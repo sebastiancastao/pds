@@ -6,10 +6,22 @@ import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
 
-type Audience = 'manual' | 'role' | 'all';
+type Audience = 'manual' | 'role' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
 
 const allowedRoles = new Set(['admin', 'exec', 'hr', 'hr_admin']);
+
+const getRegionIcon = (regionName?: string | null) => {
+  const name = (regionName || '').toLowerCase();
+  if (/\bny\b|new york/.test(name)) return '\uD83D\uDDFD\uFE0F';
+  if (/\bca\b|california|los angeles|san diego|san francisco/.test(name)) return '\uD83C\uDF07';
+  if (/\bnv\b|nevada|las vegas/.test(name)) return '\uD83C\uDFDC\uFE0F';
+  if (/\baz\b|arizona|phoenix/.test(name)) return '\uD83C\uDF35';
+  if (/\btx\b|texas/.test(name)) return '\uD83E\uDD20';
+  if (/\bwi\b|wisconsin/.test(name)) return '\uD83E\uDDC0';
+  if (/\beast\b|\bwest\b|\bnorth\b|\bsouth\b/.test(name)) return '\uD83E\uDDED';
+  return '\uD83D\uDCCD';
+};
 
 function parseEmailList(value: string): string[] {
   return Array.from(
@@ -35,6 +47,10 @@ export default function AdminEmailPage() {
   const [audience, setAudience] = useState<Audience>('manual');
   const [to, setTo] = useState('');
   const [targetRole, setTargetRole] = useState('worker');
+  const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedRegion, setSelectedRegion] = useState('all');
+  const [loadingRegions, setLoadingRegions] = useState(false);
+  const [regionsError, setRegionsError] = useState('');
   const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState('');
@@ -86,6 +102,41 @@ export default function AdminEmailPage() {
       }
     })();
   }, [router]);
+
+  useEffect(() => {
+    if (accessState !== 'allowed') return;
+
+    let active = true;
+    const loadRegions = async () => {
+      setLoadingRegions(true);
+      setRegionsError('');
+
+      try {
+        const res = await fetch('/api/regions', { method: 'GET' });
+        const data = await res.json().catch(() => ({}));
+
+        if (!res.ok) {
+          throw new Error(
+            typeof data?.error === 'string' ? data.error : `Failed to load regions (${res.status})`
+          );
+        }
+
+        if (!active) return;
+        setRegions(Array.isArray(data?.regions) ? data.regions : []);
+      } catch (err: any) {
+        if (!active) return;
+        setRegions([]);
+        setRegionsError(err?.message || 'Failed to load regions.');
+      } finally {
+        if (active) setLoadingRegions(false);
+      }
+    };
+
+    void loadRegions();
+    return () => {
+      active = false;
+    };
+  }, [accessState]);
 
   const manualRecipientCount = useMemo(() => {
     if (!to.trim()) return 0;
@@ -148,6 +199,11 @@ export default function AdminEmailPage() {
       return;
     }
 
+    if (audience === 'region' && (!selectedRegion || selectedRegion === 'all')) {
+      setError('Please select a region.');
+      return;
+    }
+
     if (bulkMode && !confirmBulk) {
       setError('Please confirm bulk sending before continuing.');
       return;
@@ -162,6 +218,7 @@ export default function AdminEmailPage() {
       form.set('audience', audience);
       if (audience === 'manual') form.set('to', to);
       if (audience === 'role') form.set('role', targetRole);
+      if (audience === 'region') form.set('region_id', selectedRegion);
       form.set('subject', subject.trim());
       form.set('body', body);
       form.set('bodyFormat', bodyFormat);
@@ -263,6 +320,7 @@ export default function AdminEmailPage() {
                   >
                     <option value="manual">Manual list</option>
                     <option value="role">All users by role</option>
+                    <option value="region">All users by region</option>
                     <option value="all">All users</option>
                   </select>
                   <p className="text-xs text-gray-500 mt-2">
@@ -289,6 +347,44 @@ export default function AdminEmailPage() {
                       <option value="hr_admin">hr_admin</option>
                       <option value="backgroundchecker">backgroundchecker</option>
                     </select>
+                  </div>
+                )}
+
+                {audience === 'region' && (
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      Target region
+                      {regions.length > 0 && (
+                        <span className="ml-2 text-xs font-normal text-gray-500">
+                          ({regions.length} regions)
+                        </span>
+                      )}
+                    </label>
+                    <select
+                      value={selectedRegion}
+                      onChange={(e) => setSelectedRegion(e.target.value)}
+                      disabled={loadingRegions}
+                      className="w-full border rounded px-3 py-2"
+                    >
+                      <option value="all" disabled>
+                        {loadingRegions
+                          ? 'Loading regions...'
+                          : regions.length === 0
+                            ? 'No regions found'
+                            : 'Select a region'}
+                      </option>
+                      {regions.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {getRegionIcon(r.name)} {r.name}
+                        </option>
+                      ))}
+                    </select>
+                    {regionsError && (
+                      <p className="text-xs text-red-500 mt-1">{regionsError}</p>
+                    )}
+                    {regions.length === 0 && (
+                      <p className="text-xs text-red-500 mt-1">No regions available.</p>
+                    )}
                   </div>
                 )}
 
@@ -390,6 +486,7 @@ export default function AdminEmailPage() {
                       setTo('');
                       setCc('');
                       setBcc('');
+                      setSelectedRegion('all');
                       setConfirmBulk(false);
                       setAttachments([]);
                       setSuccess(null);

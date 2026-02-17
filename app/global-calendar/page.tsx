@@ -147,6 +147,7 @@ export default function DashboardPage() {
   const [selectedTeamMembers, setSelectedTeamMembers] = useState<Set<string>>(new Set());
   const [loadingAvailable, setLoadingAvailable] = useState(false);
   const [savingTeam, setSavingTeam] = useState(false);
+  const [resendingTeamConfirmations, setResendingTeamConfirmations] = useState(false);
   const [teamMessage, setTeamMessage] = useState("");
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
 
@@ -1122,6 +1123,7 @@ export default function DashboardPage() {
     setSelectedEvent(null);
     setAvailableVendors([]);
     setSelectedTeamMembers(new Set());
+    setResendingTeamConfirmations(false);
     setTeamMessage("");
     setTeamSearchQuery("");
   };
@@ -1174,6 +1176,51 @@ export default function DashboardPage() {
       setTeamMessage("Network error creating team");
     } finally {
       setSavingTeam(false);
+    }
+  };
+
+  const handleResendTeamConfirmations = async () => {
+    if (!selectedEvent) return;
+
+    const invitedVendorIds = availableVendors
+      .filter((vendor) => {
+        const status = String((vendor as any).status || "").toLowerCase();
+        return Boolean((vendor as any).isExistingMember) && status !== "confirmed" && status !== "declined";
+      })
+      .map((vendor) => vendor.id);
+
+    if (invitedVendorIds.length === 0) {
+      setTeamMessage("No invited vendors are pending confirmation.");
+      return;
+    }
+
+    setResendingTeamConfirmations(true);
+    setTeamMessage("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/events/${selectedEvent.id}/team/resend-confirmation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ vendorIds: invitedVendorIds }),
+      });
+      const data = await res.json();
+
+      if (res.ok) {
+        setTeamMessage(
+          data.message ||
+          `Successfully resent confirmation to ${invitedVendorIds.length} invited vendor${invitedVendorIds.length !== 1 ? "s" : ""}.`
+        );
+      } else {
+        setTeamMessage(data.error || "Failed to resend confirmations");
+      }
+    } catch {
+      setTeamMessage("Network error resending confirmations");
+    } finally {
+      setResendingTeamConfirmations(false);
     }
   };
 
@@ -1241,6 +1288,10 @@ export default function DashboardPage() {
   const allAvailableVendorsInvited =
     availableVendors.length > 0 &&
     availableVendors.every((v) => (v as any).isExistingMember);
+  const pendingTeamInvitesCount = availableVendors.filter((vendor) => {
+    const status = String((vendor as any).status || "").toLowerCase();
+    return Boolean((vendor as any).isExistingMember) && status !== "confirmed" && status !== "declined";
+  }).length;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
@@ -2526,7 +2577,8 @@ export default function DashboardPage() {
                   className={`apple-alert mb-6 ${
                     (
                       teamMessage.toLowerCase().includes("success") ||
-                      teamMessage.toLowerCase().includes("awaiting confirmation")
+                      teamMessage.toLowerCase().includes("awaiting confirmation") ||
+                      teamMessage.toLowerCase().includes("resent")
                     ) ? "apple-alert-success" : "apple-alert-error"
                   }`}
                 >
@@ -2591,13 +2643,22 @@ export default function DashboardPage() {
                         Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember).length} new)
                       </span>
                     </label>
-                    <button
-                      onClick={handleSaveTeam}
-                      disabled={selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited}
-                      className={`apple-button ${selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited ? "apple-button-disabled" : "apple-button-primary"}`}
-                    >
-                      {savingTeam ? "Creating..." : allAvailableVendorsInvited ? "All Invited" : `Create Team (${selectedTeamMembers.size})`}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleResendTeamConfirmations}
+                        disabled={pendingTeamInvitesCount === 0 || resendingTeamConfirmations || savingTeam}
+                        className={`apple-button ${pendingTeamInvitesCount === 0 || resendingTeamConfirmations || savingTeam ? "apple-button-disabled" : "apple-button-secondary"}`}
+                      >
+                        {resendingTeamConfirmations ? "Resending..." : `Resend Confirmation (${pendingTeamInvitesCount})`}
+                      </button>
+                      <button
+                        onClick={handleSaveTeam}
+                        disabled={selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations}
+                        className={`apple-button ${selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations ? "apple-button-disabled" : "apple-button-primary"}`}
+                      >
+                        {savingTeam ? "Creating..." : allAvailableVendorsInvited ? "All Invited" : `Create Team (${selectedTeamMembers.size})`}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-3">

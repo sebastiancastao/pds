@@ -22,7 +22,7 @@ const DEFAULT_BATCH_SIZE = 50;
 const DEFAULT_BATCH_DELAY_MS = 300;
 const MAX_RECIPIENTS_PER_REQUEST = 1000;
 
-type Audience = "manual" | "role" | "all";
+type Audience = "manual" | "role" | "region" | "all";
 type BodyFormat = "html" | "text";
 
 function parseEmailList(value: string): string[] {
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest) {
     const bccRaw = String(form.get("bcc") || "");
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
 
-    if (!["manual", "role", "all"].includes(audience)) {
+    if (!["manual", "role", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
     if ((requesterRole === "manager" || requesterRole === "supervisor") && audience !== "manual") {
@@ -140,6 +140,18 @@ export async function POST(req: NextRequest) {
         .eq("role", role);
       if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
       to = parseEmailList((usersByRole || []).map((u: any) => u.email || "").join(","));
+    } else if (audience === "region") {
+      const regionId = String(form.get("region_id") || "").trim();
+      if (!regionId) {
+        return NextResponse.json({ error: "region_id is required for audience=region." }, { status: 400 });
+      }
+      // Get users whose profile is linked to this region
+      const { data: usersByRegion, error: usersErr } = await supabaseAdmin
+        .from("users")
+        .select("email, profiles!inner(region_id)")
+        .eq("profiles.region_id", regionId);
+      if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
+      to = parseEmailList((usersByRegion || []).map((u: any) => u.email || "").join(","));
     } else {
       const { data: allUsers, error: usersErr } = await supabaseAdmin
         .from("users")
