@@ -869,22 +869,22 @@ export default function DashboardPage() {
 
   // Region + vendors helpers
   const loadRegions = async () => {
-    console.log('[GLOBAL-CALENDAR] ð Loading regions...');
+    console.log('[GLOBAL-CALENDAR] Loading regions...');
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch("/api/regions", {
-        method: "GET",
-        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        console.log('[GLOBAL-CALENDAR] â Regions loaded:', data.regions?.length || 0, data.regions);
-        setRegions(data.regions || []);
-      } else {
-        console.error('[GLOBAL-CALENDAR] â Failed to load regions, status:', res.status);
+      const res = await fetch("/api/regions", { method: "GET" });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        console.error('[GLOBAL-CALENDAR] Failed to load regions, status:', res.status, data);
+        setRegions([]);
+        return;
       }
+
+      console.log('[GLOBAL-CALENDAR] Regions loaded:', data.regions?.length || 0, data.regions);
+      setRegions(Array.isArray(data.regions) ? data.regions : []);
     } catch (err) {
-      console.error("[GLOBAL-CALENDAR] â Failed to load regions:", err);
+      console.error("[GLOBAL-CALENDAR] Failed to load regions:", err);
+      setRegions([]);
     }
   };
 
@@ -2802,3 +2802,4 @@ export default function DashboardPage() {
     </div>
   );
 }
+

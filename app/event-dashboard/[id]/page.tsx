@@ -195,6 +195,7 @@ export default function EventDashboardPage() {
   const [creatingLocation, setCreatingLocation] = useState(false);
   const [savingLocationId, setSavingLocationId] = useState<string | null>(null);
   const [deletingLocationId, setDeletingLocationId] = useState<string | null>(null);
+  const [sendingLocationEmails, setSendingLocationEmails] = useState(false);
   const [editingLocationIds, setEditingLocationIds] = useState<Record<string, boolean>>({});
   const [locationAssignmentDrafts, setLocationAssignmentDrafts] = useState<Record<string, string[]>>({});
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
@@ -327,6 +328,17 @@ export default function EventDashboardPage() {
     if (!isVendorDivision(member.users?.division)) return count;
     return hasTimesheetForMember(member) ? count + 1 : count;
   }, 0), [teamMembers, timesheetTotals, timesheetSpans]);
+
+  const assignedLocationRecipientCount = useMemo(() => {
+    const uniqueUserIds = new Set<string>();
+    Object.values(locationAssignments).forEach((ids) => {
+      (ids || []).forEach((id) => {
+        const normalizedId = String(id || "").trim();
+        if (normalizedId) uniqueUserIds.add(normalizedId);
+      });
+    });
+    return uniqueUserIds.size;
+  }, [locationAssignments]);
 
   // Form state for editing
   const [form, setForm] = useState<Partial<EventItem>>({
@@ -954,6 +966,52 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to delete location");
     } finally {
       setDeletingLocationId(null);
+    }
+  };
+
+  const handleSendLocationAssignments = async () => {
+    if (!eventId) return;
+    if (assignedLocationRecipientCount === 0) {
+      setMessage("No assigned team members found to email.");
+      return;
+    }
+
+    if (
+      !window.confirm(
+        `Send location assignments to ${assignedLocationRecipientCount} team member${assignedLocationRecipientCount === 1 ? "" : "s"}?`
+      )
+    ) {
+      return;
+    }
+
+    setSendingLocationEmails(true);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations/send-emails`, {
+        method: "POST",
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to send location assignment emails");
+      }
+
+      const sentCount = Number(data?.sentCount || 0);
+      const failedCount = Number(data?.failedCount || 0);
+
+      if (failedCount > 0) {
+        setMessage(`Location assignment emails sent to ${sentCount} users. Failed: ${failedCount}.`);
+      } else {
+        setMessage(`Success: Location assignment emails sent to ${sentCount} users.`);
+      }
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to send location assignment emails");
+    } finally {
+      setSendingLocationEmails(false);
     }
   };
 
@@ -3097,6 +3155,20 @@ export default function EventDashboardPage() {
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold">Locations</h2>
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleSendLocationAssignments}
+                    disabled={
+                      !canManageLocations ||
+                      sendingLocationEmails ||
+                      loadingLocations ||
+                      assignedLocationRecipientCount === 0
+                    }
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    {sendingLocationEmails
+                      ? "Sending..."
+                      : `Send Assignments${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
+                  </button>
                   <button
                     onClick={handleExportLocations}
                     disabled={loadingLocations || eventLocations.length === 0}
