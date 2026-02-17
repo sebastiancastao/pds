@@ -915,24 +915,81 @@ export default function EventDashboardPage() {
     }
   };
 
-  const toCsvCell = (value: unknown): string => {
-    const raw = String(value ?? "");
-    if (/[",\n]/.test(raw)) return `"${raw.replace(/"/g, "\"\"")}"`;
-    return raw;
-  };
-
-  const handleExportLocations = () => {
+  const handleExportLocations = async () => {
     try {
-      const headers = [
-        "event_name",
-        "event_id",
-        "station_name",
-        "station_notes",
-        "vendor_name",
-        "vendor_email",
-      ];
+      if (eventLocations.length === 0) {
+        setMessage("No locations to export.");
+        return;
+      }
 
-      const lines: string[] = [headers.join(",")];
+      const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
+      const pdfDoc = await PDFDocument.create();
+      const regularFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const boldFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const pageWidth = 612;
+      const pageHeight = 792;
+      const margin = 44;
+
+      let page = pdfDoc.addPage([pageWidth, pageHeight]);
+      let y = pageHeight - margin;
+
+      const ensureSpace = (requiredHeight = 20) => {
+        if (y < margin + requiredHeight) {
+          page = pdfDoc.addPage([pageWidth, pageHeight]);
+          y = pageHeight - margin;
+        }
+      };
+
+      const drawLine = (text: string, font: any, size: number, color = rgb(0, 0, 0)) => {
+        page.drawText(text, {
+          x: margin,
+          y,
+          size,
+          font,
+          color,
+        });
+        y -= size + 6;
+      };
+
+      const wrapText = (text: string, font: any, size: number, maxWidth: number): string[] => {
+        const clean = (text || "").trim();
+        if (!clean) return [""];
+
+        const words = clean.split(/\s+/);
+        const lines: string[] = [];
+        let current = "";
+
+        for (const word of words) {
+          const candidate = current ? `${current} ${word}` : word;
+          const candidateWidth = font.widthOfTextAtSize(candidate, size);
+
+          if (candidateWidth <= maxWidth) {
+            current = candidate;
+            continue;
+          }
+
+          if (current) {
+            lines.push(current);
+            current = word;
+          } else {
+            lines.push(word);
+            current = "";
+          }
+        }
+
+        if (current) lines.push(current);
+        return lines.length > 0 ? lines : [clean];
+      };
+
+      const eventName = (event?.event_name || "Event").trim();
+      const dateLabel = event?.event_date ? String(event.event_date).slice(0, 10) : "";
+
+      drawLine("Locations Assignment Report", boldFont, 16);
+      drawLine(`Event: ${eventName}`, boldFont, 12);
+      if (dateLabel) {
+        drawLine(`Date: ${dateLabel}`, regularFont, 10);
+      }
+      y -= 4;
 
       for (const loc of eventLocations) {
         const assignedIds = locationAssignments[loc.id] || [];
@@ -942,19 +999,25 @@ export default function EventDashboardPage() {
           )
           .filter(Boolean);
 
+        ensureSpace(44);
+        drawLine(`Station: ${loc.name}`, boldFont, 12, rgb(0.1, 0.1, 0.1));
+        if (loc.notes) {
+          const noteLines = wrapText(`Notes: ${loc.notes}`, regularFont, 10, pageWidth - margin * 2);
+          for (const noteLine of noteLines) {
+            ensureSpace(18);
+            drawLine(noteLine, regularFont, 10, rgb(0.25, 0.25, 0.25));
+          }
+        }
+
         if (assignedMembers.length === 0) {
-          lines.push(
-            [
-              toCsvCell(event?.event_name || ""),
-              toCsvCell(eventId || ""),
-              toCsvCell(loc.name),
-              toCsvCell(loc.notes || ""),
-              "",
-              "",
-            ].join(",")
-          );
+          ensureSpace(18);
+          drawLine("No vendors assigned.", regularFont, 10, rgb(0.45, 0.45, 0.45));
+          y -= 6;
           continue;
         }
+
+        ensureSpace(18);
+        drawLine("Assigned Vendors:", boldFont, 10, rgb(0.15, 0.15, 0.15));
 
         for (const member of assignedMembers) {
           const profile = member?.users?.profiles;
@@ -962,36 +1025,36 @@ export default function EventDashboardPage() {
           const lastName = profile?.last_name || "";
           const fullName = `${firstName} ${lastName}`.trim();
           const email = member?.users?.email || "";
-
-          lines.push(
-            [
-              toCsvCell(event?.event_name || ""),
-              toCsvCell(eventId || ""),
-              toCsvCell(loc.name),
-              toCsvCell(loc.notes || ""),
-              toCsvCell(fullName),
-              toCsvCell(email),
-            ].join(",")
-          );
+          const vendorLabel = `- ${fullName || "Unknown Vendor"}${email ? ` (${email})` : ""}`;
+          const vendorLines = wrapText(vendorLabel, regularFont, 10, pageWidth - margin * 2);
+          for (const vendorLine of vendorLines) {
+            ensureSpace(18);
+            drawLine(vendorLine, regularFont, 10);
+          }
         }
+
+        y -= 6;
       }
 
-      const csvContent = lines.join("\n");
-      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const pdfBytes = await pdfDoc.save();
+      const pdfBuffer = new ArrayBuffer(pdfBytes.length);
+      new Uint8Array(pdfBuffer).set(pdfBytes);
+      const blob = new Blob([pdfBuffer], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       const today = new Date().toISOString().slice(0, 10);
-      const safeEventName = (event?.event_name || "event")
+      const safeEventName = (eventName || "event")
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/(^-|-$)/g, "");
 
       link.href = url;
-      link.download = `${safeEventName || "event"}-locations-${today}.csv`;
+      link.download = `${safeEventName || "event"}-locations-${today}.pdf`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
+      setMessage("Locations PDF exported successfully.");
     } catch (err: any) {
       setMessage(err?.message || "Failed to export locations");
     }
