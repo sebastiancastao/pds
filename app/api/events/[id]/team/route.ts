@@ -6,6 +6,9 @@ import { sendTeamConfirmationEmail } from "@/lib/email";
 import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -187,72 +190,99 @@ export async function POST(
       }, { status: 200 });
     }
 
-    // Send confirmation emails only to newly added vendors
+    // Send confirmation emails sequentially to avoid rate limiting (429)
     const newVendors = vendors.filter((v: any) => newVendorIds.includes(v.id));
-    const emailResults = await Promise.allSettled(
-      newVendors.map(async (vendor: any) => {
-        const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
-        if (!teamMember) return null;
 
-        // Decrypt vendor names
-        let vendorFirstName = 'Vendor';
-        let vendorLastName = '';
-        try {
-          vendorFirstName = vendor.profiles?.first_name
-            ? decrypt(vendor.profiles.first_name)
-            : 'Vendor';
-          vendorLastName = vendor.profiles?.last_name
-            ? decrypt(vendor.profiles.last_name)
-            : '';
-        } catch (error) {
-          console.error('❌ Error decrypting vendor name for email:', error);
-        }
+    // Decrypt manager details once (shared across all emails)
+    let managerName = 'Event Manager';
+    let managerPhone = '';
+    try {
+      if (managerProfile) {
+        const managerFirst = managerProfile.first_name
+          ? decrypt(managerProfile.first_name)
+          : '';
+        const managerLast = managerProfile.last_name
+          ? decrypt(managerProfile.last_name)
+          : '';
+        managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
+        managerPhone = managerProfile.phone
+          ? decrypt(managerProfile.phone)
+          : '';
+      }
+    } catch (error) {
+      console.error('❌ Error decrypting manager details:', error);
+    }
 
-        // Decrypt manager names
-        let managerName = 'Event Manager';
-        let managerPhone = '';
-        try {
-          if (managerProfile) {
-            const managerFirst = managerProfile.first_name
-              ? decrypt(managerProfile.first_name)
-              : '';
-            const managerLast = managerProfile.last_name
-              ? decrypt(managerProfile.last_name)
-              : '';
-            managerName = `${managerFirst} ${managerLast}`.trim() || 'Event Manager';
-            managerPhone = managerProfile.phone
-              ? decrypt(managerProfile.phone)
-              : '';
+    // Format event date once
+    const eventDate = event.event_date
+      ? new Date(event.event_date + 'T00:00:00').toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric'
+        })
+      : 'Date TBD';
+
+    let emailsSent = 0;
+    let emailsFailed = 0;
+
+    for (const vendor of newVendors as any[]) {
+      const teamMember = insertedTeams?.find((t: any) => t.vendor_id === vendor.id);
+      if (!teamMember) {
+        emailsFailed++;
+        continue;
+      }
+
+      // Decrypt vendor names
+      let vendorFirstName = 'Vendor';
+      let vendorLastName = '';
+      try {
+        vendorFirstName = vendor.profiles?.first_name
+          ? decrypt(vendor.profiles.first_name)
+          : 'Vendor';
+        vendorLastName = vendor.profiles?.last_name
+          ? decrypt(vendor.profiles.last_name)
+          : '';
+      } catch (error) {
+        console.error('❌ Error decrypting vendor name for email:', error);
+      }
+
+      // Retry on 429 responses from provider
+      try {
+        let emailResult: any = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          emailResult = await sendTeamConfirmationEmail({
+            email: vendor.email,
+            firstName: vendorFirstName,
+            lastName: vendorLastName,
+            eventName: event.event_name,
+            eventDate: eventDate,
+            managerName: managerName,
+            managerPhone: managerPhone,
+            confirmationToken: teamMember.confirmation_token
+          });
+
+          if (emailResult?.success) break;
+          const err = emailResult?.error || 'Unknown email error';
+          if (attempt < 3 && isRateLimitError(err)) {
+            await sleep(1200 * attempt);
+            continue;
           }
-        } catch (error) {
-          console.error('❌ Error decrypting manager details:', error);
+          throw new Error(`Failed to send email to ${vendor.email}: ${err}`);
         }
 
-        // Format event date
-        const eventDate = event.event_date
-          ? new Date(event.event_date + 'T00:00:00').toLocaleDateString('en-US', {
-              weekday: 'long',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric'
-            })
-          : 'Date TBD';
+        if (!emailResult?.success) {
+          throw new Error(`Failed to send email to ${vendor.email}`);
+        }
 
-        return await sendTeamConfirmationEmail({
-          email: vendor.email,
-          firstName: vendorFirstName,
-          lastName: vendorLastName,
-          eventName: event.event_name,
-          eventDate: eventDate,
-          managerName: managerName,
-          managerPhone: managerPhone,
-          confirmationToken: teamMember.confirmation_token
-        });
-      })
-    );
-
-    const emailsSent = emailResults.filter(r => r.status === 'fulfilled').length;
-    const emailsFailed = emailResults.filter(r => r.status === 'rejected').length;
+        emailsSent++;
+        // Light throttling between sends to reduce 429 likelihood
+        await sleep(125);
+      } catch (error: any) {
+        console.error(`❌ Email failed for ${vendor.email}:`, error?.message);
+        emailsFailed++;
+      }
+    }
 
     console.log(`📧 Sent ${emailsSent} confirmation emails, ${emailsFailed} failed`);
 

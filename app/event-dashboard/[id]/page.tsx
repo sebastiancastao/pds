@@ -93,6 +93,25 @@ type TeamVendorOption = {
   };
 };
 
+const getTeamMemberSortKey = (member: any): string => {
+  const profile = member?.users?.profiles;
+  const firstName = (profile?.first_name || "").toString().trim();
+  const lastName = (profile?.last_name || "").toString().trim();
+  const fullName = `${firstName} ${lastName}`.trim();
+  if (fullName) return fullName;
+
+  const email = (member?.users?.email || "").toString().trim();
+  if (email) return email;
+
+  return (
+    member?.users?.id ||
+    member?.user_id ||
+    member?.vendor_id ||
+    member?.id ||
+    ""
+  ).toString();
+};
+
 export default function EventDashboardPage() {
   const router = useRouter();
   const params = useParams();
@@ -206,8 +225,21 @@ export default function EventDashboardPage() {
   const [staffSearch, setStaffSearch] = useState<string>("");
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
 
+  const sortedTeamMembers = useMemo(() => {
+    return [...(teamMembers || [])].sort((a: any, b: any) => {
+      const aName = getTeamMemberSortKey(a);
+      const bName = getTeamMemberSortKey(b);
+      const byName = aName.localeCompare(bName, undefined, { sensitivity: "base", numeric: true });
+      if (byName !== 0) return byName;
+
+      const aId = (a?.users?.id || a?.user_id || a?.vendor_id || a?.id || "").toString();
+      const bId = (b?.users?.id || b?.user_id || b?.vendor_id || b?.id || "").toString();
+      return aId.localeCompare(bId, undefined, { sensitivity: "base", numeric: true });
+    });
+  }, [teamMembers]);
+
   // Derived: filtered team members based on search and role filter
-  const filteredTeamListMembers = useMemo(() => (teamMembers || []).filter((member: any) => {
+  const filteredTeamListMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
     const q = teamSearch.trim().toLowerCase();
     if (!q) return true;
 
@@ -227,7 +259,7 @@ export default function EventDashboardPage() {
       division.includes(q) ||
       status.includes(q)
     );
-  }), [teamMembers, teamSearch]);
+  }), [sortedTeamMembers, teamSearch]);
 
   const filteredAddVendorOptions = useMemo(() => {
     const query = addVendorSearch.trim().toLowerCase();
@@ -250,7 +282,7 @@ export default function EventDashboardPage() {
     });
   }, [addVendorOptions, addVendorSearch]);
 
-  const filteredTeamMembers = useMemo(() => (teamMembers || []).filter((member: any) => {
+  const filteredTeamMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
     try {
       const division = (member?.users?.division || '').toString().toLowerCase();
       const email = (member?.users?.email || '').toString().toLowerCase();
@@ -275,7 +307,7 @@ export default function EventDashboardPage() {
     } catch {
       return true;
     }
-  }), [teamMembers, staffRoleFilter, staffSearch]);
+  }), [sortedTeamMembers, staffRoleFilter, staffSearch]);
 
   const isVendorDivision = (division?: string | null) => {
     const normalized = (division || '').toString().toLowerCase();
@@ -3330,14 +3362,14 @@ export default function EventDashboardPage() {
           </tr>
         </thead>
         <tbody className="divide-y">
-          {teamMembers.length === 0 ? (
+          {sortedTeamMembers.length === 0 ? (
             <tr>
               <td colSpan={9} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
           ) : (
-            teamMembers.map((m: any) => {
+            sortedTeamMembers.map((m: any) => {
               const profile = m.users?.profiles;
               const firstName = profile?.first_name || "N/A";
               const lastName = profile?.last_name || "";
