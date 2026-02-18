@@ -1220,6 +1220,218 @@ export default function EventDashboardPage() {
     }
   };
 
+  const getDisplayedWorkedMs = (uid: string): number => {
+    let totalMs = timesheetTotals[uid] || 0;
+    const span = timesheetSpans[uid];
+
+    if ((!totalMs || totalMs <= 0) && span?.firstIn && span?.lastOut) {
+      try {
+        totalMs = Math.max(
+          new Date(span.lastOut).getTime() - new Date(span.firstIn).getTime(),
+          0
+        );
+      } catch {
+        totalMs = 0;
+      }
+    }
+
+    if (span?.firstMealStart && span?.lastMealEnd) {
+      const meal1Ms =
+        new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
+      if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
+    }
+
+    if (span?.secondMealStart && span?.secondMealEnd) {
+      const meal2Ms =
+        new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
+      if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
+    }
+
+    return totalMs;
+  };
+
+  const formatHoursFromMs = (totalMs: number): string => {
+    if (!Number.isFinite(totalMs) || totalMs <= 0) return "0:00";
+    const totalMinutes = Math.floor(totalMs / 60000);
+    const hh = Math.floor(totalMinutes / 60);
+    const mm = totalMinutes % 60;
+    return `${hh}:${String(mm).padStart(2, "0")}`;
+  };
+
+  const buildPaymentExportRows = (): Record<string, string | number>[] => {
+    const eventState = event?.state?.toUpperCase()?.trim() || "CA";
+    const baseRate = getBaseRateForState(eventState);
+    const netSales = sharesData?.netSales || 0;
+    const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
+    const totalCommissionPool = netSales * poolPercent;
+    const perVendorCommissionShare = vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
+    const totalTips = Number(tips) || 0;
+
+    const totalEligibleHours = teamMembers.reduce((sum: number, member: any) => {
+      if (member?.users?.division === "trailers") return sum;
+      const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+      if (!uid) return sum;
+      return sum + getDisplayedWorkedMs(uid) / (1000 * 60 * 60);
+    }, 0);
+
+    return filteredTeamMembers.map((member: any) => {
+      const profile = member?.users?.profiles;
+      const firstName = (profile?.first_name || "").toString().trim();
+      const lastName = (profile?.last_name || "").toString().trim();
+      const fullName = `${firstName} ${lastName}`.trim() || "N/A";
+      const email = (member?.users?.email || "N/A").toString();
+      const division = (member?.users?.division || "").toString();
+      const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+      const totalMs = getDisplayedWorkedMs(uid);
+      const actualHours = totalMs / (1000 * 60 * 60);
+      const hoursHHMM = formatHoursFromMs(totalMs);
+      const extAmtOnRegRate = actualHours * baseRate * 1.5;
+      const isTrailersDivision = division === "trailers";
+      const totalFinalCommission = isTrailersDivision
+        ? extAmtOnRegRate
+        : Math.max(extAmtOnRegRate, perVendorCommissionShare);
+      const commissionAmount =
+        !isTrailersDivision && actualHours > 0 && vendorCount > 0
+          ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
+          : 0;
+      const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
+      const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
+      const proratedTips =
+        !isTrailersDivision && totalEligibleHours > 0
+          ? (totalTips * actualHours) / totalEligibleHours
+          : 0;
+      const restBreak = getRestBreakAmount(actualHours, eventState);
+      const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
+      const totalGrossPay = totalFinalCommission + proratedTips + restBreak + otherAmount;
+      const money = (amount: number) => `$${formatPayrollMoney(amount)}`;
+
+      const row: Record<string, string | number> = {
+        Employee: fullName,
+        Email: email,
+        Division: division || "N/A",
+        "Reg Rate": money(baseRate),
+        "Loaded Rate": money(finalCommissionRate),
+        "Hours (HH:MM)": actualHours > 0 ? hoursHHMM : "0:00",
+        "Hours (Decimal)": Number(actualHours.toFixed(2)),
+        "Ext Amt on Reg Rate": money(extAmtOnRegRate),
+        "Commission Amt": money(commissionAmount),
+        "Total Final Commission": money(totalFinalCommission),
+        Tips: money(proratedTips),
+      };
+
+      if (!hideRestBreakColumn) {
+        row["Rest Break"] = money(restBreak);
+      }
+
+      row.Other = money(otherAmount);
+      row["Total Gross Pay"] = money(totalGrossPay);
+
+      return row;
+    });
+  };
+
+  const handleExportPayments = async () => {
+    try {
+      if (!event) {
+        setMessage("Event data is still loading.");
+        return;
+      }
+
+      const rows = buildPaymentExportRows();
+      if (rows.length === 0) {
+        setMessage("No payment rows to export.");
+        return;
+      }
+
+      const parseExportMoney = (value: unknown): number => {
+        const parsed = Number(String(value ?? "").replace(/[^0-9.-]/g, ""));
+        return Number.isFinite(parsed) ? parsed : 0;
+      };
+
+      const totals = rows.reduce<{ hours: number; gross: number }>(
+        (acc, row) => ({
+          hours: acc.hours + Number(row["Hours (Decimal)"] || 0),
+          gross: acc.gross + parseExportMoney(row["Total Gross Pay"]),
+        }),
+        { hours: 0, gross: 0 }
+      );
+
+      const filtersApplied = [
+        staffSearch.trim() ? `Search: ${staffSearch.trim()}` : "",
+        staffRoleFilter ? `Role: ${staffRoleFilter}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ") || "None";
+
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.utils.book_new();
+
+      const summaryRows = [
+        { Field: "Event", Value: event.event_name || "Event" },
+        { Field: "Date", Value: event.event_date ? String(event.event_date).slice(0, 10) : "N/A" },
+        { Field: "Venue", Value: event.venue || "N/A" },
+        { Field: "State", Value: event.state || "N/A" },
+        { Field: "Rows Exported", Value: rows.length },
+        { Field: "Total Hours", Value: totals.hours.toFixed(2) },
+        { Field: "Total Gross Pay", Value: `$${formatPayrollMoney(totals.gross)}` },
+        { Field: "Filters Applied", Value: filtersApplied },
+      ];
+
+      const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
+      summarySheet["!cols"] = [{ wch: 24 }, { wch: 42 }];
+
+      const paymentsSheet = XLSX.utils.json_to_sheet(rows);
+      const paymentColumns = [
+        { wch: 26 }, // Employee
+        { wch: 30 }, // Email
+        { wch: 14 }, // Division
+        { wch: 12 }, // Reg Rate
+        { wch: 12 }, // Loaded Rate
+        { wch: 14 }, // Hours (HH:MM)
+        { wch: 14 }, // Hours (Decimal)
+        { wch: 18 }, // Ext Amt on Reg Rate
+        { wch: 16 }, // Commission Amt
+        { wch: 20 }, // Total Final Commission
+        { wch: 10 }, // Tips
+      ];
+      if (!hideRestBreakColumn) {
+        paymentColumns.push({ wch: 12 }); // Rest Break
+      }
+      paymentColumns.push({ wch: 10 }); // Other
+      paymentColumns.push({ wch: 14 }); // Total Gross Pay
+      paymentsSheet["!cols"] = paymentColumns;
+
+      XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+      XLSX.utils.book_append_sheet(workbook, paymentsSheet, "Payments");
+
+      const fileBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+      const blob = new Blob([fileBuffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const timestamp = new Date()
+        .toISOString()
+        .replace("T", "-")
+        .replace(/:/g, "-")
+        .slice(0, 19);
+      const safeEventName = (event.event_name || "event")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+
+      link.href = url;
+      link.download = `${safeEventName || "event"}-payments-${timestamp}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMessage("Payments exported successfully.");
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to export payments");
+    }
+  };
+
   const loadAdjustmentsFromPayments = async () => {
     try {
       if (!eventId) return;
@@ -1660,14 +1872,21 @@ export default function EventDashboardPage() {
     if (normalizedState === "NV" || normalizedState === "WI") return 0;
     return actualHours > 10 ? 12 : actualHours > 0 ? 9 : 0;
   };
-  const roundUpThousandsToNextHundred = (amount: number): number => {
+  const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
-    if (Math.abs(amount) < 1000) return amount;
-    const roundedMagnitude = Math.ceil(Math.abs(amount) / 100) * 100;
-    return amount < 0 ? -roundedMagnitude : roundedMagnitude;
+    const absAmount = Math.abs(amount);
+    if (absAmount < 1000) {
+      // Normalize to 3 decimals first to absorb floating drift near .005 boundaries.
+      // Example: 237.024999999 should behave like 237.025 -> 237.03.
+      const normalizedThousandths = Math.round((absAmount + 1e-9) * 1000) / 1000;
+      const roundedCents = Math.round((normalizedThousandths + 1e-9) * 100) / 100;
+      return amount < 0 ? -roundedCents : roundedCents;
+    }
+    const roundedHundreds = Math.round((absAmount + 1e-9) / 100) * 100;
+    return amount < 0 ? -roundedHundreds : roundedHundreds;
   };
   const formatPayrollMoney = (amount: number): string =>
-    roundUpThousandsToNextHundred(amount).toFixed(2);
+    roundPayrollAmount(amount).toFixed(2);
 
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
@@ -1873,17 +2092,17 @@ export default function EventDashboardPage() {
           firstName: profile?.first_name || "Team Member",
           lastName: profile?.last_name || "",
           regularHours: regularHours.toFixed(2),
-          regularPay: extAmtOnRegRate.toFixed(2),
+          regularPay: formatPayrollMoney(extAmtOnRegRate),
           overtimeHours: overtimeHours.toFixed(2),
-          overtimePay: overtimePay.toFixed(2),
+          overtimePay: formatPayrollMoney(overtimePay),
           doubletimeHours: doubletimeHours.toFixed(2),
-          doubletimePay: doubletimePay.toFixed(2),
-          commission: commissionAmount.toFixed(2),
-          tips: proratedTips.toFixed(2),
-          restBreak: restBreak.toFixed(2),
-          adjustment: adjustment.toFixed(2),
-          totalPay: totalPay.toFixed(2),
-          baseRate: baseRate.toFixed(2),
+          doubletimePay: formatPayrollMoney(doubletimePay),
+          commission: formatPayrollMoney(commissionAmount),
+          tips: formatPayrollMoney(proratedTips),
+          restBreak: formatPayrollMoney(restBreak),
+          adjustment: formatPayrollMoney(adjustment),
+          totalPay: formatPayrollMoney(totalPay),
+          baseRate: formatPayrollMoney(baseRate),
         };
       });
 
@@ -3239,7 +3458,15 @@ export default function EventDashboardPage() {
           {activeTab === "locations" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-2xl font-bold">Locations</h2>
+                <div>
+                  <h2 className="text-2xl font-bold">Locations</h2>
+                  <div className="text-sm text-gray-600 mt-1">
+                    Vendors: {assignedVendorCount}
+                    {vendorCount !== assignedVendorCount && (
+                      <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
+                    )}
+                  </div>
+                </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={handleSendLocationAssignments}
@@ -3750,11 +3977,20 @@ export default function EventDashboardPage() {
             <div className="space-y-6">
               <div className="flex items-center justify-between mb-6">
                 <h2 className="text-2xl font-bold">HR Management</h2>
-                <div className="text-sm text-gray-600">
-                  Vendors: {assignedVendorCount}
-                  {vendorCount !== assignedVendorCount && (
-                    <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
-                  )}
+                <div className="flex items-center gap-3">
+                  <div className="text-sm text-gray-600">
+                    Vendors: {assignedVendorCount}
+                    {vendorCount !== assignedVendorCount && (
+                      <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleExportPayments}
+                    disabled={loadingPaymentTab || filteredTeamMembers.length === 0}
+                    className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    Export Payments
+                  </button>
                 </div>
               </div>
 

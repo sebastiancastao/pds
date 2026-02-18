@@ -40,16 +40,52 @@ type BackgroundCheck = {
   updated_at: string;
 };
 
+type SickLeaveStatus = "pending" | "approved" | "denied";
+
+type SickLeaveRecord = {
+  id: string;
+  user_id: string;
+  start_date: string | null;
+  end_date: string | null;
+  duration_hours: number;
+  status: SickLeaveStatus;
+  reason: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  employee_name: string;
+  employee_email: string;
+  employee_state: string | null;
+  employee_city: string | null;
+};
+
+type SickLeaveStats = {
+  total: number;
+  pending: number;
+  approved: number;
+  denied: number;
+  total_hours: number;
+};
+
+const sickLeaveStatusStyles: Record<SickLeaveStatus, string> = {
+  pending: "bg-yellow-100 text-yellow-700 border-yellow-200",
+  approved: "bg-green-100 text-green-700 border-green-200",
+  denied: "bg-red-100 text-red-700 border-red-200",
+};
+
+const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200";
+
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const initialView = (searchParams?.get("view") as "overview" | "employees" | "payments" | "forms" | "paystub" | null) || "overview";
+  const initialView = (searchParams?.get("view") as "overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub" | null) || "overview";
   const initialFormState = searchParams?.get("state") || "all";
 
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [hrView, setHrView] = useState<"overview" | "employees" | "payments" | "forms" | "paystub">(initialView);
+  const [hrView, setHrView] = useState<"overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState<string>("");
@@ -93,8 +129,15 @@ function HRDashboardContent() {
   };
   const roundUpThousandsToNextHundred = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
-    if (Math.abs(amount) < 1000) return amount;
-    const roundedMagnitude = Math.ceil(Math.abs(amount) / 100) * 100;
+    const absAmount = Math.abs(amount);
+    if (absAmount < 1000) {
+      // Normalize to 3 decimals first to absorb floating drift near .005 boundaries.
+      // Example: 237.024999999 should behave like 237.025 -> 237.03.
+      const normalizedThousandths = Math.round((absAmount + 1e-9) * 1000) / 1000;
+      const roundedCents = Math.round((normalizedThousandths + 1e-9) * 100) / 100;
+      return amount < 0 ? -roundedCents : roundedCents;
+    }
+    const roundedMagnitude = Math.round((absAmount + 1e-9) / 100) * 100;
     return amount < 0 ? -roundedMagnitude : roundedMagnitude;
   };
   const formatPayrollMoney = (amount: number): string =>
@@ -175,6 +218,19 @@ function HRDashboardContent() {
   const [uploadingForm, setUploadingForm] = useState(false);
   const [filterFormState, setFilterFormState] = useState<string>(initialFormState);
   const [filterFormCategory, setFilterFormCategory] = useState<string>('all');
+  const [sickLeaves, setSickLeaves] = useState<SickLeaveRecord[]>([]);
+  const [loadingSickLeaves, setLoadingSickLeaves] = useState(false);
+  const [sickLeavesError, setSickLeavesError] = useState("");
+  const [sickLeaveStatusFilter, setSickLeaveStatusFilter] = useState<"all" | SickLeaveStatus>("all");
+  const [sickLeaveSearch, setSickLeaveSearch] = useState("");
+  const [updatingSickLeaveId, setUpdatingSickLeaveId] = useState<string | null>(null);
+  const [sickLeaveStats, setSickLeaveStats] = useState<SickLeaveStats>({
+    total: 0,
+    pending: 0,
+    approved: 0,
+    denied: 0,
+    total_hours: 0,
+  });
 
   const handleLogout = async () => {
     try {
@@ -883,11 +939,30 @@ function HRDashboardContent() {
       return;
     }
 
-    // Flatten data for Excel export
+    // Event-level summary rows (matches payroll header metrics in UI)
+    const summaryRows: any[] = [];
+    // Employee-level detail rows
     const rows: any[] = [];
 
     paymentsByVenue.forEach(venue => {
       venue.events.forEach(event => {
+        summaryRows.push({
+          'Venue': venue.venue,
+          'City': venue.city || '',
+          'State': venue.state || '',
+          'Event': event.name || '',
+          'Date': event.date || '',
+          'Commission per Vendor': `$${formatPayrollMoney(Number(event.commissionPerVendor || 0))}`,
+          'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
+          'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
+          'Adjusted Gross Amount': `$${formatPayrollMoney(Number(event.adjustedGrossAmount || 0))}`,
+          'Total Commission': `$${formatPayrollMoney(Number(event.commissionDollars || 0))}`,
+          'Total Tips': `$${formatPayrollMoney(Number(event.totalTips || 0))}`,
+          'Total Rest Break': `$${formatPayrollMoney(Number(event.totalRestBreak || 0))}`,
+          'Total Other': `$${formatPayrollMoney(Number(event.totalOther || 0))}`,
+          'Total': `$${formatPayrollMoney(Number(event.eventTotal || 0))}`,
+        });
+
         if (Array.isArray(event.payments) && event.payments.length > 0) {
           event.payments.forEach((p: any) => {
             const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
@@ -912,52 +987,74 @@ function HRDashboardContent() {
               'Event Date': event.date || '',
               'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
               'Email': p.email || '',
-              'Reg Rate': regRate.toFixed(2),
-              'Loaded Rate': loadedRate.toFixed(2),
+              'Reg Rate': formatPayrollMoney(regRate),
+              'Loaded Rate': formatPayrollMoney(loadedRate),
               'Hours': formatHoursHHMM(hours),
-              'Ext Amt on Reg Rate': extAmtOnRegRate.toFixed(2),
-              'Commission Amt': commissionAmt.toFixed(2),
-              'Total Final Commission Amt': totalFinalCommissionAmt.toFixed(2),
-              'Tips': tips.toFixed(2),
-              'Rest Break': hideRest ? 'N/A' : restBreak.toFixed(2),
-              'Other': other.toFixed(2),
-              'Total Gross Pay': totalGrossPay.toFixed(2),
+              'Ext Amt on Reg Rate': formatPayrollMoney(extAmtOnRegRate),
+              'Commission Amt': formatPayrollMoney(commissionAmt),
+              'Total Final Commission Amt': formatPayrollMoney(totalFinalCommissionAmt),
+              'Tips': formatPayrollMoney(tips),
+              'Rest Break': hideRest ? 'N/A' : formatPayrollMoney(restBreak),
+              'Other': formatPayrollMoney(other),
+              'Total Gross Pay': formatPayrollMoney(totalGrossPay),
             });
           });
         }
       });
     });
 
-    if (rows.length === 0) {
+    if (summaryRows.length === 0 && rows.length === 0) {
       alert('No payment records found in the loaded data.');
       return;
     }
 
-    // Create workbook and worksheet
-    const worksheet = XLSX.utils.json_to_sheet(rows);
+    // Create workbook
     const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Payments');
 
-    // Set column widths
-    worksheet['!cols'] = [
-      { wch: 25 }, // Venue
-      { wch: 15 }, // City
-      { wch: 8 },  // State
-      { wch: 30 }, // Event Name
-      { wch: 12 }, // Event Date
-      { wch: 25 }, // Employee
-      { wch: 30 }, // Email
-      { wch: 10 }, // Reg Rate
-      { wch: 12 }, // Loaded Rate
-      { wch: 8 },  // Hours
-      { wch: 18 }, // Ext Amt on Reg Rate
-      { wch: 15 }, // Commission Amt
-      { wch: 22 }, // Total Final Commission Amt
-      { wch: 10 }, // Tips
-      { wch: 12 }, // Rest Break
-      { wch: 10 }, // Other
-      { wch: 15 }, // Total Gross Pay
-    ];
+    if (summaryRows.length > 0) {
+      const summaryWorksheet = XLSX.utils.json_to_sheet(summaryRows);
+      summaryWorksheet['!cols'] = [
+        { wch: 25 }, // Venue
+        { wch: 15 }, // City
+        { wch: 8 },  // State
+        { wch: 30 }, // Event
+        { wch: 12 }, // Date
+        { wch: 22 }, // Commission per Vendor
+        { wch: 16 }, // Vendors w/ Hours
+        { wch: 10 }, // Hours
+        { wch: 22 }, // Adjusted Gross Amount
+        { wch: 18 }, // Total Commission
+        { wch: 12 }, // Total Tips
+        { wch: 18 }, // Total Rest Break
+        { wch: 12 }, // Total Other
+        { wch: 12 }, // Total
+      ];
+      XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Event Summaries');
+    }
+
+    if (rows.length > 0) {
+      const worksheet = XLSX.utils.json_to_sheet(rows);
+      worksheet['!cols'] = [
+        { wch: 25 }, // Venue
+        { wch: 15 }, // City
+        { wch: 8 },  // State
+        { wch: 30 }, // Event Name
+        { wch: 12 }, // Event Date
+        { wch: 25 }, // Employee
+        { wch: 30 }, // Email
+        { wch: 10 }, // Reg Rate
+        { wch: 12 }, // Loaded Rate
+        { wch: 8 },  // Hours
+        { wch: 18 }, // Ext Amt on Reg Rate
+        { wch: 15 }, // Commission Amt
+        { wch: 22 }, // Total Final Commission Amt
+        { wch: 10 }, // Tips
+        { wch: 12 }, // Rest Break
+        { wch: 10 }, // Other
+        { wch: 15 }, // Total Gross Pay
+      ];
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Payments');
+    }
 
     // Generate filename with date range
     const startStr = paymentsStartDate || 'start';
@@ -1056,6 +1153,84 @@ function HRDashboardContent() {
     }
   }, [supabase, loadOnboardingForms]);
 
+  const loadSickLeaves = useCallback(async () => {
+    setLoadingSickLeaves(true);
+    setSickLeavesError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leaves", {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load sick leave records");
+      }
+
+      setSickLeaves(Array.isArray(data.records) ? data.records : []);
+      setSickLeaveStats({
+        total: Number(data.stats?.total || 0),
+        pending: Number(data.stats?.pending || 0),
+        approved: Number(data.stats?.approved || 0),
+        denied: Number(data.stats?.denied || 0),
+        total_hours: Number(data.stats?.total_hours || 0),
+      });
+    } catch (err: any) {
+      setSickLeaves([]);
+      setSickLeaveStats({ total: 0, pending: 0, approved: 0, denied: 0, total_hours: 0 });
+      setSickLeavesError(err?.message || "Failed to load sick leave records");
+    } finally {
+      setLoadingSickLeaves(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hrView === "sickleave") {
+      loadSickLeaves();
+    }
+  }, [hrView, loadSickLeaves]);
+
+  const updateSickLeaveStatus = useCallback(async (id: string, status: SickLeaveStatus) => {
+    setUpdatingSickLeaveId(id);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leaves", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ id, status }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to update sick leave status");
+      }
+
+      await loadSickLeaves();
+    } catch (err: any) {
+      alert(err?.message || "Failed to update sick leave status");
+    } finally {
+      setUpdatingSickLeaveId(null);
+    }
+  }, [loadSickLeaves]);
+
+  const formatSickLeaveDate = (value?: string | null) => {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    return d.toLocaleDateString();
+  };
+
+  const formatSickLeaveHours = (hours: number) => {
+    if (!Number.isFinite(hours)) return "0.00";
+    return Number(hours).toFixed(2);
+  };
+
   const hrStats = {
     totalEmployees: employees.length,
     activeEmployees: employees.filter((e) => e.status === "active").length,
@@ -1135,6 +1310,31 @@ function HRDashboardContent() {
     if (!q) return employeeCards;
     return employeeCards.filter((card) => card.searchText.includes(q));
   }, [employeeCards, employeeSearch]);
+
+  const filteredSickLeaveRecords = useMemo(() => {
+    const q = sickLeaveSearch.trim().toLowerCase();
+    return sickLeaves.filter((record) => {
+      const matchesStatus = sickLeaveStatusFilter === "all" || record.status === sickLeaveStatusFilter;
+      if (!matchesStatus) return false;
+      if (!q) return true;
+
+      const text = [
+        record.employee_name,
+        record.employee_email,
+        record.employee_city,
+        record.employee_state,
+        record.reason,
+        record.status,
+        record.start_date,
+        record.end_date,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      return text.includes(q);
+    });
+  }, [sickLeaves, sickLeaveSearch, sickLeaveStatusFilter]);
 
   if (authChecking) {
     return (
@@ -1226,6 +1426,15 @@ function HRDashboardContent() {
             >
               Employees
               {hrView === "employees" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
+            <button
+              onClick={() => setHrView("sickleave")}
+              className={`pb-4 px-2 font-semibold transition-colors relative ${
+                hrView === "sickleave" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Sick Leave
+              {hrView === "sickleave" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
             <button
               onClick={() => setHrView("payments")}
@@ -1771,6 +1980,178 @@ function HRDashboardContent() {
                   )}
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {hrView === "sickleave" && (
+          <div className="space-y-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Sick Leave Management</h2>
+              <button
+                onClick={loadSickLeaves}
+                disabled={loadingSickLeaves}
+                className="apple-button apple-button-secondary"
+              >
+                {loadingSickLeaves ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              <div className="apple-card p-5">
+                <p className="text-sm text-gray-500">Total Requests</p>
+                <p className="text-3xl font-semibold text-gray-900">{sickLeaveStats.total}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-yellow-700">Pending</p>
+                <p className="text-3xl font-semibold text-yellow-700">{sickLeaveStats.pending}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-green-700">Approved</p>
+                <p className="text-3xl font-semibold text-green-700">{sickLeaveStats.approved}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-red-700">Denied</p>
+                <p className="text-3xl font-semibold text-red-700">{sickLeaveStats.denied}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-purple-700">Total Hours</p>
+                <p className="text-3xl font-semibold text-purple-700">{formatSickLeaveHours(sickLeaveStats.total_hours)}</p>
+              </div>
+            </div>
+
+            <div className="apple-card p-6">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="relative">
+                  <label className="sr-only" htmlFor="sick-leave-search">Search sick leave records</label>
+                  <svg
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden="true"
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35m1.35-5.65a7 7 0 11-14 0 7 7 0 0114 0z" />
+                  </svg>
+                  <input
+                    id="sick-leave-search"
+                    type="search"
+                    value={sickLeaveSearch}
+                    onChange={(e) => setSickLeaveSearch(e.target.value)}
+                    className="w-[18rem] md:w-[24rem] rounded-xl border border-gray-300 bg-white px-10 py-3 text-sm text-gray-900 shadow-sm transition placeholder:text-gray-400 focus:border-[#007AFF] focus:outline-none focus:ring-4 focus:ring-[#007AFF]/10"
+                    placeholder="Search by employee, reason, city..."
+                  />
+                </div>
+
+                <label className="apple-label" htmlFor="sick-leave-status-filter">Status</label>
+                <select
+                  id="sick-leave-status-filter"
+                  value={sickLeaveStatusFilter}
+                  onChange={(e) => setSickLeaveStatusFilter(e.target.value as "all" | SickLeaveStatus)}
+                  className="apple-select min-w-[12rem]"
+                  title="Filter sick leave requests by status"
+                >
+                  <option value="all">All Statuses</option>
+                  <option value="pending">Pending</option>
+                  <option value="approved">Approved</option>
+                  <option value="denied">Denied</option>
+                </select>
+              </div>
+            </div>
+
+            {sickLeavesError && (
+              <div className="apple-error-banner">{sickLeavesError}</div>
+            )}
+
+            <div className="apple-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Dates</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Reason</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Approved</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {loadingSickLeaves && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                          Loading sick leave records...
+                        </td>
+                      </tr>
+                    )}
+                    {!loadingSickLeaves && filteredSickLeaveRecords.map((record) => {
+                      const status = record.status;
+                      const statusClass = sickLeaveStatusStyles[status] ?? fallbackSickLeaveStatusStyle;
+                      return (
+                        <tr key={record.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-4 py-3 align-top">
+                            <p className="text-sm font-semibold text-gray-900">{record.employee_name}</p>
+                            <p className="text-xs text-gray-500">{record.employee_email}</p>
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            <p className="text-sm text-gray-900">
+                              {formatSickLeaveDate(record.start_date)} - {formatSickLeaveDate(record.end_date)}
+                            </p>
+                            <p className="text-xs text-gray-500">Created {formatSickLeaveDate(record.created_at)}</p>
+                          </td>
+                          <td className="px-4 py-3 align-top text-sm text-gray-900">
+                            {formatSickLeaveHours(record.duration_hours)}
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            <span className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${statusClass}`}>
+                              {status}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 align-top text-sm text-gray-700 max-w-[18rem]">
+                            {record.reason || "-"}
+                          </td>
+                          <td className="px-4 py-3 align-top text-sm text-gray-700">
+                            {record.approved_at ? formatSickLeaveDate(record.approved_at) : "-"}
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            <div className="flex items-center justify-end gap-2">
+                              <Link
+                                href={`/hr/employees/${record.user_id}`}
+                                className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
+                              >
+                                Employee
+                              </Link>
+                              <button
+                                onClick={() => updateSickLeaveStatus(record.id, "approved")}
+                                disabled={updatingSickLeaveId === record.id || status === "approved"}
+                                className="px-2 py-1 text-xs rounded bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-50"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => updateSickLeaveStatus(record.id, "denied")}
+                                disabled={updatingSickLeaveId === record.id || status === "denied"}
+                                className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
+                              >
+                                Deny
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!loadingSickLeaves && filteredSickLeaveRecords.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                          No sick leave requests found for the current filters.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}

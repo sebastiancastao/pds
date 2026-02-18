@@ -15,6 +15,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+const DB_CHUNK_SIZE = 200;
 
 async function getAuthenticatedUserId(req: NextRequest): Promise<string | null> {
   const supabase = createRouteHandlerClient({ cookies });
@@ -50,24 +51,6 @@ function chunkArray<T>(items: T[], size: number): T[][] {
   return out;
 }
 
-async function listAllAuthUserIds(): Promise<Set<string>> {
-  const ids = new Set<string>();
-  const perPage = 1000;
-  for (let page = 1; page <= 50; page += 1) {
-    const { data, error } = await supabaseAdmin.auth.admin.listUsers({
-      page,
-      perPage,
-    });
-    if (error) throw error;
-    const users = data?.users || [];
-    for (const u of users as any[]) {
-      if (u?.id) ids.add(String(u.id));
-    }
-    if (users.length < perPage) break;
-  }
-  return ids;
-}
-
 export async function GET(req: NextRequest) {
   try {
     const userId = await getAuthenticatedUserId(req);
@@ -85,8 +68,6 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
-    const authUserIds = await listAllAuthUserIds();
-
     const { data: users, error: usersError } = await supabaseAdmin
       .from("users")
       .select("id, email, role, is_active")
@@ -103,12 +84,22 @@ export async function GET(req: NextRequest) {
     const latestEmailSentAtByUserId = new Map<string, string>();
 
     if (userIds.length > 0) {
-      const { data: profiles, error: profilesError } = await supabaseAdmin
-        .from("profiles")
-        .select("id, user_id, first_name, last_name, onboarding_completed_at")
-        .in("user_id", userIds);
+      const profiles: any[] = [];
 
-      if (!profilesError && profiles) {
+      for (const chunk of chunkArray(userIds, DB_CHUNK_SIZE)) {
+        const { data: profilesChunk, error: profilesError } = await supabaseAdmin
+          .from("profiles")
+          .select("id, user_id, first_name, last_name, onboarding_completed_at")
+          .in("user_id", chunk as any);
+
+        if (profilesError) {
+          return NextResponse.json({ error: profilesError.message }, { status: 400 });
+        }
+
+        profiles.push(...(profilesChunk || []));
+      }
+
+      if (profiles.length > 0) {
         profileMap = new Map(
           profiles.map((p: any) => [
             p.user_id,
@@ -123,18 +114,20 @@ export async function GET(req: NextRequest) {
       }
 
       // Also check vendor_onboarding_status for admin-marked completion
-      const profileIds = (profiles || []).map((p: any) => String(p.id)).filter(Boolean);
-      if (profileIds.length > 0) {
-        const { data: vendorStatuses } = await supabaseAdmin
+      const profileIds = profiles.map((p: any) => String(p.id)).filter(Boolean);
+      for (const chunk of chunkArray(profileIds, DB_CHUNK_SIZE)) {
+        const { data: vendorStatuses, error: vendorStatusesError } = await supabaseAdmin
           .from("vendor_onboarding_status")
           .select("profile_id")
-          .in("profile_id", profileIds)
+          .in("profile_id", chunk as any)
           .eq("onboarding_completed", true);
 
-        if (vendorStatuses) {
-          for (const vs of vendorStatuses as any[]) {
-            adminCompletedProfileIds.add(String(vs.profile_id));
-          }
+        if (vendorStatusesError) {
+          return NextResponse.json({ error: vendorStatusesError.message }, { status: 400 });
+        }
+
+        for (const vs of (vendorStatuses || []) as any[]) {
+          adminCompletedProfileIds.add(String(vs.profile_id));
         }
       }
     }
@@ -170,7 +163,6 @@ export async function GET(req: NextRequest) {
     }
 
     const recipients = (users || [])
-      .filter((u: any) => authUserIds.has(String(u.id)))
       .map((u: any) => {
         const profile = profileMap.get(u.id);
         const onboardingCompleted = Boolean(

@@ -55,6 +55,7 @@ export default function CheckInCodesPage() {
   const [selectedCodeId, setSelectedCodeId] = useState("");
   const [sendingAll, setSendingAll] = useState(false);
   const [sendingOnboardingCompleted, setSendingOnboardingCompleted] = useState(false);
+  const [sendingOnboardingCompletedNotSent, setSendingOnboardingCompletedNotSent] = useState(false);
   const [sendingOnboardingCompletedTest, setSendingOnboardingCompletedTest] = useState(false);
   const [sendingUserId, setSendingUserId] = useState<string | null>(null);
   const [emailError, setEmailError] = useState("");
@@ -109,6 +110,11 @@ export default function CheckInCodesPage() {
 
     return result;
   }, [recipients, searchQuery, filterOnboardedNotSent]);
+
+  const onboardingCompletedNotSentCount = useMemo(
+    () => recipients.filter((u) => u.onboarding_completed && !u.email_sent).length,
+    [recipients]
+  );
 
   useEffect(() => {
     checkAuth();
@@ -420,6 +426,71 @@ export default function CheckInCodesPage() {
       setEmailError("An unexpected error occurred while sending the email");
     } finally {
       setSendingOnboardingCompleted(false);
+    }
+  };
+
+  const sendToOnboardingCompletedNotSentUsers = async (codeId: string) => {
+    setSendingOnboardingCompletedNotSent(true);
+    setEmailError("");
+    setEmailSuccess("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        setEmailError("Session expired. Please log in again.");
+        return;
+      }
+
+      const res = await fetch("/api/checkin-codes/send", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          codeId,
+          audience: "onboarding_completed_not_sent",
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setEmailError(data?.error || "Failed to send email");
+        return;
+      }
+
+      if (data?.success === false || Number(data?.failedCount || 0) > 0) {
+        const failedCount = Number(data?.failedCount || 0);
+        const sentTo = Number(data?.sentTo || 0);
+        const firstFailure =
+          Array.isArray(data?.failures) && data.failures.length > 0
+            ? String(data.failures[0]?.error || "").trim()
+            : "";
+        setEmailError(
+          firstFailure
+            ? `Sent to ${sentTo}, failed ${failedCount}: ${firstFailure}`
+            : `Sent to ${sentTo}, failed ${failedCount}`
+        );
+        if (sentTo > 0) {
+          await fetchRecipients();
+        }
+        return;
+      }
+
+      const sentTo = Number(data?.sentTo || 0);
+      if (sentTo === 0) {
+        setEmailError("No onboarding-completed unsent recipients were found.");
+        return;
+      }
+
+      setEmailSuccess(
+        `Email sent to onboarding-completed unsent users (${sentTo} recipients)`
+      );
+      await fetchRecipients();
+    } catch (err) {
+      setEmailError("An unexpected error occurred while sending the email");
+    } finally {
+      setSendingOnboardingCompletedNotSent(false);
     }
   };
 
@@ -772,6 +843,30 @@ export default function CheckInCodesPage() {
               {sendingOnboardingCompleted
                 ? "Sending..."
                 : "Send to Onboarding Completed"}
+            </button>
+            <button
+              onClick={async () => {
+                if (!activeCodes.length) {
+                  setEmailError("No active code selected");
+                  return;
+                }
+                const codeId = await getOrCreateBulkCodeId();
+                if (!codeId) {
+                  return;
+                }
+                await sendToOnboardingCompletedNotSentUsers(codeId);
+              }}
+              disabled={
+                sendingOnboardingCompletedNotSent ||
+                activeCodes.length === 0 ||
+                recipientsLoading
+              }
+              className="px-6 py-3 bg-teal-600 border border-teal-700 text-white rounded-xl font-medium hover:bg-teal-700 transition-all disabled:opacity-50 shadow-sm"
+              title="Sends only to onboarding-completed users who have not been emailed yet"
+            >
+              {sendingOnboardingCompletedNotSent
+                ? "Sending..."
+                : `Send Onboarded Not Sent (${onboardingCompletedNotSentCount})`}
             </button>
             <button
               onClick={async () => {

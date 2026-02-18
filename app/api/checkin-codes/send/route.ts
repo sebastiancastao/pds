@@ -25,7 +25,12 @@ const DEFAULT_PER_EMAIL_DELAY_MS = 600;
 const DB_CHUNK_SIZE = 200;
 const DB_RETRY_ATTEMPTS = 3;
 
-type Audience = "all" | "one" | "onboarding_completed" | "onboarding_completed_test";
+type Audience =
+  | "all"
+  | "one"
+  | "onboarding_completed"
+  | "onboarding_completed_not_sent"
+  | "onboarding_completed_test";
 type Recipient = {
   id: string;
   email: string;
@@ -277,7 +282,7 @@ async function getRecipients(params: {
 
   let allowedUserIds: Set<string> | null = null;
 
-  if (audience === "onboarding_completed") {
+  if (audience === "onboarding_completed" || audience === "onboarding_completed_not_sent") {
     const profileIds = (profiles || []).map((p: any) => String(p.id));
     const adminCompletedProfileIds = new Set<string>();
     for (let i = 0; i < profileIds.length; i += DB_CHUNK_SIZE) {
@@ -311,6 +316,45 @@ async function getRecipients(params: {
       if (profile.workflow_completed || adminCompletedProfileIds.has(profile.id)) {
         allowedUserIds.add(userId);
       }
+    }
+  }
+
+  if (audience === "onboarding_completed_not_sent" && allowedUserIds) {
+    const sentUserIds = new Set<string>();
+    const allowedUserIdList = Array.from(allowedUserIds.values());
+
+    for (let i = 0; i < allowedUserIdList.length; i += DB_CHUNK_SIZE) {
+      const chunk = allowedUserIdList.slice(i, i + DB_CHUNK_SIZE);
+      const sentLogsRes = await withDbRetry(
+        async () =>
+          await supabaseAdmin
+            .from("employee_id_code_email_sends")
+            .select("user_id")
+            .in("user_id", chunk as any),
+        "employee_id_code_email_sends:chunk"
+      );
+      const sentRows = (sentLogsRes as any)?.data;
+      const sentError = (sentLogsRes as any)?.error;
+
+      if (sentError) {
+        if (String((sentError as any)?.code || "") === "42P01") {
+          throw new Error(
+            "Missing table employee_id_code_email_sends. Run migration 042_create_employee_id_code_email_sends_table.sql first."
+          );
+        }
+        throw sentError;
+      }
+
+      for (const row of (sentRows || []) as any[]) {
+        const sentUserId = String((row as any)?.user_id || "");
+        if (sentUserId) sentUserIds.add(sentUserId);
+      }
+    }
+
+    if (sentUserIds.size > 0) {
+      allowedUserIds = new Set(
+        Array.from(allowedUserIds.values()).filter((id) => !sentUserIds.has(id))
+      );
     }
   }
 
@@ -412,7 +456,15 @@ export async function POST(req: NextRequest) {
     const codeId = String(body?.codeId || "").trim();
     const recipientUserId = body?.recipientUserId;
 
-    if (!["all", "one", "onboarding_completed", "onboarding_completed_test"].includes(audience)) {
+    if (
+      ![
+        "all",
+        "one",
+        "onboarding_completed",
+        "onboarding_completed_not_sent",
+        "onboarding_completed_test",
+      ].includes(audience)
+    ) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
 
@@ -472,7 +524,9 @@ export async function POST(req: NextRequest) {
     const resolvedBatchSize = batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE;
     const chunks = chunkArray(recipients, resolvedBatchSize);
     const personalCodeByUserId =
-      audience === "onboarding_completed" || audience === "onboarding_completed_test"
+      audience === "onboarding_completed" ||
+      audience === "onboarding_completed_not_sent" ||
+      audience === "onboarding_completed_test"
         ? await getActivePersonalCodeByUserId(recipients.map((r) => r.id))
         : null;
 
@@ -486,7 +540,11 @@ export async function POST(req: NextRequest) {
       for (let j = 0; j < chunk.length; j += 1) {
         const recipient = chunk[j];
         let codeToSend = String(code.code);
-        if (audience === "onboarding_completed" || audience === "onboarding_completed_test") {
+        if (
+          audience === "onboarding_completed" ||
+          audience === "onboarding_completed_not_sent" ||
+          audience === "onboarding_completed_test"
+        ) {
           const personalCode = personalCodeByUserId?.get(recipient.id);
           if (!personalCode) {
             failures.push({
