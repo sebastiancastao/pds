@@ -4151,29 +4151,29 @@ export default function EventDashboardPage() {
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full">
+                  <table className="w-full table-fixed text-xs leading-4">
                     <thead className="bg-gray-50 border-b">
                       <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Employee</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Reg Rate</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Loaded Rate</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Ext Amt on Reg Rate</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Commission Amt</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Total Final Commission</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Tips</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700 w-[18rem]">Employee</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Regular Rate">Reg</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Loaded</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Extended Amount on Regular Rate">Ext @ Reg</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Amount">Comm</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Total Final Commission">Final Comm</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
                         {!hideRestBreakColumn && (
-                          <th className="text-left p-4 font-semibold text-gray-700">Rest Break</th>
+                          <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
                         )}
-                        <th className="text-left p-4 font-semibold text-gray-700">Other</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Total Gross Pay</th>
-                        <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700">Other</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700">Gross Pay</th>
+                        <th className="text-right px-2 py-2 font-semibold text-gray-700 w-[7.5rem]">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={12} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideRestBreakColumn ? 11 : 12} className="p-8 text-center text-gray-500">
                             No staff found matching filters
                           </td>
                         </tr>
@@ -4286,17 +4286,17 @@ export default function EventDashboardPage() {
                           return (
                             <tr key={member.id} className="hover:bg-gray-50 transition-colors">
                               {/* Employee */}
-                              <td className="p-4">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold">
+                              <td className="px-2 py-2 align-top">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-[10px]">
                                     {firstName.charAt(0)}
                                     {lastName.charAt(0)}
                                   </div>
-                                  <div>
-                                    <div className="font-medium text-gray-900">
+                                  <div className="min-w-0">
+                                    <div className="font-medium text-gray-900 text-sm truncate">
                                       {firstName} {lastName}
                                     </div>
-                                    <div className="text-xs text-gray-500">
+                                    <div className="text-[10px] text-gray-500 break-all">
                                       {member.users?.email || "N/A"}
                                     </div>
                                   </div>
@@ -4304,28 +4304,28 @@ export default function EventDashboardPage() {
                               </td>
 
                               {/* Reg Rate */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="font-medium text-gray-900">
                                   ${formatPayrollMoney(baseRate)}/hr
                                 </div>
                               </td>
 
                               {/* Loaded Rate */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
                                   ${formatPayrollMoney(finalCommissionRate)}/hr
                                 </div>
                               </td>
 
                               {/* Hours */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="font-medium text-gray-900">
                                   {actualHours > 0 ? hoursHHMM : "0:00"}
                                 </div>
                               </td>
 
                               {/* Ext Amt on Reg Rate */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(extAmtOnRegRate)}
                                 </div>
@@ -4335,7 +4335,7 @@ export default function EventDashboardPage() {
                               </td>
 
                               {/* Commission Amt */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(commissionAmount)}
                                 </div>
@@ -4345,21 +4345,21 @@ export default function EventDashboardPage() {
                               </td>
 
                               {/* Total Final Commission */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(totalFinalCommission)}
                                 </div>
                               </td>
 
                               {/* Tips */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(proratedTips)}
                                 </div>
                               </td>
 
                               {!hideRestBreakColumn && (
-                                <td className="p-4">
+                                <td className="px-2 py-2 align-top">
                                   <div className="text-sm font-medium text-green-600">
                                     ${formatPayrollMoney(restBreak)}
                                   </div>
@@ -4370,7 +4370,7 @@ export default function EventDashboardPage() {
                               )}
 
                               {/* Other (Adjustments + Reimbursements) - Editable */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 {canEditTimesheets && editingMemberId === member.id ? (
                                   <div className="flex flex-col gap-1">
                                     <div className="flex items-center gap-1">
@@ -4426,7 +4426,7 @@ export default function EventDashboardPage() {
                               </td>
 
                               {/* Total Gross Pay */}
-                              <td className="p-4">
+                              <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-bold text-green-700">
                                   ${formatPayrollMoney(totalGrossPay)}
                                 </div>

@@ -165,8 +165,9 @@ function HRDashboardContent() {
       const bLast = (b?.lastName || "").toString().trim();
       const aEmail = (a?.email || "").toString().trim();
       const bEmail = (b?.email || "").toString().trim();
-      const aKey = `${aLast} ${aFirst}`.trim() || aEmail;
-      const bKey = `${bLast} ${bFirst}`.trim() || bEmail;
+      // Match visible UI name order: sort by "First Last" from A->Z per event.
+      const aKey = `${aFirst} ${aLast}`.trim() || `${aLast} ${aFirst}`.trim() || aEmail;
+      const bKey = `${bFirst} ${bLast}`.trim() || `${bLast} ${bFirst}`.trim() || bEmail;
       return aKey.localeCompare(bKey, undefined, { sensitivity: "base" });
     });
   };
