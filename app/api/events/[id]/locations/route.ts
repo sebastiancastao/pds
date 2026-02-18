@@ -328,6 +328,40 @@ export async function PUT(
             { status: 400 }
           );
         }
+
+        const { data: assignmentsInOtherLocations, error: assignmentsInOtherLocationsError } =
+          await supabaseAdmin
+            .from("event_location_assignments")
+            .select("vendor_id, location_id")
+            .eq("event_id", eventId)
+            .in("vendor_id", uniqueMemberIds)
+            .neq("location_id", locationId);
+
+        if (assignmentsInOtherLocationsError) {
+          return NextResponse.json(
+            { error: assignmentsInOtherLocationsError.message },
+            { status: 500 }
+          );
+        }
+
+        if ((assignmentsInOtherLocations || []).length > 0) {
+          const blockedVendorIds = Array.from(
+            new Set(
+              (assignmentsInOtherLocations || [])
+                .map((row) => normalizeText(row.vendor_id))
+                .filter(Boolean)
+            )
+          );
+
+          return NextResponse.json(
+            {
+              error:
+                "Some users are already assigned to another location. Remove them there first.",
+              blockedVendorIds,
+            },
+            { status: 409 }
+          );
+        }
       }
 
       const { data: currentAssignments, error: currentAssignmentsError } = await supabaseAdmin

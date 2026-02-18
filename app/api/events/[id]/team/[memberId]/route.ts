@@ -13,6 +13,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
+
 const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2"]);
 
 async function getAuthedUser(req: NextRequest) {
@@ -96,6 +98,80 @@ export async function DELETE(
     }
     if (!teamMember) {
       return NextResponse.json({ error: "Team member not found for this event" }, { status: 404 });
+    }
+
+    const vendorId = String(teamMember.vendor_id || "").trim();
+    if (vendorId) {
+      const { data: clockOutRows, error: clockOutError } = await supabaseAdmin
+        .from("time_entries")
+        .select("id, timestamp")
+        .eq("event_id", eventId)
+        .eq("user_id", vendorId)
+        .eq("action", "clock_out");
+
+      if (clockOutError) {
+        return NextResponse.json({ error: clockOutError.message }, { status: 500 });
+      }
+
+      const normalizedClockOutRows = (clockOutRows || [])
+        .map((row: any) => {
+          const entryId = String(row?.id || "").trim();
+          const parsedMs = Date.parse(String(row?.timestamp || ""));
+          return {
+            formId: entryId ? `clock-out-${entryId}` : "",
+            timestampMs: Number.isNaN(parsedMs) ? null : parsedMs,
+          };
+        })
+        .filter((row) => row.formId.length > 0);
+
+      if (normalizedClockOutRows.length > 0) {
+        let attestationQuery = supabaseAdmin
+          .from("form_signatures")
+          .select("id, form_id, signed_at")
+          .eq("form_type", "clock_out_attestation")
+          .eq("user_id", vendorId);
+
+        const validClockOutMs = normalizedClockOutRows
+          .map((row) => row.timestampMs)
+          .filter((value): value is number => typeof value === "number");
+        if (validClockOutMs.length > 0) {
+          const minMs = Math.min(...validClockOutMs) - ATTESTATION_TIME_MATCH_WINDOW_MS;
+          const maxMs = Math.max(...validClockOutMs) + ATTESTATION_TIME_MATCH_WINDOW_MS;
+          attestationQuery = attestationQuery
+            .gte("signed_at", new Date(minMs).toISOString())
+            .lte("signed_at", new Date(maxMs).toISOString());
+        }
+
+        const { data: attestationRows, error: attestationError } = await attestationQuery;
+
+        if (attestationError) {
+          return NextResponse.json({ error: attestationError.message }, { status: 500 });
+        }
+
+        const hasAttestationForEvent = (attestationRows || []).some((row: any) => {
+          const formId = String(row?.form_id || "").trim();
+          const signedAtMs = Date.parse(String(row?.signed_at || ""));
+          const directFormMatch = normalizedClockOutRows.some((clockOut) => clockOut.formId === formId);
+          const timeMatch =
+            !Number.isNaN(signedAtMs) &&
+            normalizedClockOutRows.some(
+              (clockOut) =>
+                clockOut.timestampMs !== null &&
+                Math.abs(clockOut.timestampMs - signedAtMs) <= ATTESTATION_TIME_MATCH_WINDOW_MS
+            );
+          return directFormMatch || timeMatch;
+        });
+
+        if (hasAttestationForEvent) {
+          return NextResponse.json(
+            {
+              error:
+                "Cannot uninvite this team member because they already have a clock-out attestation for this event.",
+            },
+            { status: 409 }
+          );
+        }
+      }
     }
 
     const { error: assignmentDeleteError } = await supabaseAdmin

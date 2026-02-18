@@ -816,6 +816,13 @@ export default function EventDashboardPage() {
     if (!eventId || !member?.id) return;
 
     const memberName = getTeamMemberDisplayName(member);
+    if (member?.has_attestation) {
+      setMessage(
+        `${memberName} cannot be uninvited because they already have an attestation for this event.`
+      );
+      return;
+    }
+
     if (!window.confirm(`Uninvite ${memberName} from this event?`)) return;
 
     setUninvitingMemberId(member.id);
@@ -1184,8 +1191,7 @@ export default function EventDashboardPage() {
           const firstName = profile?.first_name || "";
           const lastName = profile?.last_name || "";
           const fullName = `${firstName} ${lastName}`.trim();
-          const email = member?.users?.email || "";
-          const vendorLabel = `- ${fullName || "Unknown Vendor"}${email ? ` (${email})` : ""}`;
+          const vendorLabel = `- ${fullName || "Unknown Vendor"}`;
           const vendorLines = wrapText(vendorLabel, regularFont, 10, pageWidth - margin * 2);
           for (const vendorLine of vendorLines) {
             ensureSpace(18);
@@ -1217,6 +1223,119 @@ export default function EventDashboardPage() {
       setMessage("Locations PDF exported successfully.");
     } catch (err: any) {
       setMessage(err?.message || "Failed to export locations");
+    }
+  };
+
+  const buildTeamExportRows = (): Record<string, string | number>[] => {
+    return filteredTeamListMembers.map((member: any) => {
+      const profile = member?.users?.profiles;
+      const firstName = (profile?.first_name || "").toString().trim();
+      const lastName = (profile?.last_name || "").toString().trim();
+      const fullName = `${firstName} ${lastName}`.trim() || "N/A";
+      const phone = (profile?.phone || "N/A").toString();
+      const division = (member?.users?.division || "N/A").toString();
+      const status = (member?.status || "Unknown").toString();
+      const hasAttestation = Boolean(member?.has_attestation);
+      const invitedOnRaw = String(member?.created_at || "");
+      const invitedOn = invitedOnRaw
+        ? new Date(invitedOnRaw).toLocaleString("en-US")
+        : "N/A";
+
+      return {
+        "Event Name": event?.event_name || "N/A",
+        "Event Date": event?.event_date ? String(event.event_date).slice(0, 10) : "N/A",
+        Vendor: fullName,
+        Phone: phone,
+        Division: division,
+        Status: status,
+        "Attestation Submitted": hasAttestation ? "Yes" : "No",
+        "Invited On": invitedOn,
+        "Team Member ID": String(member?.id || ""),
+        "Vendor ID": String(member?.vendor_id || member?.users?.id || ""),
+      };
+    });
+  };
+
+  const handleExportTeamMembers = async () => {
+    try {
+      if (!event) {
+        setMessage("Event data is still loading.");
+        return;
+      }
+
+      const rows = buildTeamExportRows();
+      if (rows.length === 0) {
+        setMessage("No team rows to export.");
+        return;
+      }
+
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.utils.book_new();
+
+      const summaryRows = [
+        {
+          "Event Name": event.event_name || "N/A",
+          "Event Date": event.event_date ? String(event.event_date).slice(0, 10) : "N/A",
+          "Total Invited": teamMembers.length,
+          "Displayed Rows": rows.length,
+          Confirmed: teamMembers.filter((m: any) => m?.status === "confirmed").length,
+          Pending: teamMembers.filter((m: any) => m?.status === "pending_confirmation").length,
+          "With Attestation": teamMembers.filter((m: any) => Boolean(m?.has_attestation)).length,
+          "Exported At": new Date().toLocaleString("en-US"),
+        },
+      ];
+
+      const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
+      const teamSheet = XLSX.utils.json_to_sheet(rows);
+
+      summarySheet["!cols"] = [
+        { wch: 30 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 18 },
+        { wch: 24 },
+      ];
+
+      teamSheet["!cols"] = [
+        { wch: 28 },
+        { wch: 14 },
+        { wch: 24 },
+        { wch: 18 },
+        { wch: 14 },
+        { wch: 18 },
+        { wch: 20 },
+        { wch: 24 },
+        { wch: 38 },
+        { wch: 38 },
+      ];
+
+      XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+      XLSX.utils.book_append_sheet(workbook, teamSheet, "Team");
+
+      const fileBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+      const blob = new Blob([fileBuffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const safeEventName = (event.event_name || "event")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+
+      link.href = url;
+      link.download = `${safeEventName || "event"}-team-${timestamp}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMessage("Team data exported successfully.");
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to export team data");
     }
   };
 
@@ -3274,6 +3393,13 @@ export default function EventDashboardPage() {
                     </button>
                   )}
                   <button
+                    onClick={handleExportTeamMembers}
+                    disabled={loadingTeam || filteredTeamListMembers.length === 0}
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    Export Excel
+                  </button>
+                  <button
                     onClick={() => loadTeam(false)}
                     disabled={loadingTeam}
                     className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
@@ -3375,6 +3501,7 @@ export default function EventDashboardPage() {
                           const lastName = profile?.last_name || "";
                           const email = member.users?.email || "N/A";
                           const phone = profile?.phone || "N/A";
+                          const hasAttestation = Boolean(member?.has_attestation);
 
                           let statusBadge = "";
                           let statusColor = "";
@@ -3421,6 +3548,11 @@ export default function EventDashboardPage() {
                                 >
                                   {statusBadge}
                                 </span>
+                                {hasAttestation && (
+                                  <div className="mt-1 text-xs font-semibold text-purple-700">
+                                    Attestation Submitted
+                                  </div>
+                                )}
                               </td>
                               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                                 {new Date(member.created_at).toLocaleDateString("en-US", {
@@ -3435,7 +3567,12 @@ export default function EventDashboardPage() {
                                     onClick={() => {
                                       void handleUninviteTeamMember(member);
                                     }}
-                                    disabled={uninvitingMemberId === member.id}
+                                    disabled={uninvitingMemberId === member.id || hasAttestation}
+                                    title={
+                                      hasAttestation
+                                        ? "Cannot uninvite: attestation already submitted"
+                                        : "Uninvite this team member"
+                                    }
                                     className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                   >
                                     {uninvitingMemberId === member.id ? "Uninviting..." : "Uninvite"}
@@ -3639,6 +3776,13 @@ export default function EventDashboardPage() {
                               {teamMembers.map((member: any) => {
                                 const memberId = getTeamMemberId(member);
                                 if (!memberId) return null;
+
+                                const assignedToOtherLocation = eventLocations
+                                  .filter((locationItem) => locationItem.id !== loc.id)
+                                  .some((locationItem) =>
+                                    (locationAssignments[locationItem.id] || []).includes(memberId)
+                                  );
+                                if (assignedToOtherLocation) return null;
 
                                 const profile = member?.users?.profiles;
                                 const firstName = profile?.first_name || "Unknown";
@@ -4183,6 +4327,7 @@ export default function EventDashboardPage() {
                           const firstName = profile?.first_name || "N/A";
                           const lastName = profile?.last_name || "";
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+                          const hasAttestation = Boolean(member?.has_attestation);
 
                           // Worked hours for member & all
                           // Prefer server-computed totals; fall back to span-based calc if missing
@@ -4453,7 +4598,16 @@ export default function EventDashboardPage() {
                                     onClick={() => {
                                       void handleUninviteTeamMember(member);
                                     }}
-                                    disabled={!canUninviteTeamMember || uninvitingMemberId === member.id}
+                                    disabled={
+                                      !canUninviteTeamMember ||
+                                      uninvitingMemberId === member.id ||
+                                      hasAttestation
+                                    }
+                                    title={
+                                      hasAttestation
+                                        ? "Cannot remove: attestation already submitted"
+                                        : "Remove from this event"
+                                    }
                                     className="text-red-600 hover:text-red-700 font-medium text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                                   >
                                     {uninvitingMemberId === member.id ? "Removing..." : "Remove"}

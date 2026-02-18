@@ -19,6 +19,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
+
 /**
  * POST /api/events/[id]/team
  * Create a team for an event by assigning vendors
@@ -373,6 +375,85 @@ export async function GET(
       .map((member: any) => (member?.vendor_id || member?.users?.id || '').toString())
       .filter((id: string) => id.length > 0);
 
+    let hasAttestationByUserId = new Map<string, boolean>();
+    if (teamUserIds.length > 0) {
+      const { data: clockOutRows, error: clockOutError } = await supabaseAdmin
+        .from('time_entries')
+        .select('id, user_id, timestamp')
+        .eq('event_id', eventId)
+        .eq('action', 'clock_out')
+        .in('user_id', teamUserIds);
+
+      if (clockOutError) {
+        console.error('Error fetching clock-out entries for attestation checks:', clockOutError);
+      } else {
+        const clockOutRowsByUser = new Map<
+          string,
+          Array<{ formId: string; timestampMs: number | null }>
+        >();
+        const clockOutMs: number[] = [];
+
+        for (const row of clockOutRows || []) {
+          const userId = String((row as any)?.user_id || '').trim();
+          const entryId = String((row as any)?.id || '').trim();
+          if (!userId || !entryId) continue;
+
+          const parsedMs = Date.parse(String((row as any)?.timestamp || ''));
+          const timestampMs = Number.isNaN(parsedMs) ? null : parsedMs;
+          if (timestampMs !== null) clockOutMs.push(timestampMs);
+
+          const existing = clockOutRowsByUser.get(userId) || [];
+          existing.push({ formId: `clock-out-${entryId}`, timestampMs });
+          clockOutRowsByUser.set(userId, existing);
+        }
+
+        if (clockOutRowsByUser.size > 0) {
+          let attestationQuery = supabaseAdmin
+            .from('form_signatures')
+            .select('user_id, form_id, signed_at')
+            .eq('form_type', 'clock_out_attestation')
+            .in('user_id', teamUserIds);
+
+          if (clockOutMs.length > 0) {
+            const minMs = Math.min(...clockOutMs) - ATTESTATION_TIME_MATCH_WINDOW_MS;
+            const maxMs = Math.max(...clockOutMs) + ATTESTATION_TIME_MATCH_WINDOW_MS;
+            attestationQuery = attestationQuery
+              .gte('signed_at', new Date(minMs).toISOString())
+              .lte('signed_at', new Date(maxMs).toISOString());
+          }
+
+          const { data: attestationRows, error: attestationError } = await attestationQuery;
+
+          if (attestationError) {
+            console.error('Error fetching attestations for team members:', attestationError);
+          } else {
+            for (const row of attestationRows || []) {
+              const userId = String((row as any)?.user_id || '').trim();
+              if (!userId) continue;
+
+              const userClockOutRows = clockOutRowsByUser.get(userId) || [];
+              if (userClockOutRows.length === 0) continue;
+
+              const formId = String((row as any)?.form_id || '').trim();
+              const signedAtMs = Date.parse(String((row as any)?.signed_at || ''));
+              const hasDirectFormMatch = userClockOutRows.some((entry) => entry.formId === formId);
+              const hasTimeMatch =
+                !Number.isNaN(signedAtMs) &&
+                userClockOutRows.some(
+                  (entry) =>
+                    entry.timestampMs !== null &&
+                    Math.abs(entry.timestampMs - signedAtMs) <= ATTESTATION_TIME_MATCH_WINDOW_MS
+                );
+
+              if (hasDirectFormMatch || hasTimeMatch) {
+                hasAttestationByUserId.set(userId, true);
+              }
+            }
+          }
+        }
+      }
+    }
+
     let employeePhoneByUserId = new Map<string, string>();
     if (teamUserIds.length > 0) {
       const { data: employeeInfoRows, error: employeeInfoError } = await supabaseAdmin
@@ -407,9 +488,13 @@ export async function GET(
       const employeeInfoPhone = memberUserId
         ? safeDecrypt(employeePhoneByUserId.get(memberUserId) || '')
         : '';
+      const hasAttestation = memberUserId
+        ? Boolean(hasAttestationByUserId.get(memberUserId))
+        : false;
 
       return {
         ...member,
+        has_attestation: hasAttestation,
         users: {
           ...member.users,
           profiles: {

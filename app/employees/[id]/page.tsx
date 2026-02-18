@@ -1,7 +1,7 @@
 // app/employees/[id]/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -166,6 +166,13 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
+  const [sickRequestHours, setSickRequestHours] = useState<string>("");
+  const [sickRequestDate, setSickRequestDate] = useState<string>(
+    () => new Date().toISOString().slice(0, 10)
+  );
+  const [submittingSickRequest, setSubmittingSickRequest] = useState(false);
+  const [sickRequestError, setSickRequestError] = useState("");
+  const [sickRequestSuccess, setSickRequestSuccess] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -328,6 +335,116 @@ export default function WorkerProfilePage() {
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
+
+  const toSickLeaveEntry = (record: any): SickLeaveEntry | null => {
+    if (!record?.id) return null;
+    const duration = Number(record?.duration_hours ?? 0);
+    if (!Number.isFinite(duration) || duration <= 0) return null;
+
+    return {
+      id: String(record.id),
+      start_date: record.start_date ? String(record.start_date) : null,
+      end_date: record.end_date ? String(record.end_date) : null,
+      duration_hours: Number(duration.toFixed(2)),
+      status: String(record.status || "pending").toLowerCase(),
+      reason: record.reason ? String(record.reason) : null,
+      approved_at: record.approved_at ? String(record.approved_at) : null,
+      approved_by: record.approved_by ? String(record.approved_by) : null,
+      created_at: record.created_at ? String(record.created_at) : null,
+    };
+  };
+
+  const appendSickLeaveEntry = (entry: SickLeaveEntry) => {
+    setSummary((prev) => {
+      if (!prev) return prev;
+
+      const nextEntries = [entry, ...(prev.sick_leave?.entries || [])];
+      const nextTotalHours = Number(
+        ((prev.sick_leave?.total_hours || 0) + entry.duration_hours).toFixed(2)
+      );
+      const nextTotalDays = Number((nextTotalHours / 8).toFixed(2));
+      const nextBalanceHours = Number(
+        Math.max(0, (prev.sick_leave?.balance_hours || 0) - entry.duration_hours).toFixed(2)
+      );
+      const nextBalanceDays = Number((nextBalanceHours / 8).toFixed(2));
+
+      return {
+        ...prev,
+        sick_leave: {
+          ...prev.sick_leave,
+          entries: nextEntries,
+          total_hours: nextTotalHours,
+          total_days: nextTotalDays,
+          balance_hours: nextBalanceHours,
+          balance_days: nextBalanceDays,
+        },
+      };
+    });
+  };
+
+  const submitSickLeaveRequest = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setSickRequestError("");
+    setSickRequestSuccess("");
+
+    const parsedHours = Number(sickRequestHours);
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+      setSickRequestError("Please enter a valid number of hours.");
+      return;
+    }
+
+    if (!sickRequestDate) {
+      setSickRequestError("Please choose a date.");
+      return;
+    }
+
+    setSubmittingSickRequest(true);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const res = await fetch("/api/sick-leaves/request", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          hours: parsedHours,
+          date: sickRequestDate,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      const insertedEntry = toSickLeaveEntry(data?.record);
+
+      if (!res.ok) {
+        if (insertedEntry) {
+          appendSickLeaveEntry(insertedEntry);
+          setSickRequestSuccess(
+            "Request saved, but notification email failed. Please contact HR if needed."
+          );
+          setSickRequestHours("");
+          return;
+        }
+        throw new Error(data?.error || "Failed to submit sick leave request");
+      }
+
+      if (insertedEntry) {
+        appendSickLeaveEntry(insertedEntry);
+      }
+
+      setSickRequestSuccess("Sick leave request sent successfully.");
+      setSickRequestHours("");
+    } catch (error: any) {
+      setSickRequestError(error?.message || "Failed to submit sick leave request");
+    } finally {
+      setSubmittingSickRequest(false);
+    }
+  };
 
   const createPdfBlobUrl = (base64Data: string) => {
     const byteCharacters = atob(base64Data);
@@ -665,6 +782,83 @@ export default function WorkerProfilePage() {
                   <p className="text-xs text-gray-400 self-end">
                     Workers earn 1 hour of sick leave per 30 hours worked.
                   </p>
+                </div>
+
+                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <h3 className="text-lg font-semibold text-blue-900">
+                        Request Sick Leave Hours
+                      </h3>
+                      <p className="mt-1 text-sm text-blue-800">
+                        Submit hours and date. A request email is sent to
+                        {" "}
+                        sebastiancastao379@gmail.com and jenvillar@1pds.net.
+                      </p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={submitSickLeaveRequest} className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div>
+                      <label
+                        htmlFor="sick-request-hours"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Sick Leave Hours
+                      </label>
+                      <input
+                        id="sick-request-hours"
+                        type="number"
+                        inputMode="decimal"
+                        min="0.25"
+                        max="24"
+                        step="0.25"
+                        required
+                        value={sickRequestHours}
+                        onChange={(event) => setSickRequestHours(event.target.value)}
+                        placeholder="8"
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor="sick-request-date"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Date
+                      </label>
+                      <input
+                        id="sick-request-date"
+                        type="date"
+                        required
+                        value={sickRequestDate}
+                        onChange={(event) => setSickRequestDate(event.target.value)}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      />
+                    </div>
+
+                    <div className="flex items-end">
+                      <button
+                        type="submit"
+                        disabled={submittingSickRequest}
+                        className="inline-flex w-full items-center justify-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-300"
+                      >
+                        {submittingSickRequest ? "Sending..." : "Send Request"}
+                      </button>
+                    </div>
+                  </form>
+
+                  {sickRequestError && (
+                    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                      {sickRequestError}
+                    </div>
+                  )}
+                  {sickRequestSuccess && (
+                    <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+                      {sickRequestSuccess}
+                    </div>
+                  )}
                 </div>
 
                 {sickLeaveEntries.length === 0 ? (
