@@ -4329,7 +4329,7 @@ export default function EventDashboardPage() {
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(extAmtOnRegRate)}
                                 </div>
-                                <div className="text-[10px] text-gray-500 mt-1">
+                                <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
                                   {hoursHHMM} × ${formatPayrollMoney(baseRate)} × 1.5
                                 </div>
                               </td>
@@ -4339,7 +4339,7 @@ export default function EventDashboardPage() {
                                 <div className="text-sm font-medium text-green-600">
                                   ${formatPayrollMoney(commissionAmount)}
                                 </div>
-                                <div className="text-[10px] text-gray-500">
+                                <div className="hidden xl:block text-[10px] text-gray-500">
                                   Pool {(poolPercent * 100).toFixed(2)}%
                                 </div>
                               </td>
@@ -4363,7 +4363,7 @@ export default function EventDashboardPage() {
                                   <div className="text-sm font-medium text-green-600">
                                     ${formatPayrollMoney(restBreak)}
                                   </div>
-                                  <div className="text-[10px] text-gray-500 mt-1">
+                                  <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
                                     {hoursHHMM} {actualHours > 10 ? '>' : '≤'} 10h
                                   </div>
                                 </td>
@@ -4382,7 +4382,7 @@ export default function EventDashboardPage() {
                                           const value = Number(e.target.value) || 0;
                                           setAdjustments(prev => ({ ...prev, [uid]: value }));
                                         }}
-                                        className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                        className="w-14 px-1 py-0.5 border border-blue-500 rounded text-xs"
                                         placeholder="0"
                                         step="1"
                                         autoFocus
@@ -4397,7 +4397,7 @@ export default function EventDashboardPage() {
                                           const value = Number(e.target.value) || 0;
                                           setReimbursements(prev => ({ ...prev, [uid]: value }));
                                         }}
-                                        className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                        className="w-14 px-1 py-0.5 border border-blue-500 rounded text-xs"
                                         placeholder="0"
                                         step="1"
                                       />
@@ -4420,7 +4420,7 @@ export default function EventDashboardPage() {
                                     )}
                                   </div>
                                 )}
-                                <div className="text-[10px] text-gray-500 mt-1">
+                                <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
                                   {canEditTimesheets ? "Click to edit" : "Exec only"}
                                 </div>
                               </td>
@@ -4433,30 +4433,32 @@ export default function EventDashboardPage() {
                               </td>
 
                               {/* Actions */}
-                              <td className="p-4 text-right">
-                                <button
-                                  onClick={() => {
-                                    if (!canEditTimesheets) return;
-                                    if (editingMemberId === member.id) {
-                                      setEditingMemberId(null);
-                                    } else {
-                                      setEditingMemberId(member.id);
-                                    }
-                                  }}
-                                  disabled={!canEditTimesheets}
-                                  className="text-blue-600 hover:text-blue-700 font-medium text-sm mr-3 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                >
-                                  {editingMemberId === member.id ? 'Done' : 'Edit'}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    void handleUninviteTeamMember(member);
-                                  }}
-                                  disabled={!canUninviteTeamMember || uninvitingMemberId === member.id}
-                                  className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                >
-                                  {uninvitingMemberId === member.id ? "Removing..." : "Remove"}
-                                </button>
+                              <td className="px-2 py-2 text-right align-top whitespace-nowrap">
+                                <div className="inline-flex flex-col items-end gap-1">
+                                  <button
+                                    onClick={() => {
+                                      if (!canEditTimesheets) return;
+                                      if (editingMemberId === member.id) {
+                                        setEditingMemberId(null);
+                                      } else {
+                                        setEditingMemberId(member.id);
+                                      }
+                                    }}
+                                    disabled={!canEditTimesheets}
+                                    className="text-blue-600 hover:text-blue-700 font-medium text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    {editingMemberId === member.id ? 'Done' : 'Edit'}
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      void handleUninviteTeamMember(member);
+                                    }}
+                                    disabled={!canUninviteTeamMember || uninvitingMemberId === member.id}
+                                    className="text-red-600 hover:text-red-700 font-medium text-xs transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                  >
+                                    {uninvitingMemberId === member.id ? "Removing..." : "Remove"}
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           );
