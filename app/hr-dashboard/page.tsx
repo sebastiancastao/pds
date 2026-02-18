@@ -60,6 +60,23 @@ type SickLeaveRecord = {
   employee_city: string | null;
 };
 
+type SickLeaveAccrual = {
+  user_id: string;
+  employee_name: string;
+  employee_email: string;
+  employee_state: string | null;
+  employee_city: string | null;
+  worked_hours: number;
+  accrued_months: number;
+  accrued_hours: number;
+  accrued_days: number;
+  used_hours: number;
+  used_days: number;
+  balance_hours: number;
+  balance_days: number;
+  request_count: number;
+};
+
 type SickLeaveStats = {
   total: number;
   pending: number;
@@ -220,11 +237,14 @@ function HRDashboardContent() {
   const [filterFormState, setFilterFormState] = useState<string>(initialFormState);
   const [filterFormCategory, setFilterFormCategory] = useState<string>('all');
   const [sickLeaves, setSickLeaves] = useState<SickLeaveRecord[]>([]);
+  const [sickLeaveAccruals, setSickLeaveAccruals] = useState<SickLeaveAccrual[]>([]);
   const [loadingSickLeaves, setLoadingSickLeaves] = useState(false);
   const [sickLeavesError, setSickLeavesError] = useState("");
   const [sickLeaveStatusFilter, setSickLeaveStatusFilter] = useState<"all" | SickLeaveStatus>("all");
   const [sickLeaveSearch, setSickLeaveSearch] = useState("");
   const [updatingSickLeaveId, setUpdatingSickLeaveId] = useState<string | null>(null);
+  const [addingUsedHoursUserId, setAddingUsedHoursUserId] = useState<string | null>(null);
+  const [removingUsedHoursUserId, setRemovingUsedHoursUserId] = useState<string | null>(null);
   const [sickLeaveStats, setSickLeaveStats] = useState<SickLeaveStats>({
     total: 0,
     pending: 0,
@@ -1172,6 +1192,7 @@ function HRDashboardContent() {
       }
 
       setSickLeaves(Array.isArray(data.records) ? data.records : []);
+      setSickLeaveAccruals(Array.isArray(data.accruals) ? data.accruals : []);
       setSickLeaveStats({
         total: Number(data.stats?.total || 0),
         pending: Number(data.stats?.pending || 0),
@@ -1181,6 +1202,7 @@ function HRDashboardContent() {
       });
     } catch (err: any) {
       setSickLeaves([]);
+      setSickLeaveAccruals([]);
       setSickLeaveStats({ total: 0, pending: 0, approved: 0, denied: 0, total_hours: 0 });
       setSickLeavesError(err?.message || "Failed to load sick leave records");
     } finally {
@@ -1219,6 +1241,99 @@ function HRDashboardContent() {
       setUpdatingSickLeaveId(null);
     }
   }, [loadSickLeaves]);
+
+  const addUsedHours = useCallback(
+    async (userId: string, employeeName: string) => {
+      const input = window.prompt(`Add used sick leave hours for ${employeeName}:`, "8");
+      if (input == null) return;
+
+      const parsedHours = Number(input.trim());
+      if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+        alert("Please enter a valid positive number of hours.");
+        return;
+      }
+
+      setAddingUsedHoursUserId(userId);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch("/api/hr/sick-leaves", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            duration_hours: Number(parsedHours.toFixed(2)),
+            reason: "Manual used-hours entry from HR dashboard",
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to add used sick leave hours");
+        }
+
+        await loadSickLeaves();
+      } catch (err: any) {
+        alert(err?.message || "Failed to add used sick leave hours");
+      } finally {
+        setAddingUsedHoursUserId(null);
+      }
+    },
+    [loadSickLeaves]
+  );
+
+  const removeUsedHours = useCallback(
+    async (userId: string, employeeName: string, usedHours: number) => {
+      if (!Number.isFinite(usedHours) || usedHours <= 0) {
+        alert("This employee has no used hours to remove.");
+        return;
+      }
+
+      const suggested = Math.min(usedHours, 8);
+      const input = window.prompt(
+        `Take away used sick leave hours for ${employeeName} (current used: ${usedHours.toFixed(2)}):`,
+        suggested.toFixed(2)
+      );
+      if (input == null) return;
+
+      const parsedHours = Number(input.trim());
+      if (!Number.isFinite(parsedHours) || parsedHours <= 0) {
+        alert("Please enter a valid positive number of hours.");
+        return;
+      }
+
+      setRemovingUsedHoursUserId(userId);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch("/api/hr/sick-leaves", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            duration_hours: Number(parsedHours.toFixed(2)),
+            operation: "remove",
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || "Failed to remove used sick leave hours");
+        }
+
+        await loadSickLeaves();
+      } catch (err: any) {
+        alert(err?.message || "Failed to remove used sick leave hours");
+      } finally {
+        setRemovingUsedHoursUserId(null);
+      }
+    },
+    [loadSickLeaves]
+  );
 
   const formatSickLeaveDate = (value?: string | null) => {
     if (!value) return "-";
@@ -1311,6 +1426,34 @@ function HRDashboardContent() {
     if (!q) return employeeCards;
     return employeeCards.filter((card) => card.searchText.includes(q));
   }, [employeeCards, employeeSearch]);
+
+  const filteredSickLeaveAccruals = useMemo(() => {
+    const q = sickLeaveSearch.trim().toLowerCase();
+    if (!q) return sickLeaveAccruals;
+    return sickLeaveAccruals.filter((record) => {
+      const text = [
+        record.employee_name,
+        record.employee_email,
+        record.employee_city,
+        record.employee_state,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return text.includes(q);
+    });
+  }, [sickLeaveAccruals, sickLeaveSearch]);
+
+  const sickLeaveAccrualTotals = useMemo(() => {
+    return sickLeaveAccruals.reduce(
+      (acc, row) => {
+        acc.totalAccruedHours += Number(row.accrued_hours || 0);
+        acc.totalBalanceHours += Number(row.balance_hours || 0);
+        return acc;
+      },
+      { totalAccruedHours: 0, totalBalanceHours: 0 }
+    );
+  }, [sickLeaveAccruals]);
 
   const filteredSickLeaveRecords = useMemo(() => {
     const q = sickLeaveSearch.trim().toLowerCase();
@@ -2021,10 +2164,29 @@ function HRDashboardContent() {
               </div>
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="apple-card p-5">
+                <p className="text-sm text-blue-700">Employees With Earned Hours</p>
+                <p className="text-3xl font-semibold text-blue-700">{sickLeaveAccruals.length}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-indigo-700">Total Earned Hours</p>
+                <p className="text-3xl font-semibold text-indigo-700">
+                  {formatSickLeaveHours(sickLeaveAccrualTotals.totalAccruedHours)}
+                </p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-emerald-700">Total Available Balance</p>
+                <p className="text-3xl font-semibold text-emerald-700">
+                  {formatSickLeaveHours(sickLeaveAccrualTotals.totalBalanceHours)}
+                </p>
+              </div>
+            </div>
+
             <div className="apple-card p-6">
               <div className="flex flex-wrap items-center gap-3">
                 <div className="relative">
-                  <label className="sr-only" htmlFor="sick-leave-search">Search sick leave records</label>
+                  <label className="sr-only" htmlFor="sick-leave-search">Search sick leave employees and records</label>
                   <svg
                     className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400"
                     viewBox="0 0 24 24"
@@ -2041,7 +2203,7 @@ function HRDashboardContent() {
                     value={sickLeaveSearch}
                     onChange={(e) => setSickLeaveSearch(e.target.value)}
                     className="w-[18rem] md:w-[24rem] rounded-xl border border-gray-300 bg-white px-10 py-3 text-sm text-gray-900 shadow-sm transition placeholder:text-gray-400 focus:border-[#007AFF] focus:outline-none focus:ring-4 focus:ring-[#007AFF]/10"
-                    placeholder="Search by employee, reason, city..."
+                    placeholder="Search by employee, email, reason, city..."
                   />
                 </div>
 
@@ -2066,6 +2228,99 @@ function HRDashboardContent() {
             )}
 
             <div className="apple-card overflow-hidden">
+              <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Employee Sick Leave Balances</h3>
+                <p className="text-xs text-gray-500 mt-1">Users with earned hours, calculated as 1 hour per 30 worked.</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Worked</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Earned</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Used</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Balance</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Requests</th>
+                      <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {loadingSickLeaves && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                          Loading earned sick leave balances...
+                        </td>
+                      </tr>
+                    )}
+                    {!loadingSickLeaves && filteredSickLeaveAccruals.map((record) => (
+                      <tr key={record.user_id} className="hover:bg-gray-50 transition-colors">
+                        <td className="px-4 py-3 align-top">
+                          <p className="text-sm font-semibold text-gray-900">{record.employee_name}</p>
+                          <p className="text-xs text-gray-500">{record.employee_email}</p>
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-gray-700">
+                          {formatSickLeaveHours(record.worked_hours)}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-indigo-700 font-semibold">
+                          {formatSickLeaveHours(record.accrued_hours)}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-gray-700">
+                          {formatSickLeaveHours(record.used_hours)}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-emerald-700 font-semibold">
+                          {formatSickLeaveHours(record.balance_hours)}
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-gray-700">
+                          {record.request_count}
+                        </td>
+                        <td className="px-4 py-3 align-top text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              onClick={() => addUsedHours(record.user_id, record.employee_name)}
+                              disabled={addingUsedHoursUserId === record.user_id}
+                              className="px-2 py-1 text-xs rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
+                            >
+                              {addingUsedHoursUserId === record.user_id ? "Adding..." : "Add Used Hours"}
+                            </button>
+                            <button
+                              onClick={() =>
+                                removeUsedHours(record.user_id, record.employee_name, Number(record.used_hours || 0))
+                              }
+                              disabled={
+                                removingUsedHoursUserId === record.user_id ||
+                                Number(record.used_hours || 0) <= 0
+                              }
+                              className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
+                            >
+                              {removingUsedHoursUserId === record.user_id ? "Removing..." : "Take Away Used Hours"}
+                            </button>
+                            <Link
+                              href={`/hr/employees/${record.user_id}`}
+                              className="px-2 py-1 text-xs rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
+                            >
+                              Employee
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {!loadingSickLeaves && filteredSickLeaveAccruals.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                          No employees with earned sick leave hours match the current search.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="apple-card overflow-hidden">
+              <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Sick Leave Requests</h3>
+              </div>
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
