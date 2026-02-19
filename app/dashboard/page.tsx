@@ -126,6 +126,9 @@ export default function DashboardPage() {
     type: "success" | "error";
   } | null>(null);
   const [selectedVenue, setSelectedVenue] = useState<string>("all");
+  const [eventSearchQuery, setEventSearchQuery] = useState<string>("");
+  const [eventStartDate, setEventStartDate] = useState<string>("");
+  const [eventEndDate, setEventEndDate] = useState<string>("");
 
   // Vendors / Regions (Calendar Availability Request)
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -772,8 +775,32 @@ export default function DashboardPage() {
   }, [events, loadPrediction]);
 
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
-  const filteredEvents =
-    selectedVenue === "all" ? events : events.filter((e) => e.venue === selectedVenue);
+  const hasEventSearch = eventSearchQuery.trim().length > 0;
+  const hasEventDateFilter = Boolean(eventStartDate || eventEndDate);
+  const hasActiveEventFilters = selectedVenue !== "all" || hasEventSearch || hasEventDateFilter;
+  const filteredEvents = useMemo(() => {
+    const query = eventSearchQuery.trim().toLowerCase();
+    return events.filter((e) => {
+      if (selectedVenue !== "all" && e.venue !== selectedVenue) return false;
+      if (query) {
+        const searchableText = [
+          e.event_name,
+          e.artist || "",
+          e.venue,
+          e.city || "",
+          e.state || "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!searchableText.includes(query)) return false;
+      }
+      if (hasEventDateFilter) {
+        if (eventStartDate && e.event_date < eventStartDate) return false;
+        if (eventEndDate && e.event_date > eventEndDate) return false;
+      }
+      return true;
+    });
+  }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate]);
 
   useEffect(() => {
     if (selectedVenue === "all") return;
@@ -1536,44 +1563,6 @@ export default function DashboardPage() {
               </section>
             )}
 
-            {!loading && !error && events.length > 0 && (
-              <div className="mb-10">
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Filter by Venue
-                  {venueOptions.length > 0 && (
-                    <span className="ml-2 text-xs font-normal text-gray-500">({venueOptions.length} venues)</span>
-                  )}
-                </label>
-                <select
-                  value={selectedVenue}
-                  onChange={(e) => setSelectedVenue(e.target.value)}
-                  className="w-full max-w-md px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                >
-                  <option value="all">All Venues</option>
-                  {venueOptions.map((venue) => (
-                    <option key={venue} value={venue}>
-                      {venue}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-center justify-between mt-1.5">
-                  <p className="text-xs text-gray-500">
-                    {selectedVenue === "all"
-                      ? `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} across all venues`
-                      : `Showing ${filteredEvents.length} event${filteredEvents.length === 1 ? "" : "s"} at ${selectedVenue}`}
-                  </p>
-                  {selectedVenue !== "all" && (
-                    <button
-                      onClick={() => setSelectedVenue("all")}
-                      className="text-xs text-blue-600 hover:text-blue-700 font-medium"
-                    >
-                      Clear filter
-                    </button>
-                  )}
-                </div>
-              </div>
-            )}
-
             {/* Calendar */}
             <section className="mb-10">
               <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Calendar</h2>
@@ -1606,6 +1595,90 @@ export default function DashboardPage() {
             {/* All Events */}
             <section>
               <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">All Events</h2>
+              {!loading && !error && events.length > 0 && (
+                <div className="mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+                    <div className="md:col-span-2 xl:col-span-2">
+                      <label htmlFor="event-search" className="block text-sm font-semibold text-gray-700 mb-2">
+                        Search Events
+                      </label>
+                      <input
+                        id="event-search"
+                        type="search"
+                        placeholder="Search by event, venue, artist, city, or state"
+                        value={eventSearchQuery}
+                        onChange={(e) => setEventSearchQuery(e.target.value)}
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="event-venue-filter" className="block text-sm font-semibold text-gray-700 mb-2">
+                        Filter by Venue
+                        {venueOptions.length > 0 && (
+                          <span className="ml-2 text-xs font-normal text-gray-500">({venueOptions.length} venues)</span>
+                        )}
+                      </label>
+                      <select
+                        id="event-venue-filter"
+                        value={selectedVenue}
+                        onChange={(e) => setSelectedVenue(e.target.value)}
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      >
+                        <option value="all">All Venues</option>
+                        {venueOptions.map((venue) => (
+                          <option key={venue} value={venue}>
+                            {venue}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label htmlFor="event-start-date" className="block text-sm font-semibold text-gray-700 mb-2">Start</label>
+                        <input
+                          id="event-start-date"
+                          type="date"
+                          value={eventStartDate}
+                          onChange={(e) => setEventStartDate(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="event-end-date" className="block text-sm font-semibold text-gray-700 mb-2">End</label>
+                        <input
+                          id="event-end-date"
+                          type="date"
+                          value={eventEndDate}
+                          onChange={(e) => setEventEndDate(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between mt-1.5 gap-3">
+                    <p className="text-xs text-gray-500">
+                      Showing {filteredEvents.length} of {events.length} event{events.length === 1 ? "" : "s"}.
+                      {" "}
+                      {hasEventDateFilter
+                        ? "Time period filter is active."
+                        : "Select a start or end date to enable the time period filter."}
+                    </p>
+                    {hasActiveEventFilters && (
+                      <button
+                        onClick={() => {
+                          setSelectedVenue("all");
+                          setEventSearchQuery("");
+                          setEventStartDate("");
+                          setEventEndDate("");
+                        }}
+                        className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
               {loading && (
                 <div className="apple-card">
                   <div className="flex items-center justify-center py-16">
@@ -1629,8 +1702,8 @@ export default function DashboardPage() {
                   <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                   </svg>
-                  <p className="text-gray-500 text-lg">No events match this venue</p>
-                  <p className="text-gray-400 text-sm mt-2">Try another venue or clear the filter</p>
+                  <p className="text-gray-500 text-lg">No events match the current filters</p>
+                  <p className="text-gray-400 text-sm mt-2">Try changing search text, venue, or date period.</p>
                 </div>
               )}
               {!loading && !error && filteredEvents.length > 0 && (
