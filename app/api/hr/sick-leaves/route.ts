@@ -400,7 +400,7 @@ export async function GET(req: NextRequest) {
       while (true) {
         const { data: sickRows, error: sickRowsError } = await supabaseAdmin
           .from("sick_leaves")
-          .select("user_id, duration_hours")
+          .select("user_id, duration_hours, status")
           .in("user_id", chunk)
           .range(from, from + QUERY_PAGE_SIZE - 1);
 
@@ -412,11 +412,13 @@ export async function GET(req: NextRequest) {
         }
         if (!sickRows || sickRows.length === 0) break;
 
-        for (const row of sickRows as Array<{ user_id: string | null; duration_hours: number | string | null }>) {
+        for (const row of sickRows as Array<{ user_id: string | null; duration_hours: number | string | null; status: string | null }>) {
           if (!row.user_id) continue;
+          sickRequestCountByUser.set(row.user_id, (sickRequestCountByUser.get(row.user_id) || 0) + 1);
+          if (normalizeStatus(row.status) !== "approved") continue;
+
           const duration = Number(row.duration_hours || 0);
           sickHoursByUser.set(row.user_id, (sickHoursByUser.get(row.user_id) || 0) + duration);
-          sickRequestCountByUser.set(row.user_id, (sickRequestCountByUser.get(row.user_id) || 0) + 1);
         }
 
         if (sickRows.length < QUERY_PAGE_SIZE) break;

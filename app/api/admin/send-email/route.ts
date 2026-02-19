@@ -19,8 +19,18 @@ const supabaseAnon = createClient(
 
 const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor"]);
 const DEFAULT_BATCH_SIZE = 50;
+const MIN_BATCH_SIZE = 1;
+const MAX_BATCH_SIZE = 100;
 const DEFAULT_BATCH_DELAY_MS = 300;
-const MAX_RECIPIENTS_PER_REQUEST = 1000;
+const MIN_BATCH_DELAY_MS = 200;
+const MAX_BATCH_DELAY_MS = 5000;
+const DEFAULT_MAX_RECIPIENTS_PER_REQUEST = 1000;
+const ABSOLUTE_MAX_RECIPIENTS_PER_REQUEST = 2000;
+const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
+const MAX_RATE_LIMIT_RETRY_COUNT = 5;
+const DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS = 1200;
+const MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS = 250;
+const MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS = 20000;
 
 type Audience = "manual" | "role" | "region" | "all";
 type BodyFormat = "html" | "text";
@@ -59,6 +69,23 @@ function chunkArray<T>(items: T[], size: number): T[][] {
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function resolveIntSetting(
+  value: string | undefined,
+  fallback: number,
+  min: number,
+  max: number
+): number {
+  const parsed = Number(value);
+  const normalized = Number.isFinite(parsed) ? Math.floor(parsed) : fallback;
+  return Math.min(max, Math.max(min, normalized));
+}
+
+function getRetryDelayMs(baseDelayMs: number, attempt: number): number {
+  const exponential = baseDelayMs * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * 250);
+  return exponential + jitter;
+}
 
 function isRateLimitError(message?: string) {
   const text = String(message || "").toLowerCase();
@@ -167,9 +194,15 @@ export async function POST(req: NextRequest) {
     if (!to.length) {
       return NextResponse.json({ error: "No valid recipients found." }, { status: 400 });
     }
-    if (to.length > MAX_RECIPIENTS_PER_REQUEST) {
+    const maxRecipientsPerRequest = resolveIntSetting(
+      process.env.MAX_BULK_EMAIL_RECIPIENTS || process.env.MAX_RECIPIENTS_PER_REQUEST,
+      DEFAULT_MAX_RECIPIENTS_PER_REQUEST,
+      1,
+      ABSOLUTE_MAX_RECIPIENTS_PER_REQUEST
+    );
+    if (to.length > maxRecipientsPerRequest) {
       return NextResponse.json(
-        { error: `Too many recipients. Max allowed is ${MAX_RECIPIENTS_PER_REQUEST} per request.` },
+        { error: `Too many recipients. Max allowed is ${maxRecipientsPerRequest} per request.` },
         { status: 400 }
       );
     }
@@ -198,42 +231,68 @@ export async function POST(req: NextRequest) {
         ? body
         : `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(body)}</pre>`;
 
-    const batchSize = Number(process.env.EMAIL_SEND_BATCH_SIZE || DEFAULT_BATCH_SIZE);
-    const batchDelayMs = Number(process.env.EMAIL_SEND_BATCH_DELAY_MS || DEFAULT_BATCH_DELAY_MS);
-    const batches = chunkArray(to, batchSize > 0 ? batchSize : DEFAULT_BATCH_SIZE);
+    const batchSize = resolveIntSetting(
+      process.env.EMAIL_SEND_BATCH_SIZE,
+      DEFAULT_BATCH_SIZE,
+      MIN_BATCH_SIZE,
+      MAX_BATCH_SIZE
+    );
+    const batchDelayMs = resolveIntSetting(
+      process.env.EMAIL_SEND_BATCH_DELAY_MS,
+      DEFAULT_BATCH_DELAY_MS,
+      MIN_BATCH_DELAY_MS,
+      MAX_BATCH_DELAY_MS
+    );
+    const rateLimitRetryCount = resolveIntSetting(
+      process.env.EMAIL_SEND_RATE_LIMIT_RETRY_COUNT,
+      DEFAULT_RATE_LIMIT_RETRY_COUNT,
+      0,
+      MAX_RATE_LIMIT_RETRY_COUNT
+    );
+    const retryBaseDelayMs = resolveIntSetting(
+      process.env.EMAIL_SEND_RATE_LIMIT_RETRY_BASE_DELAY_MS,
+      DEFAULT_RATE_LIMIT_RETRY_BASE_DELAY_MS,
+      MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS,
+      MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS
+    );
+    const batches = chunkArray(to, batchSize);
 
     let sentCount = 0;
     const messageIds: string[] = [];
+    const basePayload = {
+      cc: cc.length ? cc : undefined,
+      bcc: bcc.length ? bcc : undefined,
+      subject,
+      html,
+      from: process.env.RESEND_FROM || undefined,
+      attachments: attachments.length ? attachments : undefined,
+    };
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      let result = await sendEmail({
-        to: batch,
-        cc: cc.length ? cc : undefined,
-        bcc: bcc.length ? bcc : undefined,
-        subject,
-        html,
-        from: process.env.RESEND_FROM || undefined,
-        attachments: attachments.length ? attachments : undefined,
-      });
+      let result: Awaited<ReturnType<typeof sendEmail>> | null = null;
 
-      if (!result.success && isRateLimitError(result.error)) {
-        await sleep(1200);
+      for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
         result = await sendEmail({
+          ...basePayload,
           to: batch,
-          cc: cc.length ? cc : undefined,
-          bcc: bcc.length ? bcc : undefined,
-          subject,
-          html,
-          from: process.env.RESEND_FROM || undefined,
-          attachments: attachments.length ? attachments : undefined,
         });
+
+        if (result.success) {
+          break;
+        }
+
+        if (!isRateLimitError(result.error) || attempt >= rateLimitRetryCount) {
+          break;
+        }
+
+        await sleep(getRetryDelayMs(retryBaseDelayMs, attempt));
       }
 
-      if (!result.success) {
+      if (!result?.success) {
         return NextResponse.json(
           {
-            error: result.error || "Failed to send email.",
+            error: result?.error || "Failed to send email.",
             sentCount,
             attemptedRecipients: to.length,
           },
