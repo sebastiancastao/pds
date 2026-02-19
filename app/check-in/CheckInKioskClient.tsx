@@ -8,6 +8,7 @@ import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 // ─── Types ───────────────────────────────────────────────────────────
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
+const MIN_MEAL_BREAK_MS = 30 * 60 * 1000;
 
 type QueuedAction = {
   id: string;
@@ -30,6 +31,11 @@ type ValidatedWorker = {
   status: WorkerStatus;
   clockedInAt: string | null;
   code: string;
+};
+
+type EarlyMealEndModal = {
+  mealEndsAt: string;
+  minutesRemaining: number;
 };
 
 // ─── IndexedDB helpers ──────────────────────────────────────────────
@@ -118,6 +124,7 @@ export default function CheckInKioskPage() {
   // Feedback
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [earlyMealEndModal, setEarlyMealEndModal] = useState<EarlyMealEndModal | null>(null);
   const successTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Clock-out attestation / signature
@@ -504,6 +511,13 @@ export default function CheckInKioskPage() {
     successTimeoutRef.current = setTimeout(() => setSuccess(""), 3000);
   };
 
+  const buildMealStartMessage = (name: string, mealEndsAt?: string | null) => {
+    const parsedMealEndsAt = typeof mealEndsAt === "string" ? Date.parse(mealEndsAt) : NaN;
+    const fallbackMealEndsAt = Date.now() + MIN_MEAL_BREAK_MS;
+    const mealEndsAtMs = Number.isNaN(parsedMealEndsAt) ? fallbackMealEndsAt : parsedMealEndsAt;
+    return `${name} - Meal Started. Please come back at ${toPacificHHMM(mealEndsAtMs)}.`;
+  };
+
   const formatDuration = (ms: number) => {
     if (!Number.isFinite(ms) || ms < 0) return "--";
     const totalMinutes = Math.floor(ms / 60_000);
@@ -535,6 +549,7 @@ export default function CheckInKioskPage() {
     setDigits(["", "", "", "", "", ""]);
     setError("");
     setSuccess("");
+    setEarlyMealEndModal(null);
     setShowAttestation(false);
     setSignature("");
     setIsSubmitting(false);
@@ -655,6 +670,7 @@ export default function CheckInKioskPage() {
     if (!worker) return;
     setIsActioning(true);
     setError("");
+    setEarlyMealEndModal(null);
 
     const actionLabels: Record<ActionType, string> = {
       clock_in: "Checked In",
@@ -678,8 +694,12 @@ export default function CheckInKioskPage() {
           await addToQueue(queuedItem);
           await refreshQueueCount();
           if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-          setTimeout(resetToCodeEntry, 1500);
+          const queuedMessage =
+            action === "meal_start"
+              ? `${buildMealStartMessage(worker.name)} (queued offline)`
+              : `${actionLabels[action]} (queued offline)`;
+          showSuccessMessage(queuedMessage);
+          setTimeout(resetToCodeEntry, action === "meal_start" ? 3000 : 1500);
         } catch (err) {
           setError("Failed to save offline. Please try again.");
         }
@@ -725,20 +745,45 @@ export default function CheckInKioskPage() {
             await addToQueue(queuedItem);
             await refreshQueueCount();
             if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-            showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-            setTimeout(resetToCodeEntry, 1500);
+            const queuedMessage =
+              action === "meal_start"
+                ? `${buildMealStartMessage(worker.name)} (queued offline)`
+                : `${actionLabels[action]} (queued offline)`;
+            showSuccessMessage(queuedMessage);
+            setTimeout(resetToCodeEntry, action === "meal_start" ? 3000 : 1500);
             setIsActioning(false);
             return;
           }
+        if (
+          action === "meal_end" &&
+          data?.code === "MEAL_MINIMUM_NOT_MET" &&
+          typeof data?.mealEndsAt === "string"
+        ) {
+          const apiMinutes = Number(data?.minutesRemaining);
+          const parsedMealEndsAt = Date.parse(data.mealEndsAt);
+          const fallbackMinutes = Number.isNaN(parsedMealEndsAt)
+            ? 1
+            : Math.max(1, Math.ceil((parsedMealEndsAt - Date.now()) / 60_000));
+          setEarlyMealEndModal({
+            mealEndsAt: data.mealEndsAt,
+            minutesRemaining: Number.isFinite(apiMinutes) ? Math.max(1, Math.ceil(apiMinutes)) : fallbackMinutes,
+          });
+          setIsActioning(false);
+          return;
+        }
         setError(data.error || "Action failed");
         setIsActioning(false);
           return;
         }
 
         if (action === "clock_in") showEventCheckInFlashMessage(worker.name);
-        showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
+        if (action === "meal_start") {
+          showSuccessMessage(buildMealStartMessage(worker.name, typeof data?.mealEndsAt === "string" ? data.mealEndsAt : null));
+        } else {
+          showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
+        }
         fetchRecentActivity();
-        setTimeout(resetToCodeEntry, 1500);
+        setTimeout(resetToCodeEntry, action === "meal_start" ? 3000 : 1500);
       } catch {
       // Network error - queue offline
       const queuedItem: QueuedAction = {
@@ -754,8 +799,12 @@ export default function CheckInKioskPage() {
           await addToQueue(queuedItem);
           await refreshQueueCount();
           if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
-          setTimeout(resetToCodeEntry, 1500);
+          const queuedMessage =
+            action === "meal_start"
+              ? `${buildMealStartMessage(worker.name)} (queued offline)`
+              : `${actionLabels[action]} (queued offline)`;
+          showSuccessMessage(queuedMessage);
+          setTimeout(resetToCodeEntry, action === "meal_start" ? 3000 : 1500);
         } catch {
           setError("Failed to save. Please try again.");
         }
@@ -937,6 +986,35 @@ export default function CheckInKioskPage() {
   // ─── Main kiosk UI ─────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex flex-col">
+      {earlyMealEndModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+          <div className="w-full max-w-md bg-white rounded-2xl shadow-xl border border-gray-100 p-6">
+            <div className="text-center mb-4">
+              <div className="w-14 h-14 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                <svg className="w-7 h-7 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h3 className="text-xl font-bold text-gray-900">Meal Break Still Active</h3>
+            </div>
+
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-900">
+              <p className="font-medium">Your 30-minute meal ends at {toPacificHHMM(earlyMealEndModal.mealEndsAt)}.</p>
+              <p className="mt-2">
+                You still have {earlyMealEndModal.minutesRemaining} minute{earlyMealEndModal.minutesRemaining === 1 ? "" : "s"} left.
+              </p>
+            </div>
+
+            <button
+              onClick={() => setEarlyMealEndModal(null)}
+              className="w-full mt-5 py-3 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-medium transition-all"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top bar: online status + offline queue badge */}
       <div className="flex items-center justify-between px-4 py-3">
         <div

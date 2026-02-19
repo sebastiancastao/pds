@@ -168,6 +168,11 @@ export async function PUT(
     }
 
     const body = await req.json();
+    const hasSalesFieldsInPayload =
+      Object.prototype.hasOwnProperty.call(body, "ticket_sales") ||
+      Object.prototype.hasOwnProperty.call(body, "tips") ||
+      Object.prototype.hasOwnProperty.call(body, "tax_rate_percent") ||
+      Object.prototype.hasOwnProperty.call(body, "commission_pool");
 
     // Core fields
     const event_name = body.event_name?.trim() || "";
@@ -303,6 +308,39 @@ export async function PUT(
         { error: "Event not found or you do not have permission to update it" },
         { status: 404 }
       );
+    }
+
+    // Keep event_payments.net_sales aligned with Sales tab values so payroll can consume it directly.
+    if (hasSalesFieldsInPayload) {
+      const updatedEvent = data[0] || {};
+      const savedTicketSales = Number(updatedEvent.ticket_sales || 0);
+      const savedTips = Number(updatedEvent.tips || 0);
+      const savedTotalSales = Math.max(savedTicketSales - savedTips, 0);
+      const savedTaxRatePercent = Number(updatedEvent.tax_rate_percent || 0);
+      const savedTax = savedTotalSales * (savedTaxRatePercent / 100);
+      const savedNetSales = Math.max(savedTotalSales - savedTax, 0);
+      const savedCommissionPoolPercent = Number(updatedEvent.commission_pool || 0);
+      const savedCommissionPoolDollars = savedNetSales * savedCommissionPoolPercent;
+
+      const { error: upsertEventPaymentErr } = await supabaseAdmin
+        .from("event_payments")
+        .upsert(
+          {
+            event_id: eventId,
+            net_sales: Number(savedNetSales.toFixed(2)),
+            total_tips: Number(savedTips.toFixed(2)),
+            commission_pool_percent: savedCommissionPoolPercent,
+            commission_pool_dollars: Number(savedCommissionPoolDollars.toFixed(2)),
+            created_by: user.id,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "event_id", ignoreDuplicates: false }
+        );
+
+      if (upsertEventPaymentErr) {
+        console.error("Event payments upsert error:", upsertEventPaymentErr);
+        return NextResponse.json({ error: upsertEventPaymentErr.message }, { status: 500 });
+      }
     }
 
     // Upsert merchandise payload if provided

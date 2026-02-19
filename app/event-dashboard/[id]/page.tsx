@@ -168,7 +168,7 @@ export default function EventDashboardPage() {
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
   const [stateRatesData, setStateRatesData] = useState<StateRateData[]>([]); // Fetched rates from API
   const [tips, setTips] = useState<string>("");
-  // Manual tax amount for Sales tab (no auto rate calc)
+  // Manual tax amount shown in Sales tab; persisted as an equivalent tax_rate_percent.
   const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
 
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
@@ -639,6 +639,14 @@ export default function EventDashboardPage() {
         console.debug('[SALES-DEBUG] Event state detected:', eventData.state);
         console.debug('[SALES-DEBUG] Using event tax_rate_percent:', eventData.tax_rate_percent);
         setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
+
+        // Keep Tax Amount input aligned with persisted event tax rate so Sales and HR payroll match.
+        const initialTicketSales = Number(eventData.ticket_sales || 0);
+        const initialTips = Number((eventData as any).tips || 0);
+        const initialTotalSales = Math.max(initialTicketSales - initialTips, 0);
+        const initialTaxRate = Number(eventData.tax_rate_percent ?? 0);
+        const initialTaxAmount = Math.max(initialTotalSales * (initialTaxRate / 100), 0);
+        setManualTaxAmount(initialTaxAmount > 0 ? initialTaxAmount.toFixed(2) : "");
 
         // Load merchandise breakdown if provided
         const m = data.merchandise || null;
@@ -1737,12 +1745,21 @@ export default function EventDashboardPage() {
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
+      const grossCollected = Number(ticketSales) || 0;
+      const tipsNum = Number(tips) || 0;
+      const totalSales = Math.max(grossCollected - tipsNum, 0);
+      const manualTaxInput = manualTaxAmount.trim();
+      const taxFromRate = Math.max(totalSales * ((Number(stateTaxRate) || 0) / 100), 0);
+      const taxAmountForSave = manualTaxInput === ""
+        ? taxFromRate
+        : Math.max(Number(manualTaxInput) || 0, 0);
+      const taxRatePercentFromManual = totalSales > 0 ? (taxAmountForSave / totalSales) * 100 : 0;
       const payload = {
         ...event,
         ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
         ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
         commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
-        tax_rate_percent: stateTaxRate || 0,
+        tax_rate_percent: Number(taxRatePercentFromManual.toFixed(6)),
         tips: tips !== "" ? Number(tips) : null,
       };
       try { console.debug('[SALES-DEBUG] handleSaveSales payload:', payload); } catch {}
@@ -1761,6 +1778,8 @@ export default function EventDashboardPage() {
       if (res.ok) {
         setMessage("Sales data updated successfully");
         setEvent(data.event);
+        setStateTaxRate(taxRatePercentFromManual);
+        setTaxRate(taxRatePercentFromManual.toString());
       } else {
         try { console.warn('[SALES-DEBUG] handleSaveSales server error:', data); } catch {}
         setMessage(data.error || "Failed to update sales data");
@@ -1830,10 +1849,14 @@ export default function EventDashboardPage() {
 
     const grossCollected = Number(ticketSales) || 0; // total collected
     const tipsNum = Number(tips) || 0;
-    const taxPct = stateTaxRate; // kept for reference/debug; not used for tax amount
+    const taxPct = Number(stateTaxRate) || 0;
 
     const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected - Tips
-    const tax = Math.max(Number(manualTaxAmount) || 0, 0);
+    const manualTaxInput = manualTaxAmount.trim();
+    const taxFromRate = Math.max(totalSales * (taxPct / 100), 0);
+    const tax = manualTaxInput === ""
+      ? taxFromRate
+      : Math.max(Number(manualTaxInput) || 0, 0);
     const netSales = Math.max(totalSales - tax, 0);
 
     const artistShare = netSales * (event.artist_share_percent / 100);
@@ -2844,7 +2867,7 @@ export default function EventDashboardPage() {
                       </div>
 
                       <div className="flex justify-between items-center pt-2">
-                        <span className="text-lg font-bold text-gray-900">= Net Sales</span>
+                        <span className="text-lg font-bold text-gray-900">= Adjusted Gross Amount</span>
                         <span className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent">${shares.netSales.toFixed(2)}</span>
                       </div>
                     </div>
