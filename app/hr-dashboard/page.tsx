@@ -1044,8 +1044,8 @@ function HRDashboardContent() {
             const other = Number(p.adjustmentAmount || 0);
             const totalFinalCommissionForLoadedRate =
               other !== 0 ? (totalFinalCommissionAmt + other) : totalFinalCommissionAmt;
-            const finalLoadedRate = hoursInDecimal > 0
-              ? (totalFinalCommissionForLoadedRate / hoursInDecimal)
+            const finalLoadedRate = hours > 0
+              ? (totalFinalCommissionForLoadedRate / hours)
               : 0;
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
