@@ -93,23 +93,30 @@ type TeamVendorOption = {
   };
 };
 
-const getTeamMemberSortKey = (member: any): string => {
+const getTeamMemberSortFields = (member: any): {
+  lastKey: string;
+  firstKey: string;
+  emailKey: string;
+  idKey: string;
+} => {
   const profile = member?.users?.profiles;
   const firstName = (profile?.first_name || "").toString().trim();
   const lastName = (profile?.last_name || "").toString().trim();
-  const fullName = `${firstName} ${lastName}`.trim();
-  if (fullName) return fullName;
-
   const email = (member?.users?.email || "").toString().trim();
-  if (email) return email;
-
-  return (
+  const id = (
     member?.users?.id ||
     member?.user_id ||
     member?.vendor_id ||
     member?.id ||
     ""
   ).toString();
+
+  return {
+    lastKey: (lastName || firstName || email || id).toLowerCase(),
+    firstKey: (firstName || email || id).toLowerCase(),
+    emailKey: email.toLowerCase(),
+    idKey: id.toLowerCase(),
+  };
 };
 
 export default function EventDashboardPage() {
@@ -240,14 +247,31 @@ export default function EventDashboardPage() {
 
   const sortedTeamMembers = useMemo(() => {
     return [...(teamMembers || [])].sort((a: any, b: any) => {
-      const aName = getTeamMemberSortKey(a);
-      const bName = getTeamMemberSortKey(b);
-      const byName = aName.localeCompare(bName, undefined, { sensitivity: "base", numeric: true });
-      if (byName !== 0) return byName;
+      const aSort = getTeamMemberSortFields(a);
+      const bSort = getTeamMemberSortFields(b);
 
-      const aId = (a?.users?.id || a?.user_id || a?.vendor_id || a?.id || "").toString();
-      const bId = (b?.users?.id || b?.user_id || b?.vendor_id || b?.id || "").toString();
-      return aId.localeCompare(bId, undefined, { sensitivity: "base", numeric: true });
+      const byLast = aSort.lastKey.localeCompare(bSort.lastKey, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+      if (byLast !== 0) return byLast;
+
+      const byFirst = aSort.firstKey.localeCompare(bSort.firstKey, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+      if (byFirst !== 0) return byFirst;
+
+      const byEmail = aSort.emailKey.localeCompare(bSort.emailKey, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
+      if (byEmail !== 0) return byEmail;
+
+      return aSort.idKey.localeCompare(bSort.idKey, undefined, {
+        sensitivity: "base",
+        numeric: true,
+      });
     });
   }, [teamMembers]);
 
@@ -1160,11 +1184,10 @@ export default function EventDashboardPage() {
 
       for (const loc of eventLocations) {
         const assignedIds = locationAssignments[loc.id] || [];
-        const assignedMembers = assignedIds
-          .map((assignedId) =>
-            teamMembers.find((member: any) => getTeamMemberId(member) === assignedId)
-          )
-          .filter(Boolean);
+        const assignedIdSet = new Set(assignedIds);
+        const assignedMembers = sortedTeamMembers.filter((member: any) =>
+          assignedIdSet.has(getTeamMemberId(member))
+        );
 
         ensureSpace(44);
         drawLine(`Station: ${loc.name}`, boldFont, 12, rgb(0.1, 0.1, 0.1));
@@ -3698,11 +3721,10 @@ export default function EventDashboardPage() {
                     const assignedIds = locationAssignments[loc.id] || [];
                     const isEditing = !!editingLocationIds[loc.id];
                     const selectedIds = locationAssignmentDrafts[loc.id] || [];
-                    const assignedMembers = assignedIds
-                      .map((assignedId) =>
-                        teamMembers.find((member: any) => getTeamMemberId(member) === assignedId)
-                      )
-                      .filter(Boolean);
+                    const assignedIdSet = new Set(assignedIds);
+                    const assignedMembers = sortedTeamMembers.filter((member: any) =>
+                      assignedIdSet.has(getTeamMemberId(member))
+                    );
 
                     return (
                       <div key={loc.id} className="bg-white border rounded-lg p-4">
@@ -3773,7 +3795,7 @@ export default function EventDashboardPage() {
                         ) : (
                           <div className="space-y-4">
                             <div className="border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
-                              {teamMembers.map((member: any) => {
+                              {sortedTeamMembers.map((member: any) => {
                                 const memberId = getTeamMemberId(member);
                                 if (!memberId) return null;
 

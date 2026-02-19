@@ -182,10 +182,19 @@ function HRDashboardContent() {
       const bLast = (b?.lastName || "").toString().trim();
       const aEmail = (a?.email || "").toString().trim();
       const bEmail = (b?.email || "").toString().trim();
-      // Match visible UI name order: sort by "First Last" from A->Z per event.
-      const aKey = `${aFirst} ${aLast}`.trim() || `${aLast} ${aFirst}`.trim() || aEmail;
-      const bKey = `${bFirst} ${bLast}`.trim() || `${bLast} ${bFirst}`.trim() || bEmail;
-      return aKey.localeCompare(bKey, undefined, { sensitivity: "base" });
+
+      // Payroll should sort by last name A->Z, then first name.
+      const aLastKey = aLast || aFirst || aEmail;
+      const bLastKey = bLast || bFirst || bEmail;
+      const lastNameCompare = aLastKey.localeCompare(bLastKey, undefined, { sensitivity: "base" });
+      if (lastNameCompare !== 0) return lastNameCompare;
+
+      const aFirstKey = aFirst || aEmail;
+      const bFirstKey = bFirst || bEmail;
+      const firstNameCompare = aFirstKey.localeCompare(bFirstKey, undefined, { sensitivity: "base" });
+      if (firstNameCompare !== 0) return firstNameCompare;
+
+      return aEmail.localeCompare(bEmail, undefined, { sensitivity: "base" });
     });
   };
 
