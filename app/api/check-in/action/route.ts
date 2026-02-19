@@ -45,15 +45,6 @@ async function getUserDivision(userId: string) {
 }
 
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
-const MIN_MEAL_BREAK_MS = 30 * 60 * 1000;
-
-function getActionTimestampMs(offlineTimestamp: unknown): number {
-  if (typeof offlineTimestamp === "string") {
-    const parsed = Date.parse(offlineTimestamp);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return Date.now();
-}
 
 /**
  * POST /api/check-in/action
@@ -175,24 +166,6 @@ export async function POST(req: NextRequest) {
       if (lastAction !== "meal_start") {
         return jsonError("Worker is not on a meal break", 409);
       }
-
-      const mealStartedAtMs = Date.parse(String(lastEntry?.timestamp || ""));
-      if (!Number.isNaN(mealStartedAtMs)) {
-        const actionTimestampMs = getActionTimestampMs(offlineTimestamp);
-        const mealEndsAtMs = mealStartedAtMs + MIN_MEAL_BREAK_MS;
-        if (actionTimestampMs < mealEndsAtMs) {
-          const remainingMs = mealEndsAtMs - actionTimestampMs;
-          return NextResponse.json(
-            {
-              error: "Meal break must be at least 30 minutes before ending.",
-              code: "MEAL_MINIMUM_NOT_MET",
-              mealEndsAt: new Date(mealEndsAtMs).toISOString(),
-              minutesRemaining: Math.max(1, Math.ceil(remainingMs / 60_000)),
-            },
-            { status: 409 }
-          );
-        }
-      }
     }
 
     // Insert the time entry
@@ -275,21 +248,12 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const responseBody: Record<string, unknown> = {
+    return NextResponse.json({
       success: true,
       action,
       timestamp: data.timestamp,
       entryId: data.id,
-    };
-
-    if (action === "meal_start") {
-      const mealStartedAtMs = Date.parse(String(data.timestamp || ""));
-      if (!Number.isNaN(mealStartedAtMs)) {
-        responseBody.mealEndsAt = new Date(mealStartedAtMs + MIN_MEAL_BREAK_MS).toISOString();
-      }
-    }
-
-    return NextResponse.json(responseBody, { status: 201 });
+    }, { status: 201 });
   } catch (err) {
     console.error("Error performing check-in action:", err);
     return jsonError("Internal server error", 500);
