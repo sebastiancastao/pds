@@ -248,6 +248,9 @@ export default function EventDashboardPage() {
   const [sendingLocationEmails, setSendingLocationEmails] = useState(false);
   const [editingLocationIds, setEditingLocationIds] = useState<Record<string, boolean>>({});
   const [locationAssignmentDrafts, setLocationAssignmentDrafts] = useState<Record<string, string[]>>({});
+  const [invitingLocationVendorIds, setInvitingLocationVendorIds] = useState<Set<string>>(new Set());
+  const [invitingAllLocationVendors, setInvitingAllLocationVendors] = useState(false);
+  const [sendingLocationInviteRequests, setSendingLocationInviteRequests] = useState(false);
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
@@ -454,6 +457,23 @@ export default function EventDashboardPage() {
     () => new Map(locationAssignableMembers.map((member) => [member.id, member])),
     [locationAssignableMembers]
   );
+
+  const savedAssignedUninvitedLocationVendorIds = useMemo(() => {
+    const assignedUninvitedIds = new Set<string>();
+
+    Object.values(locationAssignments).forEach((assignedIds) => {
+      (assignedIds || []).forEach((idValue) => {
+        const id = String(idValue || "").trim();
+        if (!id) return;
+        const member = locationAssignableMemberById.get(id);
+        if (member && !member.isExistingMember) {
+          assignedUninvitedIds.add(id);
+        }
+      });
+    });
+
+    return Array.from(assignedUninvitedIds);
+  }, [locationAssignments, locationAssignableMemberById]);
 
   const filteredTeamMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
     try {
@@ -1370,6 +1390,121 @@ export default function EventDashboardPage() {
         [locationId]: Array.from(current),
       };
     });
+  };
+
+  const inviteVendorsFromLocationSelection = async (vendorIds: string[]) => {
+    if (!eventId) return;
+    if (sendingLocationInviteRequests) {
+      return;
+    }
+
+    const uniqueVendorIds = Array.from(
+      new Set(vendorIds.map((id) => String(id || "").trim()).filter(Boolean))
+    );
+    if (uniqueVendorIds.length === 0) {
+      setMessage("No vendors selected to invite.");
+      return;
+    }
+
+    const BATCH_SIZE = 20;
+    const BATCH_DELAY_MS = 300;
+
+    setMessage("");
+    setSendingLocationInviteRequests(true);
+    try {
+      const token = await getSessionToken();
+
+      for (let index = 0; index < uniqueVendorIds.length; index += BATCH_SIZE) {
+        const batch = uniqueVendorIds.slice(index, index + BATCH_SIZE);
+        const res = await fetch(`/api/events/${eventId}/team`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ vendorIds: batch }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data?.error || "Failed to send invitations");
+        }
+
+        if (index + BATCH_SIZE < uniqueVendorIds.length) {
+          await new Promise((resolve) => setTimeout(resolve, BATCH_DELAY_MS));
+        }
+      }
+
+      setMessage(
+        `Invitations sent for ${uniqueVendorIds.length} vendor${uniqueVendorIds.length === 1 ? "" : "s"}.`
+      );
+      await loadLocationCreateTeamModalData();
+      await loadTeam(true);
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to send invitations");
+    } finally {
+      setSendingLocationInviteRequests(false);
+    }
+  };
+
+  const handleInviteSingleLocationVendor = async (vendorId: string) => {
+    if (!canSendTeamInvites) {
+      setMessage("You do not have permission to send team invitations.");
+      return;
+    }
+    if (sendingLocationInviteRequests) return;
+
+    const normalizedVendorId = String(vendorId || "").trim();
+    if (!normalizedVendorId) return;
+
+    setInvitingLocationVendorIds((prev) => {
+      const next = new Set(prev);
+      next.add(normalizedVendorId);
+      return next;
+    });
+
+    try {
+      await inviteVendorsFromLocationSelection([normalizedVendorId]);
+    } finally {
+      setInvitingLocationVendorIds((prev) => {
+        const next = new Set(prev);
+        next.delete(normalizedVendorId);
+        return next;
+      });
+    }
+  };
+
+  const handleInviteAllAssignedLocationVendors = async () => {
+    if (!canSendTeamInvites) {
+      setMessage("You do not have permission to send team invitations.");
+      return;
+    }
+    if (sendingLocationInviteRequests) return;
+
+    const uninvitedSelectedIds = savedAssignedUninvitedLocationVendorIds;
+
+    if (uninvitedSelectedIds.length === 0) {
+      setMessage("No saved uninvited assigned vendors to invite.");
+      return;
+    }
+
+    setInvitingAllLocationVendors(true);
+    setInvitingLocationVendorIds((prev) => {
+      const next = new Set(prev);
+      uninvitedSelectedIds.forEach((id) => next.add(String(id)));
+      return next;
+    });
+
+    try {
+      await inviteVendorsFromLocationSelection(uninvitedSelectedIds);
+    } finally {
+      setInvitingAllLocationVendors(false);
+      setInvitingLocationVendorIds((prev) => {
+        const next = new Set(prev);
+        uninvitedSelectedIds.forEach((id) => next.delete(String(id)));
+        return next;
+      });
+    }
   };
 
   const saveLocationAssignments = async (locationId: string) => {
@@ -4037,6 +4172,23 @@ export default function EventDashboardPage() {
                       Add Vendors
                     </button>
                   )}
+                  {canSendTeamInvites && (
+                    <button
+                      onClick={() => {
+                        void handleInviteAllAssignedLocationVendors();
+                      }}
+                      disabled={
+                        invitingAllLocationVendors ||
+                        sendingLocationInviteRequests ||
+                        savedAssignedUninvitedLocationVendorIds.length === 0
+                      }
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      {invitingAllLocationVendors
+                        ? "Inviting..."
+                        : `Invite Assigned (${savedAssignedUninvitedLocationVendorIds.length})`}
+                    </button>
+                  )}
                   <button
                     onClick={handleSendLocationAssignments}
                     disabled={
@@ -4184,6 +4336,7 @@ export default function EventDashboardPage() {
                                   const lastName = profile?.last_name || "";
                                   const fullName = `${firstName} ${lastName}`.trim();
                                   const email = member?.email || "No email";
+                                  const isUninvited = !member?.isExistingMember;
 
                                   return (
                                     <div
@@ -4191,8 +4344,33 @@ export default function EventDashboardPage() {
                                       className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0"
                                     >
                                       <div className="min-w-0">
-                                        <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                        <div className="flex items-center gap-2">
+                                          <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {isUninvited && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                              Not Invited
+                                            </span>
+                                          )}
+                                        </div>
                                         <p className="text-xs text-gray-500 truncate">{email}</p>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        {isUninvited && canSendTeamInvites && (
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              void handleInviteSingleLocationVendor(memberId);
+                                            }}
+                                            disabled={
+                                              invitingLocationVendorIds.has(memberId) ||
+                                              invitingAllLocationVendors ||
+                                              sendingLocationInviteRequests
+                                            }
+                                            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold py-1.5 px-3 rounded transition disabled:bg-gray-400"
+                                          >
+                                            {invitingLocationVendorIds.has(memberId) ? "Inviting..." : "Invite"}
+                                          </button>
+                                        )}
                                       </div>
                                     </div>
                                   );
@@ -4214,6 +4392,10 @@ export default function EventDashboardPage() {
                           </div>
                         ) : (
                           <div className="space-y-4">
+                            <p className="text-xs text-gray-500">
+                              Select vendors for this location, then save assignments.
+                            </p>
+
                             {locationAssignableMembers.length === 0 ? (
                               <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4 space-y-3">
                                 <p>No available users found for this event date.</p>
@@ -4248,9 +4430,13 @@ export default function EventDashboardPage() {
                                   if (assignedToOtherLocation) return null;
 
                                   return (
-                                    <label
+                                    <div
                                       key={`${loc.id}-${memberId}`}
                                       className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer"
+                                      onClick={() => {
+                                        if (!canManageLocations) return;
+                                        toggleLocationAssignmentDraft(loc.id, memberId);
+                                      }}
                                     >
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2">
@@ -4263,14 +4449,17 @@ export default function EventDashboardPage() {
                                         </div>
                                         <p className="text-xs text-gray-500 truncate">{email}</p>
                                       </div>
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        disabled={!canManageLocations}
-                                        onChange={() => toggleLocationAssignmentDraft(loc.id, memberId)}
-                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                      />
-                                    </label>
+                                      <div className="flex items-center gap-2">
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          disabled={!canManageLocations}
+                                          onClick={(e) => e.stopPropagation()}
+                                          onChange={() => toggleLocationAssignmentDraft(loc.id, memberId)}
+                                          className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                        />
+                                      </div>
+                                    </div>
                                   );
                                 })}
                               </div>
