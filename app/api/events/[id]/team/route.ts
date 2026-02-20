@@ -77,16 +77,78 @@ export async function POST(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    // Allow event creator, exec, or manager roles
+    const { data: requester, error: requesterError } = await supabaseAdmin
+      .from('users')
+      .select('role, email')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (requesterError) {
+      return NextResponse.json({ error: requesterError.message }, { status: 500 });
+    }
+
+    const requesterRole = String(requester?.role || '').toLowerCase().trim();
+    const requesterEmail = String(requester?.email || '').trim().toLowerCase();
+
+    // Allow event creator, exec, manager, or supervisor roles
     if (event.created_by !== user.id) {
-      const { data: requester } = await supabaseAdmin
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .maybeSingle();
-      const role = String(requester?.role || '').toLowerCase().trim();
-      if (role !== 'exec' && role !== 'manager' && role !== 'supervisor') {
+      if (requesterRole !== 'exec' && requesterRole !== 'manager' && requesterRole !== 'supervisor' && requesterRole !== 'supervisor2') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
+      }
+    }
+
+    let managerCcEmail: string | null = null;
+    const requesterIsSupervisor = requesterRole === 'supervisor' || requesterRole === 'supervisor2';
+
+    if (!shouldAutoConfirm && requesterIsSupervisor) {
+      const managerCandidateIds: string[] = [];
+
+      const eventCreatorId = String(event.created_by || '').trim();
+      if (eventCreatorId && eventCreatorId !== user.id) {
+        managerCandidateIds.push(eventCreatorId);
+      }
+
+      const { data: managerLinks, error: managerLinksError } = await supabaseAdmin
+        .from('manager_team_members')
+        .select('manager_id')
+        .eq('member_id', user.id)
+        .eq('is_active', true);
+
+      if (managerLinksError && !isMissingRelationError(managerLinksError)) {
+        console.error('Error loading manager links for supervisor invite CC:', managerLinksError);
+      }
+
+      for (const link of managerLinks || []) {
+        const managerId = String((link as any)?.manager_id || '').trim();
+        if (managerId && managerId !== user.id && !managerCandidateIds.includes(managerId)) {
+          managerCandidateIds.push(managerId);
+        }
+      }
+
+      if (managerCandidateIds.length > 0) {
+        const { data: managerUsers, error: managerUsersError } = await supabaseAdmin
+          .from('users')
+          .select('id, email, role')
+          .in('id', managerCandidateIds);
+
+        if (managerUsersError) {
+          console.error('Error loading manager emails for supervisor invite CC:', managerUsersError);
+        } else {
+          const normalizedManagers = (managerUsers || []).map((row: any) => ({
+            id: String(row?.id || '').trim(),
+            role: String(row?.role || '').toLowerCase().trim(),
+            email: String(row?.email || '').trim().toLowerCase(),
+          }));
+
+          const byEventCreator = normalizedManagers.find((row) => row.id === eventCreatorId && row.email);
+          const byManagerRole = normalizedManagers.find((row) => row.role === 'manager' && row.email);
+          const fallback = normalizedManagers.find((row) => row.email);
+          const selected = byEventCreator || byManagerRole || fallback;
+
+          if (selected?.email && selected.email !== requesterEmail) {
+            managerCcEmail = selected.email;
+          }
+        }
       }
     }
 
@@ -258,6 +320,10 @@ export async function POST(
       // Retry on 429 responses from provider
       try {
         let emailResult: any = null;
+        const vendorEmailNormalized = String(vendor.email || '').trim().toLowerCase();
+        const ccForVendor = managerCcEmail && managerCcEmail !== vendorEmailNormalized
+          ? managerCcEmail
+          : undefined;
         for (let attempt = 1; attempt <= 3; attempt++) {
           emailResult = await sendTeamConfirmationEmail({
             email: vendor.email,
@@ -267,7 +333,8 @@ export async function POST(
             eventDate: eventDate,
             managerName: managerName,
             managerPhone: managerPhone,
-            confirmationToken: teamMember.confirmation_token
+            confirmationToken: teamMember.confirmation_token,
+            cc: ccForVendor,
           });
 
           if (emailResult?.success) break;

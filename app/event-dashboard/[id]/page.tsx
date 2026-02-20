@@ -86,6 +86,8 @@ type TeamVendorOption = {
   role?: string | null;
   division?: string | null;
   distance?: number | null;
+  status?: string | null;
+  isExistingMember?: boolean;
   profiles?: {
     first_name?: string | null;
     last_name?: string | null;
@@ -168,6 +170,12 @@ export default function EventDashboardPage() {
     event?.created_by &&
     currentUserId === event.created_by
   );
+  const canSendTeamInvites =
+    isEventCreator ||
+    userRole === "exec" ||
+    userRole === "manager" ||
+    userRole === "supervisor" ||
+    userRole === "supervisor2";
   const canUninviteTeamMember =
     canManageTeam ||
     userRole === "admin" ||
@@ -209,6 +217,14 @@ export default function EventDashboardPage() {
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [teamSearch, setTeamSearch] = useState<string>("");
   const [showAddVendorModal, setShowAddVendorModal] = useState(false);
+  const [showLocationCreateTeamModal, setShowLocationCreateTeamModal] = useState(false);
+  const [loadingLocationTeamVendors, setLoadingLocationTeamVendors] = useState(false);
+  const [locationTeamMessage, setLocationTeamMessage] = useState("");
+  const [locationTeamSearchQuery, setLocationTeamSearchQuery] = useState("");
+  const [locationTeamVendors, setLocationTeamVendors] = useState<TeamVendorOption[]>([]);
+  const [selectedLocationTeamMembers, setSelectedLocationTeamMembers] = useState<Set<string>>(new Set());
+  const [savingLocationTeam, setSavingLocationTeam] = useState(false);
+  const [resendingLocationTeamConfirmations, setResendingLocationTeamConfirmations] = useState(false);
   const [showUninvitedHistoryModal, setShowUninvitedHistoryModal] = useState(false);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
@@ -333,6 +349,111 @@ export default function EventDashboardPage() {
       );
     });
   }, [addVendorOptions, addVendorSearch]);
+
+  const filteredLocationTeamVendors = useMemo(() => {
+    const query = locationTeamSearchQuery.trim().toLowerCase();
+    const sorted = [...locationTeamVendors].sort((a, b) => {
+      const aName = `${a.profiles?.first_name || ""} ${a.profiles?.last_name || ""}`.trim().toLowerCase();
+      const bName = `${b.profiles?.first_name || ""} ${b.profiles?.last_name || ""}`.trim().toLowerCase();
+      return aName.localeCompare(bName);
+    });
+
+    if (!query) return sorted;
+
+    return sorted.filter((vendor) => {
+      const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
+      const lastName = (vendor.profiles?.last_name || "").toString().toLowerCase();
+      const fullName = `${firstName} ${lastName}`.trim();
+      const email = (vendor.email || "").toString().toLowerCase();
+      const phone = (vendor.profiles?.phone || "").toString().toLowerCase();
+      const division = (vendor.division || "").toString().toLowerCase();
+      const status = (vendor.status || "").toString().replace(/_/g, " ").toLowerCase();
+
+      return (
+        fullName.includes(query) ||
+        email.includes(query) ||
+        phone.includes(query) ||
+        division.includes(query) ||
+        status.includes(query)
+      );
+    });
+  }, [locationTeamVendors, locationTeamSearchQuery]);
+
+  const allLocationAvailableVendorsInvited = useMemo(
+    () =>
+      locationTeamVendors.length > 0 &&
+      locationTeamVendors.every((vendor) => Boolean(vendor.isExistingMember)),
+    [locationTeamVendors]
+  );
+
+  const pendingLocationTeamInvitesCount = useMemo(
+    () =>
+      locationTeamVendors.filter((vendor) => {
+        const status = String(vendor.status || "").toLowerCase();
+        return Boolean(vendor.isExistingMember) && status !== "confirmed" && status !== "declined";
+      }).length,
+    [locationTeamVendors]
+  );
+
+  const locationAssignableMembers = useMemo(() => {
+    const byId = new Map<string, TeamVendorOption>();
+
+    for (const vendor of locationTeamVendors) {
+      const id = String(vendor?.id || "").trim();
+      if (!id) continue;
+      byId.set(id, vendor);
+    }
+
+    for (const member of sortedTeamMembers) {
+      const id = String(member?.vendor_id || member?.user_id || member?.users?.id || "").trim();
+      if (!id || byId.has(id)) continue;
+
+      byId.set(id, {
+        id,
+        email: String(member?.users?.email || ""),
+        division: String(member?.users?.division || ""),
+        distance: null,
+        status: String(member?.status || ""),
+        isExistingMember: true,
+        profiles: {
+          first_name: String(member?.users?.profiles?.first_name || ""),
+          last_name: String(member?.users?.profiles?.last_name || ""),
+          phone: String(member?.users?.profiles?.phone || ""),
+        },
+      });
+    }
+
+    Object.values(locationAssignments).forEach((ids) => {
+      (ids || []).forEach((idValue) => {
+        const id = String(idValue || "").trim();
+        if (!id || byId.has(id)) return;
+        byId.set(id, {
+          id,
+          email: "",
+          division: "",
+          distance: null,
+          status: null,
+          isExistingMember: false,
+          profiles: {
+            first_name: "Unknown",
+            last_name: "",
+            phone: "",
+          },
+        });
+      });
+    });
+
+    return Array.from(byId.values()).sort((a, b) => {
+      const aName = `${a.profiles?.first_name || ""} ${a.profiles?.last_name || ""}`.trim().toLowerCase();
+      const bName = `${b.profiles?.first_name || ""} ${b.profiles?.last_name || ""}`.trim().toLowerCase();
+      return aName.localeCompare(bName);
+    });
+  }, [locationTeamVendors, sortedTeamMembers, locationAssignments]);
+
+  const locationAssignableMemberById = useMemo(
+    () => new Map(locationAssignableMembers.map((member) => [member.id, member])),
+    [locationAssignableMembers]
+  );
 
   const filteredTeamMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
     try {
@@ -462,10 +583,16 @@ export default function EventDashboardPage() {
     if (activeTab === "locations") {
       const needsTeam = !teamLoaded;
       const needsLocations = !locationsLoaded;
-      if (!needsTeam && !needsLocations) return;
+      const needsAssignableUsers = locationTeamVendors.length === 0;
+      if (!needsTeam && !needsLocations && !needsAssignableUsers) return;
       (async () => {
         const promises: Promise<void>[] = [];
-        if (needsTeam) promises.push(loadTeam(true)); // Skip photos for locations tab
+        if (needsAssignableUsers) {
+          // Includes team + available vendors merge used by assignment UI.
+          promises.push(loadLocationCreateTeamModalData());
+        } else if (needsTeam) {
+          promises.push(loadTeam(true)); // Skip photos for locations tab
+        }
         if (needsLocations) promises.push(loadLocations());
         await Promise.all(promises);
       })();
@@ -740,6 +867,227 @@ export default function EventDashboardPage() {
     setShowUninvitedHistoryModal(false);
   };
 
+  const closeLocationCreateTeamModal = () => {
+    if (savingLocationTeam || resendingLocationTeamConfirmations) return;
+    setShowLocationCreateTeamModal(false);
+    setLocationTeamMessage("");
+    setLocationTeamSearchQuery("");
+    setLocationTeamVendors([]);
+    setSelectedLocationTeamMembers(new Set());
+  };
+
+  const loadLocationCreateTeamModalData = async () => {
+    if (!eventId) return;
+
+    setLoadingLocationTeamVendors(true);
+    try {
+      const token = await getSessionToken();
+      const [availableRes, teamRes] = await Promise.all([
+        fetch(`/api/events/${eventId}/available-vendors`, {
+          method: "GET",
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        }),
+        fetch(`/api/events/${eventId}/team`, {
+          method: "GET",
+          headers: {
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+        }),
+      ]);
+
+      let available: TeamVendorOption[] = [];
+      if (availableRes.ok) {
+        const availableData = await availableRes.json().catch(() => ({}));
+        available = Array.isArray(availableData?.vendors) ? availableData.vendors : [];
+      } else {
+        const availableError = await availableRes.json().catch(() => ({}));
+        setLocationTeamMessage(availableError?.error || "Failed to load available vendors");
+      }
+
+      let existingTeam: any[] = [];
+      if (teamRes.ok) {
+        const teamData = await teamRes.json().catch(() => ({}));
+        existingTeam = Array.isArray(teamData?.team) ? teamData.team : [];
+        setTeamMembers(existingTeam);
+        setUninvitedTeamMembers(Array.isArray(teamData?.uninvited_history) ? teamData.uninvited_history : []);
+        setTeamLoaded(true);
+      } else {
+        const teamError = await teamRes.json().catch(() => ({}));
+        setLocationTeamMessage((prev) =>
+          prev
+            ? prev
+            : (teamError?.error || "Failed to load current team")
+        );
+      }
+
+      const existingVendors: TeamVendorOption[] = existingTeam.map((member: any) => ({
+        id: String(member?.vendor_id || ""),
+        email: String(member?.users?.email || ""),
+        division: String(member?.users?.division || ""),
+        distance: null,
+        status: String(member?.status || ""),
+        isExistingMember: true,
+        profiles: {
+          first_name: String(member?.users?.profiles?.first_name || ""),
+          last_name: String(member?.users?.profiles?.last_name || ""),
+          phone: String(member?.users?.profiles?.phone || ""),
+        },
+      }));
+
+      const existingById = new Map<string, TeamVendorOption>(
+        existingVendors
+          .filter((vendor) => vendor.id.length > 0)
+          .map((vendor) => [vendor.id, vendor])
+      );
+
+      const merged = available.map((vendor) => {
+        const vendorId = String(vendor?.id || "");
+        const existing = existingById.get(vendorId);
+        if (!existing) {
+          return {
+            ...vendor,
+            isExistingMember: false,
+          };
+        }
+        return {
+          ...vendor,
+          status: existing.status,
+          isExistingMember: true,
+        };
+      });
+
+      const mergedIds = new Set(merged.map((vendor) => String(vendor.id || "")));
+      const missingExisting = existingVendors.filter(
+        (vendor) => vendor.id.length > 0 && !mergedIds.has(vendor.id)
+      );
+
+      setLocationTeamVendors([...merged, ...missingExisting]);
+
+      // Start with no new selections; existing invited members are displayed as read-only rows.
+      setSelectedLocationTeamMembers(new Set());
+    } catch (err: any) {
+      setLocationTeamMessage(err?.message || "Network error loading vendors");
+    } finally {
+      setLoadingLocationTeamVendors(false);
+    }
+  };
+
+  const openLocationCreateTeamModal = async () => {
+    if (!canSendTeamInvites) {
+      setMessage("You do not have permission to send team invitations.");
+      return;
+    }
+    setShowLocationCreateTeamModal(true);
+    setLocationTeamMessage("");
+    setLocationTeamSearchQuery("");
+    await loadLocationCreateTeamModalData();
+  };
+
+  const toggleLocationTeamMember = (id: string) => {
+    const next = new Set(selectedLocationTeamMembers);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedLocationTeamMembers(next);
+  };
+
+  const handleSelectAllLocationTeam = () => {
+    const visibleNewVendorIds = filteredLocationTeamVendors
+      .filter((vendor) => !vendor.isExistingMember)
+      .map((vendor) => vendor.id);
+
+    if (visibleNewVendorIds.length === 0) return;
+
+    const allVisibleNewSelected = visibleNewVendorIds.every((id) =>
+      selectedLocationTeamMembers.has(id)
+    );
+    const nextSelected = new Set(selectedLocationTeamMembers);
+
+    if (allVisibleNewSelected) {
+      visibleNewVendorIds.forEach((id) => nextSelected.delete(id));
+    } else {
+      visibleNewVendorIds.forEach((id) => nextSelected.add(id));
+    }
+
+    setSelectedLocationTeamMembers(nextSelected);
+  };
+
+  const handleCreateTeamFromLocations = async () => {
+    if (!eventId || selectedLocationTeamMembers.size === 0) return;
+
+    setSavingLocationTeam(true);
+    setLocationTeamMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ vendorIds: Array.from(selectedLocationTeamMembers) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to create team");
+      }
+
+      setLocationTeamMessage(data?.message || "Team invitations sent.");
+      await loadLocationCreateTeamModalData();
+      await loadTeam(true);
+    } catch (err: any) {
+      setLocationTeamMessage(err?.message || "Failed to create team");
+    } finally {
+      setSavingLocationTeam(false);
+    }
+  };
+
+  const handleResendLocationTeamConfirmations = async () => {
+    if (!eventId) return;
+
+    const invitedVendorIds = locationTeamVendors
+      .filter((vendor) => {
+        const status = String(vendor.status || "").toLowerCase();
+        return Boolean(vendor.isExistingMember) && status !== "confirmed" && status !== "declined";
+      })
+      .map((vendor) => vendor.id);
+
+    if (invitedVendorIds.length === 0) {
+      setLocationTeamMessage("No invited vendors are pending confirmation.");
+      return;
+    }
+
+    setResendingLocationTeamConfirmations(true);
+    setLocationTeamMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team/resend-confirmation`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ vendorIds: invitedVendorIds }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to resend confirmations");
+      }
+
+      setLocationTeamMessage(
+        data?.message ||
+        `Successfully resent confirmation to ${invitedVendorIds.length} invited vendor${invitedVendorIds.length !== 1 ? "s" : ""}.`
+      );
+      await loadLocationCreateTeamModalData();
+      await loadTeam(true);
+    } catch (err: any) {
+      setLocationTeamMessage(err?.message || "Failed to resend confirmations");
+    } finally {
+      setResendingLocationTeamConfirmations(false);
+    }
+  };
+
   const loadVendorsForImmediateTeamAdd = async () => {
     if (!event?.venue) {
       setAddVendorOptions([]);
@@ -985,7 +1333,13 @@ export default function EventDashboardPage() {
     }
   };
 
-  const startLocationAssignmentEdit = (locationId: string) => {
+  const startLocationAssignmentEdit = async (locationId: string) => {
+    if (!locationId) return;
+
+    if (locationTeamVendors.length === 0 && !loadingLocationTeamVendors) {
+      await loadLocationCreateTeamModalData();
+    }
+
     setEditingLocationIds((prev) => ({ ...prev, [locationId]: true }));
     setLocationAssignmentDrafts((prev) => ({
       ...prev,
@@ -3674,6 +4028,15 @@ export default function EventDashboardPage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {canSendTeamInvites && (
+                    <button
+                      onClick={openLocationCreateTeamModal}
+                      disabled={loadingLocationTeamVendors || savingLocationTeam}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Add Vendors
+                    </button>
+                  )}
                   <button
                     onClick={handleSendLocationAssignments}
                     disabled={
@@ -3767,10 +4130,23 @@ export default function EventDashboardPage() {
                     const assignedIds = locationAssignments[loc.id] || [];
                     const isEditing = !!editingLocationIds[loc.id];
                     const selectedIds = locationAssignmentDrafts[loc.id] || [];
-                    const assignedIdSet = new Set(assignedIds);
-                    const assignedMembers = sortedTeamMembers.filter((member: any) =>
-                      assignedIdSet.has(getTeamMemberId(member))
-                    );
+                    const assignedMembers = assignedIds.map((memberId) => {
+                      const existing = locationAssignableMemberById.get(memberId);
+                      if (existing) return existing;
+                      return {
+                        id: memberId,
+                        email: "",
+                        division: "",
+                        distance: null,
+                        status: null,
+                        isExistingMember: false,
+                        profiles: {
+                          first_name: "Unknown",
+                          last_name: "",
+                          phone: "",
+                        },
+                      } as TeamVendorOption;
+                    });
 
                     return (
                       <div key={loc.id} className="bg-white border rounded-lg p-4">
@@ -3801,13 +4177,13 @@ export default function EventDashboardPage() {
                               </div>
                             ) : (
                               <div className="border rounded-lg overflow-hidden">
-                                {assignedMembers.map((member: any) => {
-                                  const memberId = getTeamMemberId(member);
-                                  const profile = member?.users?.profiles;
+                                {assignedMembers.map((member) => {
+                                  const memberId = String(member?.id || "");
+                                  const profile = member?.profiles;
                                   const firstName = profile?.first_name || "Unknown";
                                   const lastName = profile?.last_name || "";
                                   const fullName = `${firstName} ${lastName}`.trim();
-                                  const email = member?.users?.email || "No email";
+                                  const email = member?.email || "No email";
 
                                   return (
                                     <div
@@ -3826,59 +4202,79 @@ export default function EventDashboardPage() {
 
                             <div className="flex justify-end">
                               <button
-                                onClick={() => startLocationAssignmentEdit(loc.id)}
-                                disabled={!canManageLocations || teamMembers.length === 0}
+                                onClick={() => {
+                                  void startLocationAssignmentEdit(loc.id);
+                                }}
+                                disabled={!canManageLocations}
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                               >
                                 Add Vendors
                               </button>
                             </div>
                           </div>
-                        ) : teamMembers.length === 0 ? (
-                          <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4">
-                            No team members available. Add team members first, then assign them here.
-                          </div>
                         ) : (
                           <div className="space-y-4">
-                            <div className="border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
-                              {sortedTeamMembers.map((member: any) => {
-                                const memberId = getTeamMemberId(member);
-                                if (!memberId) return null;
+                            {locationAssignableMembers.length === 0 ? (
+                              <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4 space-y-3">
+                                <p>No available users found for this event date.</p>
+                                <button
+                                  onClick={() => {
+                                    void loadLocationCreateTeamModalData();
+                                  }}
+                                  disabled={loadingLocationTeamVendors}
+                                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                                >
+                                  {loadingLocationTeamVendors ? "Loading..." : "Load Available Users"}
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
+                                {locationAssignableMembers.map((member) => {
+                                  const memberId = String(member?.id || "");
+                                  if (!memberId) return null;
 
-                                const assignedToOtherLocation = eventLocations
-                                  .filter((locationItem) => locationItem.id !== loc.id)
-                                  .some((locationItem) =>
-                                    (locationAssignments[locationItem.id] || []).includes(memberId)
+                                  const profile = member?.profiles;
+                                  const firstName = profile?.first_name || "Unknown";
+                                  const lastName = profile?.last_name || "";
+                                  const fullName = `${firstName} ${lastName}`.trim();
+                                  const email = member?.email || "No email";
+                                  const checked = selectedIds.includes(memberId);
+
+                                  const assignedToOtherLocation = eventLocations
+                                    .filter((locationItem) => locationItem.id !== loc.id)
+                                    .some((locationItem) =>
+                                      (locationAssignments[locationItem.id] || []).includes(memberId)
+                                    );
+                                  if (assignedToOtherLocation) return null;
+
+                                  return (
+                                    <label
+                                      key={`${loc.id}-${memberId}`}
+                                      className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer"
+                                    >
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                          <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {!member.isExistingMember && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
+                                              Not Invited
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-xs text-gray-500 truncate">{email}</p>
+                                      </div>
+                                      <input
+                                        type="checkbox"
+                                        checked={checked}
+                                        disabled={!canManageLocations}
+                                        onChange={() => toggleLocationAssignmentDraft(loc.id, memberId)}
+                                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                      />
+                                    </label>
                                   );
-                                if (assignedToOtherLocation) return null;
-
-                                const profile = member?.users?.profiles;
-                                const firstName = profile?.first_name || "Unknown";
-                                const lastName = profile?.last_name || "";
-                                const fullName = `${firstName} ${lastName}`.trim();
-                                const email = member?.users?.email || "No email";
-                                const checked = selectedIds.includes(memberId);
-
-                                return (
-                                  <label
-                                    key={`${loc.id}-${memberId}`}
-                                    className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0 hover:bg-gray-50 cursor-pointer"
-                                  >
-                                    <div className="min-w-0">
-                                      <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
-                                      <p className="text-xs text-gray-500 truncate">{email}</p>
-                                    </div>
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      disabled={!canManageLocations}
-                                      onChange={() => toggleLocationAssignmentDraft(loc.id, memberId)}
-                                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                    />
-                                  </label>
-                                );
-                              })}
-                            </div>
+                                })}
+                              </div>
+                            )}
 
                             <div className="flex justify-end gap-2">
                               <button
@@ -3958,9 +4354,6 @@ export default function EventDashboardPage() {
               Clock In
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Clock Out
-            </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
               Meal 1 Start
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
@@ -3971,6 +4364,9 @@ export default function EventDashboardPage() {
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
               Meal 2 End
+            </th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+              Clock Out
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
               Hours
@@ -4059,16 +4455,6 @@ export default function EventDashboardPage() {
                   <td className="px-3 py-3">
                     <input
                       type="time"
-                      value={isEditing ? draft.lastOut : lastClockOut}
-                      onChange={(e) => updateTimesheetDraft(uid, "lastOut", e.target.value)}
-                      readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
-                  </td>
-
-                  <td className="px-3 py-3">
-                    <input
-                      type="time"
                       value={isEditing ? draft.firstMealStart : firstMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
                       placeholder="--:--"
@@ -4105,6 +4491,16 @@ export default function EventDashboardPage() {
                       value={isEditing ? draft.secondMealEnd : secondMealEnd}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
                       placeholder="--:--"
+                      readOnly={!isEditing}
+                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                    />
+                  </td>
+
+                  <td className="px-3 py-3">
+                    <input
+                      type="time"
+                      value={isEditing ? draft.lastOut : lastClockOut}
+                      onChange={(e) => updateTimesheetDraft(uid, "lastOut", e.target.value)}
                       readOnly={!isEditing}
                       className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
@@ -4826,6 +5222,212 @@ export default function EventDashboardPage() {
         </div>
       </div>
       </div>
+
+      {showLocationCreateTeamModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={closeLocationCreateTeamModal}
+        >
+          <div
+            className="w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-gray-200 max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">Add Vendors</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  {event?.event_name || "Selected Event"} {event?.event_date ? `- ${event.event_date}` : ""}
+                </p>
+              </div>
+              <button
+                onClick={closeLocationCreateTeamModal}
+                disabled={savingLocationTeam || resendingLocationTeamConfirmations}
+                className="text-gray-500 hover:text-gray-700 disabled:text-gray-300"
+                aria-label="Close add vendors modal"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-4 overflow-y-auto space-y-4">
+              {locationTeamMessage && (
+                <div
+                  className={`rounded-lg px-4 py-3 text-sm border ${
+                    locationTeamMessage.toLowerCase().includes("success") ||
+                    locationTeamMessage.toLowerCase().includes("awaiting confirmation") ||
+                    locationTeamMessage.toLowerCase().includes("resent")
+                      ? "bg-green-50 border-green-200 text-green-800"
+                      : "bg-red-50 border-red-200 text-red-800"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <span>{locationTeamMessage}</span>
+                    <button
+                      onClick={() => setLocationTeamMessage("")}
+                      className="text-gray-500 hover:text-gray-700"
+                      aria-label="Close team message"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="search"
+                  value={locationTeamSearchQuery}
+                  onChange={(e) => setLocationTeamSearchQuery(e.target.value)}
+                  placeholder="Search vendors by name, email, phone, division, or status"
+                  className="flex-1 px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                  disabled={loadingLocationTeamVendors}
+                />
+                <button
+                  onClick={loadLocationCreateTeamModalData}
+                  disabled={loadingLocationTeamVendors || savingLocationTeam || resendingLocationTeamConfirmations}
+                  className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
+                >
+                  {loadingLocationTeamVendors ? "Loading..." : "Reload"}
+                </button>
+              </div>
+
+              {loadingLocationTeamVendors ? (
+                <div className="py-10 text-center text-gray-600">
+                  <div className="inline-block w-7 h-7 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-sm">Loading available users for this date...</p>
+                </div>
+              ) : locationTeamVendors.length === 0 ? (
+                <div className="py-10 text-center bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-sm text-gray-600">No available users found for this event date.</p>
+                </div>
+              ) : (
+                <>
+                  <div className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+                    <span className="font-semibold">{locationTeamVendors.length}</span>{" "}
+                    vendor{locationTeamVendors.length !== 1 ? "s" : ""} available on this date.
+                  </div>
+
+                  <div className="flex items-center justify-between border-b border-gray-200 pb-3">
+                    <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                      <input
+                        type="checkbox"
+                        checked={(() => {
+                          const newVendors = filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember);
+                          return newVendors.length > 0 && newVendors.every((vendor) => selectedLocationTeamMembers.has(vendor.id));
+                        })()}
+                        onChange={handleSelectAllLocationTeam}
+                        className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      Select All (
+                      {filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember).length} new)
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleResendLocationTeamConfirmations}
+                        disabled={
+                          pendingLocationTeamInvitesCount === 0 ||
+                          resendingLocationTeamConfirmations ||
+                          savingLocationTeam
+                        }
+                        className="px-3 py-2 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
+                      >
+                        {resendingLocationTeamConfirmations
+                          ? "Resending..."
+                          : `Resend Confirmation (${pendingLocationTeamInvitesCount})`}
+                      </button>
+                      <button
+                        onClick={handleCreateTeamFromLocations}
+                        disabled={
+                          selectedLocationTeamMembers.size === 0 ||
+                          savingLocationTeam ||
+                          allLocationAvailableVendorsInvited ||
+                          resendingLocationTeamConfirmations
+                        }
+                        className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 disabled:bg-gray-400"
+                      >
+                        {savingLocationTeam
+                          ? "Sending..."
+                          : allLocationAvailableVendorsInvited
+                            ? "All Invited"
+                            : `Send Invitations (${selectedLocationTeamMembers.size})`}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="max-h-[48vh] overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                    {filteredLocationTeamVendors.length === 0 && (
+                      <div className="px-4 py-10 text-center text-sm text-gray-500">
+                        No vendors match your search.
+                      </div>
+                    )}
+                    {filteredLocationTeamVendors.map((vendor) => {
+                      const firstName = (vendor.profiles?.first_name || "").toString();
+                      const lastName = (vendor.profiles?.last_name || "").toString();
+                      const fullName = `${firstName} ${lastName}`.trim() || vendor.email || "Vendor";
+                      const phone = (vendor.profiles?.phone || "").toString();
+                      const isExistingMember = Boolean(vendor.isExistingMember);
+                      const vendorStatus = String(vendor.status || "").toLowerCase();
+
+                      return (
+                        <div
+                          key={vendor.id}
+                          className={`px-4 py-3 flex items-start gap-3 ${isExistingMember ? "" : "cursor-pointer hover:bg-gray-50"}`}
+                          onClick={() => {
+                            if (!isExistingMember) toggleLocationTeamMember(vendor.id);
+                          }}
+                        >
+                          {!isExistingMember ? (
+                            <input
+                              type="checkbox"
+                              checked={selectedLocationTeamMembers.has(vendor.id)}
+                              onChange={() => toggleLocationTeamMember(vendor.id)}
+                              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                            />
+                          ) : (
+                            <div className="mt-1 h-4 w-4"></div>
+                          )}
+
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-sm font-semibold text-gray-900 truncate">{fullName}</div>
+                              <div className="flex items-center gap-2">
+                                {isExistingMember && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700">
+                                    {vendorStatus === "confirmed"
+                                      ? "Confirmed"
+                                      : vendorStatus === "declined"
+                                        ? "Declined"
+                                        : "Invited"}
+                                  </span>
+                                )}
+                                {vendor.distance !== null && vendor.distance !== undefined && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                                    {vendor.distance} mi
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-xs text-gray-600 mt-1">
+                              {vendor.email || "N/A"}
+                              {phone ? ` | ${phone}` : ""}
+                              {vendor.division ? ` | ${vendor.division}` : ""}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {showUninvitedHistoryModal && (
         <div

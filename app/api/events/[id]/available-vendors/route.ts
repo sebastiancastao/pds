@@ -111,7 +111,12 @@ export async function GET(
     }
 
     const requesterRole = String(requester.role || '').toLowerCase();
-    const canAccessAllEvents = requesterRole === 'exec' || requesterRole === 'admin';
+    const canAccessByRole =
+      requesterRole === 'exec' ||
+      requesterRole === 'admin' ||
+      requesterRole === 'manager' ||
+      requesterRole === 'supervisor' ||
+      requesterRole === 'supervisor2';
 
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
@@ -130,8 +135,8 @@ export async function GET(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    // Managers can access their own events. Exec/Admin can access all events.
-    if (!canAccessAllEvents && event.created_by !== user.id) {
+    // Allow event creator and authorized management roles to load availability.
+    if (!canAccessByRole && event.created_by !== user.id) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
@@ -402,4 +407,3 @@ export async function GET(
     }, { status: 500 });
   }
 }
-

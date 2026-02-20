@@ -164,6 +164,7 @@ function HRDashboardContent() {
     const roundedMagnitude = Math.round((absAmount + 1e-9) / 100) * 100;
     return amount < 0 ? -roundedMagnitude : roundedMagnitude;
   };
+  
   const formatPayrollMoney = (amount: number): string =>
     roundUpThousandsToNextHundred(amount).toFixed(2);
   const formatExactMoney = (amount: number): string =>

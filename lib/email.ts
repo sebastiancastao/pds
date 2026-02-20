@@ -996,9 +996,23 @@ export async function sendTeamConfirmationEmail(data: {
   managerName: string;
   managerPhone: string;
   confirmationToken: string;
+  cc?: string | string[];
 }): Promise<EmailResult> {
-  const { email, firstName, lastName, eventName, eventDate, managerName, managerPhone, confirmationToken } = data;
+  const {
+    email,
+    firstName,
+    lastName,
+    eventName,
+    eventDate,
+    managerName,
+    managerPhone,
+    confirmationToken,
+    cc,
+  } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
+  const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : [])
+    .map((v) => (v || "").toString().trim().toLowerCase())
+    .filter((v) => v.length > 0 && isValidEmail(v));
 
   if (!isValidEmail(normalizedEmail)) {
     return {
@@ -1185,7 +1199,7 @@ export async function sendTeamConfirmationEmail(data: {
       from: EVENTS_FROM,
       to: normalizedEmail,
       subject: emailSubject,
-      cc:"jenvillar625@gmail.com",
+      cc: ccList.length > 0 ? (Array.isArray(cc) ? ccList : ccList[0]) : undefined,
       html: emailBody,
     });
 
