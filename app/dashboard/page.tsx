@@ -1747,30 +1747,6 @@ export default function DashboardPage() {
                               {ev.start_time?.slice(0, 5)} - {ev.end_time?.slice(0, 5)}
                             </span>
                           </div>
-                          {/* Staff Prediction */}
-                          {predictions[ev.id] && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 border border-purple-200 rounded-lg">
-                                <svg className="w-4 h-4 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                                </svg>
-                                <span className="text-xs font-semibold text-purple-700">
-                                  AI Prediction: {predictions[ev.id].loading ? (
-                                    <span className="text-purple-500">Loading...</span>
-                                  ) : (
-                                    <>
-                                      <span className="font-bold">{predictions[ev.id].predictedStaff}</span> staff
-                                      {predictions[ev.id].confidence > 0 && (
-                                        <span className="ml-1 text-purple-500">
-                                          ({Math.round(predictions[ev.id].confidence * 100)}% confidence)
-                                        </span>
-                                      )}
-                                    </>
-                                  )}
-                                </span>
-                              </div>
-                            </div>
-                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           <button onClick={() => handleCheckInClick(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">

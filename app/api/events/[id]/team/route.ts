@@ -21,6 +21,12 @@ const supabaseAnon = createClient(
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 
+const isMissingRelationError = (error: any): boolean => {
+  const code = String(error?.code || "").trim();
+  const message = String(error?.message || "");
+  return code === "42P01" || /relation .* does not exist/i.test(message);
+};
+
 /**
  * POST /api/events/[id]/team
  * Create a team for an event by assigning vendors
@@ -512,8 +518,153 @@ export async function GET(
       };
     });
 
+    type RawUninviteHistoryRow = {
+      id: string;
+      vendor_id: string;
+      previous_status: string;
+      uninvited_by_user_id: string;
+      uninvited_at: string;
+      team_member_id: string;
+      metadata: Record<string, any>;
+    };
+
+    let rawUninviteRows: RawUninviteHistoryRow[] = [];
+
+    const { data: uninviteRows, error: uninviteRowsError } = await supabaseAdmin
+      .from('event_team_uninvites')
+      .select('id, vendor_id, previous_status, uninvited_by, uninvited_at, team_member_id, metadata')
+      .eq('event_id', eventId)
+      .order('uninvited_at', { ascending: false })
+      .limit(200);
+
+    if (uninviteRowsError) {
+      if (!isMissingRelationError(uninviteRowsError)) {
+        console.error('Error fetching event_team_uninvites history:', uninviteRowsError);
+      }
+
+      const { data: uninviteAuditRows, error: uninviteAuditError } = await supabaseAdmin
+        .from('audit_logs')
+        .select('id, user_id, created_at, metadata')
+        .eq('action', 'team_member_uninvited')
+        .eq('resource_type', 'event')
+        .eq('resource_id', eventId)
+        .order('created_at', { ascending: false })
+        .limit(200);
+
+      if (uninviteAuditError) {
+        console.error('Error fetching legacy team uninvite audit history:', uninviteAuditError);
+      } else {
+        rawUninviteRows = (uninviteAuditRows || []).map((row: any) => {
+          const metadata =
+            row && typeof row.metadata === 'object' && row.metadata !== null
+              ? (row.metadata as Record<string, any>)
+              : {};
+          return {
+            id: String(row?.id || ''),
+            vendor_id: String(metadata.vendor_id || '').trim(),
+            previous_status: String(metadata.previous_status || '').trim(),
+            uninvited_by_user_id: String(row?.user_id || metadata.uninvited_by_user_id || '').trim(),
+            uninvited_at: String(row?.created_at || ''),
+            team_member_id: String(metadata.team_member_id || '').trim(),
+            metadata,
+          };
+        });
+      }
+    } else {
+      rawUninviteRows = (uninviteRows || []).map((row: any) => {
+        const metadata =
+          row && typeof row.metadata === 'object' && row.metadata !== null
+            ? (row.metadata as Record<string, any>)
+            : {};
+
+        return {
+          id: String(row?.id || ''),
+          vendor_id: String(row?.vendor_id || metadata.vendor_id || '').trim(),
+          previous_status: String(row?.previous_status || metadata.previous_status || '').trim(),
+          uninvited_by_user_id: String(row?.uninvited_by || metadata.uninvited_by_user_id || '').trim(),
+          uninvited_at: String(row?.uninvited_at || ''),
+          team_member_id: String(row?.team_member_id || metadata.team_member_id || '').trim(),
+          metadata,
+        };
+      });
+    }
+
+    const vendorIds = new Set<string>();
+    const actorIds = new Set<string>();
+
+    for (const row of rawUninviteRows) {
+      if (row.vendor_id) vendorIds.add(row.vendor_id);
+      if (row.uninvited_by_user_id) actorIds.add(row.uninvited_by_user_id);
+    }
+
+    const relatedUserIds = Array.from(new Set<string>([...vendorIds, ...actorIds]));
+    const userLookup = new Map<string, { name: string; email: string }>();
+
+    if (relatedUserIds.length > 0) {
+      const { data: relatedUsers, error: relatedUsersError } = await supabaseAdmin
+        .from('users')
+        .select(`
+          id,
+          email,
+          profiles (
+            first_name,
+            last_name
+          )
+        `)
+        .in('id', relatedUserIds);
+
+      if (relatedUsersError) {
+        console.error('Error fetching uninvite history users:', relatedUsersError);
+      } else {
+        for (const relatedUser of relatedUsers || []) {
+          const profile = Array.isArray((relatedUser as any)?.profiles)
+            ? (relatedUser as any).profiles[0]
+            : ((relatedUser as any)?.profiles || {});
+          const firstName = profile?.first_name ? safeDecrypt(String(profile.first_name)) : '';
+          const lastName = profile?.last_name ? safeDecrypt(String(profile.last_name)) : '';
+          const fullName = `${firstName} ${lastName}`.trim();
+          userLookup.set(String((relatedUser as any)?.id || ''), {
+            name: fullName,
+            email: String((relatedUser as any)?.email || '').trim(),
+          });
+        }
+      }
+    }
+
+    const uninvitedHistory = rawUninviteRows.map((row) => {
+      const metadata = row.metadata || {};
+      const vendorUser = row.vendor_id ? userLookup.get(row.vendor_id) : undefined;
+      const uninvitedByUser = row.uninvited_by_user_id
+        ? userLookup.get(row.uninvited_by_user_id)
+        : undefined;
+
+      return {
+        id: row.id,
+        vendor_id: row.vendor_id || null,
+        vendor_name:
+          vendorUser?.name ||
+          String(metadata.vendor_name || '').trim() ||
+          'Unknown',
+        vendor_email:
+          vendorUser?.email ||
+          String(metadata.vendor_email || '').trim(),
+        previous_status: row.previous_status || null,
+        uninvited_by_user_id: row.uninvited_by_user_id || null,
+        uninvited_by_name:
+          uninvitedByUser?.name ||
+          String(metadata.uninvited_by_name || '').trim() ||
+          'Unknown',
+        uninvited_by_email:
+          uninvitedByUser?.email ||
+          String(metadata.uninvited_by_email || '').trim(),
+        uninvited_at: row.uninvited_at || null,
+        team_member_id: row.team_member_id || null,
+      };
+    });
+
     return NextResponse.json({
-      team: decryptedTeamMembers || []
+      team: decryptedTeamMembers || [],
+      uninvited_history: uninvitedHistory,
     }, { status: 200 });
 
   } catch (error: any) {

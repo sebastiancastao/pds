@@ -88,7 +88,7 @@ export async function DELETE(
 
     const { data: teamMember, error: teamMemberError } = await supabaseAdmin
       .from("event_teams")
-      .select("id, vendor_id")
+      .select("id, vendor_id, status")
       .eq("id", memberId)
       .eq("event_id", eventId)
       .maybeSingle();
@@ -196,6 +196,43 @@ export async function DELETE(
     }
     if (!deletedRows || deletedRows.length === 0) {
       return NextResponse.json({ error: "Team member was not removed" }, { status: 404 });
+    }
+
+    const uninviteMetadata = {
+      event_id: eventId,
+      team_member_id: teamMember.id,
+      vendor_id: teamMember.vendor_id,
+      previous_status: teamMember.status || null,
+      uninvited_by_user_id: user.id,
+    };
+
+    const { error: uninviteHistoryError } = await supabaseAdmin
+      .from("event_team_uninvites")
+      .insert({
+        event_id: eventId,
+        team_member_id: teamMember.id,
+        vendor_id: teamMember.vendor_id,
+        previous_status: teamMember.status || null,
+        uninvited_by: user.id,
+        metadata: uninviteMetadata,
+      });
+
+    if (uninviteHistoryError && !isMissingRelationError(uninviteHistoryError)) {
+      console.error("Failed to persist team uninvite history:", uninviteHistoryError);
+    }
+
+    const { error: auditError } = await supabaseAdmin
+      .from("audit_logs")
+      .insert({
+        user_id: user.id,
+        action: "team_member_uninvited",
+        resource_type: "event",
+        resource_id: eventId,
+        metadata: uninviteMetadata,
+      });
+
+    if (auditError) {
+      console.error("Failed to log team uninvite audit event:", auditError);
     }
 
     return NextResponse.json({

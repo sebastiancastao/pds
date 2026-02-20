@@ -93,6 +93,19 @@ type TeamVendorOption = {
   };
 };
 
+type UninvitedTeamMemberRecord = {
+  id: string;
+  vendor_id: string | null;
+  vendor_name: string;
+  vendor_email: string;
+  previous_status: string | null;
+  uninvited_by_user_id: string | null;
+  uninvited_by_name: string;
+  uninvited_by_email: string;
+  uninvited_at: string | null;
+  team_member_id: string | null;
+};
+
 const getTeamMemberSortFields = (member: any): {
   lastKey: string;
   firstKey: string;
@@ -192,9 +205,11 @@ export default function EventDashboardPage() {
 
   // Team & Timesheet
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [uninvitedTeamMembers, setUninvitedTeamMembers] = useState<UninvitedTeamMemberRecord[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
   const [teamSearch, setTeamSearch] = useState<string>("");
   const [showAddVendorModal, setShowAddVendorModal] = useState(false);
+  const [showUninvitedHistoryModal, setShowUninvitedHistoryModal] = useState(false);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
   const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
@@ -702,6 +717,7 @@ export default function EventDashboardPage() {
       if (res.ok) {
         const data = await res.json();
         setTeamMembers(data.team || []);
+        setUninvitedTeamMembers(Array.isArray(data.uninvited_history) ? data.uninvited_history : []);
         setTeamLoaded(true);
       } else {
         const errorText = await res.text();
@@ -718,6 +734,10 @@ export default function EventDashboardPage() {
     setShowAddVendorModal(false);
     setAddVendorSearch("");
     setSelectedVendorToAdd("");
+  };
+
+  const closeUninvitedHistoryModal = () => {
+    setShowUninvitedHistoryModal(false);
   };
 
   const loadVendorsForImmediateTeamAdd = async () => {
@@ -1071,13 +1091,13 @@ export default function EventDashboardPage() {
   const handleSendLocationAssignments = async () => {
     if (!eventId) return;
     if (assignedLocationRecipientCount === 0) {
-      setMessage("No assigned team members found to email.");
+      setMessage("No assigned team members found for Call Time.");
       return;
     }
 
     if (
       !window.confirm(
-        `Send location assignments to ${assignedLocationRecipientCount} team member${assignedLocationRecipientCount === 1 ? "" : "s"}?`
+        `Send Call Time to ${assignedLocationRecipientCount} team member${assignedLocationRecipientCount === 1 ? "" : "s"}?`
       )
     ) {
       return;
@@ -1096,19 +1116,19 @@ export default function EventDashboardPage() {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(data?.error || "Failed to send location assignment emails");
+        throw new Error(data?.error || "Failed to send Call Time emails");
       }
 
       const sentCount = Number(data?.sentCount || 0);
       const failedCount = Number(data?.failedCount || 0);
 
       if (failedCount > 0) {
-        setMessage(`Location assignment emails sent to ${sentCount} users. Failed: ${failedCount}.`);
+        setMessage(`Call Time sent to ${sentCount} users. Failed: ${failedCount}.`);
       } else {
-        setMessage(`Success: Location assignment emails sent to ${sentCount} users.`);
+        setMessage(`Success: Call Time sent to ${sentCount} users.`);
       }
     } catch (err: any) {
-      setMessage(err?.message || "Failed to send location assignment emails");
+      setMessage(err?.message || "Failed to send Call Time emails");
     } finally {
       setSendingLocationEmails(false);
     }
@@ -2325,10 +2345,6 @@ export default function EventDashboardPage() {
   }
 
   const shares = sharesData;
-  const percentTotal =
-    ((event.artist_share_percent || 0) +
-    (event.venue_share_percent || 0) +
-    (event.pds_share_percent || 0)) * 100;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
@@ -2373,17 +2389,6 @@ export default function EventDashboardPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
-          </div>
-        )}
-
-        {Math.abs(percentTotal - 100) > 0.01 && (
-          <div className="mb-6 px-6 py-4 rounded-xl bg-gradient-to-r from-amber-50 to-yellow-50 border-2 border-amber-200 text-amber-900 shadow-sm">
-            <div className="flex items-center gap-3">
-              <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-              </svg>
-              <span className="font-medium">Heads up: your split percentages add up to {percentTotal.toFixed(2)}% (not 100%).</span>
-            </div>
           </div>
         )}
 
@@ -3446,6 +3451,13 @@ export default function EventDashboardPage() {
                     Export Excel
                   </button>
                   <button
+                    onClick={() => setShowUninvitedHistoryModal(true)}
+                    disabled={loadingTeam || uninvitedTeamMembers.length === 0}
+                    className="bg-rose-600 hover:bg-rose-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    Uninvited ({uninvitedTeamMembers.length})
+                  </button>
+                  <button
                     onClick={() => loadTeam(false)}
                     disabled={loadingTeam}
                     className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
@@ -3460,7 +3472,7 @@ export default function EventDashboardPage() {
                   <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
                   <p className="mt-4 text-gray-600">Loading team members...</p>
                 </div>
-              ) : teamMembers.length === 0 ? (
+              ) : teamMembers.length === 0 && uninvitedTeamMembers.length === 0 ? (
                 <div className="bg-gray-50 rounded-lg p-8 text-center">
                   <p className="text-gray-600 text-lg font-medium">No team members assigned yet</p>
                   <p className="text-gray-500 text-sm mt-2">
@@ -3472,7 +3484,7 @@ export default function EventDashboardPage() {
               ) : (
                 <div className="space-y-4">
                   {/* Summary */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
                     <div className="bg-blue-50 rounded-lg p-4">
                       <div className="text-sm font-medium text-blue-600 mb-1">Total Invited</div>
                       <div className="text-2xl font-bold text-blue-900">{teamMembers.length}</div>
@@ -3489,149 +3501,160 @@ export default function EventDashboardPage() {
                         {teamMembers.filter((m) => m.status === "pending_confirmation").length}
                       </div>
                     </div>
+                    <div className="bg-rose-50 rounded-lg p-4">
+                      <div className="text-sm font-medium text-rose-600 mb-1">Uninvited</div>
+                      <div className="text-2xl font-bold text-rose-900">{uninvitedTeamMembers.length}</div>
+                    </div>
                   </div>
 
-                  <div className="bg-white border rounded-lg p-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Search Team</label>
-                    <input
-                      type="text"
-                      placeholder="Search by name, email, phone, role, or status"
-                      value={teamSearch}
-                      onChange={(e) => setTeamSearch(e.target.value)}
-                      className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-                    />
-                    <p className="text-xs text-gray-500 mt-2">
-                      Showing {filteredTeamListMembers.length} of {teamMembers.length}{" "}
-                      {teamMembers.length === 1 ? "member" : "members"}
-                    </p>
-                  </div>
+                  {teamMembers.length > 0 ? (
+                    <>
+                      <div className="bg-white border rounded-lg p-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Search Team</label>
+                        <input
+                          type="text"
+                          placeholder="Search by name, email, phone, role, or status"
+                          value={teamSearch}
+                          onChange={(e) => setTeamSearch(e.target.value)}
+                          className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                        />
+                        <p className="text-xs text-gray-500 mt-2">
+                          Showing {filteredTeamListMembers.length} of {teamMembers.length}{" "}
+                          {teamMembers.length === 1 ? "member" : "members"}
+                        </p>
+                      </div>
 
-                  {/* List */}
-                  <div className="bg-white border rounded-lg overflow-hidden">
-                    <table className="min-w-full divide-y divide-gray-200">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
-                            Vendor
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
-                            Email
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
-                            Phone
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
-                            Status
-                          </th>
-                          <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
-                            Invited On
-                          </th>
-                          {canUninviteTeamMember && (
-                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">
-                              Actions
-                            </th>
-                          )}
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white divide-y divide-gray-200">
-                        {filteredTeamListMembers.length === 0 ? (
-                          <tr>
-                            <td colSpan={canUninviteTeamMember ? 6 : 5} className="px-6 py-8 text-center text-sm text-gray-500">
-                              No team members match your search
-                            </td>
-                          </tr>
-                        ) : (
-                        filteredTeamListMembers.map((member: any) => {
-                          const profile = member.users?.profiles;
-                          const firstName = profile?.first_name || "N/A";
-                          const lastName = profile?.last_name || "";
-                          const email = member.users?.email || "N/A";
-                          const phone = profile?.phone || "N/A";
-                          const hasAttestation = Boolean(member?.has_attestation);
-
-                          let statusBadge = "";
-                          let statusColor = "";
-                          switch (member.status) {
-                            case "confirmed":
-                              statusBadge = "Confirmed";
-                              statusColor = "bg-green-100 text-green-800";
-                              break;
-                            case "declined":
-                              statusBadge = "Declined";
-                              statusColor = "bg-red-100 text-red-800";
-                              break;
-                            case "pending_confirmation":
-                              statusBadge = "Pending";
-                              statusColor = "bg-amber-100 text-amber-800";
-                              break;
-                            case "assigned":
-                              statusBadge = "Assigned";
-                              statusColor = "bg-blue-100 text-blue-800";
-                              break;
-                            default:
-                              statusBadge = member.status || "Unknown";
-                              statusColor = "bg-gray-100 text-gray-800";
-                          }
-
-                          return (
-                            <tr key={member.id} className="hover:bg-gray-50">
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm font-medium text-gray-900">
-                                  {firstName} {lastName}
-                                </div>
-                              </td>
-
-                              
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm text-gray-900">{email}</div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <div className="text-sm text-gray-900">{phone}</div>
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap">
-                                <span
-                                  className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}`}
-                                >
-                                  {statusBadge}
-                                </span>
-                                {hasAttestation && (
-                                  <div className="mt-1 text-xs font-semibold text-purple-700">
-                                    Attestation Submitted
-                                  </div>
-                                )}
-                              </td>
-                              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                {new Date(member.created_at).toLocaleDateString("en-US", {
-                                  year: "numeric",
-                                  month: "short",
-                                  day: "numeric",
-                                })}
-                              </td>
+                      {/* List */}
+                      <div className="bg-white border rounded-lg overflow-hidden">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Vendor
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Email
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Phone
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Status
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Invited On
+                              </th>
                               {canUninviteTeamMember && (
-                                <td className="px-6 py-4 whitespace-nowrap text-right">
-                                  <button
-                                    onClick={() => {
-                                      void handleUninviteTeamMember(member);
-                                    }}
-                                    disabled={uninvitingMemberId === member.id || hasAttestation}
-                                    title={
-                                      hasAttestation
-                                        ? "Cannot uninvite: attestation already submitted"
-                                        : "Uninvite this team member"
-                                    }
-                                    className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                  >
-                                    {uninvitingMemberId === member.id ? "Uninviting..." : "Uninvite"}
-                                  </button>
-                                </td>
+                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                  Actions
+                                </th>
                               )}
                             </tr>
-                          );
-                        })
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {filteredTeamListMembers.length === 0 ? (
+                              <tr>
+                                <td colSpan={canUninviteTeamMember ? 6 : 5} className="px-6 py-8 text-center text-sm text-gray-500">
+                                  No team members match your search
+                                </td>
+                              </tr>
+                            ) : (
+                            filteredTeamListMembers.map((member: any) => {
+                              const profile = member.users?.profiles;
+                              const firstName = profile?.first_name || "N/A";
+                              const lastName = profile?.last_name || "";
+                              const email = member.users?.email || "N/A";
+                              const phone = profile?.phone || "N/A";
+                              const hasAttestation = Boolean(member?.has_attestation);
+
+                              let statusBadge = "";
+                              let statusColor = "";
+                              switch (member.status) {
+                                case "confirmed":
+                                  statusBadge = "Confirmed";
+                                  statusColor = "bg-green-100 text-green-800";
+                                  break;
+                                case "declined":
+                                  statusBadge = "Declined";
+                                  statusColor = "bg-red-100 text-red-800";
+                                  break;
+                                case "pending_confirmation":
+                                  statusBadge = "Pending";
+                                  statusColor = "bg-amber-100 text-amber-800";
+                                  break;
+                                case "assigned":
+                                  statusBadge = "Assigned";
+                                  statusColor = "bg-blue-100 text-blue-800";
+                                  break;
+                                default:
+                                  statusBadge = member.status || "Unknown";
+                                  statusColor = "bg-gray-100 text-gray-800";
+                              }
+
+                              return (
+                                <tr key={member.id} className="hover:bg-gray-50">
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    <div className="text-sm font-medium text-gray-900">
+                                      {firstName} {lastName}
+                                    </div>
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    <div className="text-sm text-gray-900">{email}</div>
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    <div className="text-sm text-gray-900">{phone}</div>
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    <span
+                                      className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}`}
+                                    >
+                                      {statusBadge}
+                                    </span>
+                                    {hasAttestation && (
+                                      <div className="mt-1 text-xs font-semibold text-purple-700">
+                                        Attestation Submitted
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                    {new Date(member.created_at).toLocaleDateString("en-US", {
+                                      year: "numeric",
+                                      month: "short",
+                                      day: "numeric",
+                                    })}
+                                  </td>
+                                  {canUninviteTeamMember && (
+                                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                                      <button
+                                        onClick={() => {
+                                          void handleUninviteTeamMember(member);
+                                        }}
+                                        disabled={uninvitingMemberId === member.id || hasAttestation}
+                                        title={
+                                          hasAttestation
+                                            ? "Cannot uninvite: attestation already submitted"
+                                            : "Uninvite this team member"
+                                        }
+                                        className="text-red-600 hover:text-red-700 font-medium text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                      >
+                                        {uninvitingMemberId === member.id ? "Uninviting..." : "Uninvite"}
+                                      </button>
+                                    </td>
+                                  )}
+                                </tr>
+                              );
+                            })
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="bg-gray-50 rounded-lg p-6 text-center text-sm text-gray-600">
+                      No currently invited team members.
+                    </div>
+                  )}
+
                 </div>
               )}
             </div>
@@ -3663,7 +3686,7 @@ export default function EventDashboardPage() {
                   >
                     {sendingLocationEmails
                       ? "Sending..."
-                      : `Send Assignments${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
+                      : `Call Time${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
                   </button>
                   <button
                     onClick={handleExportLocations}
@@ -4803,6 +4826,117 @@ export default function EventDashboardPage() {
         </div>
       </div>
       </div>
+
+      {showUninvitedHistoryModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={closeUninvitedHistoryModal}
+        >
+          <div
+            className="w-full max-w-5xl bg-white rounded-2xl shadow-2xl border border-gray-200 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">Uninvited Team Members</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Persistent record stored in the database. Total: {uninvitedTeamMembers.length}
+                </p>
+              </div>
+              <button
+                onClick={closeUninvitedHistoryModal}
+                className="text-gray-500 hover:text-gray-700"
+                aria-label="Close uninvited history modal"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-4 overflow-y-auto">
+              {uninvitedTeamMembers.length === 0 ? (
+                <div className="py-10 text-center bg-gray-50 rounded-lg border border-gray-200">
+                  <p className="text-sm text-gray-600">No uninvited team members found for this event.</p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                          Vendor
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                          Email
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                          Previous Status
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                          Uninvited By
+                        </th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                          Uninvited On
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {uninvitedTeamMembers.map((row) => {
+                        const previousStatus = (row.previous_status || "")
+                          .replace(/_/g, " ")
+                          .trim();
+                        const formattedPreviousStatus = previousStatus
+                          ? previousStatus.charAt(0).toUpperCase() + previousStatus.slice(1)
+                          : "N/A";
+                        const uninvitedByName =
+                          row.uninvited_by_name || row.uninvited_by_email || "Unknown";
+
+                        return (
+                          <tr key={row.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                              {row.vendor_name || "Unknown"}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                              {row.vendor_email || "N/A"}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                              {formattedPreviousStatus}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                              {uninvitedByName}
+                            </td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                              {row.uninvited_at
+                                ? new Date(row.uninvited_at).toLocaleString("en-US", {
+                                    year: "numeric",
+                                    month: "short",
+                                    day: "numeric",
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })
+                                : "N/A"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={closeUninvitedHistoryModal}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddVendorModal && (
         <div
