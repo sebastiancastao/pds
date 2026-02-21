@@ -102,12 +102,31 @@ export async function DELETE(
 
     const vendorId = String(teamMember.vendor_id || "").trim();
     if (vendorId) {
-      const { data: clockOutRows, error: clockOutError } = await supabaseAdmin
+      let clockOutRows: any[] | null = null;
+      let clockOutError: any = null;
+      const clockOutWithAttestationResult = await supabaseAdmin
         .from("time_entries")
-        .select("id, timestamp")
+        .select("id, timestamp, attestation_accepted")
         .eq("event_id", eventId)
         .eq("user_id", vendorId)
         .eq("action", "clock_out");
+
+      if (
+        clockOutWithAttestationResult.error &&
+        String((clockOutWithAttestationResult.error as any)?.code || "").trim() === "42703"
+      ) {
+        const fallbackClockOutResult = await supabaseAdmin
+          .from("time_entries")
+          .select("id, timestamp")
+          .eq("event_id", eventId)
+          .eq("user_id", vendorId)
+          .eq("action", "clock_out");
+        clockOutRows = fallbackClockOutResult.data || null;
+        clockOutError = fallbackClockOutResult.error || null;
+      } else {
+        clockOutRows = clockOutWithAttestationResult.data || null;
+        clockOutError = clockOutWithAttestationResult.error || null;
+      }
 
       if (clockOutError) {
         return NextResponse.json({ error: clockOutError.message }, { status: 500 });
@@ -117,21 +136,29 @@ export async function DELETE(
         .map((row: any) => {
           const entryId = String(row?.id || "").trim();
           const parsedMs = Date.parse(String(row?.timestamp || ""));
+          const rawAttestationAccepted = row?.attestation_accepted;
+          const attestationAccepted =
+            typeof rawAttestationAccepted === "boolean" ? rawAttestationAccepted : null;
           return {
             formId: entryId ? `clock-out-${entryId}` : "",
             timestampMs: Number.isNaN(parsedMs) ? null : parsedMs,
+            attestationAccepted,
           };
         })
         .filter((row) => row.formId.length > 0);
 
-      if (normalizedClockOutRows.length > 0) {
+      const attestationEligibleClockOutRows = normalizedClockOutRows.filter(
+        (row) => row.attestationAccepted !== false
+      );
+
+      if (attestationEligibleClockOutRows.length > 0) {
         let attestationQuery = supabaseAdmin
           .from("form_signatures")
           .select("id, form_id, signed_at")
           .eq("form_type", "clock_out_attestation")
           .eq("user_id", vendorId);
 
-        const validClockOutMs = normalizedClockOutRows
+        const validClockOutMs = attestationEligibleClockOutRows
           .map((row) => row.timestampMs)
           .filter((value): value is number => typeof value === "number");
         if (validClockOutMs.length > 0) {
@@ -151,10 +178,10 @@ export async function DELETE(
         const hasAttestationForEvent = (attestationRows || []).some((row: any) => {
           const formId = String(row?.form_id || "").trim();
           const signedAtMs = Date.parse(String(row?.signed_at || ""));
-          const directFormMatch = normalizedClockOutRows.some((clockOut) => clockOut.formId === formId);
+          const directFormMatch = attestationEligibleClockOutRows.some((clockOut) => clockOut.formId === formId);
           const timeMatch =
             !Number.isNaN(signedAtMs) &&
-            normalizedClockOutRows.some(
+            attestationEligibleClockOutRows.some(
               (clockOut) =>
                 clockOut.timestampMs !== null &&
                 Math.abs(clockOut.timestampMs - signedAtMs) <= ATTESTATION_TIME_MATCH_WINDOW_MS

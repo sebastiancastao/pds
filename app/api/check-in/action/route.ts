@@ -195,6 +195,9 @@ export async function POST(req: NextRequest) {
               : "Clocked out via kiosk"
           : "Kiosk check-in",
     };
+    if (action === "clock_out" && typeof attestationAccepted === "boolean") {
+      insertData.attestation_accepted = attestationAccepted;
+    }
 
     // Use offline timestamp if provided (for synced actions)
     if (offlineTimestamp) {
@@ -272,6 +275,10 @@ export async function POST(req: NextRequest) {
       action,
       timestamp: data.timestamp,
       entryId: data.id,
+      attestationAccepted:
+        action === "clock_out" && typeof attestationAccepted === "boolean"
+          ? attestationAccepted
+          : null,
     }, { status: 201 });
   } catch (err) {
     console.error("Error performing check-in action:", err);

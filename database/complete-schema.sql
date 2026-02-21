@@ -385,6 +385,7 @@ CREATE TABLE time_entries (
     longitude DECIMAL(11, 8),
     division division_type,
     notes TEXT,
+    attestation_accepted BOOLEAN,
     event_id UUID,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -662,6 +663,9 @@ CREATE INDEX idx_time_entries_user_id ON time_entries(user_id);
 CREATE INDEX idx_time_entries_timestamp ON time_entries(timestamp);
 CREATE INDEX idx_time_entries_event_id ON time_entries(event_id);
 CREATE INDEX idx_time_entries_action ON time_entries(action);
+CREATE INDEX idx_time_entries_attestation_accepted_clock_out
+    ON time_entries(attestation_accepted)
+    WHERE action = 'clock_out';
 
 -- Payments
 CREATE INDEX idx_payouts_user_id ON payouts(user_id);
@@ -806,6 +810,7 @@ COMMENT ON TABLE profiles IS 'User profile information with encrypted PII data';
 COMMENT ON TABLE sessions IS 'Active user sessions for authentication';
 COMMENT ON TABLE audit_logs IS 'Immutable audit trail for compliance';
 COMMENT ON TABLE time_entries IS 'Clock in/out records for Time Keeping ';
+COMMENT ON COLUMN time_entries.attestation_accepted IS 'Clock-out attestation outcome from kiosk flow (TRUE=accepted, FALSE=rejected, NULL=not captured)';
 COMMENT ON TABLE sick_leaves IS 'Sick leave records for employees with duration and approvals';
 COMMENT ON COLUMN sick_leaves.duration_hours IS 'Length of time booked as sick leave in hours';
 COMMENT ON COLUMN sick_leaves.status IS 'Pending/approved/denied workflow state for each request';

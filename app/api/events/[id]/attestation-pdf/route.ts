@@ -16,6 +16,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
@@ -138,18 +139,38 @@ export async function GET(
 
     // Fetch time entries for this vendor + event
     const eventDate = (event.event_date || "").split("T")[0];
-    const { data: timeEntries } = await supabaseAdmin
+    let timeEntries: any[] = [];
+    const withAttestationResult = await supabaseAdmin
       .from("time_entries")
-      .select("action, timestamp")
+      .select("id, action, timestamp, attestation_accepted")
       .eq("user_id", vendorId)
       .eq("event_id", eventId)
       .order("timestamp", { ascending: true });
+    if (
+      withAttestationResult.error &&
+      String((withAttestationResult.error as any)?.code || "").trim() === "42703"
+    ) {
+      const fallbackResult = await supabaseAdmin
+        .from("time_entries")
+        .select("id, action, timestamp")
+        .eq("user_id", vendorId)
+        .eq("event_id", eventId)
+        .order("timestamp", { ascending: true });
+      timeEntries = fallbackResult.data || [];
+    } else {
+      timeEntries = withAttestationResult.data || [];
+    }
 
     // Compute shift details
     let clockInAt: string | null = null;
     let clockOutAt: string | null = null;
     let mealMs = 0;
     let openMealStart: number | null = null;
+    const clockOutEntries: Array<{
+      formId: string;
+      timestampMs: number;
+      attestationAccepted: boolean | null;
+    }> = [];
 
     for (const entry of timeEntries || []) {
       const tsMs = Date.parse(entry.timestamp);
@@ -157,6 +178,16 @@ export async function GET(
       if (entry.action === "clock_in" && !clockInAt) clockInAt = entry.timestamp;
       else if (entry.action === "clock_out") {
         clockOutAt = entry.timestamp;
+        const entryId = String((entry as any)?.id || "").trim();
+        const rawAccepted = (entry as any)?.attestation_accepted;
+        const attestationAccepted = typeof rawAccepted === "boolean" ? rawAccepted : null;
+        if (entryId) {
+          clockOutEntries.push({
+            formId: `clock-out-${entryId}`,
+            timestampMs: tsMs,
+            attestationAccepted,
+          });
+        }
         if (openMealStart !== null) { mealMs += Math.max(0, tsMs - openMealStart); openMealStart = null; }
       } else if (entry.action === "meal_start" && openMealStart === null) openMealStart = tsMs;
       else if (entry.action === "meal_end" && openMealStart !== null) {
@@ -169,18 +200,43 @@ export async function GET(
       totalHoursMs = Math.max(0, Date.parse(clockOutAt) - Date.parse(clockInAt) - mealMs);
     }
 
-    // Fetch attestation (clock_out_attestation) for this vendor in last 48h
-    const fortyEightHoursAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
-    const { data: attestations } = await supabaseAdmin
-      .from("form_signatures")
-      .select("id, user_id, signed_at, ip_address, is_valid, form_id, signature_data, signature_type")
-      .eq("form_type", "clock_out_attestation")
-      .eq("user_id", vendorId)
-      .gte("signed_at", fortyEightHoursAgo)
-      .order("signed_at", { ascending: false })
-      .limit(5);
+    const latestClockOut = clockOutEntries
+      .slice()
+      .sort((a, b) => b.timestampMs - a.timestampMs)[0];
+    if (latestClockOut?.attestationAccepted === false) {
+      return jsonError("Clock-out attestation was rejected for this vendor.", 409);
+    }
 
-    const att = (attestations || [])[0] || null;
+    // Fetch attestation signatures and match to this event's clock-out rows.
+    let att: any = null;
+    if (clockOutEntries.length > 0) {
+      const minMs = Math.min(...clockOutEntries.map((row) => row.timestampMs)) - ATTESTATION_TIME_MATCH_WINDOW_MS;
+      const maxMs = Math.max(...clockOutEntries.map((row) => row.timestampMs)) + ATTESTATION_TIME_MATCH_WINDOW_MS;
+
+      const { data: attestations } = await supabaseAdmin
+        .from("form_signatures")
+        .select("id, user_id, signed_at, ip_address, is_valid, form_id, signature_data, signature_type")
+        .eq("form_type", "clock_out_attestation")
+        .eq("user_id", vendorId)
+        .gte("signed_at", new Date(minMs).toISOString())
+        .lte("signed_at", new Date(maxMs).toISOString())
+        .order("signed_at", { ascending: false })
+        .limit(25);
+
+      att =
+        (attestations || []).find((row: any) => {
+          const formId = String(row?.form_id || "").trim();
+          const signedAtMs = Date.parse(String(row?.signed_at || ""));
+          const directFormMatch = clockOutEntries.some((clockOut) => clockOut.formId === formId);
+          const timeMatch =
+            !Number.isNaN(signedAtMs) &&
+            clockOutEntries.some(
+              (clockOut) =>
+                Math.abs(clockOut.timestampMs - signedAtMs) <= ATTESTATION_TIME_MATCH_WINDOW_MS
+            );
+          return directFormMatch || timeMatch;
+        }) || null;
+    }
 
     // ─── Build PDF ───
     const pdfDoc = await PDFDocument.create();

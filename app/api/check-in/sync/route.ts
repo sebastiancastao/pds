@@ -148,6 +148,9 @@ export async function POST(req: NextRequest) {
             division,
             timestamp: item.timestamp,
             notes: item.action === "clock_out" ? clockOutNote : baseNote,
+            ...(item.action === "clock_out" && typeof item.attestationAccepted === "boolean"
+              ? { attestation_accepted: item.attestationAccepted }
+              : {}),
             ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
           })
           .select("id, timestamp")

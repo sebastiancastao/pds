@@ -449,13 +449,36 @@ export async function GET(
       .filter((id: string) => id.length > 0);
 
     let hasAttestationByUserId = new Map<string, boolean>();
+    let latestClockOutByUserId = new Map<
+      string,
+      { timestampMs: number | null; attestationAccepted: boolean | null }
+    >();
     if (teamUserIds.length > 0) {
-      const { data: clockOutRows, error: clockOutError } = await supabaseAdmin
+      let clockOutRows: any[] | null = null;
+      let clockOutError: any = null;
+      const clockOutWithAttestationResult = await supabaseAdmin
         .from('time_entries')
-        .select('id, user_id, timestamp')
+        .select('id, user_id, timestamp, attestation_accepted')
         .eq('event_id', eventId)
         .eq('action', 'clock_out')
         .in('user_id', teamUserIds);
+
+      if (
+        clockOutWithAttestationResult.error &&
+        String((clockOutWithAttestationResult.error as any)?.code || '').trim() === '42703'
+      ) {
+        const fallbackClockOutResult = await supabaseAdmin
+          .from('time_entries')
+          .select('id, user_id, timestamp')
+          .eq('event_id', eventId)
+          .eq('action', 'clock_out')
+          .in('user_id', teamUserIds);
+        clockOutRows = fallbackClockOutResult.data || null;
+        clockOutError = fallbackClockOutResult.error || null;
+      } else {
+        clockOutRows = clockOutWithAttestationResult.data || null;
+        clockOutError = clockOutWithAttestationResult.error || null;
+      }
 
       if (clockOutError) {
         console.error('Error fetching clock-out entries for attestation checks:', clockOutError);
@@ -473,11 +496,21 @@ export async function GET(
 
           const parsedMs = Date.parse(String((row as any)?.timestamp || ''));
           const timestampMs = Number.isNaN(parsedMs) ? null : parsedMs;
+          const rawAttestationAccepted = (row as any)?.attestation_accepted;
+          const attestationAccepted =
+            typeof rawAttestationAccepted === 'boolean' ? rawAttestationAccepted : null;
           if (timestampMs !== null) clockOutMs.push(timestampMs);
 
           const existing = clockOutRowsByUser.get(userId) || [];
           existing.push({ formId: `clock-out-${entryId}`, timestampMs });
           clockOutRowsByUser.set(userId, existing);
+
+          const previousLatest = latestClockOutByUserId.get(userId);
+          const previousMs = previousLatest?.timestampMs ?? Number.NEGATIVE_INFINITY;
+          const currentMs = timestampMs ?? Number.NEGATIVE_INFINITY;
+          if (!previousLatest || currentMs >= previousMs) {
+            latestClockOutByUserId.set(userId, { timestampMs, attestationAccepted });
+          }
         }
 
         if (clockOutRowsByUser.size > 0) {
@@ -564,10 +597,22 @@ export async function GET(
       const hasAttestation = memberUserId
         ? Boolean(hasAttestationByUserId.get(memberUserId))
         : false;
+      const latestClockOut = memberUserId
+        ? latestClockOutByUserId.get(memberUserId)
+        : undefined;
+      const attestationStatus = memberUserId
+        ? latestClockOut?.attestationAccepted === false
+            ? 'rejected'
+            : hasAttestation
+              ? 'submitted'
+              : 'not_submitted'
+        : 'not_submitted';
+      const hasSubmittedAttestation = attestationStatus === 'submitted';
 
       return {
         ...member,
-        has_attestation: hasAttestation,
+        has_attestation: hasSubmittedAttestation,
+        attestation_status: attestationStatus,
         users: {
           ...member.users,
           profiles: {

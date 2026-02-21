@@ -4066,7 +4066,19 @@ export default function EventDashboardPage() {
                               const lastName = profile?.last_name || "";
                               const email = member.users?.email || "N/A";
                               const phone = profile?.phone || "N/A";
-                              const hasAttestation = Boolean(member?.has_attestation);
+                              const attestationStatus = String(member?.attestation_status || "").trim().toLowerCase();
+                              const hasSubmittedAttestation =
+                                attestationStatus === "submitted" ||
+                                (!attestationStatus && Boolean(member?.has_attestation));
+                              const hasRejectedAttestation = attestationStatus === "rejected";
+                              const attestationStatusLabel = hasSubmittedAttestation
+                                ? "Attestation Submitted"
+                                : hasRejectedAttestation
+                                  ? "Attestation Rejected"
+                                  : "";
+                              const attestationStatusColor = hasSubmittedAttestation
+                                ? "text-purple-700"
+                                : "text-rose-700";
 
                               let statusBadge = "";
                               let statusColor = "";
@@ -4111,9 +4123,9 @@ export default function EventDashboardPage() {
                                     >
                                       {statusBadge}
                                     </span>
-                                    {hasAttestation && (
-                                      <div className="mt-1 text-xs font-semibold text-purple-700">
-                                        Attestation Submitted
+                                    {(hasSubmittedAttestation || hasRejectedAttestation) && (
+                                      <div className={`mt-1 text-xs font-semibold ${attestationStatusColor}`}>
+                                        {attestationStatusLabel}
                                       </div>
                                     )}
                                   </td>
@@ -4130,9 +4142,9 @@ export default function EventDashboardPage() {
                                         onClick={() => {
                                           void handleUninviteTeamMember(member);
                                         }}
-                                        disabled={uninvitingMemberId === member.id || hasAttestation}
+                                        disabled={uninvitingMemberId === member.id || hasSubmittedAttestation}
                                         title={
-                                          hasAttestation
+                                          hasSubmittedAttestation
                                             ? "Cannot uninvite: attestation already submitted"
                                             : "Uninvite this team member"
                                         }
@@ -4593,6 +4605,21 @@ export default function EventDashboardPage() {
               const firstName = profile?.first_name || "N/A";
               const lastName = profile?.last_name || "";
               const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+              const attestationStatus = String(m?.attestation_status || "").trim().toLowerCase();
+              const hasSubmittedAttestation =
+                attestationStatus === "submitted" ||
+                (!attestationStatus && Boolean(m?.has_attestation));
+              const isRejectedAttestation = attestationStatus === "rejected";
+              const attestationStatusLabel = hasSubmittedAttestation
+                ? "Submitted"
+                : isRejectedAttestation
+                  ? "Rejected"
+                  : "Not submitted";
+              const attestationStatusClass = hasSubmittedAttestation
+                ? "text-emerald-700"
+                : isRejectedAttestation
+                  ? "text-rose-700"
+                  : "text-gray-500";
 
               const span = timesheetSpans[uid] || {
                 firstIn: null,
@@ -4739,7 +4766,10 @@ export default function EventDashboardPage() {
                           >
                             Edit
                           </button>
-                          {userRole === "exec" && (
+                          <span className={`ml-2 text-xs font-medium ${attestationStatusClass}`}>
+                            {attestationStatusLabel}
+                          </span>
+                          {userRole === "exec" && hasSubmittedAttestation && (
                             <button
                               onClick={async () => {
                                 try {
@@ -4750,7 +4780,13 @@ export default function EventDashboardPage() {
                                     `/api/events/${eventId}/attestation-pdf?userId=${encodeURIComponent(uid)}`,
                                     { headers: { Authorization: `Bearer ${token}` } }
                                   );
-                                  if (!res.ok) return;
+                                  if (!res.ok) {
+                                    console.warn("Attestation PDF unavailable", {
+                                      status: res.status,
+                                      userId: uid,
+                                    });
+                                    return;
+                                  }
                                   const blob = await res.blob();
                                   const blobUrl = URL.createObjectURL(blob);
                                   const a = document.createElement("a");
@@ -4760,18 +4796,25 @@ export default function EventDashboardPage() {
                                   a.click();
                                   a.remove();
                                   URL.revokeObjectURL(blobUrl);
-                                } catch { /* silent */ }
+                                } catch (err: any) {
+                                  console.error("Failed to download attestation PDF", err);
+                                }
                               }}
                               className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
-                              title="Download attestation PDF"
+                              title="Download submitted attestation PDF"
                             >
-                              Attestation
+                              Attestation PDF
                             </button>
                           )}
                         </>
                       )
                     ) : (
-                      <span className="text-xs text-gray-400">View only</span>
+                      <div className="inline-flex items-center gap-2">
+                        <span className={`text-xs font-medium ${attestationStatusClass}`}>
+                          {attestationStatusLabel}
+                        </span>
+                        <span className="text-xs text-gray-400">View only</span>
+                      </div>
                     )}
                   </td>
                 </tr>
