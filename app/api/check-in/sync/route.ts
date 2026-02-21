@@ -51,6 +51,7 @@ type QueuedAction = {
   timestamp: string;
   userName: string;
   signature?: string;
+  attestationAccepted?: boolean;
   eventId?: string;
 };
 
@@ -117,9 +118,26 @@ export async function POST(req: NextRequest) {
         const workerId = codeRecord.target_user_id;
         const division = await getUserDivision(workerId);
 
+        if (item.action === "clock_out" && item.attestationAccepted === true && !item.signature) {
+          results.push({
+            id: item.id,
+            success: false,
+            error: "Signature is required when accepting attestation",
+          });
+          continue;
+        }
+
         const isValidUuid = (id: unknown) =>
           typeof id === "string" &&
           /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+
+        const baseNote = `Offline kiosk sync (original: ${item.timestamp})`;
+        const clockOutNote =
+          item.attestationAccepted === false
+            ? `${baseNote} - attestation rejected`
+            : item.signature
+              ? `${baseNote} - signed clock-out attestation`
+              : baseNote;
 
         // Insert the time entry with the original offline timestamp
         const { data: entryData, error: insertErr } = await supabaseAdmin
@@ -129,7 +147,7 @@ export async function POST(req: NextRequest) {
             action: item.action,
             division,
             timestamp: item.timestamp,
-            notes: `Offline kiosk sync (original: ${item.timestamp})`,
+            notes: item.action === "clock_out" ? clockOutNote : baseNote,
             ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
           })
           .select("id, timestamp")
@@ -148,7 +166,7 @@ export async function POST(req: NextRequest) {
         }
 
         // Save attestation signature to form_signatures on clock_out
-        if (item.action === "clock_out" && item.signature && entryData?.id) {
+        if (item.action === "clock_out" && item.attestationAccepted !== false && item.signature && entryData?.id) {
           try {
             const ipAddress =
               req.headers.get("x-forwarded-for") ||

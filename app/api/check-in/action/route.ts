@@ -48,7 +48,13 @@ type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 
 /**
  * POST /api/check-in/action
- * body: { code: string, action: ActionType, timestamp?: string, signature?: string }
+ * body: {
+ *   code: string;
+ *   action: ActionType;
+ *   timestamp?: string;
+ *   signature?: string;
+ *   attestationAccepted?: boolean;
+ * }
  *
  * Performs a time-keeping action for the worker identified by the check-in code.
  * Optionally accepts a timestamp for offline-queued actions.
@@ -65,6 +71,8 @@ export async function POST(req: NextRequest) {
     const action: ActionType = body.action;
     const offlineTimestamp = body.timestamp; // ISO string from offline queue
     const signature = body.signature; // base64 signature for clock_out
+    const attestationAccepted =
+      typeof body.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
 
     const isValidUuid = (id: unknown) =>
@@ -145,6 +153,10 @@ export async function POST(req: NextRequest) {
         return jsonError("Worker is not clocked in", 409);
       }
 
+      if (attestationAccepted === true && !signature) {
+        return jsonError("Signature is required when accepting attestation", 400);
+      }
+
       // If on a meal, auto-end it before clocking out
       if (lastAction === "meal_start") {
         const division = await getUserDivision(workerId);
@@ -174,7 +186,14 @@ export async function POST(req: NextRequest) {
       user_id: workerId,
       action,
       division,
-      notes: action === "clock_out" && signature ? "Signed clock-out via kiosk" : "Kiosk check-in",
+      notes:
+        action === "clock_out"
+          ? attestationAccepted === false
+            ? "Clocked out via kiosk - attestation rejected"
+            : signature
+              ? "Signed clock-out via kiosk"
+              : "Clocked out via kiosk"
+          : "Kiosk check-in",
     };
 
     // Use offline timestamp if provided (for synced actions)
@@ -201,7 +220,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Save attestation signature to form_signatures on clock_out
-    if (action === "clock_out" && signature) {
+    if (action === "clock_out" && attestationAccepted !== false && signature) {
       try {
         const ipAddress =
           req.headers.get("x-forwarded-for") ||

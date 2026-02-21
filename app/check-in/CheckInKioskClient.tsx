@@ -16,6 +16,7 @@ type QueuedAction = {
   timestamp: string;
   userName: string;
   signature?: string;
+  attestationAccepted?: boolean;
   eventId?: string;
 };
 
@@ -651,17 +652,24 @@ export default function CheckInKioskPage() {
   };
 
   // ─── Perform action (online or queue offline) ──────────────────
-  const performAction = async (action: ActionType, sig?: string) => {
+  const performAction = async (
+    action: ActionType,
+    sig?: string,
+    options?: { attestationAccepted?: boolean }
+  ) => {
     if (!worker) return;
     setIsActioning(true);
     setError("");
-
-    const actionLabels: Record<ActionType, string> = {
-      clock_in: "Checked In",
-      clock_out: "Clocked Out",
-      meal_start: "Meal Started",
-      meal_end: "Meal Ended",
-    };
+    const attestationAccepted = options?.attestationAccepted;
+    const actionLabel =
+      action === "clock_out" && attestationAccepted === false
+        ? "Clocked Out (attestation rejected)"
+        : ({
+            clock_in: "Checked In",
+            clock_out: "Clocked Out",
+            meal_start: "Meal Started",
+            meal_end: "Meal Ended",
+          } as Record<ActionType, string>)[action];
 
       if (!isOnline) {
         // Queue in IndexedDB
@@ -672,13 +680,14 @@ export default function CheckInKioskPage() {
         timestamp: new Date().toISOString(),
         userName: worker.name,
         signature: sig,
+        attestationAccepted,
         eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
         try {
           await addToQueue(queuedItem);
           await refreshQueueCount();
           if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+          showSuccessMessage(`${actionLabel} (queued offline)`);
           setTimeout(resetToCodeEntry, 1500);
         } catch (err) {
           setError("Failed to save offline. Please try again.");
@@ -705,6 +714,7 @@ export default function CheckInKioskPage() {
           code: worker.code,
           action,
           signature: sig,
+          attestationAccepted,
           eventId: activeEvent?.id || (eventIdFromUrl || undefined),
         }),
       });
@@ -720,12 +730,13 @@ export default function CheckInKioskPage() {
             timestamp: new Date().toISOString(),
             userName: worker.name,
             signature: sig,
+            attestationAccepted,
             eventId: activeEvent?.id || (eventIdFromUrl || undefined),
             };
             await addToQueue(queuedItem);
             await refreshQueueCount();
             if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-            showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+            showSuccessMessage(`${actionLabel} (queued offline)`);
             setTimeout(resetToCodeEntry, 1500);
             setIsActioning(false);
             return;
@@ -736,7 +747,7 @@ export default function CheckInKioskPage() {
         }
 
         if (action === "clock_in") showEventCheckInFlashMessage(worker.name);
-        showSuccessMessage(`${worker.name} - ${actionLabels[action]}!`);
+        showSuccessMessage(`${worker.name} - ${actionLabel}!`);
         fetchRecentActivity();
         setTimeout(resetToCodeEntry, 1500);
       } catch {
@@ -748,13 +759,14 @@ export default function CheckInKioskPage() {
         timestamp: new Date().toISOString(),
         userName: worker.name,
         signature: sig,
+        attestationAccepted,
         eventId: activeEvent?.id || (eventIdFromUrl || undefined),
       };
         try {
           await addToQueue(queuedItem);
           await refreshQueueCount();
           if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabels[action]} (queued offline)`);
+          showSuccessMessage(`${actionLabel} (queued offline)`);
           setTimeout(resetToCodeEntry, 1500);
         } catch {
           setError("Failed to save. Please try again.");
@@ -775,7 +787,14 @@ export default function CheckInKioskPage() {
       setError("Please sign before confirming");
       return;
     }
-    performAction("clock_out", signature);
+    performAction("clock_out", signature, { attestationAccepted: true });
+    setShowAttestation(false);
+    setAttestationSummary(null);
+    setAttestationSummaryLoading(false);
+    setSignature("");
+  };
+  const handleRejectAttestation = () => {
+    performAction("clock_out", undefined, { attestationAccepted: false });
     setShowAttestation(false);
     setAttestationSummary(null);
     setAttestationSummaryLoading(false);
@@ -814,7 +833,7 @@ export default function CheckInKioskPage() {
                 </svg>
               </div>
               <h2 className="text-2xl font-bold text-gray-900">Clock Out Attestation</h2>
-              <p className="text-gray-600 mt-2">Please sign below to confirm your clock out</p>
+              <p className="text-gray-600 mt-2">Sign to accept, or reject if these statements are not accurate.</p>
             </div>
 
             {error && (
@@ -920,6 +939,13 @@ export default function CheckInKioskPage() {
                     Accept & Clock Out
                   </>
                 )}
+              </button>
+              <button
+                onClick={handleRejectAttestation}
+                disabled={isActioning}
+                className="w-full py-3 px-4 border border-red-300 text-red-700 rounded-xl font-medium hover:bg-red-50 transition-all disabled:opacity-50"
+              >
+                Reject & Clock Out
               </button>
               <button
                 onClick={handleCancelAttestation}

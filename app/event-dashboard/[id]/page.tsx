@@ -1879,6 +1879,9 @@ export default function EventDashboardPage() {
     }
   };
 
+  const GATE_PHONE_OFFSET_MINUTES = 30;
+  const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
+
   const getDisplayedWorkedMs = (uid: string): number => {
     let totalMs = timesheetTotals[uid] || 0;
     const span = timesheetSpans[uid];
@@ -1906,8 +1909,16 @@ export default function EventDashboardPage() {
       if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
     }
 
+    // Include Gate/Phone lead time as the initial worked segment for hour calculations only.
+    if (totalMs > 0 && span?.firstIn) {
+      totalMs += GATE_PHONE_OFFSET_MS;
+    }
+
     return totalMs;
   };
+
+  const getTotalDisplayedWorkedMs = (): number =>
+    Object.keys(timesheetTotals).reduce((sum, uid) => sum + getDisplayedWorkedMs(uid), 0);
 
   const formatHoursFromMs = (totalMs: number): string => {
     if (!Number.isFinite(totalMs) || totalMs <= 0) return "0:00";
@@ -2434,6 +2445,17 @@ export default function EventDashboardPage() {
     return `${hh}:${mm}`;
   };
 
+  const subtractMinutesFromHHMM = (hhmm: string, minutes: number): string => {
+    if (!hhmm || !/^\d{2}:\d{2}$/.test(hhmm)) return "";
+    const [hh, mm] = hhmm.split(":").map((value) => Number(value));
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return "";
+    const dayMinutes = 24 * 60;
+    const totalMinutes = (((hh * 60 + mm - minutes) % dayMinutes) + dayMinutes) % dayMinutes;
+    const outHh = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+    const outMm = String(totalMinutes % 60).padStart(2, "0");
+    return `${outHh}:${outMm}`;
+  };
+
   const getPacificTzAbbr = (iso?: string | null): string => {
     if (!iso) return "PT";
     const d = new Date(iso);
@@ -2565,19 +2587,9 @@ export default function EventDashboardPage() {
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
   const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
 
-  // Helper: deduct meal times from raw ms to match timesheet tab display
+  // Helper: use the same worked-hours calculation as Timesheet/Payment (includes Gate/Phone offset).
   const getMealDeductedMsForSave = (uid: string) => {
-    let ms = timesheetTotals[uid] || 0;
-    const sp = timesheetSpans[uid];
-    if (sp?.firstMealStart && sp?.lastMealEnd) {
-      const m1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-      if (m1 > 0) ms = Math.max(ms - m1, 0);
-    }
-    if (sp?.secondMealStart && sp?.secondMealEnd) {
-      const m2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-      if (m2 > 0) ms = Math.max(ms - m2, 0);
-    }
-    return ms;
+    return getDisplayedWorkedMs(uid);
   };
 
   // Save Payment Data - Store payment calculations to database
@@ -2609,17 +2621,17 @@ export default function EventDashboardPage() {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
         if (memberDivision === 'trailers') return sum;
-        const ms = timesheetTotals[uid] || 0;
+        const ms = getDisplayedWorkedMs(uid);
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
 
       const perVendorCommissionShare =
         vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
-      // Build vendor payments array (save RAW hours; meal deduction applied at display/API level)
+      // Build vendor payments array using the same UI hour calculation.
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const totalMs = timesheetTotals[uid] || 0;
+        const totalMs = getDisplayedWorkedMs(uid);
         const actualHours = totalMs / (1000 * 60 * 60);
         const memberDivision = member.users?.division;
 
@@ -4540,6 +4552,9 @@ export default function EventDashboardPage() {
               Staff
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+              Gate/Phone
+            </th>
+            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
               Clock In
             </th>
             <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
@@ -4568,7 +4583,7 @@ export default function EventDashboardPage() {
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={9} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={10} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -4606,21 +4621,11 @@ export default function EventDashboardPage() {
                 secondMealStart,
                 secondMealEnd,
               };
-
-              let totalMs = timesheetTotals[uid] || 0;
-              // Deduct meal times from total hours
-              if (span.firstMealStart && span.lastMealEnd) {
-                const meal1Ms = new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
-                if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
-              }
-              if (span.secondMealStart && span.secondMealEnd) {
-                const meal2Ms = new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
-                if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
-              }
-              const totalMinutes = Math.floor(totalMs / 60000);
-              const hh = Math.floor(totalMinutes / 60);
-              const mm = totalMinutes % 60;
-              const hours = `${hh}:${String(mm).padStart(2, "0")}`;
+              const gatePhoneTime = subtractMinutesFromHHMM(
+                isEditing ? draft.firstIn : firstClockIn,
+                GATE_PHONE_OFFSET_MINUTES
+              );
+              const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
@@ -4629,6 +4634,16 @@ export default function EventDashboardPage() {
                       {firstName} {lastName}
                     </div>
                     <div className="text-xs text-gray-500">{m.users?.email || "N/A"}</div>
+                  </td>
+
+                  <td className="px-3 py-3">
+                    <input
+                      type="time"
+                      value={gatePhoneTime}
+                      placeholder="--:--"
+                      readOnly
+                      className="border rounded px-2 py-1 text-sm w-28 bg-gray-100 cursor-not-allowed"
+                    />
                   </td>
 
                   <td className="px-3 py-3">
@@ -4807,8 +4822,8 @@ export default function EventDashboardPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0z" />
                     </svg>
                   </div>
-                  <div className="text-3xl font-bold text-blue-900">{event?.confirmed_staff || 0}</div>
-                  <div className="text-xs text-blue-600 mt-1">of {event?.required_staff || 0} required</div>
+                  <div className="text-3xl font-bold text-blue-900">{vendorCount}</div>
+                  <div className="text-xs text-blue-600 mt-1">vendors with time entries</div>
                 </div>
 
                 <div className="bg-green-50 rounded-lg p-6">
@@ -4820,24 +4835,8 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-green-900">
                     {(() => {
-                      let totalMs = 0;
-                      for (const uid of Object.keys(timesheetTotals)) {
-                        let ms = timesheetTotals[uid] || 0;
-                        const sp = timesheetSpans[uid];
-                        if (sp?.firstMealStart && sp?.lastMealEnd) {
-                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
-                        }
-                        if (sp?.secondMealStart && sp?.secondMealEnd) {
-                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
-                        }
-                        totalMs += ms;
-                      }
-                      const totalMinutes = Math.floor(totalMs / 60000);
-                      const hh = Math.floor(totalMinutes / 60);
-                      const mm = totalMinutes % 60;
-                      return `${hh}:${String(mm).padStart(2, "0")}`;
+                      const totalMs = getTotalDisplayedWorkedMs();
+                      return formatHoursFromMs(totalMs);
                     })()}
                   </div>
                   <div className="text-xs text-green-600 mt-1">total hours</div>
@@ -4852,20 +4851,7 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-purple-900">
                     ${(() => {
-                      let totalMs = 0;
-                      for (const uid of Object.keys(timesheetTotals)) {
-                        let ms = timesheetTotals[uid] || 0;
-                        const sp = timesheetSpans[uid];
-                        if (sp?.firstMealStart && sp?.lastMealEnd) {
-                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
-                        }
-                        if (sp?.secondMealStart && sp?.secondMealEnd) {
-                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
-                        }
-                        totalMs += ms;
-                      }
+                      const totalMs = getTotalDisplayedWorkedMs();
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state
@@ -4982,54 +4968,16 @@ export default function EventDashboardPage() {
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
                           const hasAttestation = Boolean(member?.has_attestation);
 
-                          // Worked hours for member & all
-                          // Prefer server-computed totals; fall back to span-based calc if missing
-                          let totalMs = timesheetTotals[uid] || 0;
-                          const memberSpan = timesheetSpans[uid] || {} as any;
-                          if (!totalMs || totalMs <= 0) {
-                            if (memberSpan.firstIn && memberSpan.lastOut) {
-                              try {
-                                totalMs = Math.max(new Date(memberSpan.lastOut).getTime() - new Date(memberSpan.firstIn).getTime(), 0);
-                              } catch {}
-                            }
-                          }
-                          // Deduct meal times to match timesheet tab
-                          if (memberSpan.firstMealStart && memberSpan.lastMealEnd) {
-                            const meal1Ms = new Date(memberSpan.lastMealEnd).getTime() - new Date(memberSpan.firstMealStart).getTime();
-                            if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
-                          }
-                          if (memberSpan.secondMealStart && memberSpan.secondMealEnd) {
-                            const meal2Ms = new Date(memberSpan.secondMealEnd).getTime() - new Date(memberSpan.secondMealStart).getTime();
-                            if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
-                          }
+                          // Worked hours include meal deductions plus Gate/Phone lead time.
+                          const totalMs = getDisplayedWorkedMs(uid);
                           const actualHours = totalMs / (1000 * 60 * 60);
-                          const totalMin = Math.floor(totalMs / 60000);
-                          const hhDisp = Math.floor(totalMin / 60);
-                          const mmDisp = totalMin % 60;
-                          const hoursHHMM = `${hhDisp}:${String(mmDisp).padStart(2, "0")}`;
+                          const hoursHHMM = formatHoursFromMs(totalMs);
                           // Hours pool for prorating excludes 'trailers' division
-                          // Helper: get meal-deducted ms for a given user
-                          const getMealDeductedMs = (memberId: string) => {
-                            let ms = timesheetTotals[memberId] || 0;
-                            const sp = timesheetSpans[memberId];
-                            if (sp?.firstMealStart && sp?.lastMealEnd) {
-                              const m1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-                              if (m1 > 0) ms = Math.max(ms - m1, 0);
-                            }
-                            if (sp?.secondMealStart && sp?.secondMealEnd) {
-                              const m2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-                              if (m2 > 0) ms = Math.max(ms - m2, 0);
-                            }
-                            return ms;
-                          };
-                          const totalHoursAll =
-                            Object.keys(timesheetTotals).reduce((sum, k) => sum + getMealDeductedMs(k), 0) /
-                            (1000 * 60 * 60);
                           const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
                             const mDivision = m.users?.division;
                             if (mDivision === 'trailers') return sum;
                             const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
-                            return sum + (getMealDeductedMs(mUid) / (1000 * 60 * 60));
+                            return sum + (getDisplayedWorkedMs(mUid) / (1000 * 60 * 60));
                           }, 0);
 
                           // Use rates from database based on venue state
@@ -5285,20 +5233,7 @@ export default function EventDashboardPage() {
                   <div className="flex justify-between items-center pb-3 border-b">
                     <span className="text-gray-600">Base Pay</span>
                     <span className="font-semibold text-gray-900"> ${(() => {
-                      let totalMs = 0;
-                      for (const uid of Object.keys(timesheetTotals)) {
-                        let ms = timesheetTotals[uid] || 0;
-                        const sp = timesheetSpans[uid];
-                        if (sp?.firstMealStart && sp?.lastMealEnd) {
-                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
-                        }
-                        if (sp?.secondMealStart && sp?.secondMealEnd) {
-                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
-                        }
-                        totalMs += ms;
-                      }
+                      const totalMs = getTotalDisplayedWorkedMs();
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state
@@ -5344,20 +5279,7 @@ export default function EventDashboardPage() {
                   <div className="flex justify-between items-center pt-2">
                     <span className="text-lg font-bold text-gray-900">Total Payroll</span>
                     <span className="text-2xl font-bold text-green-600">${(() => {
-                      let totalMs = 0;
-                      for (const uid of Object.keys(timesheetTotals)) {
-                        let ms = timesheetTotals[uid] || 0;
-                        const sp = timesheetSpans[uid];
-                        if (sp?.firstMealStart && sp?.lastMealEnd) {
-                          const meal1 = new Date(sp.lastMealEnd).getTime() - new Date(sp.firstMealStart).getTime();
-                          if (meal1 > 0) ms = Math.max(ms - meal1, 0);
-                        }
-                        if (sp?.secondMealStart && sp?.secondMealEnd) {
-                          const meal2 = new Date(sp.secondMealEnd).getTime() - new Date(sp.secondMealStart).getTime();
-                          if (meal2 > 0) ms = Math.max(ms - meal2, 0);
-                        }
-                        totalMs += ms;
-                      }
+                      const totalMs = getTotalDisplayedWorkedMs();
                       const totalHours = totalMs / (1000 * 60 * 60);
 
                       // Use rates from database based on venue state

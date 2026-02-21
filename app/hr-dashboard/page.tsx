@@ -70,6 +70,10 @@ type SickLeaveAccrual = {
   accrued_months: number;
   accrued_hours: number;
   accrued_days: number;
+  carry_over_hours: number;
+  carry_over_days: number;
+  year_to_date_hours: number;
+  year_to_date_days: number;
   used_hours: number;
   used_days: number;
   balance_hours: number;
@@ -132,6 +136,11 @@ function HRDashboardContent() {
     const st = normalizeState(s);
     return st === "CA" || st === "NV" || st === "WI";
   };
+  const GATE_PHONE_OFFSET_HOURS = 0.5;
+  const addGatePhoneLeadHours = (hours: number): number => {
+    if (!Number.isFinite(hours) || hours <= 0) return 0;
+    return Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
+  };
   const getRestBreakAmount = (actualHours: number, stateCode: string) => {
     const st = normalizeState(stateCode);
     if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
@@ -170,9 +179,11 @@ function HRDashboardContent() {
   const formatExactMoney = (amount: number): string =>
     (Number.isFinite(amount) ? amount : 0).toFixed(2);
   const getEffectiveHours = (payment: any): number => {
+    // Payroll tab: when hours are computed from timesheet effective_hours,
+    // include the Gate/Phone lead time (30 minutes).
     if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
       const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
-      if (Number.isFinite(effective) && effective >= 0) return effective;
+      if (Number.isFinite(effective) && effective >= 0) return addGatePhoneLeadHours(effective);
     }
     const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
     if (actual > 0) return actual;
@@ -215,6 +226,20 @@ function HRDashboardContent() {
     isWeeklyOT: boolean;
   };
 
+  type OtherAdjustmentType = "reimbursement_1" | "meal_break";
+  const DEFAULT_OTHER_ADJUSTMENT_TYPE: OtherAdjustmentType = "reimbursement_1";
+  const normalizeOtherAdjustmentType = (value?: string | null): OtherAdjustmentType => {
+    const normalized = (value || "")
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "_")
+      .replace(/-/g, "_");
+    return normalized === "meal_break" ? "meal_break" : "reimbursement_1";
+  };
+  const getOtherAdjustmentTypeLabel = (value?: string | null): string =>
+    normalizeOtherAdjustmentType(value) === "meal_break" ? "Meal Break" : "Reimbursement 1";
+
   const computeAzNyCommissionPerVendor = (
     items: AzNyCommissionCalcItem[],
     totalCommissionPool: number
@@ -245,6 +270,7 @@ function HRDashboardContent() {
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
+  const [adjustmentTypes, setAdjustmentTypes] = useState<Record<string, Record<string, OtherAdjustmentType>>>({});
   const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string } | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
 
@@ -264,6 +290,7 @@ function HRDashboardContent() {
   const [updatingSickLeaveId, setUpdatingSickLeaveId] = useState<string | null>(null);
   const [addingUsedHoursUserId, setAddingUsedHoursUserId] = useState<string | null>(null);
   const [removingUsedHoursUserId, setRemovingUsedHoursUserId] = useState<string | null>(null);
+  const [editingSickAccrualKey, setEditingSickAccrualKey] = useState<string | null>(null);
   const [sickLeaveStats, setSickLeaveStats] = useState<SickLeaveStats>({
     total: 0,
     pending: 0,
@@ -616,7 +643,7 @@ function HRDashboardContent() {
                     const lastName = profile?.last_name || '';
 
                     return {
-                      userId: member.vendor_id,
+                      userId: (member.vendor_id || member.user_id || user?.id || '').toString(),
                       firstName,
                       lastName,
                       email: user?.email || 'N/A',
@@ -631,6 +658,7 @@ function HRDashboardContent() {
                       tips: 0,
                       totalPay: 0,
                       adjustmentAmount: 0,
+                      adjustmentType: DEFAULT_OTHER_ADJUSTMENT_TYPE,
                       finalPay: 0,
                       status: member.status // Include confirmation status
                     };
@@ -747,7 +775,9 @@ function HRDashboardContent() {
             const rawLastName = profile?.last_name || '';
             const firstName = rawFirstName !== 'N/A' ? safeDecrypt(rawFirstName) : 'N/A';
             const lastName = rawLastName ? safeDecrypt(rawLastName) : '';
+            const paymentUserId = (payment.user_id || payment.userId || user?.id || '').toString();
             const adjustmentAmount = Number(payment.adjustment_amount || 0);
+            const adjustmentType = normalizeOtherAdjustmentType(payment.adjustment_note);
             const actualHours = getEffectiveHours(payment);
 
             const memberDivision = payment?.users?.division;
@@ -809,7 +839,7 @@ function HRDashboardContent() {
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
-              userId: payment.user_id,
+              userId: paymentUserId,
               firstName,
               lastName,
               email: user?.email || 'N/A',
@@ -826,6 +856,7 @@ function HRDashboardContent() {
               tips,
               totalPay,
               adjustmentAmount,
+              adjustmentType,
               finalPay,
               regRate: baseRate,
               loadedRate,
@@ -880,15 +911,21 @@ function HRDashboardContent() {
 
       // Seed editable adjustments map from loaded data
       const initialAdjustments: Record<string, Record<string, number>> = {};
+      const initialAdjustmentTypes: Record<string, Record<string, OtherAdjustmentType>> = {};
       venuesArr.forEach((v) => {
         v.events.forEach((ev: any) => {
           if (!initialAdjustments[ev.id]) initialAdjustments[ev.id] = {};
+          if (!initialAdjustmentTypes[ev.id]) initialAdjustmentTypes[ev.id] = {};
           (ev.payments || []).forEach((p: any) => {
-            initialAdjustments[ev.id][p.userId] = Number(p.adjustmentAmount || 0);
+            const paymentUserId = (p.userId || '').toString();
+            if (!paymentUserId) return;
+            initialAdjustments[ev.id][paymentUserId] = Number(p.adjustmentAmount || 0);
+            initialAdjustmentTypes[ev.id][paymentUserId] = normalizeOtherAdjustmentType(p.adjustmentType);
           });
         });
       });
       setAdjustments(initialAdjustments);
+      setAdjustmentTypes(initialAdjustmentTypes);
     } catch (e: any) {
       setPaymentsError(e.message || 'Failed to load payments');
     } finally {
@@ -897,19 +934,42 @@ function HRDashboardContent() {
   }, [paymentsStartDate, paymentsEndDate]);
 
   // Persist a single adjustment
-  const saveAdjustment = useCallback(async (eventId: string, userId: string) => {
+  const saveAdjustment = useCallback(async (eventId: string, userId: string): Promise<boolean> => {
     try {
       setSavingAdjustment(true);
+      if (!eventId || !userId) {
+        throw new Error('Missing event or user id for adjustment save');
+      }
+
       const amount = Number(adjustments[eventId]?.[userId] || 0);
+      const adjustmentType = normalizeOtherAdjustmentType(adjustmentTypes[eventId]?.[userId]);
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/payment-adjustments', {
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      };
+
+      const basePayload = {
+        event_id: eventId,
+        user_id: userId,
+        adjustment_amount: amount,
+      };
+
+      // Backward-compatible save: try with type metadata first, then retry without note.
+      let res = await fetch('/api/payment-adjustments', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-        body: JSON.stringify({ event_id: eventId, user_id: userId, adjustment_amount: amount }),
+        headers,
+        body: JSON.stringify({ ...basePayload, adjustment_note: adjustmentType }),
       });
+
+      if (!res.ok) {
+        res = await fetch('/api/payment-adjustments', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(basePayload),
+        });
+      }
+
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || 'Failed to save adjustment');
@@ -934,6 +994,7 @@ function HRDashboardContent() {
             return {
               ...p,
               adjustmentAmount: newAdj,
+              adjustmentType,
               loadedRate,
               finalPay: Number(p.totalPay || 0) + newAdj,
               totalGrossPay: Number(p.totalPay || 0) + newAdj,
@@ -948,10 +1009,16 @@ function HRDashboardContent() {
         const totalHours = events.reduce((sum: number, ev: any) => sum + Number(ev.eventHours || 0), 0);
         return { ...v, events, totalPayment, totalHours };
       }));
+      return true;
+    } catch (e: any) {
+      const message = e?.message || 'Failed to save adjustment';
+      setPaymentsError(message);
+      alert(message);
+      return false;
     } finally {
       setSavingAdjustment(false);
     }
-  }, [adjustments, supabase]);
+  }, [adjustments, adjustmentTypes, supabase]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -1018,11 +1085,11 @@ function HRDashboardContent() {
           'State': venue.state || '',
           'Event': event.name || '',
           'Date': event.date || '',
-          'Commission per Vendor': `$${formatPayrollMoney(Number(event.commissionPerVendor || 0))}`,
-          'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': `$${formatExactMoney(Number(event.adjustedGrossAmount || 0))}`,
           'Total Commission': `$${formatExactMoney(Number(event.commissionDollars || 0))}`,
+          'Commission per Vendor': `$${formatPayrollMoney(Number(event.commissionPerVendor || 0))}`,
+          'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
           'Total Tips': `$${formatExactMoney(Number(event.totalTips || 0))}`,
           'Total Rest Break': `$${formatExactMoney(Number(event.totalRestBreak || 0))}`,
           'Total Other': `$${formatExactMoney(Number(event.totalOther || 0))}`,
@@ -1043,11 +1110,6 @@ function HRDashboardContent() {
             const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
             const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
             const other = Number(p.adjustmentAmount || 0);
-            const totalFinalCommissionForLoadedRate =
-              other !== 0 ? (totalFinalCommissionAmt + other) : totalFinalCommissionAmt;
-            const finalLoadedRate = hours > 0
-              ? (totalFinalCommissionForLoadedRate / hours)
-              : 0;
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
             const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
@@ -1061,8 +1123,7 @@ function HRDashboardContent() {
               'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
               'Email': p.email || '',
               'Reg Rate': formatPayrollMoney(regRate),
-              'Loaded Rate': formatPayrollMoney(loadedRate),
-              'Final Loaded Rate': formatPayrollMoney(finalLoadedRate),
+              'Rate in Effect': formatPayrollMoney(loadedRate),
               'Hours': hoursHHMM,
               'Hours in Decimal': hoursInDecimal,
               'Ext Amt on Reg Rate': formatExactMoney(extAmtOnRegRate),
@@ -1094,11 +1155,11 @@ function HRDashboardContent() {
         { wch: 8 },  // State
         { wch: 30 }, // Event
         { wch: 12 }, // Date
-        { wch: 22 }, // Commission per Vendor
-        { wch: 16 }, // Vendors w/ Hours
         { wch: 10 }, // Hours
         { wch: 22 }, // Adjusted Gross Amount
         { wch: 18 }, // Total Commission
+        { wch: 22 }, // Commission per Vendor
+        { wch: 16 }, // Vendors w/ Hours
         { wch: 12 }, // Total Tips
         { wch: 18 }, // Total Rest Break
         { wch: 12 }, // Total Other
@@ -1118,8 +1179,7 @@ function HRDashboardContent() {
         { wch: 25 }, // Employee
         { wch: 30 }, // Email
         { wch: 10 }, // Reg Rate
-        { wch: 12 }, // Loaded Rate
-        { wch: 16 }, // Final Loaded Rate
+        { wch: 12 }, // Rate in Effect
         { wch: 8 },  // Hours
         { wch: 16 }, // Hours in Decimal
         { wch: 18 }, // Ext Amt on Reg Rate
@@ -1386,6 +1446,59 @@ function HRDashboardContent() {
         alert(err?.message || "Failed to remove used sick leave hours");
       } finally {
         setRemovingUsedHoursUserId(null);
+      }
+    },
+    [loadSickLeaves]
+  );
+
+  const editSickAccrualHours = useCallback(
+    async (
+      userId: string,
+      employeeName: string,
+      field: "carry_over" | "year_to_date",
+      currentHours: number
+    ) => {
+      const fieldLabel = field === "carry_over" ? "Carry Over" : "Year to Date";
+      const input = window.prompt(
+        `Set ${fieldLabel} hours for ${employeeName}:`,
+        Number(currentHours || 0).toFixed(2)
+      );
+      if (input == null) return;
+
+      const parsedHours = Number(input.trim());
+      if (!Number.isFinite(parsedHours) || parsedHours < 0) {
+        alert("Please enter a valid number of hours (0 or greater).");
+        return;
+      }
+
+      const key = `${field}:${userId}`;
+      setEditingSickAccrualKey(key);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch("/api/hr/sick-leaves", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+          body: JSON.stringify({
+            user_id: userId,
+            operation: "set_adjustment",
+            adjustment_field: field,
+            target_hours: Number(parsedHours.toFixed(2)),
+          }),
+        });
+
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.error || `Failed to update ${fieldLabel} hours`);
+        }
+
+        await loadSickLeaves();
+      } catch (err: any) {
+        alert(err?.message || `Failed to update ${fieldLabel} hours`);
+      } finally {
+        setEditingSickAccrualKey(null);
       }
     },
     [loadSickLeaves]
@@ -1817,10 +1930,10 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Date</th>
-                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Commission per Vendor</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Adjusted Gross Amount</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Commission</th>
+                            <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Commission per Vendor</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Tips</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Rest Break</th>
                             <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Total Other</th>
@@ -1840,11 +1953,6 @@ function HRDashboardContent() {
                                   <div>{ev.date || '—'}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
-                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Commission per Vendor</div>
-                                  <div>${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</div>
-                                  <div className="text-[10px] text-gray-400">{Number(ev.vendorsWithHours || 0)} vendors w/ hours</div>
-                                </td>
-                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Hours</div>
                                   <div>{formatHoursHHMM(ev.eventHours || 0)}</div>
                                 </td>
@@ -1855,6 +1963,11 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Commission</div>
                                   <div>${formatExactMoney(Number(ev.commissionDollars || 0))}</div>
+                                </td>
+                                <td className="px-4 py-2 text-sm text-gray-900 text-right">
+                                  <div className="text-[10px] text-gray-400 uppercase keeping-wider">Commission per Vendor</div>
+                                  <div>${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</div>
+                                  <div className="text-[10px] text-gray-400">{Number(ev.vendorsWithHours || 0)} vendors w/ hours</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
@@ -1940,6 +2053,10 @@ function HRDashboardContent() {
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = Number(p.restBreak || 0);
                                                 const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+                                                const currentAdjustmentType = normalizeOtherAdjustmentType(
+                                                  ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
+                                                );
+                                                const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
 
                                                 return (
                                                   <>
@@ -1958,35 +2075,59 @@ function HRDashboardContent() {
                                                     )}
                                                     <td className="p-2 text-sm text-right">
                                                       {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
-                                                        <div className="flex items-center justify-end gap-2">
-                                                          <span className="text-gray-500">$</span>
-                                                          <input
-                                                            type="number"
-                                                            className="w-24 px-2 py-1 border rounded text-sm"
-                                                            value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
+                                                        <div className="flex flex-col items-end gap-1">
+                                                          <div className="flex items-center justify-end gap-2">
+                                                            <span className="text-gray-500">$</span>
+                                                            <input
+                                                              type="number"
+                                                              className="w-24 px-2 py-1 border rounded text-sm"
+                                                              value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
+                                                              onChange={(e) => {
+                                                                const val = Number(e.target.value) || 0;
+                                                                setAdjustments(prev => ({
+                                                                  ...prev,
+                                                                  [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
+                                                                }));
+                                                              }}
+                                                              step="1"
+                                                            />
+                                                          </div>
+                                                          <select
+                                                            className="w-32 px-2 py-1 border rounded text-xs text-right"
+                                                            value={currentAdjustmentType}
                                                             onChange={(e) => {
-                                                              const val = Number(e.target.value) || 0;
-                                                              setAdjustments(prev => ({
+                                                              const nextType = normalizeOtherAdjustmentType(e.target.value);
+                                                              setAdjustmentTypes(prev => ({
                                                                 ...prev,
-                                                                [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
+                                                                [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: nextType },
                                                               }));
                                                             }}
-                                                            step="1"
-                                                          />
-                                                          <button
-                                                            onClick={async () => { await saveAdjustment(ev.id, p.userId); setEditingCell(null); }}
-                                                            className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                                          >Save</button>
-                                                          <button onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                          >
+                                                            <option value="reimbursement_1">Reimbursement 1</option>
+                                                            <option value="meal_break">Meal Break</option>
+                                                          </select>
+                                                          <div className="flex items-center gap-2">
+                                                            <button
+                                                              type="button"
+                                                              onClick={async () => {
+                                                                const saved = await saveAdjustment(ev.id, p.userId);
+                                                                if (saved) setEditingCell(null);
+                                                              }}
+                                                              className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                                            >Save</button>
+                                                            <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                          </div>
                                                         </div>
                                                       ) : (
-                                                        <span
-                                                          className={`cursor-pointer ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                                                        <button
+                                                          type="button"
+                                                          className={`text-right ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
                                                           onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
                                                           title="Click to edit"
                                                         >
-                                                          {`$${formatPayrollMoney(Number(p.adjustmentAmount || 0))}`}
-                                                        </span>
+                                                          <div>{`$${formatPayrollMoney(Number(p.adjustmentAmount || 0))}`}</div>
+                                                          <div className="text-[10px] text-gray-400">{currentAdjustmentTypeLabel}</div>
+                                                        </button>
                                                       )}
                                                     </td>
                                                     <td className="p-2 text-sm font-semibold text-right">${formatPayrollMoney(totalGrossPay)}</td>
@@ -2293,6 +2434,8 @@ function HRDashboardContent() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Carry Over</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Year to Date</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Worked</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Earned</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Used</th>
@@ -2304,7 +2447,7 @@ function HRDashboardContent() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {loadingSickLeaves && (
                       <tr>
-                        <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                        <td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">
                           Loading earned sick leave balances...
                         </td>
                       </tr>
@@ -2314,6 +2457,46 @@ function HRDashboardContent() {
                         <td className="px-4 py-3 align-top">
                           <p className="text-sm font-semibold text-gray-900">{record.employee_name}</p>
                           <p className="text-xs text-gray-500">{record.employee_email}</p>
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-blue-700">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              editSickAccrualHours(
+                                record.user_id,
+                                record.employee_name,
+                                "carry_over",
+                                Number(record.carry_over_hours || 0)
+                              )
+                            }
+                            disabled={editingSickAccrualKey === `carry_over:${record.user_id}`}
+                            className="underline decoration-dotted underline-offset-2 hover:text-blue-800 disabled:opacity-50"
+                            title="Edit carry over hours"
+                          >
+                            {editingSickAccrualKey === `carry_over:${record.user_id}`
+                              ? "Saving..."
+                              : formatSickLeaveHours(record.carry_over_hours)}
+                          </button>
+                        </td>
+                        <td className="px-4 py-3 align-top text-sm text-indigo-700">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              editSickAccrualHours(
+                                record.user_id,
+                                record.employee_name,
+                                "year_to_date",
+                                Number(record.year_to_date_hours || 0)
+                              )
+                            }
+                            disabled={editingSickAccrualKey === `year_to_date:${record.user_id}`}
+                            className="underline decoration-dotted underline-offset-2 hover:text-indigo-800 disabled:opacity-50"
+                            title="Edit year to date hours"
+                          >
+                            {editingSickAccrualKey === `year_to_date:${record.user_id}`
+                              ? "Saving..."
+                              : formatSickLeaveHours(record.year_to_date_hours)}
+                          </button>
                         </td>
                         <td className="px-4 py-3 align-top text-sm text-gray-700">
                           {formatSickLeaveHours(record.worked_hours)}
@@ -2363,7 +2546,7 @@ function HRDashboardContent() {
                     ))}
                     {!loadingSickLeaves && filteredSickLeaveAccruals.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                        <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
                           No employees with earned sick leave hours match the current search.
                         </td>
                       </tr>
