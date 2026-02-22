@@ -341,6 +341,454 @@ export async function POST(req: NextRequest) {
       });
     };
 
+    if (paystubState === "CA") {
+      const parseAmount = (value: any, absolute = true) => {
+        const raw = (value ?? "").toString().replace(/,/g, "").trim();
+        const parsed = Number.parseFloat(raw);
+        if (!Number.isFinite(parsed)) return 0;
+        return absolute ? Math.abs(parsed) : parsed;
+      };
+
+      const formatDateDisplay = (value?: string | null) => {
+        const str = (value || "").toString().trim();
+        if (!str) return "";
+        if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+          const [yy, mm, dd] = str.split("-");
+          return `${mm}/${dd}/${yy}`;
+        }
+        const asDate = new Date(str);
+        if (!Number.isNaN(asDate.getTime())) {
+          const mm = String(asDate.getUTCMonth() + 1).padStart(2, "0");
+          const dd = String(asDate.getUTCDate()).padStart(2, "0");
+          const yy = asDate.getUTCFullYear();
+          return `${mm}/${dd}/${yy}`;
+        }
+        return str;
+      };
+
+      const fmt = (value: number) =>
+        Number(value || 0).toLocaleString("en-US", {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 2,
+        });
+      const money = (value: number) => `$${fmt(value)}`;
+      const topY = (valueFromTop: number) => height - valueFromTop;
+      const drawTopText = (text: string, x: number, yFromTop: number, options: any = {}) => {
+        drawText(text, x, topY(yFromTop), options);
+      };
+      const drawTopLine = (x1: number, yFromTop: number, x2: number) => {
+        drawLine(x1, topY(yFromTop), x2, topY(yFromTop));
+      };
+
+      const splitAddressLines = (rawAddress?: string | null) => {
+        const str = (rawAddress || "").toString().trim();
+        if (!str) return ["", "", ""];
+        const parts = str.split(",").map((p) => p.trim()).filter(Boolean);
+        if (parts.length <= 1) return [str, "", ""];
+        if (parts.length === 2) return [parts[0], parts[1], ""];
+        return [parts[0], parts.slice(1, parts.length - 1).join(", "), parts[parts.length - 1]];
+      };
+
+      const ssnDigits = (ssn || "").replace(/\D/g, "");
+      const maskedSsn = ssnDigits.length >= 4 ? `XXX-XX-${ssnDigits.slice(-4)}` : (ssn || "XXX-XX-XXXX");
+      const accountMask = ssnDigits.length >= 4 ? `XXXXXX${ssnDigits.slice(-4)}` : "XXXXXXXXXX";
+      const routingMask = "XXXXXXXXX";
+      const [addressLine1, addressLine2, addressLine3] = splitAddressLines(address);
+
+      // Derive pay period from actual event dates so it always coincides
+      // with the events loaded in the paystub generator.
+      // Form values take priority; fall back to earliest/latest event date.
+      const eventDatesArr = (events || [])
+        .map((e: any) => (e?.event_date || "").toString().split("T")[0])
+        .filter(Boolean)
+        .sort();
+      const effectivePeriodStart = (payPeriodStart || "").trim() || (eventDatesArr[0] ?? "");
+      const effectivePeriodEnd = (payPeriodEnd || "").trim() || (eventDatesArr[eventDatesArr.length - 1] ?? "");
+      // payDate falls back to the period end date when not provided (batch mode)
+      const effectivePayDate = (payDate || "").trim() || effectivePeriodEnd;
+
+      const payDateFormatted = formatDateDisplay(effectivePayDate);
+      const payDateDigits = (payDateFormatted || effectivePayDate || "").replace(/\D/g, "");
+      const statementNumberSeed = `${payDateDigits}${ssnDigits}${(employeeId || "").replace(/\D/g, "")}`;
+      const statementNumber = (statementNumberSeed.slice(-7) || "0000000").padStart(7, "0");
+
+      let totalRegHours = 0;
+      let totalOtHours = 0;
+      let totalDtHours = 0;
+      let totalHoursWorked = 0;
+      let totalTips = 0;
+      let totalCommission = 0;
+      let totalRestBreak = 0;
+      let totalOther = 0;
+      let totalGross = 0;
+      let totalRegularPayAmount = 0;
+      let totalOvertimePayAmount = 0;
+      let totalDoubletimePayAmount = 0;
+
+      for (const event of events || []) {
+        const worker = matchedUserId
+          ? (event.workers || []).find((w: any) => w?.user_id === matchedUserId) || event.workers?.[0]
+          : event.workers?.[0];
+        const paymentData = worker?.payment_data;
+        const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
+
+        const shouldRenderRow = !!worker && (workedHoursFromTimeEntries > 0 || !!paymentData);
+        if (!shouldRenderRow) continue;
+
+        const {
+          baseRate,
+          vendorCountForCommission,
+          perVendorCommissionShare,
+          commissionPoolDollars,
+          workers: eventWorkers,
+          totalTipsEvent,
+          totalEventHours
+        } = getPayrollInputsForEvent(event);
+
+        const regHours = Number(paymentData?.regular_hours || 0);
+        const otHours = Number(paymentData?.overtime_hours || 0);
+        const dtHours = Number(paymentData?.doubletime_hours || 0);
+        const actualHoursFromPayment = paymentData?.actual_hours != null ? Number(paymentData.actual_hours) || 0 : 0;
+        const actualHours =
+          actualHoursFromPayment > 0
+            ? actualHoursFromPayment
+            : workedHoursFromTimeEntries > 0
+              ? workedHoursFromTimeEntries
+              : regHours + otHours + dtHours;
+
+        const eventId = (event?.id || "").toString();
+        const priorWeeklyHours = azNyMode ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
+        const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
+
+        const extAmtRegular = actualHours * baseRate;
+        const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+
+        let commissionAmt = 0;
+        let totalFinalCommissionAmt = 0;
+        let loadedRateBase = actualHours > 0 ? baseRate : 0;
+        let computedOtRate = 0;
+        let extAmtOnRegRate = 0;
+
+        if (azNyMode) {
+          const items: AzNyCommissionCalcItem[] = (eventWorkers || []).map((w: any) => {
+            const wh = getActualHoursForWorker(w);
+            const div = w?.division;
+            const divNorm = normalizeDivision(div);
+            const eligible = !isTrailersDivision(div) && (isVendorDivision(div) || divNorm === "") && wh > 0;
+            const prior = weeklyPriorHoursByEventId[eventId]?.[w?.user_id] || 0;
+            const wIsWeeklyOT = (prior + wh) > 40;
+            return {
+              eligible,
+              actualHours: wh,
+              extAmtRegular: wh * baseRate,
+              isWeeklyOT: wIsWeeklyOT,
+            };
+          });
+
+          const commissionPerVendorAzNy = computeAzNyCommissionPerVendor(items, commissionPoolDollars);
+          const isEligibleThisWorker =
+            !!worker &&
+            !isTrailersDivision(worker?.division) &&
+            (isVendorDivision(worker?.division) || normalizeDivision(worker?.division) === "") &&
+            actualHours > 0;
+          commissionAmt = isEligibleThisWorker ? commissionPerVendorAzNy : 0;
+
+          const totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + commissionAmt) : 0;
+          loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
+          computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
+          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtRegular;
+          totalFinalCommissionAmt = actualHours > 0 ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase) : 0;
+        } else {
+          extAmtOnRegRate = extAmtOnRegRateNonAzNy;
+          commissionAmt =
+            !isTrailersDivision(worker?.division) && actualHours > 0 && vendorCountForCommission > 0
+              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              : 0;
+          totalFinalCommissionAmt = actualHours > 0 ? Math.max(150, extAmtOnRegRateNonAzNy + commissionAmt) : 0;
+          loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
+        }
+
+        const tips = (totalEventHours > 0 && totalTipsEvent > 0)
+          ? totalTipsEvent * (actualHours / totalEventHours)
+          : Number(paymentData?.tips || 0);
+        const commission = commissionAmt;
+        const other = Number(worker?.adjustment_amount || 0);
+
+        const regPay = Number(paymentData?.regular_pay || 0);
+        const otPay = Number(paymentData?.overtime_pay || 0);
+        const dtPay = Number(paymentData?.doubletime_pay || 0);
+
+        const restBreak = includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0;
+        const computedTotalPay = totalFinalCommissionAmt + tips + restBreak;
+        const computedTotalGrossPay = computedTotalPay + other;
+
+        totalRegHours += regHours;
+        totalOtHours += otHours;
+        totalDtHours += dtHours;
+        totalHoursWorked += actualHours;
+        totalTips += tips;
+        totalCommission += commission;
+        totalRestBreak += restBreak;
+        totalOther += other;
+        totalGross += computedTotalGrossPay;
+        totalRegularPayAmount += regPay;
+        totalOvertimePayAmount += otPay;
+        totalDoubletimePayAmount += dtPay;
+      }
+
+      const federalIncomeAmt = parseAmount(federalIncome);
+      const socialSecurityAmt = parseAmount(socialSecurity);
+      const medicareAmt = parseAmount(medicare);
+      const stateIncomeAmt = parseAmount(stateIncome);
+      const stateDIAmt = parseAmount(stateDI);
+      const miscDeductionAmt = parseAmount(miscDeduction);
+      const reimbursement = parseAmount(miscReimbursement, false);
+      const totalDeductions =
+        federalIncomeAmt +
+        socialSecurityAmt +
+        medicareAmt +
+        stateIncomeAmt +
+        stateDIAmt +
+        miscDeductionAmt;
+      const netPay = totalGross - totalDeductions + reimbursement;
+      const effectiveRate = totalHoursWorked > 0 ? totalCommission / totalHoursWorked : 0;
+      const mealPremiumThisPeriod = 0;
+      const sickThisPeriod = 0;
+
+      let ytdSnapshot: any = null;
+      if (matchedUserId) {
+        try {
+          const { data } = await supabaseAdmin
+            .from("payroll_deductions")
+            .select(
+              "pay_date, ytd_gross, ytd_net, federal_income_ytd, social_security_ytd, medicare_ytd, ca_state_income_ytd, ca_state_di_ytd, regular_hours, overtime_hours, doubletime_hours, regular_earnings, overtime_earnings, doubletime_earnings"
+            )
+            .eq("user_id", matchedUserId)
+            .order("pay_date", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          ytdSnapshot = data || null;
+        } catch {
+          ytdSnapshot = null;
+        }
+      }
+
+      const toIsoDate = (value: any): string | null => {
+        const str = (value || "").toString().trim();
+        if (!str) return null;
+        if (/^\d{4}-\d{2}-\d{2}$/.test(str)) return str;
+        const d = new Date(str);
+        if (Number.isNaN(d.getTime())) return null;
+        return d.toISOString().slice(0, 10);
+      };
+
+      const payDateIso = toIsoDate(effectivePayDate);
+      const snapshotDateIso = toIsoDate(ytdSnapshot?.pay_date);
+      const snapshotIncludesCurrent =
+        payDateIso && snapshotDateIso ? snapshotDateIso >= payDateIso : null;
+
+      const runningYtd = (previous: any, current: number) => {
+        const prev = Number(previous || 0);
+        if (!Number.isFinite(prev) || prev <= 0) return current;
+        if (snapshotIncludesCurrent === true) return prev;
+        if (snapshotIncludesCurrent === false) return prev + current;
+        return Math.max(prev, current);
+      };
+
+      const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
+      const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
+      const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
+      const ytdRegularPay = runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayAmount);
+      const ytdOvertimePay = runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayAmount);
+      const ytdDoubleTimePay = runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayAmount);
+      const ytdCommission = totalCommission;
+      const ytdTips = totalTips;
+      const ytdRestBreak = totalRestBreak;
+      const ytdSick = sickThisPeriod;
+      const ytdMealPremium = mealPremiumThisPeriod;
+      const ytdGross = runningYtd(ytdSnapshot?.ytd_gross, totalGross);
+      const ytdFederalIncome = runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt);
+      const ytdSocialSecurity = runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt);
+      const ytdMedicare = runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt);
+      const ytdStateIncome = runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt);
+      const ytdStateDI = runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt);
+      const ytdNet = runningYtd(ytdSnapshot?.ytd_net, netPay);
+
+      const sickCarryOverYtd = 0;
+      const sickAccruedYtd = Number(sickLeave?.accrued_hours || 0);
+      const sickTakenYtd = Number(sickLeave?.total_hours || 0);
+      const sickBalanceYtd = Number(sickLeave?.balance_hours || 0);
+
+      const black = rgb(0, 0, 0);
+      const gray = rgb(0.45, 0.45, 0.45);
+
+      drawTopText("Company Code", 42, 48, { size: 7, bold: true });
+      drawTopText("Loc/Dept", 108, 48, { size: 7, bold: true });
+      drawTopText("Number", 150, 48, { size: 7, bold: true });
+      drawTopText("Page", 188, 48, { size: 7, bold: true });
+      drawTopText("KW / SZU 25574901", 42, 56, { size: 7 });
+      drawTopText("01/", 112, 56, { size: 7 });
+      drawTopText(statementNumber, 150, 56, { size: 7 });
+      drawTopText("1 of 1", 188, 56, { size: 7 });
+      drawTopText("Print & Design Solutions Inc", 42, 64, { size: 8, bold: true });
+      drawTopText("31111 Agoura Road", 42, 72, { size: 8 });
+      drawTopText("Ste 110", 42, 80, { size: 8 });
+      drawTopText("Westlake Village, CA 91361", 42, 89, { size: 8 });
+
+      drawTopText("Earnings Statement", 320, 50, { size: 14, bold: true });
+      drawTopText("ADP", 530, 56, { size: 24, bold: true });
+      drawTopText("Period Starting:", 330, 72, { size: 8 });
+      drawTopText("Period Ending:", 330, 79, { size: 8 });
+      drawTopText("Pay Date:", 330, 87, { size: 8 });
+      drawTopText(formatDateDisplay(effectivePeriodStart), 396, 72, { size: 8 });
+      drawTopText(formatDateDisplay(effectivePeriodEnd), 396, 79, { size: 8 });
+      drawTopText(payDateFormatted, 396, 87, { size: 8 });
+
+      drawTopText("Taxable Filing Status: Single", 42, 128, { size: 8 });
+      drawTopText("Exemptions/Allowances:", 42, 135, { size: 8 });
+      drawTopText("Tax Override:", 168, 135, { size: 8 });
+      drawTopText("Federal:", 60, 142, { size: 8 });
+      drawTopText("Std W/H Table", 97, 142, { size: 8 });
+      drawTopText("State:", 60, 149, { size: 8 });
+      drawTopText("0", 96, 149, { size: 8 });
+      drawTopText("Local:", 60, 157, { size: 8 });
+      drawTopText("0", 96, 157, { size: 8 });
+      drawTopText("Federal:", 170, 142, { size: 8 });
+      drawTopText("State:", 170, 149, { size: 8 });
+      drawTopText("Local:", 170, 157, { size: 8 });
+      drawTopText(`Social Security Number:${maskedSsn}`, 42, 164, { size: 8 });
+
+      drawTopText(employeeName || "", 364, 133, { size: 11, bold: true });
+      if (addressLine1) drawTopText(addressLine1, 364, 144, { size: 10 });
+      if (addressLine2) drawTopText(addressLine2, 364, 154, { size: 10 });
+      if (addressLine3) drawTopText(addressLine3, 364, 164, { size: 10 });
+
+      drawTopText("Earning", 42, 185, { size: 8, bold: true });
+      drawTopText("Rate in effect", 128, 185, { size: 8 });
+      drawTopText("Hours", 200, 185, { size: 8 });
+      drawTopText("This Period", 255, 185, { size: 8 });
+      drawTopLine(40, 192, 332);
+
+      const regularRateAvg = totalRegHours > 0 ? (totalRegularPayAmount / totalRegHours) : 0;
+      const overtimeRateAvg = totalOtHours > 0 ? (totalOvertimePayAmount / totalOtHours) : 0;
+      const doubleTimeRateAvg = totalDtHours > 0 ? (totalDoubletimePayAmount / totalDtHours) : 0;
+
+      const earningsRows = [
+        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay },
+        { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayAmount, ytd: ytdOvertimePay },
+        { y: 216, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
+        { y: 224, label: "Commission", color: black, rate: regularRateAvg, hours: totalRegHours, thisPeriod: totalCommission, ytd: ytdCommission },
+        { y: 232, label: "Double-time", color: black, rate: doubleTimeRateAvg, hours: totalDtHours, thisPeriod: totalDoubletimePayAmount, ytd: ytdDoubleTimePay },
+        { y: 240, label: "Rest Break", color: black, rate: totalRestBreak > 0 ? effectiveRate : 0, hours: totalRestBreak > 0 ? totalHoursWorked : 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
+        { y: 248, label: "Sick", color: black, rate: sickThisPeriod > 0 ? effectiveRate : 0, hours: sickThisPeriod > 0 ? totalHoursWorked : 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
+        { y: 256, label: "Meal Premium", color: black, rate: mealPremiumThisPeriod > 0 ? effectiveRate : 0, hours: mealPremiumThisPeriod > 0 ? totalHoursWorked : 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
+      ];
+
+      for (const row of earningsRows) {
+        drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
+        if (row.rate > 0) drawTopText(fmt(row.rate), 145, row.y, { size: 8 });
+        if (row.hours > 0) drawTopText(fmt(row.hours), 210, row.y, { size: 8 });
+        drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
+      }
+
+      drawTopLine(40, 259, 332);
+      drawTopText("Gross Pay", 95, 266, { size: 8, bold: true });
+      drawTopText(money(totalGross), 255, 266, { size: 8, bold: true });
+
+      drawTopText("Statutory Deductions", 112, 277, { size: 8, bold: true });
+      drawTopText("this period", 233, 277, { size: 8 });
+      drawTopText("year to date", 289, 277, { size: 8 });
+      drawTopLine(109, 284, 332);
+
+      const deductionRows = [
+        { y: 297.1, label: "Federal Income", thisPeriod: -federalIncomeAmt, ytd: ytdFederalIncome },
+        { y: 304.3, label: "Social Security", thisPeriod: -socialSecurityAmt, ytd: ytdSocialSecurity },
+        { y: 311.8, label: "Medicare", thisPeriod: -medicareAmt, ytd: ytdMedicare },
+        { y: 319.0, label: "California State Income", thisPeriod: -stateIncomeAmt, ytd: ytdStateIncome },
+        { y: 326.4, label: "California State DI", thisPeriod: -stateDIAmt, ytd: ytdStateDI },
+      ];
+
+      for (const row of deductionRows) {
+        drawTopText(row.label, 112, row.y, { size: 8 });
+        drawTopText(fmt(row.thisPeriod), 249, row.y, { size: 8 });
+        drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
+      }
+
+      if (miscDeductionAmt > 0) {
+        drawTopText("Misc Deduction", 112, 333.8, { size: 8 });
+        drawTopText(fmt(-miscDeductionAmt), 249, 333.8, { size: 8 });
+        drawTopText(fmt(miscDeductionAmt), 299, 333.8, { size: 8 });
+      }
+
+      drawTopLine(109, 326, 332);
+      drawTopText("Net Pay", 112, 335, { size: 8, bold: true });
+      drawTopText(money(netPay), 240, 335, { size: 8, bold: true });
+      drawTopText(money(ytdNet), 286, 335, { size: 8, bold: true });
+
+      drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
+      drawTopText("Information", 353, 187, { size: 8, bold: true });
+      drawTopText("this period", 474, 187, { size: 8 });
+      drawTopText("year to date", 530, 187, { size: 8 });
+      drawTopLine(353, 192, 560);
+      drawTopText("Sick", 353, 207.7, { size: 8 });
+      drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
+      drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
+      drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
+      drawTopText("- Balance", 358.2, 237.0, { size: 8 });
+      drawTopText(fmt(0), 492.9, 214.9, { size: 8 });
+      drawTopText(fmt(0), 492.9, 222.1, { size: 8 });
+      drawTopText(fmt(0), 492.9, 229.8, { size: 8 });
+      drawTopText(fmt(0), 492.9, 237.0, { size: 8 });
+      drawTopText(fmt(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
+      drawTopText(fmt(sickAccruedYtd), 547.6, 222.1, { size: 8 });
+      drawTopText(fmt(sickTakenYtd), 551.4, 229.8, { size: 8 });
+      drawTopText(fmt(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+
+      drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
+      drawTopText("account number", 353, 259.1, { size: 8 });
+      drawTopText("transit/ABA", 471.8, 259.3, { size: 8 });
+      drawTopText("amount", 542.8, 258.6, { size: 8 });
+      drawTopText(accountMask, 353, 269.9, { size: 8 });
+      drawTopText(routingMask, 469.2, 266.3, { size: 8 });
+      drawTopText(fmt(netPay), 544.2, 268.4, { size: 8 });
+
+
+      drawTopText(`Your federal taxable wages this period are ${money(totalGross)}`, 349.4, 518.0, { size: 8 });
+
+      drawTopText("Print & Design Solutions Inc", 111.9, 562.7, { size: 8 });
+      drawTopText("31111 Agoura Road", 112.0, 570.1, { size: 8 });
+      drawTopText("Ste 110", 111.8, 577.5, { size: 8 });
+      drawTopText("Westlake Village, CA 91361", 111.8, 584.7, { size: 8 });
+      drawTopText("Pay Date:", 328.6, 572.7, { size: 9, bold: true });
+      drawTopText(payDateFormatted, 415.1, 571.1, { size: 9 });
+
+      drawTopLine(90, 607.5, 560);
+      drawTopText("Deposited to the account", 94.2, 614.5, { size: 8, bold: true });
+      drawTopText("account number", 246, 614.3, { size: 8 });
+      drawTopText("transit/ABA", 353, 614.3, { size: 8 });
+      drawTopText("amount", 525.3, 614.3, { size: 8 });
+      drawTopText("Checking DirectDeposit", 94.2, 625.3, { size: 8 });
+      drawTopText(accountMask, 246, 624.1, { size: 8 });
+      drawTopText(routingMask, 353, 624.1, { size: 8 });
+      drawTopText(fmt(netPay), 527.0, 624.1, { size: 8 });
+      drawTopText("THIS IS NOT A CHECK", 292, 652, { size: 18, bold: true, color: gray });
+
+      drawTopText(employeeName || "", 139.2, 682.4, { size: 11, bold: true });
+      if (addressLine1) drawTopText(addressLine1, 138.9, 693.0, { size: 10 });
+      if (addressLine2) drawTopText(addressLine2, 139.2, 703.5, { size: 10 });
+      if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
+
+      const pdfBytes = await pdfDoc.save();
+
+      return new NextResponse(Buffer.from(pdfBytes), {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Content-Disposition': `attachment; filename="paystub-${employeeName?.replace(/\s/g, '_')}-${effectivePayDate}.pdf"`
+        }
+      });
+    }
+
     // Company Header
     drawText("Print & Design Solutions Inc", 50, yPosition, { bold: true, size: 12 });
     yPosition -= 15;

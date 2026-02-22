@@ -588,10 +588,10 @@ export default function PaystubGenerator() {
             address: emp.address,
             employeeId: emp.employeeId,
 
-            // Pay period (prefer per-row; fall back to form)
-            payPeriodStart: emp.payPeriodStart || formData.payPeriodStart,
-            payPeriodEnd: emp.payPeriodEnd || formData.payPeriodEnd,
-            payDate: emp.payDate || formData.payDate,
+            // Pay period: always use form dates (same as single-generate)
+            payPeriodStart: formData.payPeriodStart,
+            payPeriodEnd: formData.payPeriodEnd,
+            payDate: formData.payDate,
 
             // Deductions
             federalIncome: emp.federalIncome,

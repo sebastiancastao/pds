@@ -243,9 +243,15 @@ export enum Permission {
   MANAGE_SECURITY = 'manage_security',
 }
 
-export type UserRole = 'worker' | 'manager' | 'finance' | 'exec';
+export type UserRole = 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
 
 const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
+  employee: [
+    Permission.CLOCK_IN_OUT,
+    Permission.VIEW_OWN_EVENTS,
+    Permission.VIEW_OWN_PAY,
+    Permission.UPDATE_AVAILABILITY,
+  ],
   worker: [
     Permission.CLOCK_IN_OUT,
     Permission.VIEW_OWN_EVENTS,

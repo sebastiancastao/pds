@@ -16,7 +16,7 @@ export interface Database {
         Row: {
           id: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
           division: 'vendor' | 'trailers' | 'both';
           is_active: boolean;
           created_at: string;
@@ -33,7 +33,7 @@ export interface Database {
         Insert: {
           id?: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
           division: 'vendor' | 'trailers' | 'both';
           is_active?: boolean;
           created_at?: string;
@@ -162,7 +162,7 @@ export interface Database {
       [_ in never]: never;
     };
     Enums: {
-      user_role: 'worker' | 'manager' | 'finance' | 'exec';
+      user_role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
       division: 'vendor' | 'trailers' | 'both';
       document_type: 'i9' | 'w4' | 'w9' | 'direct_deposit' | 'handbook' | 'other';
       onboarding_status: 'pending' | 'in_progress' | 'completed';

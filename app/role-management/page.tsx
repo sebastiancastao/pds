@@ -27,6 +27,7 @@ type TeamAssignment = {
 type UserRoleRow = Pick<User, "role">;
 
 const AVAILABLE_ROLES = [
+  { value: "employee", label: "Employee" },
   { value: "worker", label: "Worker" },
   { value: "supervisor", label: "Supervisor" },
   { value: "supervisor2", label: "Supervisor 2 (Read-Only)" },
@@ -38,6 +39,7 @@ const AVAILABLE_ROLES = [
 ];
 
 const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
+  employee: { bg: "#e0f2fe", text: "#0369a1" },
   worker: { bg: "#f3f4f6", text: "#374151" },
   supervisor: { bg: "#fef3c7", text: "#92400e" },
   supervisor2: { bg: "#fef9c3", text: "#854d0e" },
