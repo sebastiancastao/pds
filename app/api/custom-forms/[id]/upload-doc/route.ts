@@ -20,7 +20,7 @@ const SLOT_COL_MAP: Record<string, 'additional_doc' | 'drivers_license' | 'ssn_d
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function ensureBucket(supabase: any) {
   const { data: buckets } = await supabase.storage.listBuckets();
-  if (buckets?.some(b => b.name === I9_BUCKET)) return;
+  if (buckets?.some((b: { name: string }) => b.name === I9_BUCKET)) return;
   const { error } = await supabase.storage.createBucket(I9_BUCKET, {
     public: true,
     fileSizeLimit: 52428800,
