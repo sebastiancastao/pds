@@ -60,11 +60,12 @@ export default function AdminPdfFormsPage() {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { router.push('/login'); return; }
 
-    const { data: userRecord } = await supabase
+    const { data: _userRecord } = await supabase
       .from('users')
       .select('role')
       .eq('id', session.user.id)
       .single();
+    const userRecord = _userRecord as { role: string } | null;
 
     if (!userRecord || userRecord.role !== 'exec') {
       router.push('/dashboard');
