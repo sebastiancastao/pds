@@ -682,7 +682,6 @@ export async function POST(req: NextRequest) {
       drawTopText("Westlake Village, CA 91361", 42, 89, { size: 8 });
 
       drawTopText("Earnings Statement", 320, 50, { size: 14, bold: true });
-      drawTopText("ADP", 530, 56, { size: 24, bold: true });
       drawTopText("Period Starting:", 330, 72, { size: 8 });
       drawTopText("Period Ending:", 330, 79, { size: 8 });
       drawTopText("Pay Date:", 330, 87, { size: 8 });
