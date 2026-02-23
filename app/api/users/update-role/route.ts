@@ -10,7 +10,7 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const ALLOWED_ROLES = ['employee', 'worker', 'supervisor', 'supervisor2', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
 
 const isValidUUID = (v: string) =>
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 
 // PUT: Update a user's role
 export async function PUT(request: NextRequest) {
@@ -49,11 +49,13 @@ export async function PUT(request: NextRequest) {
 
     // Validate userId
     if (!userId || typeof userId !== 'string' || !isValidUUID(userId)) {
+      console.error('[UPDATE-ROLE] Invalid userId received:', { userId, body });
       return NextResponse.json({ error: 'Valid user ID is required' }, { status: 400 });
     }
 
     // Validate newRole
     if (!newRole || !ALLOWED_ROLES.includes(newRole)) {
+      console.error('[UPDATE-ROLE] Invalid role received:', { newRole, body });
       return NextResponse.json(
         { error: `Invalid role. Allowed: ${ALLOWED_ROLES.join(', ')}` },
         { status: 400 }
@@ -62,6 +64,7 @@ export async function PUT(request: NextRequest) {
 
     // Prevent self-role-change
     if (userId === user.id) {
+      console.warn('[UPDATE-ROLE] Attempted self-role-change by:', user.id);
       return NextResponse.json({ error: 'Cannot change your own role' }, { status: 400 });
     }
 
@@ -84,7 +87,12 @@ export async function PUT(request: NextRequest) {
     const oldRole = targetUser.role;
 
     if (oldRole === newRole) {
-      return NextResponse.json({ error: 'New role is the same as current role' }, { status: 400 });
+      console.log('[UPDATE-ROLE] Role already set, returning no-op success:', { userId, role: newRole });
+      return NextResponse.json({
+        success: true,
+        message: `Role is already ${newRole}`,
+        user: { id: targetUser.id, role: targetUser.role },
+      }, { status: 200 });
     }
 
     // Update the role
