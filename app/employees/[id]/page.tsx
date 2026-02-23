@@ -166,6 +166,8 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean }[]>([]);
+  const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
   const [sickRequestDate, setSickRequestDate] = useState<string>(
     () => new Date().toISOString().slice(0, 10)
@@ -308,6 +310,27 @@ export default function WorkerProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
+  // Fetch available custom forms list
+  useEffect(() => {
+    const loadCustomForms = async () => {
+      setCustomFormsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/custom-forms/list', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCustomFormsList(data.forms || []);
+        }
+      } catch (e) {
+        console.error('Error loading custom forms list:', e);
+      } finally {
+        setCustomFormsLoading(false);
+      }
+    };
+    loadCustomForms();
+  }, []);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -1282,6 +1305,113 @@ export default function WorkerProfilePage() {
                       </div>
                     )}
 
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Custom PDF Forms */}
+            <section className="mb-8">
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Custom Forms</h2>
+              <div className="apple-card p-6">
+                {customFormsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading custom forms…</span>
+                  </div>
+                ) : customFormsList.length === 0 ? (
+                  <div className="text-center py-8">
+                    <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p className="text-gray-500 font-medium">No custom forms uploaded yet</p>
+                    <p className="text-sm text-gray-400 mt-1">
+                      Upload forms at{' '}
+                      <Link href="/admin/pdf-forms" className="text-blue-600 hover:underline">/admin/pdf-forms</Link>
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {customFormsList.map((form) => {
+                      const progressKey = `custom-form-${form.id}`;
+                      const submitted = pdfForms.find(p => p.form_name === progressKey);
+                      return (
+                        <div
+                          key={form.id}
+                          className={`border rounded-xl p-4 hover:shadow-md transition-all ${
+                            submitted
+                              ? 'border-green-200 bg-green-50'
+                              : 'border-amber-200 bg-amber-50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3 mb-3">
+                            <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                              submitted ? 'bg-green-500 text-white' : 'bg-amber-400 text-white'
+                            }`}>
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                {submitted ? (
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                ) : (
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                )}
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {form.requires_signature && (
+                                  <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
+                                    Sig. required
+                                  </span>
+                                )}
+                                <span className={`text-xs font-medium rounded-full px-2 py-0.5 border ${
+                                  submitted
+                                    ? 'text-green-700 bg-green-100 border-green-200'
+                                    : 'text-amber-700 bg-amber-100 border-amber-200'
+                                }`}>
+                                  {submitted ? `Submitted ${formatDate(submitted.updated_at)}` : 'Pending'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            {submitted ? (
+                              <button
+                                onClick={() => viewPDFForm(submitted)}
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                </svg>
+                                View Submitted
+                              </button>
+                            ) : (
+                              <Link
+                                href={`/employee/form/${form.id}`}
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-xs font-medium"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                                Open Form
+                              </Link>
+                            )}
+                            {submitted && (
+                              <button
+                                onClick={() => downloadPDFForm(submitted)}
+                                className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                                Download
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

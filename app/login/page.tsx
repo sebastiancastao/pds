@@ -166,7 +166,7 @@ export default function LoginPage() {
         return;
       }
 
-      if (userRole === 'worker' || userRole === 'vendor') {
+      if (userRole === 'worker' || userRole === 'vendor' || userRole === 'employee') {
         console.log('[LOGIN DEBUG] 🔍 Checking vendor_background_checks for worker/vendor...');
 
         // Use server-side API to bypass RLS issues

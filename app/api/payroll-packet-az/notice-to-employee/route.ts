@@ -1,9 +1,10 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, PDFRef } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const isEmployee = request.nextUrl.searchParams.get('role') === 'employee';
   try {
     const pdfPath = join(process.cwd(), 'LC_2810.5_Notice to Employee.pdf');
     const pdfBytes = readFileSync(pdfPath);
@@ -124,8 +125,10 @@ export async function GET() {
       console.warn('[NOTICE_TO_EMPLOYEE_AZ] Failed to embed employer signature image', error);
     }
 
-    for (const fieldName of fieldsToRemove) {
-      removeFieldFromPdf(fieldName);
+    if (!isEmployee) {
+      for (const fieldName of fieldsToRemove) {
+        removeFieldFromPdf(fieldName);
+      }
     }
 
     if (embeddedEmployerSignature) {
@@ -133,10 +136,12 @@ export async function GET() {
     }
     removeFieldFromPdf('Signature9');
 
-    try {
-      form.getCheckBox('Commission').check();
-    } catch (error) {
-      console.warn('[NOTICE_TO_EMPLOYEE_AZ] Failed to pre-check Commission checkbox', error);
+    if (!isEmployee) {
+      try {
+        form.getCheckBox('Commission').check();
+      } catch (error) {
+        console.warn('[NOTICE_TO_EMPLOYEE_AZ] Failed to pre-check Commission checkbox', error);
+      }
     }
 
     const updatedPdfBytes = await pdfDoc.save();

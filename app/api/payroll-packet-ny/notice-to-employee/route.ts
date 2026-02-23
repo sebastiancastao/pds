@@ -1,9 +1,10 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { PDFDocument, PDFRef, PDFName } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  const isEmployee = request.nextUrl.searchParams.get('role') === 'employee';
   try {
     const pdfPath = join(process.cwd(), 'LC_2810.5_Notice to Employee.pdf');
     const pdfBytes = readFileSync(pdfPath);
@@ -124,8 +125,10 @@ export async function GET() {
       console.warn('[NOTICE_TO_EMPLOYEE_NY] Failed to embed employer signature image', error);
     }
 
-    for (const fieldName of fieldsToRemove) {
-      removeFieldFromPdf(fieldName);
+    if (!isEmployee) {
+      for (const fieldName of fieldsToRemove) {
+        removeFieldFromPdf(fieldName);
+      }
     }
 
     if (embeddedEmployerSignature) {
@@ -133,26 +136,25 @@ export async function GET() {
     }
     removeFieldFromPdf('Signature9');
 
-    try {
-      const commissionCheckbox = form.getCheckBox('Commission');
-      // Get the acroField to access widgets and set value directly
-      const acroField = (commissionCheckbox as any).acroField;
-      const widgets = acroField?.getWidgets?.() || [];
+    if (!isEmployee) {
+      try {
+        const commissionCheckbox = form.getCheckBox('Commission');
+        const acroField = (commissionCheckbox as any).acroField;
+        const widgets = acroField?.getWidgets?.() || [];
 
-      // Find the "on" value for this checkbox (usually "Yes" or "1")
-      if (widgets.length > 0) {
-        const widget = widgets[0];
-        const onValue = widget.getOnValue?.();
-        if (onValue) {
-          // Set the field value to the on value
-          acroField.setValue(onValue);
+        if (widgets.length > 0) {
+          const widget = widgets[0];
+          const onValue = widget.getOnValue?.();
+          if (onValue) {
+            acroField.setValue(onValue);
+          }
         }
-      }
 
-      commissionCheckbox.check();
-      commissionCheckbox.enableReadOnly();
-    } catch (error) {
-      console.warn('[NOTICE_TO_EMPLOYEE_NY] Failed to pre-check Commission checkbox', error);
+        commissionCheckbox.check();
+        commissionCheckbox.enableReadOnly();
+      } catch (error) {
+        console.warn('[NOTICE_TO_EMPLOYEE_NY] Failed to pre-check Commission checkbox', error);
+      }
     }
 
     // Update all field appearances to ensure they render properly

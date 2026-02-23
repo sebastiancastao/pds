@@ -37,6 +37,7 @@ function FormViewerContent() {
     return Boolean(input?.checked);
   };
 
+  const [userRole, setUserRole] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [lastSaved, setLastSaved] = useState<Date | null>(null);
   const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -126,6 +127,16 @@ function FormViewerContent() {
       ? '/payroll-packet-ca/meal-waiver-6hour'
       : `/payroll-packet-ca/form-viewer?form=${currentForm.next}`
     : undefined;
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session) return;
+      (supabase.from('users').select('role').eq('id', session.user.id).single() as any)
+        .then(({ data }: { data: { role: string } | null }) => {
+          if (data?.role) setUserRole(data.role);
+        });
+    });
+  }, []);
 
   useEffect(() => {
     if (!currentForm && mealWaiverRoute) {
@@ -1735,7 +1746,7 @@ function FormViewerContent() {
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
             key={`${currentForm.formId}-${formName}`}
-            pdfUrl={currentForm.api}
+            pdfUrl={formName === 'notice-to-employee' && userRole === 'employee' ? `${currentForm.api}?role=employee` : currentForm.api}
             formId={currentForm.formId}
             onSave={handlePDFSave}
             onFieldChange={handleFieldChange}

@@ -324,8 +324,8 @@ function VerifyMFAContent() {
 
         let pendingOnboardingRedirect = null;
 
-        // For worker/vendor roles, check vendor_onboarding_status first
-        if (userRole === 'worker' || userRole === 'vendor') {
+        // For worker/vendor/employee roles, check vendor_onboarding_status first
+        if (userRole === 'worker' || userRole === 'vendor' || userRole === 'employee') {
           console.log('[VERIFY-MFA DEBUG] Worker/Vendor detected - checking onboarding status...');
 
           try {
@@ -421,8 +421,8 @@ function VerifyMFAContent() {
         } else if (userRole === 'backgroundchecker') {
           console.log('[VERIFY-MFA DEBUG] Background Checker role - Redirecting to /background-checks');
           router.push('/background-checks');
-        } else if (userRole === 'worker') {
-          console.log('[VERIFY-MFA DEBUG] Worker role - Redirecting to /employees/' + session.user.id);
+        } else if (userRole === 'worker' || userRole === 'employee') {
+          console.log('[VERIFY-MFA DEBUG] Worker/Employee role - Redirecting to /employees/' + session.user.id);
           router.push(`/employees/${session.user.id}`);
         } else {
           console.log('[VERIFY-MFA DEBUG] Other role - Redirecting to home page');

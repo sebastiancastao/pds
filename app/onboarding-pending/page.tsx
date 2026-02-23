@@ -93,8 +93,8 @@ export default function OnboardingPendingPage() {
           return;
         }
 
-        if (!onboardingResult.hasSubmittedPDF) {
-          // No submission means they haven't submitted yet
+        if (!onboardingResult.hasSubmittedPDF && !onboardingResult.hasOnboardingRecord) {
+          // No submission AND no onboarding record means they haven't started yet
           // Redirect them to the onboarding form
           router.replace('/payroll-packet-ca/employee-information');
           return;

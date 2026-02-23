@@ -482,32 +482,76 @@ export async function PUT(
     const dayStart = dayStartUTC.toISOString();
     const dayEnd = dayEndUTC.toISOString();
 
-    // Delete entries matching this event_id OR entries with no event_id
-    // (the GET fallback finds untagged entries by timestamp, so we must delete those too)
-    const { error: deleteError } = await supabaseAdmin
+    // Fetch existing entries so we can update them in-place instead of delete+insert
+    const { data: existingRaw, error: fetchError } = await supabaseAdmin
       .from("time_entries")
-      .delete()
-      .or(`event_id.eq.${eventId},event_id.is.null`)
+      .select("id, action, timestamp")
       .eq("user_id", targetUserId)
+      .or(`event_id.eq.${eventId},event_id.is.null`)
       .gte("timestamp", dayStart)
-      .lte("timestamp", dayEnd);
-    if (deleteError) {
-      return NextResponse.json({ error: deleteError.message }, { status: 500 });
+      .lte("timestamp", dayEnd)
+      .order("timestamp", { ascending: true });
+    if (fetchError) {
+      return NextResponse.json({ error: fetchError.message }, { status: 500 });
     }
 
-    if (timeline.length > 0) {
-      const records = timeline.map((entry) => ({
-        user_id: targetUserId,
-        action: entry.action,
-        timestamp: entry.timestamp,
-        division,
-        event_id: eventId,
-        notes: "Manual edit by exec",
-      }));
+    // Group both existing and new entries by action type
+    const existingByAction: Record<string, Array<{ id: string; action: string; timestamp: string }>> = {};
+    for (const e of existingRaw || []) {
+      if (!existingByAction[e.action]) existingByAction[e.action] = [];
+      existingByAction[e.action].push(e);
+    }
 
+    const newByAction: Record<string, Array<{ action: string; timestamp: string | null }>> = {};
+    for (const e of timeline) {
+      if (!newByAction[e.action]) newByAction[e.action] = [];
+      newByAction[e.action].push(e);
+    }
+
+    const toUpdate: Array<{ id: string; timestamp: string }> = [];
+    const toInsert: Array<{ user_id: string; action: string; timestamp: string; division: string; event_id: string; notes: string }> = [];
+    const toDelete: string[] = [];
+
+    const allActions = new Set([...Object.keys(existingByAction), ...Object.keys(newByAction)]);
+    for (const action of allActions) {
+      const existingList = existingByAction[action] || [];
+      const newList = newByAction[action] || [];
+      const maxLen = Math.max(existingList.length, newList.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (i < existingList.length && i < newList.length) {
+          toUpdate.push({ id: existingList[i].id, timestamp: newList[i].timestamp! });
+        } else if (i < newList.length) {
+          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: "Manual edit by exec" });
+        } else {
+          toDelete.push(existingList[i].id);
+        }
+      }
+    }
+
+    if (toDelete.length > 0) {
+      const { error: deleteError } = await supabaseAdmin
+        .from("time_entries")
+        .delete()
+        .in("id", toDelete);
+      if (deleteError) {
+        return NextResponse.json({ error: deleteError.message }, { status: 500 });
+      }
+    }
+
+    for (const upd of toUpdate) {
+      const { error: updateError } = await supabaseAdmin
+        .from("time_entries")
+        .update({ timestamp: upd.timestamp, event_id: eventId, notes: "Manual edit by exec" })
+        .eq("id", upd.id);
+      if (updateError) {
+        return NextResponse.json({ error: updateError.message }, { status: 500 });
+      }
+    }
+
+    if (toInsert.length > 0) {
       const { error: insertError } = await supabaseAdmin
         .from("time_entries")
-        .insert(records as any);
+        .insert(toInsert as any);
       if (insertError) {
         return NextResponse.json({ error: insertError.message }, { status: 500 });
       }
