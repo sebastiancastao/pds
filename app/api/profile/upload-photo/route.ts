@@ -43,15 +43,8 @@ export async function POST(request: NextRequest) {
 
     // Parse the form data
     const formData = await request.formData();
-    const photo = formData.get('photo') as File;
+    const photo = formData.get('photo') as File | null;
     const profileData = formData.get('profileData') as string;
-    
-    if (!photo) {
-      return NextResponse.json(
-        { error: 'No photo file provided' },
-        { status: 400 }
-      );
-    }
 
     // Parse profile data
     let parsedProfileData;
@@ -64,30 +57,41 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Validate file type and size
-    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
-    const maxSize = 5 * 1024 * 1024; // 5MB
+    // Validate and encrypt photo if provided
+    let encryptedPhotoData: string | null = null;
+    let photoFields: Record<string, unknown> = {};
 
-    if (!allowedTypes.includes(photo.type)) {
-      return NextResponse.json(
-        { error: 'Invalid file type. Only JPG and PNG files are allowed.' },
-        { status: 400 }
-      );
+    if (photo) {
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+      const maxSize = 5 * 1024 * 1024; // 5MB
+
+      if (!allowedTypes.includes(photo.type)) {
+        return NextResponse.json(
+          { error: 'Invalid file type. Only JPG and PNG files are allowed.' },
+          { status: 400 }
+        );
+      }
+
+      if (photo.size > maxSize) {
+        return NextResponse.json(
+          { error: 'File too large. Maximum size is 5MB.' },
+          { status: 400 }
+        );
+      }
+
+      // Convert file to binary data
+      const arrayBuffer = await photo.arrayBuffer();
+      const binaryData = new Uint8Array(arrayBuffer);
+
+      // Encrypt the binary data
+      encryptedPhotoData = encryptData(binaryData);
+      photoFields = {
+        profile_photo_data: encryptedPhotoData,
+        profile_photo_type: photo.type,
+        profile_photo_size: photo.size,
+        profile_photo_uploaded_at: new Date().toISOString(),
+      };
     }
-
-    if (photo.size > maxSize) {
-      return NextResponse.json(
-        { error: 'File too large. Maximum size is 5MB.' },
-        { status: 400 }
-      );
-    }
-
-    // Convert file to binary data
-    const arrayBuffer = await photo.arrayBuffer();
-    const binaryData = new Uint8Array(arrayBuffer);
-
-    // Encrypt the binary data
-    const encryptedPhotoData = encryptData(binaryData);
 
     // Prepare encrypted profile data
     const encryptedProfileData = {
@@ -166,10 +170,7 @@ export async function POST(request: NextRequest) {
         ...encryptedProfileData,
         latitude,
         longitude,
-        profile_photo_data: encryptedPhotoData,
-        profile_photo_type: photo.type,
-        profile_photo_size: photo.size,
-        profile_photo_uploaded_at: new Date().toISOString(),
+        ...photoFields,
         onboarding_status: 'pending',
         updated_at: new Date().toISOString(),
       }, {
@@ -189,9 +190,9 @@ export async function POST(request: NextRequest) {
     // Return success response
     return NextResponse.json({
       success: true,
-      message: 'Profile and photo uploaded successfully',
+      message: photo ? 'Profile and photo uploaded successfully' : 'Profile saved successfully',
       profileId: profile.id,
-      photoUploaded: true,
+      photoUploaded: !!photo,
       redirectPath: getRedirectPath(parsedProfileData.state)
     });
 

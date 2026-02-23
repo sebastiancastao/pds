@@ -304,12 +304,14 @@ export default function RegisterPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const accessToken = session?.access_token;
 
+      const uploadData = new FormData();
+      uploadData.append('profileData', JSON.stringify(formData));
+
       const response = await fetch('/api/profile/upload-photo', {
         method: 'POST',
-        body: JSON.stringify(formData),
+        body: uploadData,
         credentials: 'include',
         headers: {
-          'Content-Type': 'application/json',
           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
         },
       });
