@@ -106,10 +106,14 @@ export async function GET(
     for (const form of allForms) {
       const formName = form.form_name || "unknown";
       const base64Data = toBase64(form.form_data);
-      if (base64Data.length < MIN_FORM_DATA_LENGTH) continue;
+      // Never filter out custom forms — they must always appear regardless of PDF size
+      const isCustomForm = formName.startsWith("custom-form-");
+      if (!isCustomForm && base64Data.length < MIN_FORM_DATA_LENGTH) continue;
 
-      // Deduplicate by normalized key
-      const normalizedKey = formName.toLowerCase().replace(/^(ca|ny|wi|az|tx|fl|il|oh|pa|nj)-/, "");
+      // Deduplicate by normalized key (custom forms use their full name as the key)
+      const normalizedKey = isCustomForm
+        ? formName.toLowerCase()
+        : formName.toLowerCase().replace(/^(ca|ny|wi|az|tx|fl|il|oh|pa|nj)-/, "");
       if (seen.has(normalizedKey)) continue;
       seen.add(normalizedKey);
 

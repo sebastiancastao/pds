@@ -5,105 +5,124 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
 export const dynamic = 'force-dynamic';
 
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { persistSession: false } }
+);
+
 export async function POST(request: NextRequest) {
   try {
     console.log('[SAVE API] Request received');
 
-    // Get the authenticated user using route handler client
-    let supabase = createRouteHandlerClient({ cookies });
-    let { data: { user }, error: userError } = await supabase.auth.getUser();
+    // Resolve authenticated user — try cookie session first, then Bearer token
+    let userId: string | null = null;
 
-    console.log('[SAVE API] Cookie-based auth:', {
-      hasUser: !!user,
-      userId: user?.id,
-      error: userError?.message
-    });
+    const cookieClient = createRouteHandlerClient({ cookies });
+    const { data: { user: cookieUser } } = await cookieClient.auth.getUser();
+    if (cookieUser?.id) {
+      userId = cookieUser.id;
+      console.log('[SAVE API] Cookie-based auth OK:', userId);
+    }
 
-    // Fallback to Authorization: Bearer <access_token> header for SSR/API contexts
-    if (!user || !user.id) {
+    if (!userId) {
       const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
-      console.log('[SAVE API] Checking Authorization header:', {
-        hasHeader: !!authHeader,
-        headerPreview: authHeader ? authHeader.substring(0, 20) + '...' : 'none'
-      });
-
       const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
       if (token) {
-        console.log('[SAVE API] Validating Bearer token...');
-        // Create authenticated client with the token
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          {
-            global: {
-              headers: {
-                Authorization: `Bearer ${token}`
-              }
-            }
-          }
-        );
-        const { data: tokenUser, error: tokenErr } = await supabase.auth.getUser();
-        console.log('[SAVE API] Bearer token validation:', {
-          hasUser: !!tokenUser?.user,
-          userId: tokenUser?.user?.id,
-          error: tokenErr?.message
-        });
-
-        if (!tokenErr && tokenUser?.user?.id) {
-          user = { id: tokenUser.user.id } as any;
-          userError = null; // Clear the error since we successfully authenticated
+        const { data: { user: tokenUser }, error: tokenErr } = await supabaseAdmin.auth.getUser(token);
+        if (!tokenErr && tokenUser?.id) {
+          userId = tokenUser.id;
+          console.log('[SAVE API] Bearer token auth OK:', userId);
         }
       }
     }
 
-    if (!user || !user.id) {
-      console.log('[SAVE API] ❌ Authentication failed - returning 401');
+    if (!userId) {
+      console.log('[SAVE API] Authentication failed - returning 401');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    console.log('[SAVE API] ✅ Authentication successful for user:', user.id);
-
-    // Parse request body
     const body = await request.json();
-    const { formName, formData } = body;
+    const { formName, formData, targetUserId } = body;
 
     if (!formName || !formData) {
       return NextResponse.json({ error: 'Missing formName or formData' }, { status: 400 });
     }
 
-    // Store as base64 text directly (don't convert to buffer - Supabase has issues with BYTEA)
-    console.log('[SAVE API] Received data:', {
-      formName,
-      base64Length: formData.length,
-      base64Preview: formData.substring(0, 50)
-    });
-
-    // Upsert form progress (insert or update if exists) using the authenticated client
-    // Store the base64 string directly instead of converting to buffer
-    const { data, error } = await supabase
-      .from('pdf_form_progress')
-      .upsert({
-        user_id: user.id,
-        form_name: formName,
-        form_data: formData, // Store base64 string directly
-        updated_at: new Date().toISOString()
-      }, {
-        onConflict: 'user_id,form_name'
-      })
-      .select();
-
-    if (!error && data) {
-      console.log('[SAVE API] ✅ Saved to database successfully');
+    // If an admin is submitting on behalf of an employee, verify the caller has exec/admin role
+    // before allowing them to save under a different user's ID.
+    let saveUserId = userId;
+    if (targetUserId && targetUserId !== userId) {
+      const { data: caller } = await supabaseAdmin
+        .from('users')
+        .select('role')
+        .eq('id', userId)
+        .single();
+      if (!caller || !['exec', 'admin', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden: cannot save for another user' }, { status: 403 });
+      }
+      saveUserId = targetUserId;
     }
 
+    console.log('[SAVE API] Upserting form:', formName, 'for user:', saveUserId);
+
+    // Use service-role client so RLS never blocks a valid submission.
+    const { error } = await supabaseAdmin
+      .from('pdf_form_progress')
+      .upsert({
+        user_id: saveUserId,
+        form_name: formName,
+        form_data: formData,
+        updated_at: new Date().toISOString(),
+      }, {
+        onConflict: 'user_id,form_name',
+      });
+
     if (error) {
-      console.error('Error saving PDF form progress:', error);
+      console.error('[SAVE API] DB upsert error:', error);
       return NextResponse.json({ error: 'Failed to save form progress', details: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, message: 'Form progress saved' }, { status: 200 });
+    console.log('[SAVE API] Saved successfully');
+
+    // Upload the filled PDF to i9-documents storage bucket
+    let storageUrl: string | null = null;
+    try {
+      const pdfBuffer = Buffer.from(formData, 'base64');
+      const sanitizedName = formName.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
+      const storagePath = `${saveUserId}/custom-forms/${sanitizedName}.pdf`;
+
+      // Ensure bucket exists
+      const { data: buckets } = await supabaseAdmin.storage.listBuckets();
+      if (!buckets?.some(b => b.name === 'i9-documents')) {
+        const { error: bucketErr } = await supabaseAdmin.storage.createBucket('i9-documents', {
+          public: true,
+          fileSizeLimit: 52428800,
+        });
+        if (bucketErr && !bucketErr.message.toLowerCase().includes('already exist')) {
+          throw new Error(`Failed to create bucket: ${bucketErr.message}`);
+        }
+      }
+
+      const { error: uploadErr } = await supabaseAdmin.storage
+        .from('i9-documents')
+        .upload(storagePath, pdfBuffer, { contentType: 'application/pdf', upsert: true });
+
+      if (uploadErr) {
+        console.error('[SAVE API] Storage upload error:', uploadErr);
+      } else {
+        const { data: urlData } = supabaseAdmin.storage.from('i9-documents').getPublicUrl(storagePath);
+        storageUrl = urlData.publicUrl;
+        console.log('[SAVE API] PDF uploaded to storage:', storageUrl);
+      }
+    } catch (storageErr: any) {
+      console.error('[SAVE API] Storage upload unexpected error:', storageErr);
+      // Non-fatal — DB save already succeeded
+    }
+
+    return NextResponse.json({ success: true, message: 'Form progress saved', storageUrl }, { status: 200 });
   } catch (error: any) {
-    console.error('Save PDF form progress error:', error);
+    console.error('[SAVE API] Unexpected error:', error);
     return NextResponse.json({ error: 'Failed to save form progress', details: error.message }, { status: 500 });
   }
 }

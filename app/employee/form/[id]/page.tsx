@@ -11,20 +11,69 @@ type FormMeta = {
   requires_signature: boolean;
 };
 
+type UploadedDoc = {
+  filename: string;
+  url: string;
+  storagePath: string;
+};
+
+// Slot IDs match the I-9 naming convention
+type SlotId = 'list_a' | 'list_b' | 'list_c';
+
+const LIST_A_EXAMPLES = [
+  'U.S. Passport or Passport Card',
+  'Permanent Resident Card (I-551)',
+  'Employment Authorization Document (I-766)',
+  'Foreign Passport with I-551 stamp or I-94',
+];
+
+const LIST_B_EXAMPLES = [
+  "Driver's License or State ID card",
+  'Federal, State, or local government agency ID',
+  'School ID with photograph',
+  'U.S. Military card or draft record',
+];
+
+const LIST_C_EXAMPLES = [
+  'Social Security Account Number card',
+  'U.S. birth or birth abroad certificate',
+  'Native American tribal document',
+  'U.S. Citizen ID card (I-197)',
+];
+
 export default function EmployeeFormPage() {
   const router = useRouter();
   const params = useParams();
   const formId = params.id as string;
+  // When opened from an admin's employee profile page, asUser holds the employee's ID.
+  // The form is then saved under that employee's ID rather than the logged-in admin's ID.
+  const asUserId = typeof window !== 'undefined'
+    ? (new URLSearchParams(window.location.search).get('asUser') ?? undefined)
+    : undefined;
 
   const [meta, setMeta] = useState<FormMeta | null>(null);
   const [pdfUrl, setPdfUrl] = useState('');
+  const [sessionToken, setSessionToken] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Current PDF bytes (updated by PDFFormEditor on every field change)
+  // Already-submitted state
+  const [alreadySubmitted, setAlreadySubmitted] = useState(false);
+  const [submittedAt, setSubmittedAt] = useState<string | null>(null);
+  const [submittedDocs, setSubmittedDocs] = useState<{ slot: string; label: string; filename: string; url: string | null }[]>([]);
+
+  // PDF bytes (updated by PDFFormEditor on each field change)
   const currentPdfBytesRef = useRef<Uint8Array | null>(null);
+
+  // Document uploads — List A or List B+C
+  const [docMode, setDocMode] = useState<'A' | 'BC'>('A');
+  const [uploadedDocs, setUploadedDocs] = useState<Partial<Record<SlotId, UploadedDoc>>>({});
+  const [uploadingSlot, setUploadingSlot] = useState<SlotId | null>(null);
+  const listARef  = useRef<HTMLInputElement>(null);
+  const listBRef  = useRef<HTMLInputElement>(null);
+  const listCRef  = useRef<HTMLInputElement>(null);
 
   // Signature pad
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -32,28 +81,48 @@ export default function EmployeeFormPage() {
   const [hasSig, setHasSig] = useState(false);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
 
-  useEffect(() => {
-    loadForm();
-  }, [formId]);
+  useEffect(() => { loadForm(); }, [formId]);
 
   const loadForm = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { router.push('/login'); return; }
+    setSessionToken(session.access_token);
 
     try {
-      // Load form metadata from the list
-      const res = await fetch('/api/custom-forms/list', {
+      // Fetch form list first — we need the title to build the formName key
+      const listRes = await fetch('/api/custom-forms/list', {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
-      if (!res.ok) throw new Error('Failed to load forms');
-      const data = await res.json();
+
+      if (!listRes.ok) throw new Error('Failed to load forms');
+      const data = await listRes.json();
       const form = (data.forms as FormMeta[]).find(f => f.id === formId);
       if (!form) throw new Error('Form not found');
       setMeta(form);
-
-      // Build the PDF URL (the API route streams the PDF with auth)
-      // We pass the token as a query param so PDFFormEditor can fetch it
       setPdfUrl(`/api/custom-forms/${formId}/pdf?token=${session.access_token}`);
+
+      // Build the canonical form name: "{Title} {Year}"
+      const savedFormName = `${form.title} ${new Date().getFullYear()}`;
+
+      // Check if already submitted using the title-based key
+      const progressRes = await fetch(
+        `/api/pdf-form-progress/retrieve?formName=${encodeURIComponent(savedFormName)}`,
+        { headers: { Authorization: `Bearer ${session.access_token}` } },
+      );
+      const progressData = await progressRes.json();
+      if (progressData.found) {
+        setAlreadySubmitted(true);
+        setSubmittedAt(progressData.updatedAt ?? null);
+
+        // Load any uploaded supporting documents
+        const docsRes = await fetch(`/api/custom-forms/${formId}/docs`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (docsRes.ok) {
+          const docsData = await docsRes.json();
+          setSubmittedDocs(docsData.docs ?? []);
+        }
+      }
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -61,104 +130,115 @@ export default function EmployeeFormPage() {
     }
   };
 
-  // Update the PDF proxy route to also accept ?token= query param
-  // PDFFormEditor fetches the URL with an Authorization header if session exists
-
   const handleSave = useCallback((bytes: Uint8Array) => {
     currentPdfBytesRef.current = bytes;
   }, []);
 
-  // ─── Signature pad helpers ────────────────────────────────────────────────
+  // ─── Document upload ───────────────────────────────────────────────────────
+  const refForSlot = (slot: SlotId) =>
+    slot === 'list_a' ? listARef : slot === 'list_b' ? listBRef : listCRef;
+
+  const handleDocUpload = async (slot: SlotId, file: File) => {
+    setUploadingSlot(slot);
+    setError('');
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('slot', slot);
+      if (asUserId) fd.append('targetUserId', asUserId);
+
+      const res = await fetch(`/api/custom-forms/${formId}/upload-doc`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${sessionToken}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Upload failed');
+
+      setUploadedDocs(prev => ({
+        ...prev,
+        [slot]: { filename: json.filename, url: json.url, storagePath: json.storagePath },
+      }));
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploadingSlot(null);
+    }
+  };
+
+  const removeDoc = (slot: SlotId) => {
+    setUploadedDocs(prev => { const n = { ...prev }; delete n[slot]; return n; });
+    const ref = refForSlot(slot);
+    if (ref.current) ref.current.value = '';
+  };
+
+  // ─── Signature pad ─────────────────────────────────────────────────────────
   const getPos = (e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
     if ('touches' in e) {
-      const touch = e.touches[0];
-      return { x: touch.clientX - rect.left, y: touch.clientY - rect.top };
+      const t = e.touches[0];
+      return { x: t.clientX - rect.left, y: t.clientY - rect.top };
     }
     return { x: (e as React.MouseEvent).clientX - rect.left, y: (e as React.MouseEvent).clientY - rect.top };
   };
 
   const startDraw = (e: React.MouseEvent | React.TouchEvent) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    e.preventDefault();
-    setIsDrawing(true);
-    setHasSig(true);
+    const canvas = canvasRef.current; if (!canvas) return;
+    e.preventDefault(); setIsDrawing(true); setHasSig(true);
     lastPosRef.current = getPos(e, canvas);
   };
-
   const draw = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvas = canvasRef.current; if (!canvas) return;
     e.preventDefault();
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    const ctx = canvas.getContext('2d')!;
     const pos = getPos(e, canvas);
-    ctx.beginPath();
-    ctx.moveTo(lastPosRef.current!.x, lastPosRef.current!.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.strokeStyle = '#1a1a1a';
-    ctx.lineWidth = 2;
-    ctx.lineCap = 'round';
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(lastPosRef.current!.x, lastPosRef.current!.y);
+    ctx.lineTo(pos.x, pos.y); ctx.strokeStyle = '#1a1a1a';
+    ctx.lineWidth = 2; ctx.lineCap = 'round'; ctx.stroke();
     lastPosRef.current = pos;
   };
-
   const endDraw = () => setIsDrawing(false);
-
   const clearSignature = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    canvasRef.current?.getContext('2d')?.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
     setHasSig(false);
   };
 
-  // ─── Submit ───────────────────────────────────────────────────────────────
+  // ─── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!currentPdfBytesRef.current) {
-      setError('PDF not loaded yet. Please wait a moment and try again.');
-      return;
+      setError('PDF not loaded yet. Please wait a moment and try again.'); return;
     }
-
     if (meta?.requires_signature && !hasSig) {
-      setError('Please provide your signature before submitting.');
-      return;
+      setError('Please provide your signature before submitting.'); return;
     }
 
-    setSaving(true);
-    setError('');
+    setSaving(true); setError('');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/login'); return; }
 
       let finalBytes = currentPdfBytesRef.current;
-
-      // Embed signature into the PDF if required
       if (meta?.requires_signature && hasSig && canvasRef.current) {
-        const sigDataUrl = canvasRef.current.toDataURL('image/png');
-        finalBytes = await embedSignatureIntoPdf(finalBytes, sigDataUrl);
+        finalBytes = await embedSignatureIntoPdf(finalBytes, canvasRef.current.toDataURL('image/png'));
       }
 
-      // Convert to base64
       const base64 = uint8ArrayToBase64(finalBytes);
+      const docSummary = Object.entries(uploadedDocs)
+        .map(([slot, doc]) => `${slot}:${doc.filename}`).join('|');
 
       const res = await fetch('/api/pdf-form-progress/save', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
-          formName: `custom-form-${formId}`,
+          formName: `${meta!.title} ${new Date().getFullYear()}`,
           formData: base64,
+          ...(asUserId ? { targetUserId: asUserId } : {}),
+          ...(docSummary ? { notes: docSummary } : {}),
         }),
       });
-
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to save');
-
       setSaved(true);
     } catch (err: any) {
       setError(err.message);
@@ -167,102 +247,209 @@ export default function EmployeeFormPage() {
     }
   };
 
-  // ─── Helpers ──────────────────────────────────────────────────────────────
-  const uint8ArrayToBase64 = (bytes: Uint8Array): string => {
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++) {
-      binary += String.fromCharCode(bytes[i]);
-    }
-    return btoa(binary);
+  // ─── Helpers ───────────────────────────────────────────────────────────────
+  const uint8ArrayToBase64 = (bytes: Uint8Array) => {
+    let b = '';
+    for (let i = 0; i < bytes.length; i++) b += String.fromCharCode(bytes[i]);
+    return btoa(b);
   };
 
   const embedSignatureIntoPdf = async (pdfBytes: Uint8Array, sigDataUrl: string): Promise<Uint8Array> => {
-    const { PDFDocument, rgb } = await import('pdf-lib');
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfDoc = await PDFDocument.load(pdfBytes);
-    const pages = pdfDoc.getPages();
-    const lastPage = pages[pages.length - 1];
-    const { width, height } = lastPage.getSize();
-
-    // Convert data URL to Uint8Array
+    const lastPage = pdfDoc.getPages().at(-1)!;
     const base64 = sigDataUrl.replace(/^data:image\/png;base64,/, '');
-    const sigBytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-    const sigImage = await pdfDoc.embedPng(sigBytes);
-
-    const sigWidth = 200;
-    const sigHeight = 60;
-    const x = 40;
-    const y = 40;
-
-    lastPage.drawImage(sigImage, {
-      x,
-      y,
-      width: sigWidth,
-      height: sigHeight,
-    });
-
-    // Add "Employee Signature" label
-    const { StandardFonts } = await import('pdf-lib');
+    const sigImage = await pdfDoc.embedPng(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+    const x = 40, y = 40, w = 200, h = 60;
+    lastPage.drawImage(sigImage, { x, y, width: w, height: h });
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    lastPage.drawText('Employee Signature', {
-      x,
-      y: y + sigHeight + 4,
-      size: 9,
-      font,
-      color: rgb(0.4, 0.4, 0.4),
-    });
-
+    lastPage.drawText('Employee Signature', { x, y: y + h + 4, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
     return pdfDoc.save();
   };
 
-  // ─── Render ───────────────────────────────────────────────────────────────
-  if (loading) {
+  // ─── Upload slot component (inline) ───────────────────────────────────────
+  const UploadSlot = ({
+    slot, label, examples, inputRef,
+  }: {
+    slot: SlotId;
+    label: string;
+    examples: string[];
+    inputRef: React.RefObject<HTMLInputElement>;
+  }) => {
+    const uploaded = uploadedDocs[slot];
+    const isUploading = uploadingSlot === slot;
+
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <p className="text-gray-500 text-lg">Loading form...</p>
+      <div className={`rounded-xl border-2 transition-colors ${uploaded ? 'border-green-300 bg-green-50' : 'border-dashed border-gray-300 bg-white'}`}>
+        {uploaded ? (
+          <div className="flex items-center justify-between px-4 py-3 gap-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+                <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-gray-900">{label}</p>
+                <p className="text-xs text-gray-500 truncate">{uploaded.filename}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <a href={uploaded.url} target="_blank" rel="noopener noreferrer"
+                className="text-xs font-medium text-blue-600 hover:text-blue-800 px-2 py-1 rounded hover:bg-blue-50">
+                View
+              </a>
+              <button onClick={() => removeDoc(slot)}
+                className="text-xs font-medium text-red-500 hover:text-red-700 px-2 py-1 rounded hover:bg-red-50">
+                Replace
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" onClick={() => inputRef.current?.click()} disabled={isUploading}
+            className="w-full flex items-start gap-4 px-4 py-4 text-left hover:bg-gray-50 transition-colors rounded-xl disabled:opacity-60">
+            <div className="w-9 h-9 rounded-full bg-gray-100 flex items-center justify-center shrink-0 mt-0.5">
+              {isUploading ? (
+                <svg className="w-4 h-4 text-gray-400 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+                </svg>
+              ) : (
+                <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/>
+                </svg>
+              )}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{isUploading ? 'Uploading…' : label}</p>
+              <ul className="mt-1 space-y-0.5">
+                {examples.slice(0, 3).map(ex => (
+                  <li key={ex} className="text-xs text-gray-400">• {ex}</li>
+                ))}
+              </ul>
+            </div>
+          </button>
+        )}
+        <input ref={inputRef} type="file" accept="image/*,application/pdf" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) handleDocUpload(slot, f); }} />
       </div>
     );
-  }
+  };
 
-  if (error && !meta) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-4">
-        <p className="text-red-600">{error}</p>
-        <button onClick={() => router.push('/employee')} className="text-blue-600 hover:underline text-sm">
-          Back to Forms
+  // ─── Render ────────────────────────────────────────────────────────────────
+  if (loading) return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-50">
+      <p className="text-gray-500 text-lg">Loading form...</p>
+    </div>
+  );
+
+  if (error && !meta) return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-4">
+      <p className="text-red-600">{error}</p>
+      <button onClick={() => router.push('/employee')} className="text-blue-600 hover:underline text-sm">Back to Forms</button>
+    </div>
+  );
+
+  if (alreadySubmitted) return (
+    <div className="min-h-screen bg-gray-50 flex flex-col">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
+        <button onClick={() => router.push('/employee')} className="text-gray-500 hover:text-gray-700 text-sm">
+          ← Back
+        </button>
+        <h1 className="font-semibold text-gray-900 text-lg">{meta?.title}</h1>
+        <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+          Submitted
+        </span>
+      </div>
+
+      <div className="max-w-2xl mx-auto w-full px-4 py-8 space-y-6">
+        {/* Submitted banner */}
+        <div className="bg-green-50 border border-green-200 rounded-xl p-5 flex items-start gap-4">
+          <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center shrink-0">
+            <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+            </svg>
+          </div>
+          <div>
+            <p className="font-semibold text-green-800">This form has already been submitted</p>
+            {submittedAt && (
+              <p className="text-sm text-green-600 mt-0.5">
+                Submitted on {new Date(submittedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}
+              </p>
+            )}
+            <p className="text-sm text-green-700 mt-1">
+              You cannot edit or re-submit this form. Contact your manager if changes are needed.
+            </p>
+          </div>
+        </div>
+
+        {/* Supporting documents — read-only after submission */}
+        {submittedDocs.length > 0 && (
+          <div className="bg-white border border-gray-200 rounded-xl p-5">
+            <h3 className="font-semibold text-gray-900 mb-3">Supporting Documents</h3>
+            <div className="space-y-2">
+              {submittedDocs.map(doc => (
+                <div key={doc.slot} className="flex items-center justify-between gap-3 py-2.5 border-b border-gray-100 last:border-0">
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium text-gray-500">{doc.label}</p>
+                    <p className="text-sm text-gray-900 truncate">{doc.filename}</p>
+                  </div>
+                  {doc.url && (
+                    <div className="flex items-center gap-1 shrink-0">
+                      <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                        className="text-xs font-medium text-blue-600 hover:text-blue-800 px-3 py-1 rounded-lg hover:bg-blue-50 border border-blue-200 transition-colors">
+                        View
+                      </a>
+                      <a href={doc.url} download={doc.filename}
+                        className="text-xs font-medium text-gray-600 hover:text-gray-800 px-3 py-1 rounded-lg hover:bg-gray-100 border border-gray-200 transition-colors">
+                        Download
+                      </a>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button onClick={() => router.push('/employee')}
+          className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold py-2.5 px-6 rounded-lg text-sm transition-colors">
+          Back to My Forms
         </button>
       </div>
-    );
-  }
+    </div>
+  );
 
-  if (saved) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-6 px-4">
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center max-w-md w-full">
-          <div className="text-green-500 text-5xl mb-4">✓</div>
-          <h2 className="text-xl font-bold text-gray-900 mb-2">Form Submitted</h2>
-          <p className="text-gray-500 text-sm mb-6">
-            Your filled form has been saved successfully.
-          </p>
-          <button
-            onClick={() => router.push('/employee')}
-            className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg text-sm transition-colors"
-          >
-            Back to My Forms
-          </button>
+  if (saved) return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 gap-6 px-4">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-10 text-center max-w-md w-full">
+        <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+          <svg className="w-8 h-8 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>
         </div>
+        <h2 className="text-xl font-bold text-gray-900 mb-2">Form Submitted</h2>
+        <p className="text-gray-500 text-sm mb-6">Your form and documents have been saved successfully.</p>
+        <button onClick={() => router.push('/employee')}
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-6 rounded-lg text-sm transition-colors">
+          Back to My Forms
+        </button>
       </div>
-    );
-  }
+    </div>
+  );
+
+  const docCount = Object.keys(uploadedDocs).length;
+  // Show I-9 supporting document upload only for forms whose title contains "I-9" or "I9"
+  const isI9Form = /i-?9/i.test(meta?.title ?? '');
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
+
       {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between">
+      <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => router.push('/employee')}
-            className="text-gray-500 hover:text-gray-700 text-sm"
-          >
+          <button onClick={() => router.push('/employee')} className="text-gray-500 hover:text-gray-700 text-sm">
             ← Back
           </button>
           <h1 className="font-semibold text-gray-900 text-lg">{meta?.title}</h1>
@@ -272,74 +459,139 @@ export default function EmployeeFormPage() {
             </span>
           )}
         </div>
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2 px-5 rounded-lg text-sm transition-colors"
-        >
+        <button onClick={handleSubmit} disabled={saving}
+          className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2 px-5 rounded-lg text-sm transition-colors">
           {saving ? 'Saving...' : 'Submit Form'}
         </button>
       </div>
 
       {error && (
-        <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-sm text-red-700">
-          {error}
-        </div>
+        <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-sm text-red-700">{error}</div>
       )}
 
       {/* PDF Editor */}
-      <div className="flex-1" style={{ minHeight: '600px' }}>
+      <div className="flex-1" style={{ minHeight: '500px' }}>
         {pdfUrl && (
           <PDFFormEditor
             pdfUrl={pdfUrl}
-            formId={`custom-form-${formId}`}
+            formId={meta ? `${meta.title} ${new Date().getFullYear()}` : `custom-form-${formId}`}
             onSave={handleSave}
             skipButtonDetection={true}
           />
         )}
       </div>
 
-      {/* Signature Pad (shown only if required) */}
+      {/* ── Supporting Documents (I-9 only) ──────────────────────────────────── */}
+      {isI9Form && <div className="bg-white border-t border-gray-200 px-4 py-8">
+        <div className="max-w-2xl mx-auto">
+          <h3 className="text-lg font-semibold text-gray-900">Supporting Documents</h3>
+          <p className="text-sm text-gray-500 mt-0.5 mb-5">
+            Upload documents that verify identity and work authorization.
+          </p>
+
+          {/* Mode toggle */}
+          <div className="flex gap-3 mb-5">
+            <button
+              type="button"
+              onClick={() => setDocMode('A')}
+              className={`flex-1 py-3 px-4 rounded-xl border-2 text-sm font-semibold transition-all text-left ${
+                docMode === 'A'
+                  ? 'border-blue-500 bg-blue-50 text-blue-800'
+                  : 'border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}
+            >
+              <span className="block text-base font-bold mb-0.5">List A</span>
+              One document proving identity <em>and</em> work authorization
+            </button>
+            <button
+              type="button"
+              onClick={() => setDocMode('BC')}
+              className={`flex-1 py-3 px-4 rounded-xl border-2 text-sm font-semibold transition-all text-left ${
+                docMode === 'BC'
+                  ? 'border-blue-500 bg-blue-50 text-blue-800'
+                  : 'border-gray-200 text-gray-600 hover:border-gray-300'
+              }`}
+            >
+              <span className="block text-base font-bold mb-0.5">List B + List C</span>
+              One identity doc <em>and</em> one work authorization doc
+            </button>
+          </div>
+
+          {/* Slots */}
+          <div className="space-y-3">
+            {docMode === 'A' ? (
+              <UploadSlot
+                slot="list_a"
+                label="List A — Identity & Work Authorization"
+                examples={LIST_A_EXAMPLES}
+                inputRef={listARef}
+              />
+            ) : (
+              <>
+                <UploadSlot
+                  slot="list_b"
+                  label="List B — Identity Document"
+                  examples={LIST_B_EXAMPLES}
+                  inputRef={listBRef}
+                />
+                <UploadSlot
+                  slot="list_c"
+                  label="List C — Work Authorization Document"
+                  examples={LIST_C_EXAMPLES}
+                  inputRef={listCRef}
+                />
+              </>
+            )}
+          </div>
+
+          <p className="text-xs text-gray-400 mt-3">Accepted: JPG, PNG, WEBP, PDF — max 10 MB each</p>
+        </div>
+      </div>}
+
+      {/* ── Signature Pad ─────────────────────────────────────────────────────── */}
       {meta?.requires_signature && (
-        <div className="bg-white border-t border-gray-200 px-4 py-6">
-          <div className="max-w-xl mx-auto">
+        <div className="bg-white border-t border-gray-200 px-4 py-8">
+          <div className="max-w-2xl mx-auto">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-semibold text-gray-800">Your Signature</h3>
-              <button
-                onClick={clearSignature}
-                className="text-xs text-gray-500 hover:text-gray-700 underline"
-              >
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Employee Signature</h3>
+                <p className="text-sm text-gray-500">Draw your signature to certify this form.</p>
+              </div>
+              <button onClick={clearSignature} className="text-sm text-gray-500 hover:text-gray-700 underline">
                 Clear
               </button>
             </div>
-            <canvas
-              ref={canvasRef}
-              width={560}
-              height={120}
-              className="w-full border-2 border-dashed border-gray-300 rounded-lg bg-white cursor-crosshair touch-none"
-              style={{ maxWidth: '100%' }}
-              onMouseDown={startDraw}
-              onMouseMove={draw}
-              onMouseUp={endDraw}
-              onMouseLeave={endDraw}
-              onTouchStart={startDraw}
-              onTouchMove={draw}
-              onTouchEnd={endDraw}
-            />
-            <p className="text-xs text-gray-400 mt-2 text-center">
-              Draw your signature above using your mouse or touch
-            </p>
+            <div className={`rounded-xl border-2 overflow-hidden ${hasSig ? 'border-blue-300 bg-blue-50/30' : 'border-dashed border-gray-300 bg-white'}`}>
+              <canvas
+                ref={canvasRef}
+                width={640}
+                height={140}
+                className="w-full cursor-crosshair touch-none block"
+                onMouseDown={startDraw}
+                onMouseMove={draw}
+                onMouseUp={endDraw}
+                onMouseLeave={endDraw}
+                onTouchStart={startDraw}
+                onTouchMove={draw}
+                onTouchEnd={endDraw}
+              />
+            </div>
+            {hasSig
+              ? <p className="text-xs text-blue-600 mt-2 font-medium">Signature captured ✓</p>
+              : <p className="text-xs text-gray-400 mt-2 text-center">Sign using your mouse or finger</p>
+            }
           </div>
         </div>
       )}
 
-      {/* Submit bar at bottom */}
-      <div className="bg-white border-t border-gray-200 px-4 py-4 flex justify-end">
-        <button
-          onClick={handleSubmit}
-          disabled={saving}
-          className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 px-8 rounded-lg text-sm transition-colors"
-        >
+      {/* Submit bar */}
+      <div className="bg-white border-t border-gray-200 px-4 py-4 flex items-center justify-between">
+        <p className="text-xs text-gray-400">
+          {isI9Form && `${docCount} document${docCount !== 1 ? 's' : ''} attached`}
+          {meta?.requires_signature && (hasSig ? `${isI9Form ? ' · ' : ''}Signature captured` : `${isI9Form ? ' · ' : ''}Signature required`)}
+        </p>
+        <button onClick={handleSubmit} disabled={saving}
+          className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold py-2.5 px-8 rounded-lg text-sm transition-colors">
           {saving ? 'Saving...' : 'Submit Form'}
         </button>
       </div>

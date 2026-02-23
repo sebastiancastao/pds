@@ -11,10 +11,6 @@ type CustomForm = {
   created_at: string;
 };
 
-type FormProgress = {
-  form_name: string;
-  updated_at: string;
-};
 
 export default function EmployeeFormsPage() {
   const router = useRouter();
@@ -46,17 +42,27 @@ export default function EmployeeFormsPage() {
       if (formsData.setup_needed) {
         setError(formsData.message || 'Database setup required. Ask your admin to run the migration.');
       }
-      setForms(formsData.forms || []);
+      const fetchedForms: CustomForm[] = formsData.forms || [];
+      setForms(fetchedForms);
 
-      // Load which forms the user has already submitted
-      const { data: progressRows } = await supabase
-        .from('pdf_form_progress')
-        .select('form_name, updated_at')
-        .eq('user_id', session.user.id)
-        .like('form_name', 'custom-form-%');
-
-      const completedSet = new Set<string>(
-        (progressRows ?? []).map((r: FormProgress) => r.form_name.replace('custom-form-', ''))
+      // Load which forms the user has already submitted.
+      // Use the retrieve API (service-role backed) so missing RLS SELECT policies never block the check.
+      const completedSet = new Set<string>();
+      await Promise.all(
+        fetchedForms.map(async (form) => {
+          try {
+            const res = await fetch(
+              `/api/pdf-form-progress/retrieve?formName=${encodeURIComponent(`${form.title} ${new Date().getFullYear()}`)}`,
+              { headers: { Authorization: `Bearer ${session.access_token}` } },
+            );
+            if (res.ok) {
+              const d = await res.json();
+              if (d.found) completedSet.add(form.id);
+            }
+          } catch {
+            // Non-critical — treat as not completed
+          }
+        })
       );
       setCompleted(completedSet);
     } catch (err: any) {

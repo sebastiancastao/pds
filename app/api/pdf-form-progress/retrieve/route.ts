@@ -5,6 +5,12 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
 export const dynamic = 'force-dynamic';
 
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  { auth: { persistSession: false } }
+);
+
 function normalizeBase64(value: any): string | null {
   if (!value) return null;
   if (typeof value === 'string') {
@@ -31,61 +37,29 @@ function normalizeBase64(value: any): string | null {
 
 export async function GET(request: NextRequest) {
   try {
-    console.log('[RETRIEVE] Starting authentication check...');
+    // Resolve authenticated user — try cookie session first, then Bearer token
+    let userId: string | null = null;
 
-    // Get the authenticated user using route handler client
-    let supabase = createRouteHandlerClient({ cookies });
-    let { data: { user }, error: userError } = await supabase.auth.getUser();
+    const cookieClient = createRouteHandlerClient({ cookies });
+    const { data: { user: cookieUser } } = await cookieClient.auth.getUser();
+    if (cookieUser?.id) {
+      userId = cookieUser.id;
+    }
 
-    console.log('[RETRIEVE] Cookie-based auth:', {
-      hasUser: !!user,
-      userId: user?.id,
-      error: userError?.message
-    });
-
-    // Fallback to Authorization: Bearer <access_token> header for SSR/API contexts
-    if (!user || !user.id) {
+    if (!userId) {
       const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
-      console.log('[RETRIEVE] Checking Authorization header:', {
-        hasHeader: !!authHeader,
-        headerPreview: authHeader ? authHeader.substring(0, 20) + '...' : 'none'
-      });
-
       const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
       if (token) {
-        console.log('[RETRIEVE] Validating Bearer token...');
-        // Create authenticated client with the token
-        supabase = createClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL!,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-          {
-            global: {
-              headers: {
-                Authorization: `Bearer ${token}`
-              }
-            }
-          }
-        );
-        const { data: tokenUser, error: tokenErr } = await supabase.auth.getUser(token);
-        console.log('[RETRIEVE] Bearer token validation:', {
-          hasUser: !!tokenUser?.user,
-          userId: tokenUser?.user?.id,
-          error: tokenErr?.message
-        });
-
-        if (!tokenErr && tokenUser?.user?.id) {
-          user = { id: tokenUser.user.id } as any;
-          userError = null; // Clear the error since we successfully authenticated
+        const { data: { user: tokenUser }, error: tokenErr } = await supabaseAdmin.auth.getUser(token);
+        if (!tokenErr && tokenUser?.id) {
+          userId = tokenUser.id;
         }
       }
     }
 
-    if (!user || !user.id) {
-      console.log('[RETRIEVE] ❌ Authentication failed - no valid user found');
+    if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
-    console.log('[RETRIEVE] ✅ Authentication successful for user:', user.id);
 
     // Get form name from query parameters
     const { searchParams } = new URL(request.url);
@@ -95,11 +69,11 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing formName parameter' }, { status: 400 });
     }
 
-    // Retrieve form progress
-    const { data, error } = await supabase
+    // Use service-role client so RLS never blocks the read
+    const { data, error } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('form_data, updated_at')
-      .eq('user_id', user.id)
+      .eq('user_id', userId)
       .eq('form_name', formName)
       .single();
 

@@ -45,12 +45,12 @@ export async function POST(request: NextRequest) {
     }
     const token = authHeader.replace('Bearer ', '');
 
-    // Service key to allow server-side storage and DB ops; include user header for auditing
+    // Service-role client — do NOT override Authorization header, so RLS is fully bypassed.
     const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
     });
 
-    // Current user
+    // Validate the user's JWT separately (auth.getUser accepts a JWT directly).
     const {
       data: { user },
       error: userError,
@@ -99,6 +99,19 @@ export async function POST(request: NextRequest) {
         { error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 10MB.` },
         { status: 400 }
       );
+    }
+
+    // Ensure the storage bucket exists (create if missing, ignore if already exists)
+    const { data: buckets } = await supabase.storage.listBuckets();
+    if (!buckets?.some((b) => b.name === BUCKET)) {
+      const { error: bucketErr } = await supabase.storage.createBucket(BUCKET, {
+        public: true,
+        fileSizeLimit: 52428800,
+      });
+      if (bucketErr && !bucketErr.message.toLowerCase().includes('already exist')) {
+        console.error('[I9_UPLOAD] Failed to create bucket:', bucketErr);
+        return NextResponse.json({ error: 'Storage not available' }, { status: 500 });
+      }
     }
 
     // Build storage path

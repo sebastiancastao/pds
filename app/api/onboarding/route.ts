@@ -8,6 +8,93 @@ import { sendEmail } from "@/lib/email";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
+/** Shared helper — sends the Phase 2 approval email. Returns sendEmail result. */
+async function sendOnboardingApprovalEmail(
+  _adminClient: any,
+  _send_email: any,
+  userEmail: string,
+  fullName: string
+) {
+  const subject = 'Phase 2 Onboarding Documents Approved';
+  const html = `
+<!DOCTYPE html>
+<html>
+  <head><meta charset="UTF-8"><title>${subject}</title></head>
+  <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+    <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+      <tr>
+        <td align="center">
+          <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+            <tr>
+              <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
+                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Congratulations!</h1>
+                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Phase 2 Complete</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 40px 30px;">
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  Hello <strong>${fullName}</strong>,
+                </p>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  Congratulations! Your Phase 2 onboarding documents have been successfully reviewed and approved.
+                </p>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                  You will now advance to <strong>Phase 3</strong> of the onboarding process, which will include calendar availability review and clock-in / clock-out training.
+                </p>
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
+                  <tr>
+                    <td style="padding: 20px;">
+                      <p style="color: #856404; margin: 0; font-size: 14px;">
+                        <strong>Mandatory training is required.</strong> A separate email will be sent with training session details.
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0 0 0;">
+                  Thank you,<br>
+                  <strong>Your Onboarding Team</strong>
+                </p>
+                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                  <tr>
+                    <td align="center">
+                      <a href="https://pds-murex.vercel.app/login"
+                         style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                        Login to Your Account
+                      </a>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="padding-top: 15px;">
+                      <p style="color: #666666; font-size: 13px; margin: 0;">
+                        Or copy and paste this link in your browser:<br>
+                        <a href="https://pds-murex.vercel.app/login" style="color: #667eea; text-decoration: none; word-break: break-all;">https://pds-murex.vercel.app/login</a>
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+                <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                  This email was sent by PDS Time Keeping System
+                </p>
+                <p style="color: #999999; font-size: 11px; margin: 0;">
+                  © ${new Date().getFullYear()} PDS. All rights reserved.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`.trim();
+
+  return sendEmail({ to: userEmail, subject, html });
+}
+
 /**
  * GET /api/onboarding
  * Returns list of all users with their onboarding status
@@ -632,16 +719,57 @@ export async function POST(req: NextRequest) {
 
     // Parse request body
     const body = await req.json();
-    const { profile_id, onboarding_completed, notes } = body;
+    // only_send_email: just send the approval email without touching the status record
+    // send_email: when updating status, also send the email (default false — email is now opt-in)
+    const { profile_id, onboarding_completed, notes, send_email, only_send_email } = body;
 
     if (!profile_id) {
       return NextResponse.json({ error: 'profile_id is required' }, { status: 400 });
     }
 
+    // ── Email-only action ────────────────────────────────────────────────────
+    if (only_send_email) {
+      try {
+        const { data: profile, error: profileError } = await adminClient
+          .from('profiles')
+          .select('first_name, last_name, users!inner(email)')
+          .eq('id', profile_id)
+          .single();
+
+        if (profileError || !profile) {
+          return NextResponse.json({ error: 'Profile not found' }, { status: 404 });
+        }
+
+        const userObj = profile?.users ? (Array.isArray(profile.users) ? profile.users[0] : profile.users) : null;
+        const userEmail = userObj?.email;
+
+        if (!userEmail) {
+          return NextResponse.json({ error: 'No email address on file for this user' }, { status: 400 });
+        }
+
+        const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
+        const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
+        const fullName = `${firstName} ${lastName}`.trim() || 'User';
+
+        const emailResult = await sendOnboardingApprovalEmail(adminClient, sendEmail, userEmail, fullName);
+        if (!emailResult.success) {
+          return NextResponse.json({ error: emailResult.error || 'Email sending failed' }, { status: 500 });
+        }
+
+        console.log('[Onboarding API] Approval email sent (email-only action). MessageId:', emailResult.messageId);
+        return NextResponse.json({ success: true, email_sent: true, messageId: emailResult.messageId }, { status: 200 });
+      } catch (err: any) {
+        console.error('[Onboarding API] Error in email-only action:', err);
+        return NextResponse.json({ error: err.message || 'Failed to send email' }, { status: 500 });
+      }
+    }
+
+    // ── Status update action ─────────────────────────────────────────────────
     console.log('[Onboarding API] Updating onboarding status:', {
       profile_id,
       onboarding_completed,
-      notes
+      notes,
+      send_email,
     });
 
     // Upsert the onboarding status record
@@ -681,19 +809,12 @@ export async function POST(req: NextRequest) {
 
     console.log('[Onboarding API] Onboarding status updated successfully');
 
-    // Send email notification if onboarding was just marked as completed
-    if (onboarding_completed) {
+    // Send email only when explicitly requested via send_email flag
+    if (send_email === true) {
       try {
-        // Fetch user's email and name from profile
         const { data: profile, error: profileError } = await adminClient
           .from('profiles')
-          .select(`
-            first_name,
-            last_name,
-            users!inner (
-              email
-            )
-          `)
+          .select('first_name, last_name, users!inner(email)')
           .eq('id', profile_id)
           .single();
 
@@ -706,96 +827,8 @@ export async function POST(req: NextRequest) {
             const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
             const fullName = `${firstName} ${lastName}`.trim() || 'User';
 
-            const subject = 'Phase 2 Onboarding Documents Approved';
-            const html = `
-<!DOCTYPE html>
-<html>
-  <head><meta charset="UTF-8"><title>${subject}</title></head>
-  <body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
-    <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
-      <tr>
-        <td align="center">
-          <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-            <!-- Header -->
-            <tr>
-              <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 40px 30px; text-align: center;">
-                <h1 style="color: #ffffff; margin: 0; font-size: 28px;">Congratulations!</h1>
-                <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Phase 2 Complete</p>
-              </td>
-            </tr>
-            <!-- Body -->
-            <tr>
-              <td style="padding: 40px 30px;">
-                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  Hello <strong>${fullName}</strong>,
-                </p>
-                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  Congratulations! Your Phase 2 onboarding documents have been successfully reviewed and approved.
-                </p>
-                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                  You will now advance to <strong>Phase 3</strong> of the onboarding process, which will include calendar availability review and clock-in / clock-out training.
-                </p>
-                <!-- Important Notice -->
-                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #fff3cd; border-radius: 8px; border-left: 4px solid #ffc107; margin: 30px 0;">
-                  <tr>
-                    <td style="padding: 20px;">
-                      <p style="color: #856404; margin: 0; font-size: 14px;">
-                        <strong>Mandatory training is required.</strong> A separate email will be sent with training session details.
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-                <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 20px 0 0 0;">
-                  Thank you,<br>
-                  <strong>Your Onboarding Team</strong>
-                </p>
-                <!-- Login Button -->
-                <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
-                  <tr>
-                    <td align="center">
-                      <a href="https://pds-murex.vercel.app/login"
-                         style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
-                        Login to Your Account
-                      </a>
-                    </td>
-                  </tr>
-                  <tr>
-                    <td align="center" style="padding-top: 15px;">
-                      <p style="color: #666666; font-size: 13px; margin: 0;">
-                        Or copy and paste this link in your browser:<br>
-                        <a href="https://pds-murex.vercel.app/login" style="color: #667eea; text-decoration: none; word-break: break-all;">https://pds-murex.vercel.app/login</a>
-                      </p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-            <!-- Footer -->
-            <tr>
-              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
-                <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                  This email was sent by PDS Time Keeping System
-                </p>
-                <p style="color: #999999; font-size: 11px; margin: 0;">
-                  © ${new Date().getFullYear()} PDS. All rights reserved.
-                </p>
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </body>
-</html>`.trim();
-
             console.log('[Onboarding API] Sending approval email to:', userEmail);
-
-            const emailResult = await sendEmail({
-              to: userEmail,
-              subject,
-              html,
-            });
-
+            const emailResult = await sendOnboardingApprovalEmail(adminClient, sendEmail, userEmail, fullName);
             if (emailResult.success) {
               console.log('[Onboarding API] Approval email sent successfully. MessageId:', emailResult.messageId);
             } else {
@@ -805,7 +838,7 @@ export async function POST(req: NextRequest) {
         }
       } catch (emailError: any) {
         console.error('[Onboarding API] Error sending approval email:', emailError);
-        // Don't fail the request if email fails, just log the error
+        // Don't fail the request if email fails
       }
     }
 

@@ -65,7 +65,10 @@ const SIGNATURE_AUDIT_VERSION_HEADER = 'x-signature-audit-version';
 export default function OnboardingPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
-  const [updating, setUpdating] = useState<string | null>(null);
+  const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
+  const [sendingEmail, setSendingEmail] = useState<string | null>(null);
+  const [emailSentNow, setEmailSentNow] = useState<Set<string>>(new Set());
+  const [actionError, setActionError] = useState<Record<string, string>>({});
   const [downloadingPdf, setDownloadingPdf] = useState<string | null>(null);
   const [signatureAudits, setSignatureAudits] = useState<Record<string, SignatureAuditEntry[]>>({});
   const [error, setError] = useState<string | null>(null);
@@ -169,23 +172,24 @@ export default function OnboardingPage() {
     }
   };
 
-  const handleCheckboxChange = async (userId: string, isChecked: boolean) => {
+  // Checkbox 1 — update vendor_onboarding_status in the DB (no email sent)
+  const handleStatusToggle = async (profileId: string, isChecked: boolean) => {
     try {
-      setUpdating(userId);
-      setError(null);
+      setUpdatingStatus(profileId);
+      setActionError(prev => { const next = { ...prev }; delete next[profileId]; return next; });
 
       const { data: { session } } = await supabase.auth.getSession();
 
       const response = await fetch('/api/onboarding', {
         method: 'POST',
-        
         headers: {
           'Content-Type': 'application/json',
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {})
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
         body: JSON.stringify({
-          profile_id: userId,
+          profile_id: profileId,
           onboarding_completed: isChecked,
+          send_email: false, // email is a separate action
         }),
       });
 
@@ -194,15 +198,48 @@ export default function OnboardingPage() {
 
       setUsers(prev =>
         prev.map(u =>
-          u.id === userId ? { ...u, onboarding_status: data.onboarding_status } : u
+          u.id === profileId ? { ...u, onboarding_status: data.onboarding_status } : u
         )
       );
     } catch (err: any) {
       console.error('Error updating onboarding:', err);
-      setError(err.message || 'Failed to update onboarding status. Please try again.');
+      setActionError(prev => ({ ...prev, [profileId]: err.message || 'Failed to update status' }));
       fetchUsers();
     } finally {
-      setUpdating(null);
+      setUpdatingStatus(null);
+    }
+  };
+
+  // Checkbox 2 — send the Phase 2 approval email (no DB change)
+  const handleSendEmail = async (profileId: string) => {
+    if (emailSentNow.has(profileId)) return;
+    try {
+      setSendingEmail(profileId);
+      setActionError(prev => { const next = { ...prev }; delete next[profileId]; return next; });
+
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch('/api/onboarding', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          profile_id: profileId,
+          only_send_email: true,
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to send email');
+
+      setEmailSentNow(prev => new Set(prev).add(profileId));
+    } catch (err: any) {
+      console.error('Error sending approval email:', err);
+      setActionError(prev => ({ ...prev, [profileId]: err.message || 'Failed to send email' }));
+    } finally {
+      setSendingEmail(null);
     }
   };
 
@@ -925,23 +962,64 @@ export default function OnboardingPage() {
                           </span>
                         )}
                       </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          {/* SHOW CHECKBOX ONLY FOR HR/EXEC */}
+                      <td className="px-6 py-4">
+                        <div className="flex flex-col gap-3 min-w-[230px]">
+
                           {canEditOnboarding && (
-                            <input
-                              type="checkbox"
-                              checked={user.onboarding_status?.onboarding_completed || false}
-                              onChange={(e) => handleCheckboxChange(user.id, e.target.checked)}
-                              disabled={updating === user.id}
-                              className="h-5 w-5 text-blue-600 focus:ring-blue-500 border-gray-300 rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
-                              title={user.onboarding_status?.onboarding_completed
-                                ? 'Onboarding completed'
-                                : 'Mark onboarding as completed'}
-                            />
+                            <>
+                              {/* ── Checkbox 1: Update DB status ── */}
+                              <label className={`flex items-start gap-2 ${updatingStatus === user.id ? 'opacity-60' : 'cursor-pointer'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={user.onboarding_status?.onboarding_completed || false}
+                                  onChange={(e) => handleStatusToggle(user.id, e.target.checked)}
+                                  disabled={updatingStatus === user.id}
+                                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-green-600 focus:ring-green-500 cursor-pointer disabled:cursor-not-allowed"
+                                />
+                                <span className="text-xs leading-tight select-none">
+                                  <span className="font-semibold text-green-700 block">
+                                    Mark Onboarding Complete
+                                    {updatingStatus === user.id && <span className="ml-1 text-gray-400">(saving…)</span>}
+                                  </span>
+                                  <span className="text-gray-400 block">
+                                    Sets <code className="text-gray-500">vendor_onboarding_status</code> in database
+                                  </span>
+                                  {user.onboarding_status?.onboarding_completed && user.onboarding_status.completed_date && (
+                                    <span className="text-green-600 block mt-0.5">
+                                      ✓ {new Date(user.onboarding_status.completed_date).toLocaleDateString()}
+                                    </span>
+                                  )}
+                                </span>
+                              </label>
+
+                              <div className="border-t border-gray-100" />
+
+                              {/* ── Checkbox 2: Send confirmation email ── */}
+                              <label className={`flex items-start gap-2 ${sendingEmail === user.id || emailSentNow.has(user.id) ? 'opacity-60' : 'cursor-pointer'}`}>
+                                <input
+                                  type="checkbox"
+                                  checked={emailSentNow.has(user.id)}
+                                  onChange={() => handleSendEmail(user.id)}
+                                  disabled={sendingEmail === user.id || emailSentNow.has(user.id)}
+                                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
+                                />
+                                <span className="text-xs leading-tight select-none">
+                                  <span className="font-semibold text-blue-700 block">
+                                    Send Confirmation Email
+                                    {sendingEmail === user.id && <span className="ml-1 text-gray-400">(sending…)</span>}
+                                  </span>
+                                  <span className="text-gray-400 block">
+                                    Sends Phase 2 approval email to employee
+                                  </span>
+                                  {emailSentNow.has(user.id) && (
+                                    <span className="text-blue-600 block mt-0.5">✓ Email sent this session</span>
+                                  )}
+                                </span>
+                              </label>
+                            </>
                           )}
 
-                          {/* Show download button if user has submitted PDF */}
+                          {/* Download PDF button */}
                           {user.has_submitted_pdf && (
                             <button
                               onClick={() => handleDownloadPDF(user.user_id, user.full_name)}
@@ -955,9 +1033,9 @@ export default function OnboardingPage() {
                               } disabled:opacity-50`}
                               title={
                                 downloadingPdf === user.user_id
-                                  ? 'Generating PDF... This may take up to 5 minutes for large documents'
+                                  ? 'Generating PDF... This may take up to 5 minutes'
                                   : user.pdf_downloaded
-                                  ? 'Downloaded - Click to download again'
+                                  ? 'Downloaded — click to download again'
                                   : 'Download onboarding documents'
                               }
                             >
@@ -969,10 +1047,11 @@ export default function OnboardingPage() {
                             </button>
                           )}
 
+                          {/* Per-row error */}
+                          {actionError[user.id] && (
+                            <p className="text-xs text-red-600">{actionError[user.id]}</p>
+                          )}
                         </div>
-                        {updating === user.id && (
-                          <div className="mt-1 text-xs text-gray-500">Updating...</div>
-                        )}
                       </td>
                     </tr>
                   );
