@@ -1675,6 +1675,12 @@ function HRDashboardContent() {
               <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">HR Dashboard</h1>
               <p className="text-lg text-gray-600 font-normal">Manage employees, leave requests, and workforce analytics.</p>
             </div>
+            <button onClick={handleLogout} className="apple-button apple-button-secondary">
+              <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
+              </svg>
+              Logout
+            </button>
           </div>
         </div>
 
@@ -1719,13 +1725,6 @@ function HRDashboardContent() {
               Global Calendar
             </button>
           </Link>
-          <div className="flex-1" />
-          <button onClick={handleLogout} className="apple-button apple-button-secondary">
-            <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a2 2 0 01-2 2H7a2 2 0 01-2-2V7a2 2 0 012-2h4a2 2 0 012 2v1" />
-            </svg>
-            Logout
-          </button>
         </div>
 
         <div className="mb-8 border-b border-gray-200">

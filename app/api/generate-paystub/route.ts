@@ -619,6 +619,52 @@ export async function POST(req: NextRequest) {
       const sickTakenYtd = Number(sickLeave?.total_hours || 0);
       const sickBalanceYtd = Number(sickLeave?.balance_hours || 0);
 
+      // Period-specific: hours accrued this pay period = hours worked / 30
+      const SICK_ACCRUAL_RATE = 30;
+      const sickAccruedThisPeriod = totalHoursWorked > 0 ? totalHoursWorked / SICK_ACCRUAL_RATE : 0;
+
+      // Sick leave taken this period and YTD from Jan 1 (queried from DB)
+      let sickTakenThisPeriod = 0;
+      let sickTakenYtdFromJan = sickTakenYtd; // fallback to all-time total
+
+      if (matchedUserId && (effectivePeriodStart || effectivePeriodEnd)) {
+        try {
+          const periodEndStr = effectivePeriodEnd || effectivePeriodStart || '';
+          const periodYear = periodEndStr.substring(0, 4);
+          const yearStart = periodYear ? `${periodYear}-01-01` : null;
+          const periodEnd = effectivePeriodEnd || new Date().toISOString().slice(0, 10);
+          const periodStart = effectivePeriodStart || yearStart || periodEnd;
+
+          if (yearStart && periodEnd) {
+            const { data: periodSick } = await supabaseAdmin
+              .from("sick_leaves")
+              .select("duration_hours")
+              .eq("user_id", matchedUserId)
+              .gte("start_date", periodStart)
+              .lte("start_date", periodEnd);
+
+            sickTakenThisPeriod = (periodSick || []).reduce(
+              (sum: number, r: any) => sum + Number(r.duration_hours || 0),
+              0
+            );
+
+            const { data: ytdSick } = await supabaseAdmin
+              .from("sick_leaves")
+              .select("duration_hours")
+              .eq("user_id", matchedUserId)
+              .gte("start_date", yearStart)
+              .lte("start_date", periodEnd);
+
+            sickTakenYtdFromJan = (ytdSick || []).reduce(
+              (sum: number, r: any) => sum + Number(r.duration_hours || 0),
+              0
+            );
+          }
+        } catch {
+          // Non-fatal: keep fallback values
+        }
+      }
+
       const black = rgb(0, 0, 0);
       const gray = rgb(0.45, 0.45, 0.45);
 
@@ -736,12 +782,12 @@ export async function POST(req: NextRequest) {
       drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
       drawTopText("- Balance", 358.2, 237.0, { size: 8 });
       drawTopText(fmt(0), 492.9, 214.9, { size: 8 });
-      drawTopText(fmt(0), 492.9, 222.1, { size: 8 });
-      drawTopText(fmt(0), 492.9, 229.8, { size: 8 });
-      drawTopText(fmt(0), 492.9, 237.0, { size: 8 });
+      drawTopText(fmt(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
+      drawTopText(fmt(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
+      drawTopText(fmt(Math.max(0, sickCarryOverYtd + sickAccruedThisPeriod - sickTakenThisPeriod)), 492.9, 237.0, { size: 8 });
       drawTopText(fmt(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
       drawTopText(fmt(sickAccruedYtd), 547.6, 222.1, { size: 8 });
-      drawTopText(fmt(sickTakenYtd), 551.4, 229.8, { size: 8 });
+      drawTopText(fmt(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
       drawTopText(fmt(sickBalanceYtd), 547.7, 237.0, { size: 8 });
 
       drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
