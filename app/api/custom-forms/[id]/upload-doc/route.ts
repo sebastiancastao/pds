@@ -17,7 +17,8 @@ const SLOT_COL_MAP: Record<string, 'additional_doc' | 'drivers_license' | 'ssn_d
   list_c: 'ssn_document',     // List C → ssn_document_*
 };
 
-async function ensureBucket(supabase: ReturnType<typeof createClient>) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function ensureBucket(supabase: any) {
   const { data: buckets } = await supabase.storage.listBuckets();
   if (buckets?.some(b => b.name === I9_BUCKET)) return;
   const { error } = await supabase.storage.createBucket(I9_BUCKET, {
