@@ -86,7 +86,7 @@ export async function GET(
 
     const { data: allForms, error } = await supabaseAdmin
       .from("pdf_form_progress")
-      .select("form_name, form_data, updated_at")
+      .select("form_name, form_data, updated_at, form_date")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false });
 
@@ -124,6 +124,7 @@ export async function GET(
         updated_at: form.updated_at || "",
         // Compatibility field for UIs expecting created_at.
         created_at: form.updated_at || "",
+        form_date: form.form_date || null,
       });
     }
 

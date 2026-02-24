@@ -978,7 +978,7 @@ export default function OnboardingPage() {
                                 />
                                 <span className="text-xs leading-tight select-none">
                                   <span className="font-semibold text-green-700 block">
-                                    Mark Onboarding Complete
+                                    By Pass
                                     {updatingStatus === user.id && <span className="ml-1 text-gray-400">(saving…)</span>}
                                   </span>
                                   <span className="text-gray-400 block">
@@ -1005,7 +1005,7 @@ export default function OnboardingPage() {
                                 />
                                 <span className="text-xs leading-tight select-none">
                                   <span className="font-semibold text-blue-700 block">
-                                    Send Confirmation Email
+                                    Will HR Approval
                                     {sendingEmail === user.id && <span className="ml-1 text-gray-400">(sending…)</span>}
                                   </span>
                                   <span className="text-gray-400 block">

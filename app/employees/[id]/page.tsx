@@ -110,6 +110,7 @@ type PDFForm = {
   form_data: string; // base64
   updated_at: string;
   created_at: string;
+  form_date: string | null;
 };
 
 type OnboardingTemplate = {
@@ -166,7 +167,7 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
@@ -311,18 +312,26 @@ export default function WorkerProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
-  // Fetch available custom forms list
+  // Fetch available custom forms list, filtered by employee's state and region
   useEffect(() => {
+    if (!employee) return;
     const loadCustomForms = async () => {
       setCustomFormsLoading(true);
       try {
         const { data: { session } } = await supabase.auth.getSession();
+
         const res = await fetch('/api/custom-forms/list', {
           headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
         });
+
         if (res.ok) {
           const data = await res.json();
-          setCustomFormsList(data.forms || []);
+          const allForms = data.forms || [];
+          // Filter: only include forms where target_state matches employee's state (or has no restriction)
+          const filtered = allForms.filter((f: { target_state: string | null }) =>
+            !f.target_state || f.target_state === employee.state
+          );
+          setCustomFormsList(filtered);
         }
       } catch (e) {
         console.error('Error loading custom forms list:', e);
@@ -331,7 +340,7 @@ export default function WorkerProfilePage() {
       }
     };
     loadCustomForms();
-  }, []);
+  }, [employee]);
 
   // Load supporting docs for each submitted custom form
   useEffect(() => {
@@ -504,6 +513,25 @@ export default function WorkerProfilePage() {
     }
   };
 
+  // Embed a date string to the right of the signature block on the last PDF page.
+  // Safe to call even if the date was already embedded — it just draws over itself.
+  const withDateEmbedded = async (base64Data: string, date: string): Promise<string> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const [y, m, d] = date.split('-').map(Number);
+    const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
+  };
+
   const createPdfBlobUrl = (base64Data: string) => {
     const byteCharacters = atob(base64Data);
     const byteNumbers = new Array(byteCharacters.length);
@@ -527,10 +555,12 @@ export default function WorkerProfilePage() {
   };
 
   // Download a single PDF form
-  const downloadPDFForm = (form: PDFForm) => {
+  const downloadPDFForm = async (form: PDFForm) => {
     try {
-      // Create download link
-      const url = createPdfBlobUrl(form.form_data);
+      const data = form.form_date
+        ? await withDateEmbedded(form.form_data, form.form_date)
+        : form.form_data;
+      const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
       link.download = `${form.display_name}.pdf`;
@@ -544,9 +574,12 @@ export default function WorkerProfilePage() {
     }
   };
 
-  const viewPDFForm = (form: PDFForm) => {
+  const viewPDFForm = async (form: PDFForm) => {
     try {
-      openPdfInNewTab(form.form_data);
+      const data = form.form_date
+        ? await withDateEmbedded(form.form_data, form.form_date)
+        : form.form_data;
+      openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
       alert('Failed to open PDF form');
@@ -577,7 +610,7 @@ export default function WorkerProfilePage() {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
-        downloadPDFForm(form);
+        await downloadPDFForm(form);
         // Small delay between downloads to avoid browser blocking
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -1414,6 +1447,11 @@ export default function WorkerProfilePage() {
                                 }`}>
                                   {submitted ? `Submitted ${formatDate(submitted.updated_at)}` : 'Pending'}
                                 </span>
+                                {submitted?.form_date && (
+                                  <span className="text-xs font-medium text-purple-700 bg-purple-100 border border-purple-200 rounded-full px-2 py-0.5">
+                                    Date: {formatDate(submitted.form_date)}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>

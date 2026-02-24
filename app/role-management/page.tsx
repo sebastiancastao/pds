@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -59,7 +59,6 @@ export default function RoleManagementPage() {
 
   // --- Role Assignment State ---
   const [users, setUsers] = useState<User[]>([]);
-  const [filteredUsers, setFilteredUsers] = useState<User[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [roleFilter, setRoleFilter] = useState<string>("all");
   const [loading, setLoading] = useState(false);
@@ -139,8 +138,7 @@ export default function RoleManagementPage() {
     }
   }, [selectedManagerId]);
 
-  // Filter users based on search term and role filter
-  useEffect(() => {
+  const filteredUsers = useMemo(() => {
     let result = users;
 
     if (roleFilter !== "all") {
@@ -156,7 +154,7 @@ export default function RoleManagementPage() {
       );
     }
 
-    setFilteredUsers(result);
+    return result;
   }, [searchTerm, roleFilter, users]);
 
   const getToken = async () => {
@@ -548,14 +546,11 @@ export default function RoleManagementPage() {
                     style={{ width: '100%', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: 'pointer' }}
                   >
                     <option value="">-- Select a user to add --</option>
-                    {availableMembers.map(u => {
-                      const rc = getRoleColors(u.role);
-                      return (
-                        <option key={u.id} value={u.id}>
-                          {u.first_name} {u.last_name} — {u.role}
-                        </option>
-                      );
-                    })}
+                    {availableMembers.map(u => (
+                      <option key={u.id} value={u.id}>
+                        {u.first_name} {u.last_name} — {u.role}
+                      </option>
+                    ))}
                   </select>
                 </div>
                 <button

@@ -43,7 +43,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { formName, formData, targetUserId } = body;
+    const { formName, formData, targetUserId, formDate } = body;
 
     if (!formName || !formData) {
       return NextResponse.json({ error: 'Missing formName or formData' }, { status: 400 });
@@ -74,6 +74,7 @@ export async function POST(request: NextRequest) {
         form_name: formName,
         form_data: formData,
         updated_at: new Date().toISOString(),
+        ...(formDate ? { form_date: formDate } : {}),
       }, {
         onConflict: 'user_id,form_name',
       });

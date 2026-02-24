@@ -38,6 +38,9 @@ export async function POST(request: NextRequest) {
     const file = formData.get('file') as File | null;
     const title = (formData.get('title') as string | null)?.trim();
     const requiresSignature = formData.get('requiresSignature') === 'true';
+    const allowDateInput = formData.get('allowDateInput') === 'true';
+    const targetState = (formData.get('targetState') as string | null)?.trim() || null;
+    const targetRegion = (formData.get('targetRegion') as string | null)?.trim() || null;
 
     if (!file || !title) {
       return NextResponse.json({ error: 'Missing file or title' }, { status: 400 });
@@ -82,6 +85,9 @@ export async function POST(request: NextRequest) {
         title,
         storage_path: storagePath,
         requires_signature: requiresSignature,
+        allow_date_input: allowDateInput,
+        target_state: targetState,
+        target_region: targetRegion,
         created_by: user.id,
         is_active: true,
       })

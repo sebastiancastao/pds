@@ -9,6 +9,7 @@ type FormMeta = {
   id: string;
   title: string;
   requires_signature: boolean;
+  allow_date_input: boolean;
 };
 
 type UploadedDoc = {
@@ -58,6 +59,9 @@ export default function EmployeeFormPage() {
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+
+  // Date input (shown when admin enabled allow_date_input for this form)
+  const [formDate, setFormDate] = useState('');
 
   // Already-submitted state
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
@@ -212,6 +216,9 @@ export default function EmployeeFormPage() {
     if (meta?.requires_signature && !hasSig) {
       setError('Please provide your signature before submitting.'); return;
     }
+    if (meta?.allow_date_input && !formDate) {
+      setError('Please enter the form date before submitting.'); return;
+    }
 
     setSaving(true); setError('');
     try {
@@ -221,6 +228,9 @@ export default function EmployeeFormPage() {
       let finalBytes = currentPdfBytesRef.current;
       if (meta?.requires_signature && hasSig && canvasRef.current) {
         finalBytes = await embedSignatureIntoPdf(finalBytes, canvasRef.current.toDataURL('image/png'));
+      }
+      if (meta?.allow_date_input && formDate) {
+        finalBytes = await embedDateIntoPdf(finalBytes, formDate);
       }
 
       const base64 = uint8ArrayToBase64(finalBytes);
@@ -235,11 +245,13 @@ export default function EmployeeFormPage() {
           formData: base64,
           ...(asUserId ? { targetUserId: asUserId } : {}),
           ...(docSummary ? { notes: docSummary } : {}),
+          ...(meta?.allow_date_input && formDate ? { formDate } : {}),
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to save');
-      setSaved(true);
+      const redirectUserId = asUserId ?? session.user.id;
+      router.push(`/employees/${redirectUserId}`);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -264,6 +276,24 @@ export default function EmployeeFormPage() {
     lastPage.drawImage(sigImage, { x, y, width: w, height: h });
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     lastPage.drawText('Employee Signature', { x, y: y + h + 4, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    // Underline baseline shared with the date field
+    lastPage.drawLine({ start: { x, y: y - 2 }, end: { x: x + w, y: y - 2 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    return pdfDoc.save();
+  };
+
+  const embedDateIntoPdf = async (pdfBytes: Uint8Array, date: string): Promise<Uint8Array> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    // Format: e.g. "February 24, 2026"  (avoid timezone shift by parsing as local date)
+    const [y, m, d] = date.split('-').map(Number);
+    const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    // Place the date block to the right of the signature (x=330), same label height and baseline
+    lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+    // Underline at same baseline as signature field (y=38)
+    lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
     return pdfDoc.save();
   };
 
@@ -480,6 +510,22 @@ export default function EmployeeFormPage() {
           />
         )}
       </div>
+
+      {/* ── Date Input ───────────────────────────────────────────────────────── */}
+      {meta?.allow_date_input && (
+        <div className="bg-white border-t border-gray-200 px-4 py-8">
+          <div className="max-w-2xl mx-auto">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Form Date</h3>
+            <p className="text-sm text-gray-500 mb-4">Enter the date for this form.</p>
+            <input
+              type="date"
+              value={formDate}
+              onChange={e => setFormDate(e.target.value)}
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-xs"
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Supporting Documents (I-9 only) ──────────────────────────────────── */}
       {isI9Form && <div className="bg-white border-t border-gray-200 px-4 py-8">

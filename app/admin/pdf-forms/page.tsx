@@ -8,9 +8,40 @@ type CustomForm = {
   id: string;
   title: string;
   requires_signature: boolean;
+  allow_date_input: boolean;
   created_at: string;
   is_active: boolean;
+  target_state: string | null;
+  target_region: string | null;
 };
+
+const US_STATES = [
+  { value: 'AL', label: 'Alabama' },      { value: 'AK', label: 'Alaska' },
+  { value: 'AZ', label: 'Arizona' },      { value: 'AR', label: 'Arkansas' },
+  { value: 'CA', label: 'California' },   { value: 'CO', label: 'Colorado' },
+  { value: 'CT', label: 'Connecticut' },  { value: 'DE', label: 'Delaware' },
+  { value: 'FL', label: 'Florida' },      { value: 'GA', label: 'Georgia' },
+  { value: 'HI', label: 'Hawaii' },       { value: 'ID', label: 'Idaho' },
+  { value: 'IL', label: 'Illinois' },     { value: 'IN', label: 'Indiana' },
+  { value: 'IA', label: 'Iowa' },         { value: 'KS', label: 'Kansas' },
+  { value: 'KY', label: 'Kentucky' },     { value: 'LA', label: 'Louisiana' },
+  { value: 'ME', label: 'Maine' },        { value: 'MD', label: 'Maryland' },
+  { value: 'MA', label: 'Massachusetts' },{ value: 'MI', label: 'Michigan' },
+  { value: 'MN', label: 'Minnesota' },    { value: 'MS', label: 'Mississippi' },
+  { value: 'MO', label: 'Missouri' },     { value: 'MT', label: 'Montana' },
+  { value: 'NE', label: 'Nebraska' },     { value: 'NV', label: 'Nevada' },
+  { value: 'NH', label: 'New Hampshire' },{ value: 'NJ', label: 'New Jersey' },
+  { value: 'NM', label: 'New Mexico' },   { value: 'NY', label: 'New York' },
+  { value: 'NC', label: 'North Carolina' },{ value: 'ND', label: 'North Dakota' },
+  { value: 'OH', label: 'Ohio' },         { value: 'OK', label: 'Oklahoma' },
+  { value: 'OR', label: 'Oregon' },       { value: 'PA', label: 'Pennsylvania' },
+  { value: 'RI', label: 'Rhode Island' }, { value: 'SC', label: 'South Carolina' },
+  { value: 'SD', label: 'South Dakota' }, { value: 'TN', label: 'Tennessee' },
+  { value: 'TX', label: 'Texas' },        { value: 'UT', label: 'Utah' },
+  { value: 'VT', label: 'Vermont' },      { value: 'VA', label: 'Virginia' },
+  { value: 'WA', label: 'Washington' },   { value: 'WV', label: 'West Virginia' },
+  { value: 'WI', label: 'Wisconsin' },    { value: 'WY', label: 'Wyoming' },
+];
 
 type FormPreset = {
   code: string;
@@ -47,6 +78,8 @@ export default function AdminPdfFormsPage() {
 
   const [title, setTitle] = useState('');
   const [requiresSignature, setRequiresSignature] = useState(false);
+  const [allowDateInput, setAllowDateInput] = useState(false);
+  const [targetState, setTargetState] = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -99,6 +132,7 @@ export default function AdminPdfFormsPage() {
       setSelectedPreset(null);
       setTitle('');
       setRequiresSignature(false);
+      setAllowDateInput(false);
       return;
     }
     setSelectedPreset(preset.code);
@@ -134,6 +168,8 @@ export default function AdminPdfFormsPage() {
       fd.append('file', file);
       fd.append('title', title.trim());
       fd.append('requiresSignature', String(requiresSignature));
+      fd.append('allowDateInput', String(allowDateInput));
+      fd.append('targetState', targetState);
 
       const res = await fetch('/api/custom-forms/upload', {
         method: 'POST',
@@ -147,6 +183,8 @@ export default function AdminPdfFormsPage() {
       setSuccessMsg(`"${title}" uploaded successfully.`);
       setTitle('');
       setRequiresSignature(false);
+      setAllowDateInput(false);
+      setTargetState('');
       setSelectedPreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       await loadForms(session.access_token);
@@ -284,6 +322,36 @@ export default function AdminPdfFormsPage() {
               </label>
             </div>
 
+            <div className="flex items-center gap-3">
+              <input
+                id="allowDateInput"
+                type="checkbox"
+                checked={allowDateInput}
+                onChange={e => setAllowDateInput(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="allowDateInput" className="text-sm font-medium text-gray-700">
+                Allow employee to type a date on this form
+              </label>
+            </div>
+
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Restrict to State
+                <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
+              </label>
+              <select
+                value={targetState}
+                onChange={e => setTargetState(e.target.value)}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+              >
+                <option value="">All states</option>
+                {US_STATES.map(s => (
+                  <option key={s.value} value={s.value}>{s.value} — {s.label}</option>
+                ))}
+              </select>
+            </div>
+
             {error && (
               <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-700">
                 {error}
@@ -344,6 +412,16 @@ export default function AdminPdfFormsPage() {
                       {form.requires_signature && (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
                           Signature required
+                        </span>
+                      )}
+                      {form.allow_date_input && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">
+                          Date input
+                        </span>
+                      )}
+                      {form.target_state && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
+                          {form.target_state}
                         </span>
                       )}
                       <span className="text-xs text-gray-400 font-mono">/employee/form/{form.id}</span>
