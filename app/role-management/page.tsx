@@ -171,6 +171,7 @@ export default function RoleManagementPage() {
     try {
       const token = await getToken();
       const res = await fetch('/api/users/role-management-list', {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -214,8 +215,9 @@ export default function RoleManagementPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to update role");
 
-      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: newRole } : u));
-      setSuccessMessage(`${userName}'s role updated to ${newRole}`);
+      const persistedRole = data?.user?.role || newRole;
+      setUsers(prev => prev.map(u => u.id === userId ? { ...u, role: persistedRole } : u));
+      setSuccessMessage(`${userName}'s role updated to ${persistedRole}`);
       setTimeout(() => setSuccessMessage(""), 4000);
     } catch (err: any) {
       console.error("[ROLE-MANAGEMENT] Error:", err);

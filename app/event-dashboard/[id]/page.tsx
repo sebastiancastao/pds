@@ -2578,8 +2578,9 @@ export default function EventDashboardPage() {
       const roundedCents = Math.round((normalizedThousandths + 1e-9) * 100) / 100;
       return amount < 0 ? -roundedCents : roundedCents;
     }
-    const roundedHundreds = Math.round((absAmount + 1e-9) / 100) * 100;
-    return amount < 0 ? -roundedHundreds : roundedHundreds;
+    const normalizedThousandths = Math.round((absAmount + 1e-9) * 1000) / 1000;
+    const roundedCents = Math.round((normalizedThousandths + 1e-9) * 100) / 100;
+    return amount < 0 ? -roundedCents : roundedCents;
   };
   const formatPayrollMoney = (amount: number): string =>
     roundPayrollAmount(amount).toFixed(2);
@@ -4887,7 +4888,7 @@ export default function EventDashboardPage() {
 
                 <div className="bg-purple-50 rounded-lg p-6">
                   <div className="flex items-center justify-between mb-2">
-                    <div className="text-sm font-medium text-purple-600">Team Total Payment</div>
+                    <div className="text-sm font-medium text-purple-600">Total Ext @ Reg</div>
                     <svg className="w-5 h-5 text-purple-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
@@ -4901,7 +4902,7 @@ export default function EventDashboardPage() {
                       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
                       const baseRate = getBaseRateForState(eventState);
 
-                      const totalPayment = totalHours * baseRate;
+                      const totalPayment = totalHours * baseRate * 1.5;
                       return formatPayrollMoney(totalPayment);
                     })()}
                   </div>

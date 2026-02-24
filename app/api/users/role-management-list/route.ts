@@ -6,13 +6,16 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+};
 
 // GET: Retrieve users for role management (exec/admin only)
 export async function GET(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization');
     if (!authHeader?.startsWith('Bearer ')) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
     }
 
     const token = authHeader.substring(7);
@@ -24,7 +27,7 @@ export async function GET(request: NextRequest) {
     // Verify user role
     const { data: { user }, error: authError } = await supabase.auth.getUser(token);
     if (authError || !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401, headers: NO_STORE_HEADERS });
     }
 
     const { data: userData, error: userError } = await supabase
@@ -34,7 +37,7 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (userError || !userData || !['exec', 'admin'].includes(userData.role)) {
-      return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
+      return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403, headers: NO_STORE_HEADERS });
     }
 
     // Use service role to bypass RLS
@@ -60,7 +63,7 @@ export async function GET(request: NextRequest) {
 
     if (usersError) {
       console.error('[ROLE-MGMT-LIST] Error fetching users:', usersError);
-      return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500, headers: NO_STORE_HEADERS });
     }
 
     const transformedUsers = (users || []).map((u: any) => ({
@@ -73,9 +76,9 @@ export async function GET(request: NextRequest) {
       last_name: safeDecrypt(u.profiles.last_name),
     })).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
 
-    return NextResponse.json({ users: transformedUsers }, { status: 200 });
+    return NextResponse.json({ users: transformedUsers }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {
     console.error('[ROLE-MGMT-LIST] Unexpected error:', err);
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }

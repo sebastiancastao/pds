@@ -1079,6 +1079,10 @@ function HRDashboardContent() {
 
     paymentsByVenue.forEach(venue => {
       venue.events.forEach(event => {
+        const totalExtAmtRegRate = Array.isArray(event.payments)
+          ? event.payments.reduce((sum: number, p: any) => sum + Number(p.extAmtOnRegRate ?? p.regularPay ?? 0), 0)
+          : 0;
+
         summaryRows.push({
           'Venue': venue.venue,
           'City': venue.city || '',
@@ -1094,6 +1098,7 @@ function HRDashboardContent() {
           'Total Rest Break': `$${formatExactMoney(Number(event.totalRestBreak || 0))}`,
           'Total Other': `$${formatExactMoney(Number(event.totalOther || 0))}`,
           'Total': `$${formatExactMoney(Number(event.eventTotal || 0))}`,
+          'Total Ext Amt Reg Rate': `$${formatExactMoney(totalExtAmtRegRate)}`,
         });
 
         if (Array.isArray(event.payments) && event.payments.length > 0) {
@@ -1164,6 +1169,7 @@ function HRDashboardContent() {
         { wch: 18 }, // Total Rest Break
         { wch: 12 }, // Total Other
         { wch: 12 }, // Total
+        { wch: 22 }, // Total Ext Amt Reg Rate
       ];
       XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Event Summaries');
     }

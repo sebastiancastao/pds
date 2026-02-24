@@ -8,6 +8,9 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 const ALLOWED_ROLES = ['employee', 'worker', 'supervisor', 'supervisor2', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
+const NO_STORE_HEADERS = {
+  'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+};
 
 const isValidUUID = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
@@ -84,6 +87,16 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: 'Target user not found' }, { status: 404 });
     }
 
+    // Ensure target user exists in Supabase Auth so metadata can stay in sync.
+    const { data: targetAuthData, error: targetAuthError } = await supabaseAdmin.auth.admin.getUserById(userId);
+    if (targetAuthError || !targetAuthData?.user) {
+      console.error('[UPDATE-ROLE] Auth user lookup failed:', targetAuthError);
+      return NextResponse.json(
+        { error: 'Target auth user not found. Role update aborted to avoid inconsistent data.' },
+        { status: 409, headers: NO_STORE_HEADERS }
+      );
+    }
+
     const oldRole = targetUser.role;
 
     if (oldRole === newRole) {
@@ -92,7 +105,7 @@ export async function PUT(request: NextRequest) {
         success: true,
         message: `Role is already ${newRole}`,
         user: { id: targetUser.id, role: targetUser.role },
-      }, { status: 200 });
+      }, { status: 200, headers: NO_STORE_HEADERS });
     }
 
     // Update the role
@@ -105,7 +118,36 @@ export async function PUT(request: NextRequest) {
 
     if (updateError) {
       console.error('[UPDATE-ROLE] Error updating user role:', updateError);
-      return NextResponse.json({ error: 'Failed to update role' }, { status: 500 });
+      return NextResponse.json({ error: 'Failed to update role' }, { status: 500, headers: NO_STORE_HEADERS });
+    }
+
+    // Keep auth user metadata role in sync with public.users role.
+    const mergedUserMetadata = {
+      ...(targetAuthData.user.user_metadata || {}),
+      role: newRole,
+    };
+
+    const { error: authUpdateError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+      user_metadata: mergedUserMetadata,
+    });
+
+    if (authUpdateError) {
+      console.error('[UPDATE-ROLE] Error syncing auth metadata role:', authUpdateError);
+
+      // Roll back users.role so users and auth metadata do not diverge.
+      const { error: rollbackError } = await supabaseAdmin
+        .from('users')
+        .update({ role: oldRole, updated_at: new Date().toISOString() })
+        .eq('id', userId);
+
+      if (rollbackError) {
+        console.error('[UPDATE-ROLE] CRITICAL: Failed rollback after auth sync failure:', rollbackError);
+      }
+
+      return NextResponse.json(
+        { error: 'Failed to sync role metadata in auth; role change was rolled back.' },
+        { status: 500, headers: NO_STORE_HEADERS }
+      );
     }
 
     // Log audit event
@@ -119,6 +161,7 @@ export async function PUT(request: NextRequest) {
         oldRole,
         newRole,
         targetEmail: targetUser.email,
+        authMetadataUpdated: true,
       }
     );
 
@@ -133,9 +176,9 @@ export async function PUT(request: NextRequest) {
       success: true,
       message: `Role updated from ${oldRole} to ${newRole}`,
       user: { id: updatedUser.id, role: updatedUser.role },
-    }, { status: 200 });
+    }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {
     console.error('[UPDATE-ROLE] Unexpected error:', err);
-    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500, headers: NO_STORE_HEADERS });
   }
 }
