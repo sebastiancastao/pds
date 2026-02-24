@@ -48,7 +48,7 @@ export async function GET(request: NextRequest) {
         id,
         email,
         role,
-        profiles!inner(first_name, last_name)
+        profiles(first_name, last_name)
       `)
       .eq('role', 'manager');
 
@@ -62,8 +62,8 @@ export async function GET(request: NextRequest) {
       id: manager.id,
       email: manager.email,
       role: manager.role,
-      first_name: safeDecrypt(manager.profiles.first_name),
-      last_name: safeDecrypt(manager.profiles.last_name),
+      first_name: safeDecrypt(manager.profiles?.first_name || ''),
+      last_name: safeDecrypt(manager.profiles?.last_name || ''),
     })).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
 
     return NextResponse.json({ managers: transformedManagers }, { status: 200 });

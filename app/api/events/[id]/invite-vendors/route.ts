@@ -22,6 +22,55 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
 const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 
+function formatEventDate(value: string | null | undefined): string {
+  if (!value) return "Date TBD";
+  const normalized = String(value).trim();
+  const ymd = normalized.slice(0, 10);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    const [yearRaw, monthRaw, dayRaw] = ymd.split("-");
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    const day = Number(dayRaw);
+    const localDate = new Date(year, month - 1, day);
+    return localDate.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  }
+
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return normalized;
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function formatEventStartTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const normalized = String(value).trim();
+  const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+
+  if (hhmm) {
+    const hour = Number(hhmm[1]);
+    const minute = Number(hhmm[2]);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      const d = new Date();
+      d.setHours(hour, minute, 0, 0);
+      return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    }
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
 /**
  * POST /api/events/[id]/invite-vendors
  * Send invitations to selected vendors for an event
@@ -88,14 +137,10 @@ export async function POST(
       return NextResponse.json({ error: 'No vendors found' }, { status: 404 });
     }
 
-    // Format event date for display
-    const rawDate = eventData.event_date || new Date().toISOString().split('T')[0];
-    const eventDate = new Date(rawDate + 'T00:00:00').toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
+    // Format event date for display without timezone day-shift.
+    const rawDate = eventData.event_date || new Date().toISOString().split("T")[0];
+    const eventDate = formatEventDate(rawDate);
+    const eventStartTime = formatEventStartTime(eventData.start_time);
 
     // Send invitations sequentially to avoid provider burst rate limiting (429)
     let successes = 0;
@@ -151,6 +196,7 @@ export async function POST(
             lastName,
             eventName: eventData.event_name,
             eventDate,
+            eventStartTime,
             venueName: eventData.venue,
             invitationToken
           });

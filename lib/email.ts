@@ -546,10 +546,20 @@ export async function sendVendorEventInvitationEmail(data: {
   lastName: string;
   eventName: string;
   eventDate: string;
+  eventStartTime?: string;
   venueName: string;
   invitationToken: string;
 }): Promise<EmailResult> {
-  const { email, firstName, lastName, eventName, eventDate, venueName, invitationToken } = data;
+  const {
+    email,
+    firstName,
+    lastName,
+    eventName,
+    eventDate,
+    eventStartTime,
+    venueName,
+    invitationToken,
+  } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
 
   if (!isValidEmail(normalizedEmail)) {
@@ -618,6 +628,16 @@ export async function sendVendorEventInvitationEmail(data: {
                           <span style="color: #333333; font-size: 16px;">${eventDate}</span>
                         </td>
                       </tr>
+                      ${eventStartTime ? `
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Start Time:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 16px;">${eventStartTime}</span>
+                        </td>
+                      </tr>
+                      ` : ''}
                       <tr>
                         <td style="padding: 8px 0;">
                           <strong style="color: #555555;">Venue:</strong>
@@ -993,6 +1013,7 @@ export async function sendTeamConfirmationEmail(data: {
   lastName: string;
   eventName: string;
   eventDate: string;
+  eventStartTime?: string;
   managerName: string;
   managerPhone: string;
   confirmationToken: string;
@@ -1004,6 +1025,7 @@ export async function sendTeamConfirmationEmail(data: {
     lastName,
     eventName,
     eventDate,
+    eventStartTime,
     managerName,
     managerPhone,
     confirmationToken,
@@ -1080,6 +1102,16 @@ export async function sendTeamConfirmationEmail(data: {
                           <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">${eventDate}</span>
                         </td>
                       </tr>
+                      ${eventStartTime ? `
+                      <tr>
+                        <td style="padding: 10px 0; vertical-align: top;">
+                          <span style="color: #6b7280; font-size: 15px; font-weight: 500;">Start Time:</span>
+                        </td>
+                        <td style="padding: 10px 0; text-align: right;">
+                          <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">${eventStartTime}</span>
+                        </td>
+                      </tr>
+                      ` : ''}
                       ${managerName ? `
                       <tr>
                         <td style="padding: 10px 0; vertical-align: top;">

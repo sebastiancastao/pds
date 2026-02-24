@@ -114,12 +114,33 @@ export default function TeamConfirmationPage() {
   };
 
   const formatDate = (dateString: string) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
+    const normalized = String(dateString || "").trim();
+    if (!normalized) return "Date TBD";
+
+    // Prefer explicit YYYY-MM-DD extraction so timezone offsets never shift the calendar day.
+    const ymdMatch = normalized.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (ymdMatch) {
+      const year = Number(ymdMatch[1]);
+      const month = Number(ymdMatch[2]);
+      const day = Number(ymdMatch[3]);
+      const utcDate = new Date(Date.UTC(year, month - 1, day));
+      return utcDate.toLocaleDateString("en-US", {
+        timeZone: "UTC",
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+    }
+
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return normalized;
+    return date.toLocaleDateString("en-US", {
+      timeZone: "UTC",
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
     });
   };
 

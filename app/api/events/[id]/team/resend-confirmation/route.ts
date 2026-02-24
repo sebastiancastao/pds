@@ -9,6 +9,55 @@ import crypto from "crypto";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isRateLimitError = (errorMessage: string) => /429|too many requests|rate limit/i.test(errorMessage);
 
+function formatEventDate(value: string | null | undefined): string {
+  if (!value) return "Date TBD";
+  const normalized = String(value).trim();
+  const ymd = normalized.slice(0, 10);
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+    const [yearRaw, monthRaw, dayRaw] = ymd.split("-");
+    const year = Number(yearRaw);
+    const month = Number(monthRaw);
+    const day = Number(dayRaw);
+    const localDate = new Date(year, month - 1, day);
+    return localDate.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    });
+  }
+
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return normalized;
+  return date.toLocaleDateString("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function formatEventStartTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const normalized = String(value).trim();
+  const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+
+  if (hhmm) {
+    const hour = Number(hhmm[1]);
+    const minute = Number(hhmm[2]);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      const d = new Date();
+      d.setHours(hour, minute, 0, 0);
+      return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    }
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -61,7 +110,7 @@ export async function POST(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("id, created_by, event_name, event_date")
+      .select("id, created_by, event_name, event_date, start_time")
       .eq("id", eventId)
       .single();
 
@@ -143,14 +192,8 @@ export async function POST(
       console.error("Error decrypting manager profile:", error);
     }
 
-    const eventDate = event.event_date
-      ? new Date(event.event_date + "T00:00:00").toLocaleDateString("en-US", {
-          weekday: "long",
-          year: "numeric",
-          month: "long",
-          day: "numeric",
-        })
-      : "Date TBD";
+    const eventDate = formatEventDate(event.event_date);
+    const eventStartTime = formatEventStartTime((event as any).start_time);
 
     let emailsSent = 0;
     let emailsFailed = 0;
@@ -220,6 +263,7 @@ export async function POST(
             lastName: vendorLastName,
             eventName: event.event_name,
             eventDate,
+            eventStartTime,
             managerName,
             managerPhone,
             confirmationToken,

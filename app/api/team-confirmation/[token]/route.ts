@@ -7,6 +7,20 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
+function normalizeEventDate(value: unknown): string {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "";
+
+  const ymdMatch = normalized.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (ymdMatch) {
+    return `${ymdMatch[1]}-${ymdMatch[2]}-${ymdMatch[3]}`;
+  }
+
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return normalized;
+  return parsed.toISOString().slice(0, 10);
+}
+
 /**
  * GET /api/team-confirmation/[token]
  * Get team invitation details by confirmation token
@@ -100,12 +114,22 @@ export async function GET(
       console.error('❌ Error decrypting vendor names:', error);
     }
 
+    const rawEvent = Array.isArray((teamInvitation as any).events)
+      ? (teamInvitation as any).events[0]
+      : (teamInvitation as any).events;
+    const eventPayload = rawEvent
+      ? {
+          ...rawEvent,
+          event_date: normalizeEventDate(rawEvent.event_date),
+        }
+      : null;
+
     // Check if already responded
     if (teamInvitation.status === 'confirmed' || teamInvitation.status === 'declined') {
       return NextResponse.json({
         alreadyResponded: true,
         status: teamInvitation.status,
-        event: teamInvitation.events
+        event: eventPayload
       }, { status: 200 });
     }
 
@@ -116,7 +140,7 @@ export async function GET(
         vendorId: teamInvitation.vendor_id,
         status: teamInvitation.status,
         createdAt: teamInvitation.created_at,
-        event: teamInvitation.events,
+        event: eventPayload,
         vendor: {
           firstName: vendorFirstName,
           lastName: vendorLastName
