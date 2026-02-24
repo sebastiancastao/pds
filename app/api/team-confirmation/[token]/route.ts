@@ -21,6 +21,15 @@ function normalizeEventDate(value: unknown): string {
   return parsed.toISOString().slice(0, 10);
 }
 
+function normalizeEventStartTime(value: unknown): string {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return "";
+
+  const hhmmMatch = normalized.match(/(\d{1,2}):(\d{2})/);
+  if (!hhmmMatch) return normalized;
+  return `${hhmmMatch[1].padStart(2, "0")}:${hhmmMatch[2]}`;
+}
+
 /**
  * GET /api/team-confirmation/[token]
  * Get team invitation details by confirmation token
@@ -69,6 +78,7 @@ export async function GET(
           id,
           event_name,
           event_date,
+          start_time,
           venue
         ),
         users!event_teams_vendor_id_fkey (
@@ -121,6 +131,7 @@ export async function GET(
       ? {
           ...rawEvent,
           event_date: normalizeEventDate(rawEvent.event_date),
+          start_time: normalizeEventStartTime(rawEvent.start_time),
         }
       : null;
 

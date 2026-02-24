@@ -8,6 +8,7 @@ interface EventDetails {
   id: string;
   event_name: string;
   event_date: string;
+  start_time?: string;
   venue?: string;
 }
 
@@ -144,6 +145,32 @@ export default function TeamConfirmationPage() {
     });
   };
 
+  const formatStartTime = (timeString?: string) => {
+    const normalized = String(timeString || "").trim();
+    if (!normalized) return "Time TBD";
+
+    const hhmmMatch = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (hhmmMatch) {
+      const hour = Number(hhmmMatch[1]);
+      const minute = Number(hhmmMatch[2]);
+      if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+        const utcTime = new Date(Date.UTC(2000, 0, 1, hour, minute, 0));
+        return utcTime.toLocaleTimeString("en-US", {
+          timeZone: "UTC",
+          hour: "numeric",
+          minute: "2-digit",
+        });
+      }
+    }
+
+    const date = new Date(normalized);
+    if (Number.isNaN(date.getTime())) return normalized;
+    return date.toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  };
+
   if (loading) {
     return (
       <div className="confirmation-container">
@@ -240,6 +267,10 @@ export default function TeamConfirmationPage() {
             <div className="event-detail-row">
               <span className="detail-label">Date:</span>
               <span className="detail-value">{formatDate(invitation.event.event_date)}</span>
+            </div>
+            <div className="event-detail-row">
+              <span className="detail-label">Start:</span>
+              <span className="detail-value">{formatStartTime(invitation.event.start_time)}</span>
             </div>
             {invitation.event.venue && (
               <div className="event-detail-row">
