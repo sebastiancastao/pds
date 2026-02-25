@@ -15,6 +15,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
@@ -110,12 +111,21 @@ export async function GET(req: NextRequest) {
     }
 
     if (!Number.isFinite(mealMs) || mealMs < 0) mealMs = 0;
+    const clockInMs = Date.parse(clockInAt);
+    const workedMs =
+      Number.isFinite(clockInMs) && now.getTime() > clockInMs
+        ? now.getTime() - clockInMs
+        : 0;
+    const netWorkedMs = Math.max(0, workedMs - mealMs);
+    const totalMsWithAdminResponse = netWorkedMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS;
 
     return NextResponse.json(
       {
         active: true,
         clockInAt,
         mealMs: Math.round(mealMs),
+        adminResponseEntryProcessingMs: ADMIN_RESPONSE_ENTRY_PROCESSING_MS,
+        totalMsWithAdminResponse: Math.round(totalMsWithAdminResponse),
         serverNow: now.toISOString(),
         onMeal: openMealStartMs !== null,
       },
@@ -126,4 +136,3 @@ export async function GET(req: NextRequest) {
     return jsonError(err?.message || "Internal server error", 500);
   }
 }
-

@@ -535,15 +535,19 @@ async function createMonitorPdf(data: MonitorExportData): Promise<Uint8Array> {
       { size: 8.5, x: leftMargin + 22, fontOverride: boldFont }
     );
     drawWrapped(
-      `- I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.`,
+      `- All of my hours recorded for the workday are complete and accurate.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(
-      `- I certify that I was provided with all meal periods and rest breaks during this workday.`,
+      `- I was provided with all meal periods and was authorized and permitted to take all rest and recovery periods to which I was entitled in compliance with the Company's policies during the workday, except any that I previously reported to my supervisor/Operations Director and/or Human Resources.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(
-      `- I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.`,
+      `- I have not violated any Company policy during the workday, including, but not limited to, the Company's policy against working off-the clock.`,
+      { size: 8, x: leftMargin + 30 }
+    );
+    drawWrapped(
+      `- I understand that I may raise any concerns about my ability to take meal periods or rest breaks, or any instruction or pressure to work "off-the-clock," or incorrectly reporting my time worked at any time without fear of retaliation.`,
       { size: 8, x: leftMargin + 30 }
     );
     drawWrapped(

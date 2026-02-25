@@ -309,6 +309,19 @@ export default function EventDashboardPage() {
     });
   }, [teamMembers]);
 
+  // Sales tab is locked unless every vendor has both clock-in and clock-out
+  const salesLocked = useMemo(() => {
+    if (!timesheetLoaded) return false;
+    return sortedTeamMembers.some((m: any) => {
+      const division = (m?.users?.division || "").toString().toLowerCase();
+      if (division !== "vendor" && division !== "both") return false;
+      const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+      const span = timesheetSpans[uid];
+      return !span?.firstIn || !span?.lastOut;
+    });
+  }, [timesheetLoaded, sortedTeamMembers, timesheetSpans]);
+  const salesReadOnly = salesLocked || submitting;
+
   // Derived: filtered team members based on search and role filter
   const filteredTeamListMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
     const q = teamSearch.trim().toLowerCase();
@@ -600,6 +613,13 @@ export default function EventDashboardPage() {
       return;
     }
 
+    if (activeTab === "sales") {
+      // Need team + timesheet to compute salesLocked status
+      if (!teamLoaded) loadTeam(true);
+      if (!timesheetLoaded) loadTimesheetTotals();
+      return;
+    }
+
     if (activeTab === "locations") {
       const needsTeam = !teamLoaded;
       const needsLocations = !locationsLoaded;
@@ -661,6 +681,18 @@ export default function EventDashboardPage() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId]);
+
+  // Live polling: refresh timesheet data every 15s when on the timesheet tab and not editing
+  useEffect(() => {
+    if (activeTab !== "timesheet" || !eventId) return;
+    const interval = setInterval(() => {
+      if (!editingTimesheetUserId) {
+        loadTimesheetTotals();
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, eventId, editingTimesheetUserId]);
 
   // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
@@ -1883,33 +1915,41 @@ export default function EventDashboardPage() {
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
 
   const getDisplayedWorkedMs = (uid: string): number => {
-    let totalMs = timesheetTotals[uid] || 0;
     const span = timesheetSpans[uid];
+    const apiTotalMs = Math.max(Number(timesheetTotals[uid] || 0), 0);
 
-    if ((!totalMs || totalMs <= 0) && span?.firstIn && span?.lastOut) {
-      try {
-        totalMs = Math.max(
-          new Date(span.lastOut).getTime() - new Date(span.firstIn).getTime(),
-          0
-        );
-      } catch {
-        totalMs = 0;
-      }
+    const firstInMs = span?.firstIn ? new Date(span.firstIn).getTime() : NaN;
+    const lastOutMs = span?.lastOut ? new Date(span.lastOut).getTime() : NaN;
+    const meal1Ms =
+      span?.firstMealStart && span?.lastMealEnd
+        ? Math.max(new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime(), 0)
+        : 0;
+    const meal2Ms =
+      span?.secondMealStart && span?.secondMealEnd
+        ? Math.max(new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime(), 0)
+        : 0;
+    const mealMs = meal1Ms + meal2Ms;
+
+    let spanNetMs = 0;
+    if (Number.isFinite(firstInMs) && Number.isFinite(lastOutMs) && lastOutMs > firstInMs) {
+      spanNetMs = Math.max(lastOutMs - firstInMs - mealMs, 0);
     }
 
-    if (span?.firstMealStart && span?.lastMealEnd) {
-      const meal1Ms =
-        new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime();
-      if (meal1Ms > 0) totalMs = Math.max(totalMs - meal1Ms, 0);
+    // spanNetMs = firstIn→lastOut minus both meal breaks.
+    // For split shifts apiTotalMs already excludes clock-cycling gaps (which auto-detect as meals),
+    // so both values converge; take the minimum to avoid double-counting.
+    // Fall back to apiTotalMs minus explicit meals when span data is unavailable.
+    let totalMs = 0;
+    if (apiTotalMs > 0 && spanNetMs > 0) {
+      totalMs = Math.min(apiTotalMs, spanNetMs);
+    } else if (spanNetMs > 0) {
+      totalMs = spanNetMs;
+    } else if (apiTotalMs > 0) {
+      // No span; deduct both meal times from raw API total.
+      totalMs = Math.max(apiTotalMs - mealMs, 0);
     }
 
-    if (span?.secondMealStart && span?.secondMealEnd) {
-      const meal2Ms =
-        new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime();
-      if (meal2Ms > 0) totalMs = Math.max(totalMs - meal2Ms, 0);
-    }
-
-    // Include Gate/Phone lead time as the initial worked segment for hour calculations only.
+    // Apply a single 30-minute entry/admin processing offset.
     if (totalMs > 0 && span?.firstIn) {
       totalMs += GATE_PHONE_OFFSET_MS;
     }
@@ -2260,6 +2300,11 @@ export default function EventDashboardPage() {
   };
 
   const handleSaveSales = async () => {
+    if (salesLocked) {
+      setMessage("Sales are locked while vendors are not fully clocked or marked in red.");
+      return;
+    }
+
     setSubmitting(true);
     setMessage("");
 
@@ -3218,6 +3263,12 @@ export default function EventDashboardPage() {
                   Sales Information
                 </h2>
 
+                {salesLocked && (
+                  <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    Sales is read-only until all vendors are clocked and none are marked red in Timesheet.
+                  </div>
+                )}
+
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Total Collected ($)</label>
@@ -3227,10 +3278,13 @@ export default function EventDashboardPage() {
                         type="number"
                         value={ticketSales}
                         onChange={(e) => setTicketSales(e.target.value)}
+                        disabled={salesReadOnly}
                         placeholder="0"
                         step="0.01"
                         min="0"
-                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                        className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                          salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                        }`}
                       />
                     </div>
                   </div>
@@ -3241,9 +3295,12 @@ export default function EventDashboardPage() {
                       type="number"
                       value={ticketCount}
                       onChange={(e) => setTicketCount(e.target.value)}
+                      disabled={salesReadOnly}
                       placeholder="0"
                       min="0"
-                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                      className={`w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                        salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                      }`}
                     />
                   </div>
 
@@ -3255,10 +3312,13 @@ export default function EventDashboardPage() {
                         type="number"
                         value={manualTaxAmount}
                         onChange={(e) => setManualTaxAmount(e.target.value)}
+                        disabled={salesReadOnly}
                         placeholder="0"
                         step="0.01"
                         min="0"
-                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                        className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                          salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                        }`}
                       />
                     </div>
                   </div>
@@ -3271,10 +3331,13 @@ export default function EventDashboardPage() {
                         type="number"
                         value={tips}
                         onChange={(e) => setTips(e.target.value)}
+                        disabled={salesReadOnly}
                         placeholder="0"
                         step="0.01"
                         min="0"
-                        className="w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                        className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                          salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                        }`}
                       />
                     </div>
                   </div>
@@ -3300,8 +3363,11 @@ export default function EventDashboardPage() {
                         const fraction = numVal / 100;
                         setCommissionPool(fraction.toString());
                       }}
+                      disabled={salesReadOnly}
                       placeholder="4%"
-                      className="w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all bg-white hover:border-gray-400"
+                      className={`w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                        salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                      }`}
                     />
                     <p className="text-xs text-gray-500 mt-2">Displayed as percentage (e.g., 4% = 0.04 fraction)</p>
                   </div>
@@ -3323,7 +3389,7 @@ export default function EventDashboardPage() {
 
                 <button
                   onClick={handleSaveSales}
-                  disabled={submitting}
+                  disabled={salesReadOnly}
                   className="w-full mt-6 py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
                 >
                   {submitting ? (
@@ -4558,37 +4624,37 @@ export default function EventDashboardPage() {
 
     {/* Table */}
     <div className="bg-white border rounded-lg overflow-x-auto">
-      <table className="min-w-full divide-y divide-gray-200">
+      <table className="w-full divide-y divide-gray-200">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-4 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+            <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
               Staff
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Gate/Phone
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
+              Admin response time / entry processing time
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
               Clock In
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Meal 1 Start
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
+              M1 Start
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Meal 1 End
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
+              M1 End
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Meal 2 Start
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
+              M2 Start
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
-              Meal 2 End
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
+              M2 End
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
               Clock Out
             </th>
-            <th className="px-3 py-3 text-left text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
               Hours
             </th>
-            <th className="px-4 py-3 text-right text-xs font-semibold text-gray-600 uppercase whitespace-nowrap">
+            <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase">
               Actions
             </th>
           </tr>
@@ -4657,90 +4723,114 @@ export default function EventDashboardPage() {
 
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="font-medium text-sm text-gray-900">
-                      {firstName} {lastName}
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
+                          span.lastOut
+                            ? "bg-red-500"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd)
+                              ? "bg-orange-400"
+                              : span.firstIn
+                                ? "bg-green-500"
+                                : "bg-gray-300"
+                        }`}
+                        title={
+                          span.lastOut
+                            ? "Clocked out"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd)
+                              ? "Meal break"
+                              : span.firstIn
+                                ? "Clocked in"
+                                : "No activity"
+                        }
+                      />
+                      <div>
+                        <div className="font-medium text-xs text-gray-900">
+                          {firstName} {lastName}
+                        </div>
+                        <div className="text-xs text-gray-500 truncate max-w-[120px]">{m.users?.email || "N/A"}</div>
+                      </div>
                     </div>
-                    <div className="text-xs text-gray-500">{m.users?.email || "N/A"}</div>
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={gatePhoneTime}
                       placeholder="--:--"
                       readOnly
-                      className="border rounded px-2 py-1 text-sm w-28 bg-gray-100 cursor-not-allowed"
+                      className="border rounded px-1 py-1 text-xs w-24 bg-gray-100 cursor-not-allowed"
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.firstIn : firstClockIn}
                       onChange={(e) => updateTimesheetDraft(uid, "firstIn", e.target.value)}
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.firstMealStart : firstMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
                       placeholder="--:--"
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.lastMealEnd : lastMealEnd}
                       onChange={(e) => updateTimesheetDraft(uid, "lastMealEnd", e.target.value)}
                       placeholder="--:--"
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.secondMealStart : secondMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
                       placeholder="--:--"
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.secondMealEnd : secondMealEnd}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
                       placeholder="--:--"
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3">
+                  <td className="px-2 py-2">
                     <input
                       type="time"
                       value={isEditing ? draft.lastOut : lastClockOut}
                       onChange={(e) => updateTimesheetDraft(uid, "lastOut", e.target.value)}
                       readOnly={!isEditing}
-                      className={`border rounded px-2 py-1 text-sm w-28 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
+                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
                     />
                   </td>
 
-                  <td className="px-3 py-3 text-sm font-medium whitespace-nowrap">{hours}</td>
+                  <td className="px-2 py-2 text-xs font-medium whitespace-nowrap">{hours}</td>
 
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                  <td className="px-3 py-2 text-right whitespace-nowrap">
                     {canEditTimesheets ? (
                       isEditing ? (
                         <>

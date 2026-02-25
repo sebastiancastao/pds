@@ -17,6 +17,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
+const ENTRY_PROCESSING_OFFSET_MS = 30 * 60 * 1000;
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
@@ -161,11 +162,13 @@ export async function GET(
       timeEntries = withAttestationResult.data || [];
     }
 
-    // Compute shift details
-    let clockInAt: string | null = null;
-    let clockOutAt: string | null = null;
+    // Compute shift details from intervals (matches timesheet logic more closely).
+    let firstClockInAt: string | null = null;
+    let lastClockOutAt: string | null = null;
+    let workedMs = 0;
     let mealMs = 0;
-    let openMealStart: number | null = null;
+    let openClockInMs: number | null = null;
+    let openMealStartMs: number | null = null;
     const clockOutEntries: Array<{
       formId: string;
       timestampMs: number;
@@ -175,9 +178,17 @@ export async function GET(
     for (const entry of timeEntries || []) {
       const tsMs = Date.parse(entry.timestamp);
       if (Number.isNaN(tsMs)) continue;
-      if (entry.action === "clock_in" && !clockInAt) clockInAt = entry.timestamp;
-      else if (entry.action === "clock_out") {
-        clockOutAt = entry.timestamp;
+      if (entry.action === "clock_in") {
+        if (!firstClockInAt) firstClockInAt = entry.timestamp;
+        if (openClockInMs === null) {
+          openClockInMs = tsMs;
+        }
+      } else if (entry.action === "clock_out") {
+        lastClockOutAt = entry.timestamp;
+        if (openClockInMs !== null) {
+          workedMs += Math.max(0, tsMs - openClockInMs);
+          openClockInMs = null;
+        }
         const entryId = String((entry as any)?.id || "").trim();
         const rawAccepted = (entry as any)?.attestation_accepted;
         const attestationAccepted = typeof rawAccepted === "boolean" ? rawAccepted : null;
@@ -188,16 +199,16 @@ export async function GET(
             attestationAccepted,
           });
         }
-        if (openMealStart !== null) { mealMs += Math.max(0, tsMs - openMealStart); openMealStart = null; }
-      } else if (entry.action === "meal_start" && openMealStart === null) openMealStart = tsMs;
-      else if (entry.action === "meal_end" && openMealStart !== null) {
-        mealMs += Math.max(0, tsMs - openMealStart); openMealStart = null;
+        if (openMealStartMs !== null) {
+          mealMs += Math.max(0, tsMs - openMealStartMs);
+          openMealStartMs = null;
+        }
+      } else if (entry.action === "meal_start" && openMealStartMs === null) {
+        openMealStartMs = tsMs;
+      } else if (entry.action === "meal_end" && openMealStartMs !== null) {
+        mealMs += Math.max(0, tsMs - openMealStartMs);
+        openMealStartMs = null;
       }
-    }
-
-    let totalHoursMs = 0;
-    if (clockInAt && clockOutAt) {
-      totalHoursMs = Math.max(0, Date.parse(clockOutAt) - Date.parse(clockInAt) - mealMs);
     }
 
     const latestClockOut = clockOutEntries
@@ -237,6 +248,12 @@ export async function GET(
           return directFormMatch || timeMatch;
         }) || null;
     }
+
+    const netWorkedMs = Math.max(0, workedMs - mealMs);
+    const entryProcessingMs = netWorkedMs > 0 && firstClockInAt && lastClockOutAt
+      ? ENTRY_PROCESSING_OFFSET_MS
+      : 0;
+    const totalHoursMs = netWorkedMs + entryProcessingMs;
 
     // ─── Build PDF ───
     const pdfDoc = await PDFDocument.create();
@@ -301,10 +318,12 @@ export async function GET(
     drawText("Vendor Shift Details", { font: boldFont, size: 13 });
     y -= 4;
     drawText(`Name: ${vendorName}`, { font: boldFont });
-    drawText(`Check In: ${clockInAt ? formatTime(clockInAt) : "--"}`);
-    drawText(`Check Out: ${clockOutAt ? formatTime(clockOutAt) : "--"}`);
-    drawText(`Meal Time: ${mealMs > 0 ? formatDuration(mealMs) : "0h 00m"}`);
-    drawText(`Total Hours: ${formatDuration(totalHoursMs)}`);
+    drawText(`Check In: ${firstClockInAt ? formatTime(firstClockInAt) : "--"}`);
+    drawText(`Check Out: ${lastClockOutAt ? formatTime(lastClockOutAt) : "--"}`);
+    drawText(`Worked Time (raw): ${formatDuration(workedMs)}`);
+    drawText(`Meal Time Deduction: ${mealMs > 0 ? formatDuration(mealMs) : "0h 00m"}`);
+    drawText(`Admin Response / Entry Processing: ${formatDuration(entryProcessingMs)}`);
+    drawText(`Total Hours (Adjusted): ${formatDuration(totalHoursMs)}`, { font: boldFont });
     y -= 10;
     drawLine();
 
@@ -317,9 +336,10 @@ export async function GET(
     } else {
       drawText(`I, ${vendorName}, hereby attest that:`, { font: boldFont, size: 10 });
       y -= 2;
-      drawText(`    - I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.`, { size: 9, x: leftMargin + 8 });
-      drawText(`    - I certify that I was provided with all meal periods and rest breaks during this workday.`, { size: 9, x: leftMargin + 8 });
-      drawText(`    - I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - All of my hours recorded for the workday are complete and accurate.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - I was provided with all meal periods and was authorized and permitted to take all rest and recovery periods to which I was entitled in compliance with the Company's policies during the workday, except any that I previously reported to my supervisor/Operations Director and/or Human Resources.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - I have not violated any Company policy during the workday, including, but not limited to, the Company's policy against working off-the clock.`, { size: 9, x: leftMargin + 8 });
+      drawText(`    - I understand that I may raise any concerns about my ability to take meal periods or rest breaks, or any instruction or pressure to work "off-the-clock," or incorrectly reporting my time worked at any time without fear of retaliation.`, { size: 9, x: leftMargin + 8 });
       y -= 6;
       drawText(`Signed At: ${formatDateTime(att.signed_at)}  |  Valid: ${att.is_valid ? "Yes" : "No"}`, {
         size: 9, color: rgb(0.35, 0.35, 0.35),

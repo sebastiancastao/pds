@@ -129,6 +129,20 @@ type OnboardingTemplate = {
   updated_at: string;
 };
 
+type EventInvitation = {
+  id: string;
+  event_id: string;
+  event_name: string | null;
+  event_date: string | null;
+  venue: string | null;
+  city: string | null;
+  state: string | null;
+  status: string;
+  source: "team" | "location";
+  location_name: string | null;
+  assigned_at: string;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -177,6 +191,9 @@ export default function WorkerProfilePage() {
   const [submittingSickRequest, setSubmittingSickRequest] = useState(false);
   const [sickRequestError, setSickRequestError] = useState("");
   const [sickRequestSuccess, setSickRequestSuccess] = useState("");
+
+  const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
+  const [invitationsLoading, setInvitationsLoading] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -375,6 +392,29 @@ export default function WorkerProfilePage() {
 
     loadDocs();
   }, [customFormsList, pdfForms, employeeId]);
+
+  // Fetch event invitations (team + location assignments) for this employee
+  useEffect(() => {
+    if (!employeeId) return;
+    const loadInvitations = async () => {
+      setInvitationsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/employees/${employeeId}/invitations`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEventInvitations(data.invitations || []);
+        }
+      } catch (e) {
+        console.error("Error loading event invitations:", e);
+      } finally {
+        setInvitationsLoading(false);
+      }
+    };
+    loadInvitations();
+  }, [employeeId]);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -1516,6 +1556,81 @@ export default function WorkerProfilePage() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Event Invitations */}
+            <section className="mb-10">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Event Invitations</h2>
+              </div>
+              <div className="apple-card overflow-hidden">
+                {invitationsLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading invitations…</span>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="text-left p-4 font-semibold text-gray-700">Event</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Date</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Venue</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Type</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Location</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {eventInvitations.map((inv) => (
+                          <tr key={`${inv.source}-${inv.id}`} className="hover:bg-gray-50 transition-colors">
+                            <td className="p-4 text-gray-900 font-medium">
+                              <Link href={`/event-dashboard/${inv.event_id}`} className="text-blue-600 hover:text-blue-700">
+                                {inv.event_name || inv.event_id}
+                              </Link>
+                            </td>
+                            <td className="p-4 text-gray-700 text-sm">{formatDate(inv.event_date)}</td>
+                            <td className="p-4 text-gray-700 text-sm">
+                              {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                            </td>
+                            <td className="p-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                                inv.source === "team"
+                                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                                  : "bg-purple-50 text-purple-700 border-purple-200"
+                              }`}>
+                                {inv.source === "team" ? "Team" : "Location"}
+                              </span>
+                            </td>
+                            <td className="p-4 text-gray-600 text-sm">{inv.location_name || "—"}</td>
+                            <td className="p-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                                inv.status === "confirmed"
+                                  ? "bg-green-50 text-green-700 border-green-200"
+                                  : inv.status === "declined"
+                                  ? "bg-red-50 text-red-700 border-red-200"
+                                  : inv.status === "completed"
+                                  ? "bg-gray-100 text-gray-600 border-gray-200"
+                                  : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                              }`}>
+                                {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                        {eventInvitations.length === 0 && (
+                          <tr>
+                            <td colSpan={6} className="p-6 text-center text-gray-500">
+                              No event invitations yet.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>

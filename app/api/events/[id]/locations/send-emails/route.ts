@@ -126,10 +126,24 @@ function formatEventDate(value: string | null | undefined): string {
   });
 }
 
+function formatTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const normalized = String(value).trim();
+  // Accepts "HH:MM" or "HH:MM:SS"
+  const match = normalized.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return normalized;
+  const hours = parseInt(match[1], 10);
+  const minutes = match[2];
+  const period = hours >= 12 ? "PM" : "AM";
+  const displayHour = hours % 12 === 0 ? 12 : hours % 12;
+  return minutes === "00" ? `${displayHour}:${minutes} ${period}` : `${displayHour}:${minutes} ${period}`;
+}
+
 function buildEmailHtml(params: {
   firstName: string;
   eventName: string;
   eventDate: string;
+  startTime: string;
   venue: string;
   city: string;
   state: string;
@@ -139,6 +153,7 @@ function buildEmailHtml(params: {
   const firstName = escapeHtml(params.firstName || "Team Member");
   const eventName = escapeHtml(params.eventName);
   const eventDate = escapeHtml(params.eventDate);
+  const startTime = escapeHtml(params.startTime);
   const venue = escapeHtml(params.venue || "TBD");
   const city = escapeHtml(params.city || "");
   const state = escapeHtml(params.state || "");
@@ -157,6 +172,7 @@ function buildEmailHtml(params: {
     <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;background:#f8fafc;">
       <p style="margin:0 0 8px;"><strong>Event:</strong> ${eventName}</p>
       <p style="margin:0 0 8px;"><strong>Date:</strong> ${eventDate}</p>
+      ${startTime ? `<p style="margin:0 0 8px;"><strong>Call Time:</strong> ${startTime}</p>` : ""}
       <p style="margin:0 0 8px;"><strong>Venue:</strong> ${venue}</p>
       <p style="margin:0 0 8px;"><strong>City/State:</strong> ${cityState}</p>
       <p style="margin:0 0 8px;"><strong>Assigned Location:</strong> ${locationName}</p>
@@ -268,7 +284,7 @@ export async function POST(
     const [eventResult, locationsResult, assignmentsResult] = await Promise.all([
       supabaseAdmin
         .from("events")
-        .select("event_name, event_date, venue, city, state")
+        .select("event_name, event_date, start_time, venue, city, state")
         .eq("id", eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -401,6 +417,7 @@ export async function POST(
 
     const eventName = normalizeText(eventData?.event_name) || "Event";
     const eventDate = formatEventDate(eventData?.event_date || null);
+    const startTime = formatTime(eventData?.start_time || null);
     const venue = normalizeText(eventData?.venue);
     const city = normalizeText(eventData?.city);
     const state = normalizeText(eventData?.state);
@@ -433,6 +450,7 @@ export async function POST(
           firstName: fullName || recipient.firstName || "Team Member",
           eventName,
           eventDate,
+          startTime,
           venue,
           city,
           state,

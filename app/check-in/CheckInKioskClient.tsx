@@ -8,6 +8,7 @@ import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 // ─── Types ───────────────────────────────────────────────────────────
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
+const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 
 type QueuedAction = {
   id: string;
@@ -126,7 +127,12 @@ export default function CheckInKioskPage() {
   const [signature, setSignature] = useState("");
   const [isDrawing, setIsDrawing] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [attestationSummary, setAttestationSummary] = useState<{ clockInAt: string; mealMs: number } | null>(null);
+  const [attestationSummary, setAttestationSummary] = useState<{
+    clockInAt: string;
+    mealMs: number;
+    adminResponseEntryProcessingMs: number;
+    totalMsWithAdminResponse: number;
+  } | null>(null);
   const [attestationSummaryLoading, setAttestationSummaryLoading] = useState(false);
   const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
 
@@ -188,7 +194,20 @@ export default function CheckInKioskPage() {
         const data = await res.json().catch(() => ({}));
         if (!res.ok) return;
         if (data?.active && typeof data?.clockInAt === "string" && typeof data?.mealMs === "number") {
-          setAttestationSummary({ clockInAt: data.clockInAt, mealMs: data.mealMs });
+          const adminMs =
+            typeof data?.adminResponseEntryProcessingMs === "number"
+              ? data.adminResponseEntryProcessingMs
+              : ADMIN_RESPONSE_ENTRY_PROCESSING_MS;
+          const totalMs =
+            typeof data?.totalMsWithAdminResponse === "number"
+              ? data.totalMsWithAdminResponse
+              : 0;
+          setAttestationSummary({
+            clockInAt: data.clockInAt,
+            mealMs: data.mealMs,
+            adminResponseEntryProcessingMs: adminMs,
+            totalMsWithAdminResponse: totalMs,
+          });
         } else {
           setAttestationSummary(null);
         }
@@ -850,9 +869,10 @@ export default function CheckInKioskPage() {
                 I, <span className="font-semibold">{worker.name}</span>, hereby attest that:
               </p>
               <ul className="list-disc list-inside space-y-1 text-gray-600">
-                <li>I certify that all of my hours recorded for the workday are complete and accurate. I also certify that all work time is reflected in my time records and I did not perform any work off-the-clock.</li>
-                <li>I certify that I was provided with all meal periods and rest breaks during this workday.</li>
-                <li>I understand that if any of the above statements are incorrect, I must inform my supervisor or Human Resources immediately.</li>
+                <li>All of my hours recorded for the workday are complete and accurate.</li>
+                <li>I was provided with all meal periods and was authorized and permitted to take all rest and recovery periods to which I was entitled in compliance with the Company's policies during the workday, except any that I previously reported to my supervisor/Operations Director and/or Human Resources.</li>
+                <li>I have not violated any Company policy during the workday, including, but not limited to, the Company's policy against working off-the clock.</li>
+                <li>I understand that I may raise any concerns about my ability to take meal periods or rest breaks, or any instruction or pressure to work "off-the-clock," or incorrectly reporting my time worked at any time without fear of retaliation.</li>
               </ul>
             </div>
 
@@ -881,14 +901,33 @@ export default function CheckInKioskPage() {
                   </div>
                 </div>
                 <div>
+                  <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Admin response time / entry processing time</div>
+                  <div className="mt-1 font-semibold text-gray-900">
+                    {formatDuration(attestationSummary?.adminResponseEntryProcessingMs ?? ADMIN_RESPONSE_ENTRY_PROCESSING_MS)}
+                  </div>
+                </div>
+                <div>
                   <div className="text-[11px] uppercase tracking-wide text-gray-500 font-semibold">Total Time</div>
                   <div className="mt-1 font-semibold text-gray-900">
                     {(() => {
-                      const startMs = worker.clockedInAt ? Date.parse(worker.clockedInAt) : NaN;
-                      if (Number.isNaN(startMs)) return "--";
-                      if (!attestationSummary) return "--";
-                      const netMs = Math.max(0, attestationNowMs - startMs - attestationSummary.mealMs);
-                      return formatDuration(netMs);
+                      const startIso = attestationSummary?.clockInAt || worker.clockedInAt;
+                      const startMs = startIso ? Date.parse(startIso) : NaN;
+                      if (Number.isNaN(startMs)) {
+                        if (
+                          attestationSummary &&
+                          Number.isFinite(attestationSummary.totalMsWithAdminResponse) &&
+                          attestationSummary.totalMsWithAdminResponse > 0
+                        ) {
+                          return formatDuration(attestationSummary.totalMsWithAdminResponse);
+                        }
+                        return "--";
+                      }
+                      const mealMs = attestationSummary?.mealMs || 0;
+                      const netMs = Math.max(0, attestationNowMs - startMs - mealMs);
+                      const adminMs =
+                        attestationSummary?.adminResponseEntryProcessingMs ??
+                        ADMIN_RESPONSE_ENTRY_PROCESSING_MS;
+                      return formatDuration(netMs + adminMs);
                     })()}
                   </div>
                 </div>
