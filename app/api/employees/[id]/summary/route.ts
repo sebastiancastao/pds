@@ -221,7 +221,9 @@ export async function GET(
           phone,
           city,
           state,
-          profile_photo_data
+          profile_photo_data,
+          region_id,
+          regions ( id, name )
         )
       `)
       .eq("id", userId)
@@ -246,6 +248,7 @@ export async function GET(
     const lastName = profile.last_name ? safeDecrypt(profile.last_name) : "N/A";
 
     // Combine user and profile data into employee object
+    const region = (profile.regions as any)?.[0] || profile.regions || null;
     const employee = {
       id: user.id,
       first_name: firstName,
@@ -260,6 +263,8 @@ export async function GET(
       hire_date: user.created_at,
       status: "active" as const,
       salary: null,
+      region_id: profile.region_id || null,
+      region_name: region?.name || null,
     };
 
     // ---- Pull time_entries with action and timestamp columns
@@ -277,7 +282,7 @@ export async function GET(
       );
     }
 
-    // Group entries by event_id and pair clock_in/clock_out
+    // Pair clock_in/clock_out entries, deduct meal breaks, add 30 min bonus
     type TimeEntryRaw = {
       id: string;
       event_id: string | null;
@@ -286,80 +291,94 @@ export async function GET(
       created_at: string;
     };
 
-    // Sort entries by event and timestamp to pair them
-    const entriesByEvent = new Map<string, TimeEntryRaw[]>();
-    for (const entry of (rawEntries ?? []) as TimeEntryRaw[]) {
-      const key = entry.event_id || "unknown";
-      if (!entriesByEvent.has(key)) {
-        entriesByEvent.set(key, []);
-      }
-      entriesByEvent.get(key)!.push(entry);
-    }
+    // Sort ALL entries globally by timestamp ascending.
+    // This ensures correct pairing even when clock_in/clock_out and meal entries
+    // have different (or null) event_ids due to being recorded via different apps.
+    const allEntries = ((rawEntries ?? []) as TimeEntryRaw[]).slice().sort(
+      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
 
-    // Pair clock_in and clock_out entries, deduct meal breaks, add 30 min bonus
+    // Pair clock_in/clock_out globally (not per-event) to handle mismatched event_ids
     const normalized = [];
-    for (const [eventId, entries] of entriesByEvent.entries()) {
-      // Sort by timestamp ascending to match pairs
-      entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    let clockIn: TimeEntryRaw | null = null;
+    for (const entry of allEntries) {
+      const action = (entry.action || "").toLowerCase();
 
-      // Collect meal break intervals for this event
-      const mealStarts = entries.filter(e => (e.action || "").toLowerCase() === "meal_start");
-      const mealEnds   = entries.filter(e => (e.action || "").toLowerCase() === "meal_end");
-      const mealBreaks: Array<{ start: number; end: number }> = [];
-      const pairedMeals = Math.min(mealStarts.length, mealEnds.length);
-      for (let i = 0; i < pairedMeals; i++) {
-        mealBreaks.push({
-          start: new Date(mealStarts[i].timestamp).getTime(),
-          end:   new Date(mealEnds[i].timestamp).getTime(),
+      if (action === "clock_in") {
+        // Only latch the FIRST clock_in; don't overwrite an open one.
+        // This prevents orphaned/duplicate clock_in entries from displacing the
+        // correct clock_in and showing a wrong hour in the sub-row.
+        if (!clockIn) clockIn = entry;
+      } else if (action === "clock_out" && clockIn) {
+        const shiftStart = new Date(clockIn.timestamp).getTime();
+        const shiftEnd   = new Date(entry.timestamp).getTime();
+        let shiftMs = shiftEnd - shiftStart;
+        if (shiftMs <= 0) { clockIn = null; continue; }
+
+        // Determine event_id: prefer clock_in's, then clock_out's.
+        // Meal event_id is used as a last-resort fallback (assigned below after
+        // meals are collected) for cases where both clock entries have null event_id
+        // but the meal was recorded via the kiosk (which does set event_id).
+        let eventId = clockIn.event_id || entry.event_id || null;
+
+        // Find all meal entries whose timestamp falls within this shift window,
+        // regardless of their event_id (handles meals recorded via different app)
+        const mealsInShift = allEntries.filter(e => {
+          const t = new Date(e.timestamp).getTime();
+          return t > shiftStart && t < shiftEnd &&
+            ((e.action || "").toLowerCase() === "meal_start" ||
+             (e.action || "").toLowerCase() === "meal_end");
         });
-      }
+        const mealStarts = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_start");
+        const mealEnds   = mealsInShift.filter(e => (e.action || "").toLowerCase() === "meal_end");
 
-      let clockIn: TimeEntryRaw | null = null;
-      for (const entry of entries) {
-        const action = (entry.action || "").toLowerCase();
-
-        if (action === "clock_in") {
-          clockIn = entry;
-        } else if (action === "clock_out" && clockIn) {
-          const shiftStart = new Date(clockIn.timestamp).getTime();
-          const shiftEnd   = new Date(entry.timestamp).getTime();
-          let shiftMs = shiftEnd - shiftStart;
-          if (shiftMs <= 0) { clockIn = null; continue; }
-
-          // Deduct meal break time that falls within this shift
-          for (const meal of mealBreaks) {
-            const overlapStart = Math.max(meal.start, shiftStart);
-            const overlapEnd   = Math.min(meal.end, shiftEnd);
-            if (overlapEnd > overlapStart) shiftMs -= (overlapEnd - overlapStart);
-          }
-
-          // Add 30-minute bonus per shift
-          shiftMs += 30 * 60 * 1000;
-
-          const duration_hours = Number(Math.max(0, shiftMs / (1000 * 60 * 60)).toFixed(3));
-          normalized.push({
-            id: clockIn.id + "_" + entry.id,
-            event_id: eventId === "unknown" ? null : eventId,
-            clock_in: clockIn.timestamp,
-            clock_out: entry.timestamp,
-            duration_hours,
-            created_at: clockIn.created_at,
-          });
-          clockIn = null; // Reset for next pair
+        // Fall back to a meal entry's event_id when both clock entries have none
+        if (!eventId) {
+          eventId = mealStarts[0]?.event_id || mealEnds[0]?.event_id || null;
         }
-      }
 
-      // Handle unpaired clock_in (no clock_out yet)
-      if (clockIn) {
+        const mealBreaks: Array<{ start: number; end: number }> = [];
+        const pairedMeals = Math.min(mealStarts.length, mealEnds.length);
+        for (let i = 0; i < pairedMeals; i++) {
+          mealBreaks.push({
+            start: new Date(mealStarts[i].timestamp).getTime(),
+            end:   new Date(mealEnds[i].timestamp).getTime(),
+          });
+        }
+
+        // Deduct meal break time that falls within this shift
+        for (const meal of mealBreaks) {
+          const overlapStart = Math.max(meal.start, shiftStart);
+          const overlapEnd   = Math.min(meal.end, shiftEnd);
+          if (overlapEnd > overlapStart) shiftMs -= (overlapEnd - overlapStart);
+        }
+
+        // Add 30-minute bonus per shift
+        shiftMs += 30 * 60 * 1000;
+
+        const duration_hours = Number(Math.max(0, shiftMs / (1000 * 60 * 60)).toFixed(3));
         normalized.push({
-          id: clockIn.id,
-          event_id: eventId === "unknown" ? null : eventId,
+          id: clockIn.id + "_" + entry.id,
+          event_id: eventId,
           clock_in: clockIn.timestamp,
-          clock_out: null,
-          duration_hours: 0,
+          clock_out: entry.timestamp,
+          duration_hours,
           created_at: clockIn.created_at,
         });
+        clockIn = null;
       }
+    }
+
+    // Handle unpaired clock_in (no clock_out yet)
+    if (clockIn) {
+      normalized.push({
+        id: clockIn.id,
+        event_id: clockIn.event_id ?? null,
+        clock_in: clockIn.timestamp,
+        clock_out: null,
+        duration_hours: 0,
+        created_at: clockIn.created_at,
+      });
     }
 
     // Totals

@@ -20,6 +20,8 @@ type Employee = {
   profile_photo_url?: string | null;
   state: string | null;
   city: string | null;
+  region_id?: string | null;
+  region_name?: string | null;
   performance_score?: number | null;
   projects_completed?: number | null;
   attendance_rate?: number | null;
@@ -229,6 +231,11 @@ export default function WorkerProfilePage() {
   const [submittingSickRequest, setSubmittingSickRequest] = useState(false);
   const [sickRequestError, setSickRequestError] = useState("");
   const [sickRequestSuccess, setSickRequestSuccess] = useState("");
+
+  const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedRegion, setSelectedRegion] = useState<string>("");
+  const [savingRegion, setSavingRegion] = useState(false);
+  const [regionMessage, setRegionMessage] = useState("");
 
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
@@ -455,6 +462,44 @@ export default function WorkerProfilePage() {
     };
     loadInvitations();
   }, [employeeId]);
+
+  // Fetch regions list
+  useEffect(() => {
+    const loadRegions = async () => {
+      try {
+        const res = await fetch("/api/regions");
+        const data = await res.json();
+        if (res.ok) setRegions(Array.isArray(data.regions) ? data.regions : []);
+      } catch (e) {
+        console.error("Error loading regions:", e);
+      }
+    };
+    loadRegions();
+  }, []);
+
+  // Pre-populate selected region when employee data loads
+  useEffect(() => {
+    if (employee) setSelectedRegion(employee.region_id || "");
+  }, [employee?.region_id]);
+
+  const saveRegion = async () => {
+    if (!employee) return;
+    setSavingRegion(true);
+    setRegionMessage("");
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ region_id: selectedRegion || null } as any)
+        .eq("user_id", employee.id);
+      if (error) throw error;
+      setRegionMessage("Region saved.");
+      setTimeout(() => setRegionMessage(""), 3000);
+    } catch (e: any) {
+      setRegionMessage(e?.message || "Failed to save region");
+    } finally {
+      setSavingRegion(false);
+    }
+  };
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -851,6 +896,40 @@ export default function WorkerProfilePage() {
                       </svg>
                       <span>{(employee.city && employee.state) ? `${employee.city}, ${employee.state}` : (employee.state || "—")}</span>
                     </div>
+
+                    {/* Region */}
+                    <div className="bg-gray-50 rounded-lg py-2 px-4">
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <svg className="w-4 h-4 text-gray-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
+                        </svg>
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Region</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={selectedRegion}
+                          onChange={(e) => setSelectedRegion(e.target.value)}
+                          className="flex-1 text-sm border border-gray-200 rounded-md px-2 py-1.5 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                          <option value="">— No region —</option>
+                          {regions.map((r) => (
+                            <option key={r.id} value={r.id}>{r.name}</option>
+                          ))}
+                        </select>
+                        <button
+                          onClick={saveRegion}
+                          disabled={savingRegion}
+                          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
+                        >
+                          {savingRegion ? "Saving…" : "Save"}
+                        </button>
+                      </div>
+                      {regionMessage && (
+                        <p className={`text-xs mt-1.5 font-medium ${regionMessage === "Region saved." ? "text-green-600" : "text-red-500"}`}>
+                          {regionMessage}
+                        </p>
+                      )}
+                    </div>
                   </div>
 
                   <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold shadow-sm ${
@@ -1036,7 +1115,6 @@ export default function WorkerProfilePage() {
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Event</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Date</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Venue</th>
-                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Type</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Status</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Shifts</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Hours</th>
@@ -1046,7 +1124,7 @@ export default function WorkerProfilePage() {
                         <tbody>
                           {eventInvitations.length === 0 && (
                             <tr>
-                              <td colSpan={8} className="p-6 text-center text-gray-500">No event invitations yet.</td>
+                              <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>
                           )}
                           {eventInvitations.map((inv) => {
@@ -1065,13 +1143,6 @@ export default function WorkerProfilePage() {
                                   </td>
                                   <td className="p-3 text-gray-600 text-sm">
                                     {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
-                                  </td>
-                                  <td className="p-3">
-                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
-                                      inv.source === "team" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-purple-50 text-purple-700 border-purple-200"
-                                    }`}>
-                                      {inv.source === "team" ? "Team" : "Location"}
-                                    </span>
                                   </td>
                                   <td className="p-3">
                                     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
@@ -1108,7 +1179,7 @@ export default function WorkerProfilePage() {
                                       <div className="text-xs text-gray-500 font-medium">Clock Out</div>
                                       <div className="text-xs text-gray-800">{formatDateTime(e.clock_out)}</div>
                                     </td>
-                                    <td colSpan={5} />
+                                    <td colSpan={4} />
                                   </tr>
                                 ))}
                               </>
