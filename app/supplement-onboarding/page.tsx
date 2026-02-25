@@ -279,7 +279,7 @@ export default function SupplementOnboardingPage() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Custom Form Progress</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                      <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Fill Missing Forms</th>
+                      <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Download Forms</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor Onboarding Actions</th>
                     </tr>
                   </thead>
@@ -383,22 +383,26 @@ export default function SupplementOnboardingPage() {
                               )}
                             </td>
 
-                            {/* Fill Missing Forms */}
+                            {/* Download Forms */}
                             <td className="px-6 py-4 text-center">
-                              {missing.length > 0 && (
-                                <div className="flex flex-wrap gap-1 justify-center">
-                                  {missing.map(f => (
-                                    <Link key={f.id} href={`/employee/form/${f.id}?asUser=${emp.id}`}>
-                                      <button
-                                        className="px-2 py-1 text-xs font-medium rounded border text-blue-600 hover:text-blue-800 hover:bg-blue-50 border-blue-300 max-w-[130px] truncate"
-                                        title={`Fill out ${f.title}`}
-                                      >
-                                        Fill: {f.title}
-                                      </button>
-                                    </Link>
-                                  ))}
-                                </div>
-                              )}
+                              <div className="flex flex-wrap gap-1 justify-center">
+                                {forms.map(f => (
+                                  <a
+                                    key={f.id}
+                                    href={`/api/custom-forms/${f.id}/pdf`}
+                                    download={`${f.title}.pdf`}
+                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300 max-w-[150px] truncate"
+                                    title={`Download ${f.title}`}
+                                  >
+                                    <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                      <polyline points="7 10 12 15 17 10" />
+                                      <line x1="12" y1="15" x2="12" y2="3" />
+                                    </svg>
+                                    {f.title}
+                                  </a>
+                                ))}
+                              </div>
                             </td>
 
                             {/* Vendor Onboarding Actions */}
