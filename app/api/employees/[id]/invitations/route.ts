@@ -47,10 +47,12 @@ export async function GET(
         id,
         event_id,
         status,
+        confirmation_token,
         created_at,
         events (
           event_name,
           event_date,
+          start_time,
           venue,
           city,
           state
@@ -77,6 +79,7 @@ export async function GET(
         events (
           event_name,
           event_date,
+          start_time,
           venue,
           city,
           state
@@ -98,6 +101,7 @@ export async function GET(
         event_id: row.event_id,
         event_name: ev?.event_name ?? null,
         event_date: ev?.event_date ?? null,
+        start_time: ev?.start_time ?? null,
         venue: ev?.venue ?? null,
         city: ev?.city ?? null,
         state: ev?.state ?? null,
@@ -105,6 +109,7 @@ export async function GET(
         source: "team" as const,
         location_name: null,
         assigned_at: row.created_at,
+        confirmation_token: row.confirmation_token ?? null,
       };
     });
 
@@ -117,6 +122,7 @@ export async function GET(
         event_id: row.event_id,
         event_name: ev?.event_name ?? null,
         event_date: ev?.event_date ?? null,
+        start_time: ev?.start_time ?? null,
         venue: ev?.venue ?? null,
         city: ev?.city ?? null,
         state: ev?.state ?? null,

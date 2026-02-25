@@ -296,11 +296,23 @@ export async function GET(
       entriesByEvent.get(key)!.push(entry);
     }
 
-    // Pair clock_in and clock_out entries
+    // Pair clock_in and clock_out entries, deduct meal breaks, add 30 min bonus
     const normalized = [];
     for (const [eventId, entries] of entriesByEvent.entries()) {
       // Sort by timestamp ascending to match pairs
       entries.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+      // Collect meal break intervals for this event
+      const mealStarts = entries.filter(e => (e.action || "").toLowerCase() === "meal_start");
+      const mealEnds   = entries.filter(e => (e.action || "").toLowerCase() === "meal_end");
+      const mealBreaks: Array<{ start: number; end: number }> = [];
+      const pairedMeals = Math.min(mealStarts.length, mealEnds.length);
+      for (let i = 0; i < pairedMeals; i++) {
+        mealBreaks.push({
+          start: new Date(mealStarts[i].timestamp).getTime(),
+          end:   new Date(mealEnds[i].timestamp).getTime(),
+        });
+      }
 
       let clockIn: TimeEntryRaw | null = null;
       for (const entry of entries) {
@@ -309,8 +321,22 @@ export async function GET(
         if (action === "clock_in") {
           clockIn = entry;
         } else if (action === "clock_out" && clockIn) {
-          // Found a pair
-          const duration_hours = Number(hoursBetween(clockIn.timestamp, entry.timestamp).toFixed(3));
+          const shiftStart = new Date(clockIn.timestamp).getTime();
+          const shiftEnd   = new Date(entry.timestamp).getTime();
+          let shiftMs = shiftEnd - shiftStart;
+          if (shiftMs <= 0) { clockIn = null; continue; }
+
+          // Deduct meal break time that falls within this shift
+          for (const meal of mealBreaks) {
+            const overlapStart = Math.max(meal.start, shiftStart);
+            const overlapEnd   = Math.min(meal.end, shiftEnd);
+            if (overlapEnd > overlapStart) shiftMs -= (overlapEnd - overlapStart);
+          }
+
+          // Add 30-minute bonus per shift
+          shiftMs += 30 * 60 * 1000;
+
+          const duration_hours = Number(Math.max(0, shiftMs / (1000 * 60 * 60)).toFixed(3));
           normalized.push({
             id: clockIn.id + "_" + entry.id,
             event_id: eventId === "unknown" ? null : eventId,

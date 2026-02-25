@@ -262,6 +262,7 @@ export default function EventDashboardPage() {
         lastMealEnd: string | null;
         secondMealStart: string | null;
         secondMealEnd: string | null;
+        managerEdited?: boolean;
       }
     >
   >({});
@@ -4860,6 +4861,11 @@ export default function EventDashboardPage() {
                           <span className={`ml-2 text-xs font-medium ${attestationStatusClass}`}>
                             {attestationStatusLabel}
                           </span>
+                          {span.managerEdited && (
+                            <span className="ml-2 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                              Manager edited
+                            </span>
+                          )}
                           {userRole === "exec" && hasSubmittedAttestation && (
                             <button
                               onClick={async () => {

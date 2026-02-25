@@ -116,7 +116,7 @@ export async function GET(
     // Fetch time entries by event_id (primary strategy)
     let { data: entries, error: teErr } = await supabaseAdmin
       .from('time_entries')
-      .select('id, user_id, action, timestamp, started_at, event_id')
+      .select('id, user_id, action, timestamp, started_at, event_id, notes')
       .in('user_id', userIds)
       .eq('event_id', eventId)
       .order('timestamp', { ascending: true });
@@ -126,7 +126,7 @@ export async function GET(
     if (endsNextDay) {
       const { data: byTimestamp, error: tsErr } = await supabaseAdmin
         .from('time_entries')
-        .select('id, user_id, action, timestamp, started_at, event_id')
+        .select('id, user_id, action, timestamp, started_at, event_id, notes')
         .in('user_id', userIds)
         .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
@@ -148,14 +148,15 @@ export async function GET(
 
     // Fallback 1: try date window on timestamp (only this event or untagged entries)
     if (!entries || entries.length === 0) {
-      const { data: byTimestamp, error: tsErr } = await supabaseAdmin
+      const { data: byTimestamp, error: tsErr2 } = await supabaseAdmin
         .from('time_entries')
-        .select('id, user_id, action, timestamp, started_at, event_id')
+        .select('id, user_id, action, timestamp, started_at, event_id, notes')
         .in('user_id', userIds)
         .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
         .lte('timestamp', endIso)
         .order('timestamp', { ascending: true });
+      if (tsErr2) return NextResponse.json({ error: tsErr2.message }, { status: 500 });
 
       if (byTimestamp && byTimestamp.length > 0) {
         entries = byTimestamp;
@@ -163,7 +164,7 @@ export async function GET(
         // Fallback 2: try date window on started_at (only this event or untagged entries)
         const { data: byStarted } = await supabaseAdmin
           .from('time_entries')
-          .select('id, user_id, action, timestamp, started_at, event_id')
+          .select('id, user_id, action, timestamp, started_at, event_id, notes')
           .in('user_id', userIds)
           .or(`event_id.eq.${eventId},event_id.is.null`)
           .gte('started_at', startIso)
@@ -195,6 +196,7 @@ export async function GET(
       lastMealEnd: string | null;
       secondMealStart: string | null;
       secondMealEnd: string | null;
+      managerEdited: boolean;
     }> = {};
 
     for (const uid of userIds) {
@@ -207,7 +209,11 @@ export async function GET(
         firstMealStart: null,
         lastMealEnd: null,
         secondMealStart: null,
-        secondMealEnd: null
+        secondMealEnd: null,
+        managerEdited: userEntries.some(e => {
+          const notes = (e.notes || "").toLowerCase();
+          return notes.includes("manual edit by manager") || notes.includes("manual edit by supervisor");
+        }),
       };
 
       // Track first clock_in and last clock_out
@@ -521,7 +527,7 @@ export async function PUT(
         if (i < existingList.length && i < newList.length) {
           toUpdate.push({ id: existingList[i].id, timestamp: newList[i].timestamp! });
         } else if (i < newList.length) {
-          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: "Manual edit by exec" });
+          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: `Manual edit by ${requesterRole}` });
         } else {
           toDelete.push(existingList[i].id);
         }
@@ -541,7 +547,7 @@ export async function PUT(
     for (const upd of toUpdate) {
       const { error: updateError } = await supabaseAdmin
         .from("time_entries")
-        .update({ timestamp: upd.timestamp, event_id: eventId, notes: "Manual edit by exec" })
+        .update({ timestamp: upd.timestamp, event_id: eventId, notes: `Manual edit by ${requesterRole}` })
         .eq("id", upd.id);
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 });

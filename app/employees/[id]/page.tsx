@@ -32,6 +32,7 @@ type TimeEntry = {
   event_id: string | null;
   clock_in: string | null;  // ISO
   clock_out: string | null; // ISO
+  duration_hours?: number;  // pre-computed: meals deducted + 30 min bonus
 };
 
 type PerEvent = {
@@ -134,6 +135,7 @@ type EventInvitation = {
   event_id: string;
   event_name: string | null;
   event_date: string | null;
+  start_time: string | null;
   venue: string | null;
   city: string | null;
   state: string | null;
@@ -141,6 +143,7 @@ type EventInvitation = {
   source: "team" | "location";
   location_name: string | null;
   assigned_at: string;
+  confirmation_token?: string | null;
 };
 
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
@@ -164,6 +167,30 @@ function formatDate(d?: string | null) {
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return d;
   return dt.toLocaleDateString();
+}
+
+// Parses a YYYY-MM-DD date as local time (avoids UTC-to-local day shift)
+function formatEventDate(d?: string | null) {
+  if (!d) return "—";
+  const match = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const dt = new Date(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3]));
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return d;
+  return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatEventTime(t?: string | null) {
+  if (!t) return null;
+  const match = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return t;
+  const h = parseInt(match[1]);
+  const m = match[2];
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m} ${ampm}`;
 }
 
 export default function WorkerProfilePage() {
@@ -418,8 +445,8 @@ export default function WorkerProfilePage() {
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
-    // Re-compute locally as a guard (API already provides total_hours)
-    const total = entries.reduce((acc, e) => acc + hoursBetween(e.clock_in, e.clock_out), 0);
+    // Use pre-computed duration_hours (meals deducted + 30 min bonus)
+    const total = entries.reduce((acc, e) => acc + (e.duration_hours ?? 0), 0);
     return { totalHoursLocal: total };
   }, [entries]);
 
@@ -1583,17 +1610,21 @@ export default function WorkerProfilePage() {
                           <th className="text-left p-4 font-semibold text-gray-700">Type</th>
                           <th className="text-left p-4 font-semibold text-gray-700">Location</th>
                           <th className="text-left p-4 font-semibold text-gray-700">Status</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-200">
                         {eventInvitations.map((inv) => (
                           <tr key={`${inv.source}-${inv.id}`} className="hover:bg-gray-50 transition-colors">
                             <td className="p-4 text-gray-900 font-medium">
-                              <Link href={`/event-dashboard/${inv.event_id}`} className="text-blue-600 hover:text-blue-700">
-                                {inv.event_name || inv.event_id}
-                              </Link>
+                              {inv.event_name || inv.event_id}
                             </td>
-                            <td className="p-4 text-gray-700 text-sm">{formatDate(inv.event_date)}</td>
+                            <td className="p-4 text-gray-700 text-sm">
+                              <div>{formatEventDate(inv.event_date)}</div>
+                              {formatEventTime(inv.start_time) && (
+                                <div className="text-gray-500 text-xs mt-0.5">{formatEventTime(inv.start_time)}</div>
+                              )}
+                            </td>
                             <td className="p-4 text-gray-700 text-sm">
                               {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
                             </td>
@@ -1620,11 +1651,23 @@ export default function WorkerProfilePage() {
                                 {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
                               </span>
                             </td>
+                            <td className="p-4">
+                              {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
+                                <Link
+                                  href={`/team-confirmation/${inv.confirmation_token}`}
+                                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                                >
+                                  Confirm / Decline
+                                </Link>
+                              ) : (
+                                <span className="text-gray-400 text-xs">—</span>
+                              )}
+                            </td>
                           </tr>
                         ))}
                         {eventInvitations.length === 0 && (
                           <tr>
-                            <td colSpan={6} className="p-6 text-center text-gray-500">
+                            <td colSpan={7} className="p-6 text-center text-gray-500">
                               No event invitations yet.
                             </td>
                           </tr>
@@ -1654,20 +1697,14 @@ export default function WorkerProfilePage() {
                     </thead>
                     <tbody className="divide-y divide-gray-200">
                       {entries.map((e) => {
-                        const h = hoursBetween(e.clock_in, e.clock_out);
+                        const h = e.duration_hours ?? hoursBetween(e.clock_in, e.clock_out);
                         return (
                           <tr key={e.id} className="hover:bg-gray-50 transition-colors">
                             <td className="p-4 text-gray-900">{formatDate(e.clock_in)}</td>
                             <td className="p-4 text-gray-900">{formatDate(e.clock_out)}</td>
                             <td className="p-4 text-gray-900 font-medium">{formatHours(h)}</td>
                             <td className="p-4 text-gray-600 text-sm">
-                              {e.event_id ? (
-                                <Link href={`/event-dashboard/${e.event_id}`} className="text-blue-600 hover:text-blue-700">
-                                  {eventNameMap.get(e.event_id) || e.event_id}
-                                </Link>
-                              ) : (
-                                "—"
-                              )}
+                              {e.event_id ? (eventNameMap.get(e.event_id) || e.event_id) : "—"}
                             </td>
                           </tr>
                         );
