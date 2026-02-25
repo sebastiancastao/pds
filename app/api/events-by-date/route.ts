@@ -122,26 +122,67 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        // Compute worked hours from time_entries (matches HR Dashboard payroll tab fallback logic)
+        // Compute worked hours from time_entries scoped to this event.
+        // Prefer entries linked by event_id to avoid counting hours from other same-day events.
         const workedHoursByVendorId: Record<string, number> = {};
         if (includeHours && vendorIds.length > 0) {
           try {
-            const dateStr = (event.event_date || '').toString().split('T')[0];
-            if (dateStr) {
-              const startIso = new Date(`${dateStr}T00:00:00Z`).toISOString();
-              const endIso = new Date(`${dateStr}T23:59:59.999Z`).toISOString();
+            const timeToSeconds = (value?: string | null): number | null => {
+              const raw = (value || '').toString().trim();
+              if (!raw) return null;
+              const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+              if (!match) return null;
+              const hh = Number(match[1]);
+              const mm = Number(match[2]);
+              const ss = Number(match[3] || 0);
+              if (!Number.isFinite(hh) || !Number.isFinite(mm) || !Number.isFinite(ss)) return null;
+              return hh * 3600 + mm * 60 + ss;
+            };
+            const getEntryTimestamp = (row: any): string | null =>
+              (row?.timestamp || row?.started_at || null) as string | null;
 
-              const { data: entries } = await supabaseAdmin
+            const dateStr = (event.event_date || '').toString().split('T')[0];
+            const eventId = (event?.id || '').toString();
+            if (dateStr && eventId) {
+              const startSec = timeToSeconds((event as any)?.start_time);
+              const endSec = timeToSeconds((event as any)?.end_time);
+              const endsNextDay =
+                Boolean((event as any)?.ends_next_day) ||
+                (startSec !== null && endSec !== null && endSec <= startSec);
+
+              const startDate = new Date(`${dateStr}T00:00:00Z`);
+              const endDate = new Date(`${dateStr}T23:59:59.999Z`);
+              if (endsNextDay) endDate.setUTCDate(endDate.getUTCDate() + 1);
+              const startIso = startDate.toISOString();
+              const endIso = endDate.toISOString();
+
+              const { data: byEventIdEntries } = await supabaseAdmin
                 .from('time_entries')
-                .select('user_id, action, timestamp')
+                .select('id, user_id, action, timestamp, started_at, event_id')
+                .eq('event_id', eventId)
                 .in('user_id', vendorIds)
-                .gte('timestamp', startIso)
-                .lte('timestamp', endIso)
                 .order('timestamp', { ascending: true });
+
+              let entries = byEventIdEntries || [];
+              let source: 'event_id' | 'timestamp_window' = 'event_id';
+              if (entries.length === 0) {
+                const { data: byTimestampEntries } = await supabaseAdmin
+                  .from('time_entries')
+                  .select('id, user_id, action, timestamp, started_at, event_id')
+                  .in('user_id', vendorIds)
+                  .gte('timestamp', startIso)
+                  .lte('timestamp', endIso)
+                  .order('timestamp', { ascending: true });
+                entries = (byTimestampEntries || []).filter((row: any) => !row?.event_id || row.event_id === eventId);
+                source = 'timestamp_window';
+              }
+
               if (debug) {
                 console.log('[EVENTS-BY-DATE][debug] time_entries window', {
                   eventId: event.id,
                   dateStr,
+                  source,
+                  endsNextDay,
                   vendorCount: vendorIds.length,
                   entriesCount: (entries || []).length,
                 });
@@ -155,16 +196,27 @@ export async function GET(req: NextRequest) {
               }
 
               for (const uid of vendorIds) {
-                const uEntries = entriesByUserId[uid] || [];
+                const uEntries = [...(entriesByUserId[uid] || [])].sort((a: any, b: any) => {
+                  const tsA = getEntryTimestamp(a);
+                  const tsB = getEntryTimestamp(b);
+                  const tA = tsA ? new Date(tsA).getTime() : Number.NaN;
+                  const tB = tsB ? new Date(tsB).getTime() : Number.NaN;
+                  if (!Number.isFinite(tA) && !Number.isFinite(tB)) return 0;
+                  if (!Number.isFinite(tA)) return 1;
+                  if (!Number.isFinite(tB)) return -1;
+                  return tA - tB;
+                });
                 let currentIn: string | null = null;
                 let ms = 0;
                 for (const row of uEntries) {
+                  const ts = getEntryTimestamp(row);
+                  if (!ts) continue;
                   if (row.action === 'clock_in') {
-                    if (!currentIn) currentIn = row.timestamp as any;
+                    if (!currentIn) currentIn = ts;
                   } else if (row.action === 'clock_out') {
                     if (currentIn) {
                       const start = new Date(currentIn).getTime();
-                      const end = new Date(row.timestamp as any).getTime();
+                      const end = new Date(ts).getTime();
                       const dur = end - start;
                       if (dur > 0) ms += dur;
                       currentIn = null;

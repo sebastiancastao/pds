@@ -161,6 +161,7 @@ export default function DashboardPage() {
   const [resendingTeamConfirmations, setResendingTeamConfirmations] = useState(false);
   const [teamMessage, setTeamMessage] = useState("");
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
+  const [selectedTeamRegion, setSelectedTeamRegion] = useState<string>("all");
 
   // HR tab state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -1104,22 +1105,17 @@ export default function DashboardPage() {
     }
   };
 
-  const openTeamModal = async (event: EventItem) => {
-    if (userRole !== "exec") {
-      setTeamMessage("Only executives can create teams from Global Calendar.");
-      return;
-    }
-
-    setSelectedEvent(event);
-    setShowTeamModal(true);
-    setTeamMessage("");
-    setTeamSearchQuery("");
+  const loadTeamVendors = async (event: EventItem, regionId: string = "all") => {
     setLoadingAvailable(true);
-
-    // Load available vendors first
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${event.id}/available-vendors`, {
+      const params = new URLSearchParams();
+      if (regionId && regionId !== "all") {
+        params.append("region_id", regionId);
+        params.append("geo_filter", "true");
+      }
+      const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, {
         method: "GET",
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
@@ -1130,6 +1126,22 @@ export default function DashboardPage() {
       setTeamMessage("Network error loading available vendors");
     }
     setLoadingAvailable(false);
+  };
+
+  const openTeamModal = async (event: EventItem) => {
+    if (userRole !== "exec") {
+      setTeamMessage("Only executives can create teams from Global Calendar.");
+      return;
+    }
+
+    setSelectedEvent(event);
+    setShowTeamModal(true);
+    setTeamMessage("");
+    setSelectedTeamRegion("all");
+    setTeamSearchQuery("");
+
+    // Load available vendors first
+    await loadTeamVendors(event, "all");
 
     // Load existing team members and merge with available vendors
     try {
@@ -1203,6 +1215,71 @@ export default function DashboardPage() {
       setSelectedTeamMembers(new Set());
     }
   };
+  const handleTeamRegionChange = async (regionId: string) => {
+    setSelectedTeamRegion(regionId);
+
+    if (selectedEvent) {
+      await loadTeamVendors(selectedEvent, regionId);
+
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/events/${selectedEvent.id}/team`, {
+          method: "GET",
+          headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        });
+        const data = await res.json();
+        if (res.ok && data.team && data.team.length > 0) {
+          const existingVendors = data.team.map((member: any) => ({
+            id: member.vendor_id,
+            email: member.users?.email || '',
+            division: member.users?.division || '',
+            profiles: {
+              first_name: member.users?.profiles?.first_name || '',
+              last_name: member.users?.profiles?.last_name || '',
+              phone: member.users?.profiles?.phone || '',
+              profile_photo_url: member.users?.profiles?.profile_photo_url || null,
+            },
+            distance: null,
+            status: member.status,
+            isExistingMember: true,
+          }));
+
+          const existingById = new Map<string, any>(existingVendors.map((v: any) => [v.id, v]));
+          setAvailableVendors((prevVendors) => {
+            const updatedVendors = prevVendors.map((v: any) => {
+              const existing = existingById.get(v.id);
+              if (!existing) return v;
+              return {
+                ...v,
+                status: existing.status,
+                isExistingMember: true,
+                profiles: {
+                  ...v.profiles,
+                  profile_photo_url:
+                    existing.profiles?.profile_photo_url ??
+                    (v.profiles as any)?.profile_photo_url ??
+                    null,
+                },
+              };
+            });
+            const vendorIds = new Set(updatedVendors.map((v: any) => v.id));
+            const newVendors = existingVendors.filter((v: any) => !vendorIds.has(v.id));
+            return [...updatedVendors, ...newVendors];
+          });
+
+          const existingMemberIds = new Set<string>(
+            (data.team as any[])
+              .map((member: any) => String(member?.vendor_id ?? ""))
+              .filter((id) => id.length > 0)
+          );
+          setSelectedTeamMembers(existingMemberIds);
+        }
+      } catch (err) {
+        console.error('[GLOBAL-CALENDAR-TEAM] Error preserving team members on region change:', err);
+      }
+    }
+  };
+
   const closeTeamModal = () => {
     setShowTeamModal(false);
     setSelectedEvent(null);
@@ -1211,6 +1288,7 @@ export default function DashboardPage() {
     setResendingTeamConfirmations(false);
     setTeamMessage("");
     setTeamSearchQuery("");
+    setSelectedTeamRegion("all");
   };
   const toggleTeamMember = (id: string) => {
     const s = new Set(selectedTeamMembers);
@@ -1507,9 +1585,9 @@ export default function DashboardPage() {
                 </Link>
                 <button
                   onClick={openVendorModal}
-                  disabled={loading || events.length === 0}
+                  disabled={loading}
                   className={`apple-button ${
-                    loading || events.length === 0 ? "apple-button-disabled" : "apple-button-secondary"
+                    loading ? "apple-button-disabled" : "apple-button-secondary"
                   }`}
                 >
                   <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2407,7 +2485,7 @@ export default function DashboardPage() {
                                 <div className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-md">Availability sent</div>
                               )}
                               {v.distance !== null ? (
-                                <div className="apple-distance-badge">{v.distance} mi</div>
+                                <div className={v.distance <= 50 ? "apple-distance-badge-nearby" : "apple-distance-badge"}>{v.distance} mi</div>
                               ) : (
                                 <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
                               )}
@@ -2724,6 +2802,42 @@ export default function DashboardPage() {
                 </div>
               )}
 
+              {/* Region Filter */}
+              <div className="mb-6">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  Filter by Region
+                  {regions.length > 0 && (
+                    <span className="ml-2 text-xs font-normal text-gray-500">({regions.length} regions)</span>
+                  )}
+                </label>
+                <select
+                  value={selectedTeamRegion}
+                  onChange={(e) => handleTeamRegionChange(e.target.value)}
+                  disabled={loadingAvailable}
+                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                >
+                  <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
+                  {regions.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {getRegionIcon(r.name)} {r.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center justify-between mt-1.5">
+                  <p className="text-xs text-gray-500">
+                    {selectedTeamRegion === "all"
+                      ? "Showing vendors from all regions"
+                      : `Showing ${availableVendors.length} ${availableVendors.length === 1 ? "vendor" : "vendors"} in ${regions.find(r => r.id === selectedTeamRegion)?.name || 'selected region'}`
+                    }
+                  </p>
+                  {selectedTeamRegion !== "all" && (
+                    <button onClick={() => handleTeamRegionChange("all")} className="text-xs text-blue-600 hover:text-blue-700 font-medium">
+                      Clear filter
+                    </button>
+                  )}
+                </div>
+              </div>
+
               {loadingAvailable ? (
                 <div className="apple-empty-state">
                   <div className="apple-spinner mb-4" />
@@ -2845,7 +2959,7 @@ export default function DashboardPage() {
                                 </div>
                               )}
                               {v.distance !== null ? (
-                                <div className="apple-distance-badge">{v.distance} mi</div>
+                                <div className={v.distance <= 50 ? "apple-distance-badge-nearby" : "apple-distance-badge"}>{v.distance} mi</div>
                               ) : (
                                 <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
                               )}

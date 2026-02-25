@@ -5364,107 +5364,6 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
-              {/* Payroll Summary */
-              
-              }
-              <div className="bg-white border rounded-lg p-6">
-                <h3 className="text-xl font-semibold mb-4">Payroll Summary</h3>
-                <div className="space-y-4">
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Base Pay</span>
-                    <span className="font-semibold text-gray-900"> ${(() => {
-                      const totalMs = getTotalDisplayedWorkedMs();
-                      const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // Use rates from database based on venue state
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                      const baseRate = getBaseRateForState(eventState);
-
-                      const totalPayment = totalHours * baseRate;
-                      return formatPayrollMoney(totalPayment);
-                    })()}</span>
-                  </div>
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Overtime</span>
-                    <span className="font-semibold text-gray-900">$0.00</span>
-                  </div>
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Tips</span>
-                    <span className="font-semibold text-gray-900">${formatPayrollMoney(Number(tips) || 0)}</span>
-                  </div>
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Adjustments</span>
-                    <span className={`font-semibold ${(() => {
-                      const total = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
-                      return total >= 0 ? 'text-green-600' : 'text-red-600';
-                    })()}`}>
-                      ${(() => {
-                        const total = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
-                        return (total >= 0 ? '+' : '') + formatPayrollMoney(total);
-                      })()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center pb-3 border-b">
-                    <span className="text-gray-600">Reimbursements</span>
-                    <span className={`font-semibold ${(() => {
-                      const total = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
-                      return total >= 0 ? 'text-green-600' : 'text-red-600';
-                    })()}`}>
-                      ${(() => {
-                        const total = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
-                        return (total >= 0 ? '+' : '') + formatPayrollMoney(total);
-                      })()}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center pt-2">
-                    <span className="text-lg font-bold text-gray-900">Total Payroll</span>
-                    <span className="text-2xl font-bold text-green-600">${(() => {
-                      const totalMs = getTotalDisplayedWorkedMs();
-                      const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // Use rates from database based on venue state
-                      const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                      const baseRate = getBaseRateForState(eventState);
-
-                      const basePay = totalHours * baseRate;
-                      const tipsAmount = Number(tips) || 0;
-                      const adjustmentsTotal = Object.values(adjustments).reduce((sum, val) => sum + val, 0);
-                      const reimbursementsTotal = Object.values(reimbursements).reduce((sum, val) => sum + val, 0);
-                      const totalPayroll = basePay + tipsAmount + adjustmentsTotal + reimbursementsTotal;
-
-                      return formatPayrollMoney(totalPayroll);
-                    })()}</span>
-                  </div>
-
-                  {/* Save Payment Data Button */}
-                  <button
-                    onClick={handleSavePaymentData}
-                    disabled={savingPayment || teamMembers.length === 0 || !canEditTimesheets}
-                    title={!canEditTimesheets ? "Only exec can save timesheet payment data" : undefined}
-                    className="w-full mt-4 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-semibold transition-all duration-200 shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2"
-                  >
-                    {savingPayment ? (
-                      <>
-                        <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-3m-1 4l-3 3m0 0l-3-3m3 3V4" />
-                        </svg>
-                        Save Payment Data
-                      </>
-                    )}
-                  </button>
-
-                  {/* Process Payroll & Send Emails button removed per request */}
-                </div>
-              </div>
-
               {/* Performance Metrics */}
               
             </div>
@@ -5657,7 +5556,7 @@ export default function EventDashboardPage() {
                                   </span>
                                 )}
                                 {vendor.distance !== null && vendor.distance !== undefined && (
-                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                                  <span className={`px-2 py-0.5 rounded text-xs font-medium ${vendor.distance <= 50 ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-700"}`}>
                                     {vendor.distance} mi
                                   </span>
                                 )}

@@ -279,10 +279,10 @@ export default function PaystubGenerator() {
   const getWorkerHoursForEligibility = (worker?: Worker | null): number => {
     if (!worker) return 0;
     const pd: any = worker.payment_data;
-    const actualHours = pd?.actual_hours != null ? Number(pd.actual_hours) || 0 : 0;
-    if (actualHours > 0) return actualHours;
     const workedHours = worker.worked_hours != null ? Number(worker.worked_hours) || 0 : 0;
     if (workedHours > 0) return workedHours;
+    const actualHours = pd?.actual_hours != null ? Number(pd.actual_hours) || 0 : 0;
+    if (actualHours > 0) return actualHours;
     const regH = pd?.regular_hours != null ? Number(pd.regular_hours) || 0 : 0;
     const otH = pd?.overtime_hours != null ? Number(pd.overtime_hours) || 0 : 0;
     const dtH = pd?.doubletime_hours != null ? Number(pd.doubletime_hours) || 0 : 0;

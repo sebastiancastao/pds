@@ -1146,7 +1146,7 @@ export default function WorkerProfilePage() {
                   </div>
                 </div>
 
-                <p className="text-xs text-gray-400">1 hr earned per 30 hrs worked · Based on {formatHours(summary?.total_hours ?? 0)} total hours</p>
+                <p className="text-xs text-gray-400">1 hr earned per 30 hrs worked</p>
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
                   <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>
@@ -1169,7 +1169,7 @@ export default function WorkerProfilePage() {
                         required
                         value={sickRequestHours}
                         onChange={(event) => setSickRequestHours(event.target.value)}
-                        placeholder="8"
+                        placeholder="0"
                         className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
                       />
                     </div>

@@ -1508,9 +1508,9 @@ export default function DashboardPage() {
               </Link>
               <button
                 onClick={openVendorModal}
-                disabled={loading || events.length === 0}
+                disabled={loading}
                 className={`apple-button ${
-                  loading || events.length === 0 ? "apple-button-disabled" : "apple-button-secondary"
+                  loading ? "apple-button-disabled" : "apple-button-secondary"
                 }`}
               >
                 <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2487,7 +2487,7 @@ export default function DashboardPage() {
                                 <div className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-md">Availability sent</div>
                               )}
                               {v.distance !== null ? (
-                                <div className="apple-distance-badge">{v.distance} mi</div>
+                                <div className={v.distance <= 50 ? "apple-distance-badge-nearby" : "apple-distance-badge"}>{v.distance} mi</div>
                               ) : (
                                 <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
                               )}
@@ -2737,7 +2737,7 @@ export default function DashboardPage() {
                                   </div>
                                 )}
                                 {v.distance !== null ? (
-                                  <div className="apple-distance-badge">{v.distance} mi</div>
+                                  <div className={v.distance <= 50 ? "apple-distance-badge-nearby" : "apple-distance-badge"}>{v.distance} mi</div>
                                 ) : (
                                   <div className="px-2 py-1 text-xs bg-gray-100 text-gray-600 rounded-md">No location</div>
                                 )}
