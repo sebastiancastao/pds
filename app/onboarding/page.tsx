@@ -10,6 +10,7 @@ interface OnboardingStatus {
   completed_date: string | null;
   notes: string | null;
   updated_at: string;
+  hr_approval_sent_at?: string | null;
 }
 
 interface FormProgress {
@@ -234,7 +235,15 @@ export default function OnboardingPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || 'Failed to send email');
 
-      setEmailSentNow(prev => new Set(prev).add(profileId));
+      // Update local user state from DB record returned by API
+      if (data.onboarding_status) {
+        setUsers(prev =>
+          prev.map(u => u.id === profileId ? { ...u, onboarding_status: data.onboarding_status } : u)
+        );
+      } else {
+        // Optimistic fallback if DB record not returned
+        setEmailSentNow(prev => new Set(prev).add(profileId));
+      }
     } catch (err: any) {
       console.error('Error sending approval email:', err);
       setActionError(prev => ({ ...prev, [profileId]: err.message || 'Failed to send email' }));
@@ -676,6 +685,23 @@ export default function OnboardingPage() {
           </div>
         </div>
 
+        {/* HR Approved Banner */}
+        <div className="bg-green-50 border border-green-200 rounded-xl p-5 mb-6 flex items-center gap-4">
+          <div className="flex items-center justify-center w-12 h-12 rounded-full bg-green-100">
+            <svg className="w-6 h-6 text-green-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+              <polyline points="22 4 12 14.01 9 11.01" />
+            </svg>
+          </div>
+          <div>
+            <div className="text-sm font-medium text-green-700">HR Approved Users</div>
+            <div className="text-4xl font-bold text-green-700 leading-none mt-0.5">
+              {users.filter(u => u.onboarding_status?.hr_approval_sent_at).length}
+              <span className="text-base font-normal text-green-600 ml-2">/ {users.length} total</span>
+            </div>
+          </div>
+        </div>
+
         {/* Stats */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4 mb-6">
           <div className="bg-white rounded-lg shadow p-6">
@@ -995,12 +1021,12 @@ export default function OnboardingPage() {
                               <div className="border-t border-gray-100" />
 
                               {/* ── Checkbox 2: Send confirmation email ── */}
-                              <label className={`flex items-start gap-2 ${sendingEmail === user.id || emailSentNow.has(user.id) ? 'opacity-60' : 'cursor-pointer'}`}>
+                              <label className={`flex items-start gap-2 ${sendingEmail === user.id || !!user.onboarding_status?.hr_approval_sent_at || emailSentNow.has(user.id) ? 'opacity-60' : 'cursor-pointer'}`}>
                                 <input
                                   type="checkbox"
-                                  checked={emailSentNow.has(user.id)}
+                                  checked={!!user.onboarding_status?.hr_approval_sent_at || emailSentNow.has(user.id)}
                                   onChange={() => handleSendEmail(user.id)}
-                                  disabled={sendingEmail === user.id || emailSentNow.has(user.id)}
+                                  disabled={sendingEmail === user.id || !!user.onboarding_status?.hr_approval_sent_at || emailSentNow.has(user.id)}
                                   className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:cursor-not-allowed"
                                 />
                                 <span className="text-xs leading-tight select-none">
@@ -1011,8 +1037,10 @@ export default function OnboardingPage() {
                                   <span className="text-gray-400 block">
                                     Sends Phase 2 approval email to employee
                                   </span>
-                                  {emailSentNow.has(user.id) && (
-                                    <span className="text-blue-600 block mt-0.5">✓ Email sent this session</span>
+                                  {(user.onboarding_status?.hr_approval_sent_at || emailSentNow.has(user.id)) && (
+                                    <span className="text-blue-600 block mt-0.5">
+                                      ✓ Email sent{user.onboarding_status?.hr_approval_sent_at ? ` ${new Date(user.onboarding_status.hr_approval_sent_at).toLocaleDateString()}` : ''}
+                                    </span>
                                   )}
                                 </span>
                               </label>

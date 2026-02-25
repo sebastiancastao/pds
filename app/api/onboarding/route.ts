@@ -631,6 +631,7 @@ export async function GET(req: NextRequest) {
           completed_date: onboardingStatus.completed_date,
           notes: onboardingStatus.notes,
           updated_at: onboardingStatus.updated_at,
+          hr_approval_sent_at: onboardingStatus.hr_approval_sent_at || null,
         } : null,
         has_submitted_pdf: hasSubmittedPdf,
         pdf_submitted_at: pdfSubmittedAt,
@@ -756,8 +757,19 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: emailResult.error || 'Email sending failed' }, { status: 500 });
         }
 
+        // Record the HR approval timestamp in the DB
+        const { data: approvalRecord } = await adminClient
+          .from('vendor_onboarding_status')
+          .upsert({
+            profile_id,
+            hr_approval_sent_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'profile_id' })
+          .select()
+          .single();
+
         console.log('[Onboarding API] Approval email sent (email-only action). MessageId:', emailResult.messageId);
-        return NextResponse.json({ success: true, email_sent: true, messageId: emailResult.messageId }, { status: 200 });
+        return NextResponse.json({ success: true, email_sent: true, messageId: emailResult.messageId, onboarding_status: approvalRecord }, { status: 200 });
       } catch (err: any) {
         console.error('[Onboarding API] Error in email-only action:', err);
         return NextResponse.json({ error: err.message || 'Failed to send email' }, { status: 500 });
