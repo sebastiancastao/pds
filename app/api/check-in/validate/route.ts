@@ -68,6 +68,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const code = normalizeCheckinCode(body.code);
+    const eventId: string | undefined = body.eventId || undefined;
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
@@ -95,6 +96,21 @@ export async function POST(req: NextRequest) {
     }
 
     const workerId = codeRecord.target_user_id;
+
+    // Block check-in if the worker has declined the event invitation
+    if (eventId) {
+      const { data: teamRecord } = await supabaseAdmin
+        .from("event_teams")
+        .select("status")
+        .eq("event_id", eventId)
+        .eq("vendor_id", workerId)
+        .eq("status", "declined")
+        .maybeSingle();
+
+      if (teamRecord) {
+        return jsonError("You have declined this event invitation and cannot check in.", 403);
+      }
+    }
 
     // Get worker profile name
     const { data: profile } = await supabaseAdmin

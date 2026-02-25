@@ -645,7 +645,7 @@ export default function CheckInKioskPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, eventId: activeEvent?.id || eventIdFromUrl || undefined }),
       });
 
       const data = await res.json();

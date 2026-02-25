@@ -193,6 +193,17 @@ function formatEventTime(t?: string | null) {
   return `${h12}:${m} ${ampm}`;
 }
 
+// Formats an ISO timestamp as "Jan 1, 2025, 9:00 AM"
+function formatDateTime(d?: string | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return d;
+  return dt.toLocaleString(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+  });
+}
+
 export default function WorkerProfilePage() {
   const params = useParams<{ id: string }>();
   const employeeId = params?.id;
@@ -892,6 +903,97 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
+            {/* Event Invitations */}
+            <section className="mb-10">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Event Invitations</h2>
+              </div>
+              <div className="apple-card overflow-hidden">
+                {invitationsLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading invitations…</span>
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead className="bg-gray-50 border-b border-gray-200">
+                        <tr>
+                          <th className="text-left p-4 font-semibold text-gray-700">Event</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Date</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Venue</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Type</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Location</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Status</th>
+                          <th className="text-left p-4 font-semibold text-gray-700">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-200">
+                        {eventInvitations.map((inv) => (
+                          <tr key={`${inv.source}-${inv.id}`} className="hover:bg-gray-50 transition-colors">
+                            <td className="p-4 text-gray-900 font-medium">
+                              {inv.event_name || inv.event_id}
+                            </td>
+                            <td className="p-4 text-gray-700 text-sm">
+                              <div>{formatEventDate(inv.event_date)}</div>
+                              {formatEventTime(inv.start_time) && (
+                                <div className="text-gray-500 text-xs mt-0.5">{formatEventTime(inv.start_time)}</div>
+                              )}
+                            </td>
+                            <td className="p-4 text-gray-700 text-sm">
+                              {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                            </td>
+                            <td className="p-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                                inv.source === "team"
+                                  ? "bg-blue-50 text-blue-700 border-blue-200"
+                                  : "bg-purple-50 text-purple-700 border-purple-200"
+                              }`}>
+                                {inv.source === "team" ? "Team" : "Location"}
+                              </span>
+                            </td>
+                            <td className="p-4 text-gray-600 text-sm">{inv.location_name || "—"}</td>
+                            <td className="p-4">
+                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
+                                inv.status === "confirmed"
+                                  ? "bg-green-50 text-green-700 border-green-200"
+                                  : inv.status === "declined"
+                                  ? "bg-red-50 text-red-700 border-red-200"
+                                  : inv.status === "completed"
+                                  ? "bg-gray-100 text-gray-600 border-gray-200"
+                                  : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                              }`}>
+                                {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                              </span>
+                            </td>
+                            <td className="p-4">
+                              {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
+                                <Link
+                                  href={`/team-confirmation/${inv.confirmation_token}`}
+                                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                                >
+                                  Confirm / Decline
+                                </Link>
+                              ) : (
+                                <span className="text-gray-400 text-xs">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                        {eventInvitations.length === 0 && (
+                          <tr>
+                            <td colSpan={7} className="p-6 text-center text-gray-500">
+                              No event invitations yet.
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </section>
+
             {/* Sick Leave Summary */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
@@ -900,63 +1002,28 @@ export default function WorkerProfilePage() {
                   {sickLeaveRequestCount} request{sickLeaveRequestCount === 1 ? "" : "s"}
                 </span>
               </div>
-              <div className="apple-card p-6 space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-pink-700">Used</div>
-                    <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+              <div className="apple-card p-4 space-y-4">
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="bg-pink-50 rounded-lg p-3 border border-pink-100">
+                    <div className="text-xs font-medium text-pink-700">Used</div>
+                    <div className="text-xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-indigo-700">Earned</div>
-                    <div className="text-3xl font-bold text-indigo-900">
-                      {formatHours(sickLeaveAccruedHours)} hrs
-                    </div>
+                  <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100">
+                    <div className="text-xs font-medium text-indigo-700">Earned</div>
+                    <div className="text-xl font-bold text-indigo-900">{formatHours(sickLeaveAccruedHours)} hrs</div>
                   </div>
-                  <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-xl p-6 border border-amber-100 shadow-sm hover:shadow-md transition-shadow">
-                    <div className="text-sm font-medium text-amber-700">Balance</div>
-                    <div className="text-3xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
+                  <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
+                    <div className="text-xs font-medium text-amber-700">Balance</div>
+                    <div className="text-xl font-bold text-amber-900">{formatHours(sickLeaveBalanceHours)} hrs</div>
                   </div>
                 </div>
 
-                <div className="mt-6 flex flex-wrap gap-6 text-sm text-gray-500">
-                  <div>
-                    <p className="text-xs uppercase keeping-wide text-gray-400">Earned</p>
-                    <p className="text-lg font-semibold text-gray-900">
-                      {formatHours(sickLeaveAccruedHours)} hours
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      Based on {formatHours(summary?.total_hours ?? 0)} total hours worked
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-xs uppercase keeping-wide text-gray-400">Available balance</p>
-                    <p className="text-lg font-semibold text-gray-900">
-                      {formatHours(sickLeaveBalanceHours)} hours
-                    </p>
-                    <p className="text-xs text-gray-400">
-                      {sickLeaveBalanceHours > 0 ? "Ready to use" : "No balance available yet"}
-                    </p>
-                  </div>
-                  <p className="text-xs text-gray-400 self-end">
-                    Workers earn 1 hour of sick leave per 30 hours worked.
-                  </p>
-                </div>
+                <p className="text-xs text-gray-400">1 hr earned per 30 hrs worked · Based on {formatHours(summary?.total_hours ?? 0)} total hours</p>
 
-                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <h3 className="text-lg font-semibold text-blue-900">
-                        Request Sick Leave Hours
-                      </h3>
-                      <p className="mt-1 text-sm text-blue-800">
-                        Submit hours and date. A request email is sent to
-                        {" "}
-                        sebastiancastao379@gmail.com and jenvillar@1pds.net.
-                      </p>
-                    </div>
-                  </div>
+                <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
+                  <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>
 
-                  <form onSubmit={submitSickLeaveRequest} className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-3">
+                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-3">
                     <div>
                       <label
                         htmlFor="sick-request-hours"
@@ -1008,52 +1075,37 @@ export default function WorkerProfilePage() {
                   </form>
 
                   {sickRequestError && (
-                    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700">
                       {sickRequestError}
                     </div>
                   )}
                   {sickRequestSuccess && (
-                    <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">
+                    <div className="mt-2 rounded-lg border border-green-200 bg-green-50 px-3 py-1.5 text-xs text-green-700">
                       {sickRequestSuccess}
                     </div>
                   )}
                 </div>
 
                 {sickLeaveEntries.length === 0 ? (
-                  <div className="text-center py-8 text-sm text-gray-500">
-                    No sick leave records have been logged for this worker yet.
+                  <div className="text-center py-4 text-sm text-gray-400">
+                    No sick leave records yet.
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-2">
                     {sickLeaveEntries.map((entry) => {
                       const normalizedStatus = (entry.status ?? "pending").toLowerCase() as SickLeaveStatus;
                       const statusClasses =
                         sickLeaveStatusStyles[normalizedStatus] ?? fallbackSickLeaveStatusStyle;
                       return (
-                        <div
-                          key={entry.id}
-                          className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div>
-                              <p className="text-xs text-gray-500">Dates</p>
-                              <p className="text-sm font-semibold text-gray-900">
-                                {formatDate(entry.start_date)} — {formatDate(entry.end_date)}
-                              </p>
-                            </div>
-                            <span
-                              className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${statusClasses}`}
-                            >
-                              {entry.status}
-                            </span>
+                        <div key={entry.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center gap-4 text-gray-700">
+                            <span className="font-medium text-gray-900">{formatDate(entry.start_date)} — {formatDate(entry.end_date)}</span>
+                            <span className="text-gray-500">{formatHours(entry.duration_hours)} hrs</span>
+                            {entry.reason && <span className="text-gray-400 text-xs">{entry.reason}</span>}
                           </div>
-                          <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
-                            <span>Hours: {formatHours(entry.duration_hours)}</span>
-                            {entry.reason && <span>Reason: {entry.reason}</span>}
-                            {entry.approved_at && (
-                              <span>Approved: {formatDate(entry.approved_at)}</span>
-                            )}
-                          </div>
+                          <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${statusClasses}`}>
+                            {entry.status}
+                          </span>
                         </div>
                       );
                     })}
@@ -1065,7 +1117,7 @@ export default function WorkerProfilePage() {
             {/* All Vendor Events (Confirmed) */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">All Vendor Events</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">All Confirmed Events Outline</h2>
               </div>
               <div className="apple-card overflow-hidden">
                 <div className="overflow-x-auto">
@@ -1087,7 +1139,7 @@ export default function WorkerProfilePage() {
                             </div>
                           </td>
                           <td className="p-4 text-gray-600 text-sm">
-                            {row.event_date || "—"}
+                            {formatEventDate(row.event_date)}
                           </td>
                           <td className="p-4 text-gray-900 font-medium">
                             {row.shifts}
@@ -1101,6 +1153,49 @@ export default function WorkerProfilePage() {
                         <tr>
                           <td colSpan={4} className="p-6 text-center text-gray-500">
                             No shifts recorded for events yet.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </section>
+
+            {/* Raw Time Entries */}
+            <section className="mb-16">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Time Entries</h2>
+              </div>
+              <div className="apple-card overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 border-b border-gray-200">
+                      <tr>
+                        <th className="text-left p-4 font-semibold text-gray-700">Clock In</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Clock Out</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
+                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-200">
+                      {entries.map((e) => {
+                        const h = e.duration_hours ?? hoursBetween(e.clock_in, e.clock_out);
+                        return (
+                          <tr key={e.id} className="hover:bg-gray-50 transition-colors">
+                            <td className="p-4 text-gray-900 text-sm">{formatDateTime(e.clock_in)}</td>
+                            <td className="p-4 text-gray-900 text-sm">{formatDateTime(e.clock_out)}</td>
+                            <td className="p-4 text-gray-900 font-medium">{formatHours(h)}</td>
+                            <td className="p-4 text-gray-600 text-sm">
+                              {e.event_id ? (eventNameMap.get(e.event_id) || e.event_id) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {entries.length === 0 && (
+                        <tr>
+                          <td colSpan={4} className="p-6 text-center text-gray-500">
+                            No time entries yet.
                           </td>
                         </tr>
                       )}
@@ -1588,139 +1683,6 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
-            {/* Event Invitations */}
-            <section className="mb-10">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Event Invitations</h2>
-              </div>
-              <div className="apple-card overflow-hidden">
-                {invitationsLoading ? (
-                  <div className="flex items-center justify-center py-10">
-                    <div className="apple-spinner" />
-                    <span className="ml-3 text-gray-600">Loading invitations…</span>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-50 border-b border-gray-200">
-                        <tr>
-                          <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Date</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Venue</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Type</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Location</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Status</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {eventInvitations.map((inv) => (
-                          <tr key={`${inv.source}-${inv.id}`} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 text-gray-900 font-medium">
-                              {inv.event_name || inv.event_id}
-                            </td>
-                            <td className="p-4 text-gray-700 text-sm">
-                              <div>{formatEventDate(inv.event_date)}</div>
-                              {formatEventTime(inv.start_time) && (
-                                <div className="text-gray-500 text-xs mt-0.5">{formatEventTime(inv.start_time)}</div>
-                              )}
-                            </td>
-                            <td className="p-4 text-gray-700 text-sm">
-                              {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
-                            </td>
-                            <td className="p-4">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                inv.source === "team"
-                                  ? "bg-blue-50 text-blue-700 border-blue-200"
-                                  : "bg-purple-50 text-purple-700 border-purple-200"
-                              }`}>
-                                {inv.source === "team" ? "Team" : "Location"}
-                              </span>
-                            </td>
-                            <td className="p-4 text-gray-600 text-sm">{inv.location_name || "—"}</td>
-                            <td className="p-4">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                inv.status === "confirmed"
-                                  ? "bg-green-50 text-green-700 border-green-200"
-                                  : inv.status === "declined"
-                                  ? "bg-red-50 text-red-700 border-red-200"
-                                  : inv.status === "completed"
-                                  ? "bg-gray-100 text-gray-600 border-gray-200"
-                                  : "bg-yellow-50 text-yellow-700 border-yellow-200"
-                              }`}>
-                                {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
-                              </span>
-                            </td>
-                            <td className="p-4">
-                              {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
-                                <Link
-                                  href={`/team-confirmation/${inv.confirmation_token}`}
-                                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                                >
-                                  Confirm / Decline
-                                </Link>
-                              ) : (
-                                <span className="text-gray-400 text-xs">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                        {eventInvitations.length === 0 && (
-                          <tr>
-                            <td colSpan={7} className="p-6 text-center text-gray-500">
-                              No event invitations yet.
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </div>
-            </section>
-
-            {/* Raw Time Entries */}
-            <section className="mb-16">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Time Entries</h2>
-              </div>
-              <div className="apple-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock In</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock Out</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {entries.map((e) => {
-                        const h = e.duration_hours ?? hoursBetween(e.clock_in, e.clock_out);
-                        return (
-                          <tr key={e.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 text-gray-900">{formatDate(e.clock_in)}</td>
-                            <td className="p-4 text-gray-900">{formatDate(e.clock_out)}</td>
-                            <td className="p-4 text-gray-900 font-medium">{formatHours(h)}</td>
-                            <td className="p-4 text-gray-600 text-sm">
-                              {e.event_id ? (eventNameMap.get(e.event_id) || e.event_id) : "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {entries.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="p-6 text-center text-gray-500">
-                            No time entries yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
           </>
         )}
 
