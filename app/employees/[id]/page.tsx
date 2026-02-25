@@ -232,6 +232,8 @@ export default function WorkerProfilePage() {
 
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth()); // 0-11
 
   useEffect(() => {
     const load = async () => {
@@ -462,20 +464,42 @@ export default function WorkerProfilePage() {
   }, [entries]);
 
   // Create event name lookup from per_event data
-  const eventNameMap = useMemo(() => {
-    const map = new Map<string, string>();
-    if (summary?.per_event) {
-      summary.per_event.forEach((event) => {
-        if (event.event_id && event.event_name) {
-          map.set(event.event_id, event.event_name);
-        }
-      });
-    }
-    return map;
-  }, [summary?.per_event]);
 
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+
+  // Build a map of YYYY-MM-DD → set of marker types for the calendar
+  // and a map of YYYY-MM-DD → confirmed event details
+  const { calDots, calEventDetails } = useMemo(() => {
+    const map = new Map<string, Set<"event" | "shift" | "sick">>();
+    const events = new Map<string, { name: string; start_time: string | null }[]>();
+    const mark = (dateStr: string | null | undefined, type: "event" | "shift" | "sick") => {
+      if (!dateStr) return;
+      const d = dateStr.slice(0, 10);
+      if (!map.has(d)) map.set(d, new Set());
+      map.get(d)!.add(type);
+    };
+    eventInvitations.filter(inv => inv.status === "confirmed").forEach(inv => {
+      mark(inv.event_date, "event");
+      if (inv.event_date) {
+        const d = inv.event_date.slice(0, 10);
+        if (!events.has(d)) events.set(d, []);
+        events.get(d)!.push({ name: inv.event_name ?? "Event", start_time: inv.start_time ?? null });
+      }
+    });
+    entries.forEach(e => {
+      if (e.clock_in) mark(e.clock_in.slice(0, 10), "shift");
+    });
+    sickLeaveEntries.forEach(sl => {
+      if (!sl.start_date) return;
+      const start = new Date(sl.start_date);
+      const end = sl.end_date ? new Date(sl.end_date) : start;
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        mark(d.toISOString().slice(0, 10), "sick");
+      }
+    });
+    return { calDots: map, calEventDetails: events };
+  }, [eventInvitations, entries, sickLeaveEntries]);
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
@@ -903,94 +927,198 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
-            {/* Event Invitations */}
+            {/* Personal Calendar */}
+            {(() => {
+              const today = new Date();
+              const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+              const firstDay = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
+              const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+              const monthName = new Date(calYear, calMonth, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
+              const prevMonth = () => { if (calMonth === 0) { setCalMonth(11); setCalYear(y => y - 1); } else setCalMonth(m => m - 1); };
+              const nextMonth = () => { if (calMonth === 11) { setCalMonth(0); setCalYear(y => y + 1); } else setCalMonth(m => m + 1); };
+              const cells: (number | null)[] = [...Array(firstDay).fill(null), ...Array.from({length: daysInMonth}, (_, i) => i + 1)];
+              while (cells.length % 7 !== 0) cells.push(null);
+              return (
+                <section className="mb-8">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Calendar</h2>
+                  </div>
+                  <div className="apple-card p-4">
+                    {/* Header */}
+                    <div className="flex items-center justify-between mb-4">
+                      <button onClick={prevMonth} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-600">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+                      </button>
+                      <span className="font-semibold text-gray-800 text-sm">{monthName}</span>
+                      <button onClick={nextMonth} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-600">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+                      </button>
+                    </div>
+                    {/* Day labels */}
+                    <div className="grid grid-cols-7 mb-1">
+                      {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => (
+                        <div key={d} className="text-center text-xs font-medium text-gray-400 py-1">{d}</div>
+                      ))}
+                    </div>
+                    {/* Day cells */}
+                    <div className="grid grid-cols-7 gap-y-1">
+                      {cells.map((day, i) => {
+                        if (!day) return <div key={i} />;
+                        const dateStr = `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                        const dots = calDots.get(dateStr);
+                        const evs = calEventDetails.get(dateStr) ?? [];
+                        const isToday = dateStr === todayStr;
+                        return (
+                          <div key={i} className="flex flex-col items-center py-1 px-0.5 min-h-[3.5rem]">
+                            <div className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium shrink-0
+                              ${isToday ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"}`}>
+                              {day}
+                            </div>
+                            {evs.map((ev, ei) => (
+                              <div key={ei} className="mt-0.5 w-full text-center">
+                                <div className="bg-blue-100 text-blue-800 rounded text-[9px] font-medium leading-tight px-0.5 truncate">
+                                  {ev.name}
+                                </div>
+                                {ev.start_time && (
+                                  <div className="text-[9px] text-blue-500 leading-tight">
+                                    {formatEventTime(ev.start_time)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {dots && (dots.has("shift") || dots.has("sick")) && (
+                              <div className="flex gap-0.5 mt-0.5">
+                                {dots.has("shift") && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                                {dots.has("sick")  && <span className="w-1.5 h-1.5 rounded-full bg-pink-500" />}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* Legend */}
+                    <div className="flex gap-4 mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"/>Event</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block"/>Shift</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-500 inline-block"/>Sick leave</span>
+                    </div>
+                  </div>
+                </section>
+              );
+            })()}
+
+            {/* Events & Time — combined */}
             <section className="mb-10">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Event Invitations</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Events Recap</h2>
               </div>
               <div className="apple-card overflow-hidden">
                 {invitationsLoading ? (
                   <div className="flex items-center justify-center py-10">
                     <div className="apple-spinner" />
-                    <span className="ml-3 text-gray-600">Loading invitations…</span>
+                    <span className="ml-3 text-gray-600">Loading…</span>
                   </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full">
-                      <thead className="bg-gray-50 border-b border-gray-200">
-                        <tr>
-                          <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Date</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Venue</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Type</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Location</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Status</th>
-                          <th className="text-left p-4 font-semibold text-gray-700">Action</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-gray-200">
-                        {eventInvitations.map((inv) => (
-                          <tr key={`${inv.source}-${inv.id}`} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 text-gray-900 font-medium">
-                              {inv.event_name || inv.event_id}
-                            </td>
-                            <td className="p-4 text-gray-700 text-sm">
-                              <div>{formatEventDate(inv.event_date)}</div>
-                              {formatEventTime(inv.start_time) && (
-                                <div className="text-gray-500 text-xs mt-0.5">{formatEventTime(inv.start_time)}</div>
-                              )}
-                            </td>
-                            <td className="p-4 text-gray-700 text-sm">
-                              {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
-                            </td>
-                            <td className="p-4">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                inv.source === "team"
-                                  ? "bg-blue-50 text-blue-700 border-blue-200"
-                                  : "bg-purple-50 text-purple-700 border-purple-200"
-                              }`}>
-                                {inv.source === "team" ? "Team" : "Location"}
-                              </span>
-                            </td>
-                            <td className="p-4 text-gray-600 text-sm">{inv.location_name || "—"}</td>
-                            <td className="p-4">
-                              <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium border ${
-                                inv.status === "confirmed"
-                                  ? "bg-green-50 text-green-700 border-green-200"
-                                  : inv.status === "declined"
-                                  ? "bg-red-50 text-red-700 border-red-200"
-                                  : inv.status === "completed"
-                                  ? "bg-gray-100 text-gray-600 border-gray-200"
-                                  : "bg-yellow-50 text-yellow-700 border-yellow-200"
-                              }`}>
-                                {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
-                              </span>
-                            </td>
-                            <td className="p-4">
-                              {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
-                                <Link
-                                  href={`/team-confirmation/${inv.confirmation_token}`}
-                                  className="inline-flex items-center px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors"
-                                >
-                                  Confirm / Decline
-                                </Link>
-                              ) : (
-                                <span className="text-gray-400 text-xs">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                        {eventInvitations.length === 0 && (
+                ) : (() => {
+                  // Build lookup: event_id → per_event row
+                  const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
+                  // Build lookup: event_id → time entries[]
+                  const entriesByEvent = new Map<string, typeof entries>();
+                  entries.forEach(e => {
+                    const key = e.event_id ?? "__none__";
+                    if (!entriesByEvent.has(key)) entriesByEvent.set(key, []);
+                    entriesByEvent.get(key)!.push(e);
+                  });
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-gray-50 border-b border-gray-200">
                           <tr>
-                            <td colSpan={7} className="p-6 text-center text-gray-500">
-                              No event invitations yet.
-                            </td>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Event</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Date</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Venue</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Type</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Status</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Shifts</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Hours</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Action</th>
                           </tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                        </thead>
+                        <tbody>
+                          {eventInvitations.length === 0 && (
+                            <tr>
+                              <td colSpan={8} className="p-6 text-center text-gray-500">No event invitations yet.</td>
+                            </tr>
+                          )}
+                          {eventInvitations.map((inv) => {
+                            const agg = perEventMap.get(inv.event_id);
+                            const eventEntries = entriesByEvent.get(inv.event_id) ?? [];
+                            return (
+                              <>
+                                {/* Event row */}
+                                <tr key={`inv-${inv.source}-${inv.id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                                  <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
+                                  <td className="p-3 text-gray-700 text-sm">
+                                    <div>{formatEventDate(inv.event_date)}</div>
+                                    {formatEventTime(inv.start_time) && (
+                                      <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-gray-600 text-sm">
+                                    {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                                      inv.source === "team" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-purple-50 text-purple-700 border-purple-200"
+                                    }`}>
+                                      {inv.source === "team" ? "Team" : "Location"}
+                                    </span>
+                                  </td>
+                                  <td className="p-3">
+                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                                      inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
+                                      : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
+                                      : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
+                                      : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                                    }`}>
+                                      {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
+                                  <td className="p-3">
+                                    {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
+                                      <Link href={`/team-confirmation/${inv.confirmation_token}`}
+                                        className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors">
+                                        Confirm / Decline
+                                      </Link>
+                                    ) : <span className="text-gray-400 text-xs">—</span>}
+                                  </td>
+                                </tr>
+                                {/* Time entry sub-rows */}
+                                {eventEntries.map(e => (
+                                  <tr key={`entry-${e.id}`} className="bg-gray-50 border-t border-gray-100">
+                                    <td className="pl-8 pr-3 py-2">
+                                      <span className="text-gray-400 text-xs">↳ Shift</span>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock In</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in)}</div>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock Out</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out)}</div>
+                                    </td>
+                                    <td colSpan={5} />
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
               </div>
             </section>
 
@@ -1111,97 +1239,6 @@ export default function WorkerProfilePage() {
                     })}
                   </div>
                 )}
-              </div>
-            </section>
-
-            {/* All Vendor Events (Confirmed) */}
-            <section className="mb-8">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">All Confirmed Events Outline</h2>
-              </div>
-              <div className="apple-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Date</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Shifts</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {(summary?.per_event || []).map((row) => (
-                        <tr key={row.event_id} className="hover:bg-gray-50 transition-colors">
-                          <td className="p-4">
-                            <div className="font-medium text-gray-900">
-                              {row.event_name || row.event_id}
-                            </div>
-                          </td>
-                          <td className="p-4 text-gray-600 text-sm">
-                            {formatEventDate(row.event_date)}
-                          </td>
-                          <td className="p-4 text-gray-900 font-medium">
-                            {row.shifts}
-                          </td>
-                          <td className="p-4 text-gray-900 font-medium">
-                            {formatHours(row.hours)}
-                          </td>
-                        </tr>
-                      ))}
-                      {(!summary?.per_event || summary.per_event.length === 0) && (
-                        <tr>
-                          <td colSpan={4} className="p-6 text-center text-gray-500">
-                            No shifts recorded for events yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </section>
-
-            {/* Raw Time Entries */}
-            <section className="mb-16">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Time Entries</h2>
-              </div>
-              <div className="apple-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock In</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock Out</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {entries.map((e) => {
-                        const h = e.duration_hours ?? hoursBetween(e.clock_in, e.clock_out);
-                        return (
-                          <tr key={e.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 text-gray-900 text-sm">{formatDateTime(e.clock_in)}</td>
-                            <td className="p-4 text-gray-900 text-sm">{formatDateTime(e.clock_out)}</td>
-                            <td className="p-4 text-gray-900 font-medium">{formatHours(h)}</td>
-                            <td className="p-4 text-gray-600 text-sm">
-                              {e.event_id ? (eventNameMap.get(e.event_id) || e.event_id) : "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                      {entries.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="p-6 text-center text-gray-500">
-                            No time entries yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
               </div>
             </section>
 
