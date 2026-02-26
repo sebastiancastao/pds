@@ -194,14 +194,37 @@ function formatEventTime(t?: string | null) {
   return `${h12}:${m} ${ampm}`;
 }
 
-// Formats an ISO timestamp as "Jan 1, 2025, 9:00 AM"
-function formatDateTime(d?: string | null) {
+// Maps US state codes to IANA timezone identifiers
+const STATE_TIMEZONES: Record<string, string> = {
+  AL: "America/Chicago", AK: "America/Anchorage", AZ: "America/Phoenix",
+  AR: "America/Chicago", CA: "America/Los_Angeles", CO: "America/Denver",
+  CT: "America/New_York", DE: "America/New_York", FL: "America/New_York",
+  GA: "America/New_York", HI: "Pacific/Honolulu", ID: "America/Boise",
+  IL: "America/Chicago", IN: "America/Indiana/Indianapolis", IA: "America/Chicago",
+  KS: "America/Chicago", KY: "America/Kentucky/Louisville", LA: "America/Chicago",
+  ME: "America/New_York", MD: "America/New_York", MA: "America/New_York",
+  MI: "America/Detroit", MN: "America/Chicago", MS: "America/Chicago",
+  MO: "America/Chicago", MT: "America/Denver", NE: "America/Chicago",
+  NV: "America/Los_Angeles", NH: "America/New_York", NJ: "America/New_York",
+  NM: "America/Denver", NY: "America/New_York", NC: "America/New_York",
+  ND: "America/Chicago", OH: "America/New_York", OK: "America/Chicago",
+  OR: "America/Los_Angeles", PA: "America/New_York", RI: "America/New_York",
+  SC: "America/New_York", SD: "America/Chicago", TN: "America/Chicago",
+  TX: "America/Chicago", UT: "America/Denver", VT: "America/New_York",
+  VA: "America/New_York", WA: "America/Los_Angeles", WV: "America/New_York",
+  WI: "America/Chicago", WY: "America/Denver",
+};
+
+// Formats an ISO timestamp as "Jan 1, 2025, 9:00 AM", optionally in a venue state's timezone
+function formatDateTime(d?: string | null, state?: string | null) {
   if (!d) return "—";
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return d;
+  const tz = (state && STATE_TIMEZONES[state.toUpperCase()]) || undefined;
   return dt.toLocaleString(undefined, {
     month: "short", day: "numeric", year: "numeric",
     hour: "numeric", minute: "2-digit", hour12: true,
+    ...(tz ? { timeZone: tz } : {}),
   });
 }
 
@@ -1139,13 +1162,18 @@ export default function WorkerProfilePage() {
                                     </td>
                                     <td className="px-3 py-2">
                                       <div className="text-xs text-gray-500 font-medium">Clock In</div>
-                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in)}</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in, inv.state)}</div>
                                     </td>
                                     <td className="px-3 py-2">
                                       <div className="text-xs text-gray-500 font-medium">Clock Out</div>
-                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out)}</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out, inv.state)}</div>
                                     </td>
-                                    <td colSpan={4} />
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2 text-gray-900 text-xs font-medium">
+                                      {e.duration_hours != null ? formatHours(e.duration_hours) : "—"}
+                                    </td>
+                                    <td className="px-3 py-2" />
                                   </tr>
                                 ))}
                               </>
