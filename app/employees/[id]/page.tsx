@@ -897,39 +897,6 @@ export default function WorkerProfilePage() {
                       <span>{(employee.city && employee.state) ? `${employee.city}, ${employee.state}` : (employee.state || "—")}</span>
                     </div>
 
-                    {/* Region */}
-                    <div className="bg-gray-50 rounded-lg py-2 px-4">
-                      <div className="flex items-center gap-2 mb-1.5">
-                        <svg className="w-4 h-4 text-gray-500 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                          <path strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/>
-                        </svg>
-                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Region</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <select
-                          value={selectedRegion}
-                          onChange={(e) => setSelectedRegion(e.target.value)}
-                          className="flex-1 text-sm border border-gray-200 rounded-md px-2 py-1.5 bg-white focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                        >
-                          <option value="">— No region —</option>
-                          {regions.map((r) => (
-                            <option key={r.id} value={r.id}>{r.name}</option>
-                          ))}
-                        </select>
-                        <button
-                          onClick={saveRegion}
-                          disabled={savingRegion}
-                          className="text-xs px-3 py-1.5 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 transition-colors font-medium"
-                        >
-                          {savingRegion ? "Saving…" : "Save"}
-                        </button>
-                      </div>
-                      {regionMessage && (
-                        <p className={`text-xs mt-1.5 font-medium ${regionMessage === "Region saved." ? "text-green-600" : "text-red-500"}`}>
-                          {regionMessage}
-                        </p>
-                      )}
-                    </div>
                   </div>
 
                   <span className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-sm font-semibold shadow-sm ${
