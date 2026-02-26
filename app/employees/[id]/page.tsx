@@ -157,11 +157,10 @@ function hoursBetween(clock_in: string | null, clock_out: string | null) {
 }
 
 function formatHours(h: number) {
-  // Show 2 decimals for small numbers (< 1), 1 decimal for larger numbers
-  if (h < 1) {
-    return h.toFixed(2);
-  }
-  return (Math.round(h * 10) / 10).toFixed(1);
+  const totalMinutes = Math.round(h * 60);
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  return `${hh}:${mm.toString().padStart(2, "0")}`;
 }
 
 function formatDate(d?: string | null) {
