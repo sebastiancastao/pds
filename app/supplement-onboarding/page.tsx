@@ -42,6 +42,7 @@ export default function SupplementOnboardingPage() {
   const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
   const [emailSentNow, setEmailSentNow] = useState<Set<string>>(new Set());
   const [actionError, setActionError] = useState<Record<string, string>>({});
+  const [exporting, setExporting] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -140,6 +141,57 @@ export default function SupplementOnboardingPage() {
     callAction(employeeId, 'send_email');
   };
 
+  const handleExportToExcel = async () => {
+    if (exporting) return;
+
+    try {
+      setExporting(true);
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch('/api/supplement-onboarding/export', {
+        method: 'GET',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        let errorMessage = 'Failed to export data';
+        try {
+          const data = await response.json();
+          errorMessage = data.error || errorMessage;
+        } catch {
+          // Ignore JSON parse errors and use default error message
+        }
+        throw new Error(errorMessage);
+      }
+
+      const blob = await response.blob();
+      const contentDisposition =
+        response.headers.get('Content-Disposition') ??
+        response.headers.get('content-disposition');
+
+      let filename = `supplement_onboarding_report_${new Date().toISOString().split('T')[0]}.xlsx`;
+      const filenameMatch = contentDisposition?.match(/filename\*?=(?:UTF-8''|")?([^";\n]+)/i);
+      if (filenameMatch?.[1]) {
+        filename = decodeURIComponent(filenameMatch[1]).replace(/"/g, '').trim();
+      }
+
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+    } catch (err: any) {
+      console.error('Error exporting supplement onboarding data:', err);
+      alert(`Failed to export data: ${err.message || 'Unknown error'}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const getCompleted = (employeeId: string) =>
     forms.filter(f => completions.some(c => c.employeeId === employeeId && c.formName === `${f.title} ${year}`));
 
@@ -192,14 +244,29 @@ export default function SupplementOnboardingPage() {
             <h1 className="text-3xl font-bold text-gray-900">Supplement Onboarding</h1>
             <p className="mt-2 text-gray-600">Track employee completion of supplemental custom forms</p>
           </div>
-          <Link href="/hr-dashboard">
-            <button className="apple-button apple-button-secondary flex items-center gap-2">
+          <div className="flex gap-3">
+            <button
+              onClick={handleExportToExcel}
+              disabled={exporting}
+              className={`apple-button apple-button-primary flex items-center gap-2 ${exporting ? 'opacity-60 cursor-not-allowed' : ''}`}
+              title="Export to Excel"
+            >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 18l-6-6 6-6" />
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              Back to Dashboard
+              {exporting ? 'Exporting...' : 'Export to Excel'}
             </button>
-          </Link>
+            <Link href="/hr-dashboard">
+              <button className="apple-button apple-button-secondary flex items-center gap-2">
+                <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 18l-6-6 6-6" />
+                </svg>
+                Back to Dashboard
+              </button>
+            </Link>
+          </div>
         </div>
 
         {error && (
