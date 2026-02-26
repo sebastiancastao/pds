@@ -105,7 +105,7 @@ export async function GET(req: NextRequest) {
     if (requestedEventId && isValidUuid(requestedEventId)) {
       const { data: evt, error: evtErr } = await supabaseAdmin
         .from("events")
-        .select("id, event_name, event_date, start_time, end_time, ends_next_day, is_active")
+        .select("id, event_name, event_date, start_time, end_time, ends_next_day, is_active, state")
         .eq("id", requestedEventId)
         .maybeSingle();
       if (evtErr) return jsonError(evtErr.message, 500);
@@ -114,7 +114,7 @@ export async function GET(req: NextRequest) {
       // Auto-pick the currently active event (today or a yesterday event that ends after midnight).
       const { data: candidates, error: candErr } = await supabaseAdmin
         .from("events")
-        .select("id, event_name, event_date, start_time, end_time, ends_next_day, is_active")
+        .select("id, event_name, event_date, start_time, end_time, ends_next_day, is_active, state")
         .eq("is_active", true)
         .in("event_date", [today, yesterday]);
       if (candErr) return jsonError(candErr.message, 500);
@@ -314,6 +314,7 @@ export async function GET(req: NextRequest) {
           name: event.event_name || null,
           startIso: window.startIso,
           endIso: window.endIso,
+          state: event.state || null,
         },
         entries: mapped,
         checkedInUsers,

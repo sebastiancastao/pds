@@ -108,6 +108,65 @@ type UninvitedTeamMemberRecord = {
   team_member_id: string | null;
 };
 
+const STATE_TIMEZONE_MAP: Record<string, string> = {
+  AL: "America/Chicago",
+  AK: "America/Anchorage",
+  AZ: "America/Phoenix",
+  AR: "America/Chicago",
+  CA: "America/Los_Angeles",
+  CO: "America/Denver",
+  CT: "America/New_York",
+  DE: "America/New_York",
+  FL: "America/New_York",
+  GA: "America/New_York",
+  HI: "Pacific/Honolulu",
+  ID: "America/Denver",
+  IL: "America/Chicago",
+  IN: "America/Indiana/Indianapolis",
+  IA: "America/Chicago",
+  KS: "America/Chicago",
+  KY: "America/New_York",
+  LA: "America/Chicago",
+  ME: "America/New_York",
+  MD: "America/New_York",
+  MA: "America/New_York",
+  MI: "America/Detroit",
+  MN: "America/Chicago",
+  MS: "America/Chicago",
+  MO: "America/Chicago",
+  MT: "America/Denver",
+  NE: "America/Chicago",
+  NV: "America/Los_Angeles",
+  NH: "America/New_York",
+  NJ: "America/New_York",
+  NM: "America/Denver",
+  NY: "America/New_York",
+  NC: "America/New_York",
+  ND: "America/Chicago",
+  OH: "America/New_York",
+  OK: "America/Chicago",
+  OR: "America/Los_Angeles",
+  PA: "America/New_York",
+  RI: "America/New_York",
+  SC: "America/New_York",
+  SD: "America/Chicago",
+  TN: "America/Chicago",
+  TX: "America/Chicago",
+  UT: "America/Denver",
+  VT: "America/New_York",
+  VA: "America/New_York",
+  WA: "America/Los_Angeles",
+  WV: "America/New_York",
+  WI: "America/Chicago",
+  WY: "America/Denver",
+  DC: "America/New_York",
+};
+
+const getTimezoneForState = (state: string | null | undefined): string => {
+  if (!state) return "America/Los_Angeles";
+  return STATE_TIMEZONE_MAP[state.toUpperCase().trim()] ?? "America/Los_Angeles";
+};
+
 const getTeamMemberSortFields = (member: any): {
   lastKey: string;
   firstKey: string;
@@ -279,6 +338,8 @@ export default function EventDashboardPage() {
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
+
+  const eventTimezone = useMemo(() => getTimezoneForState(event?.state), [event?.state]);
 
   const sortedTeamMembers = useMemo(() => {
     return [...(teamMembers || [])].sort((a: any, b: any) => {
@@ -2484,7 +2545,7 @@ export default function EventDashboardPage() {
       hour: "2-digit",
       minute: "2-digit",
       hourCycle: "h23",
-      timeZone: "America/Los_Angeles",
+      timeZone: eventTimezone,
     }).formatToParts(d);
     const hh = (parts.find((p) => p.type === "hour")?.value || "00").padStart(2, "0");
     const mm = (parts.find((p) => p.type === "minute")?.value || "00").padStart(2, "0");
@@ -2503,15 +2564,14 @@ export default function EventDashboardPage() {
   };
 
   const getPacificTzAbbr = (iso?: string | null): string => {
-    if (!iso) return "PT";
-    const d = new Date(iso);
-    if (isNaN(d.getTime())) return "PT";
+    const d = iso ? new Date(iso) : new Date();
+    if (isNaN(d.getTime())) return "";
     const formatted = new Intl.DateTimeFormat("en-US", {
       timeZoneName: "short",
-      timeZone: "America/Los_Angeles",
+      timeZone: eventTimezone,
     }).format(d);
-    const match = formatted.match(/\b(PST|PDT)\b/);
-    return match ? match[1] : "PT";
+    const match = formatted.match(/\b([A-Z]{2,5})\b$/);
+    return match ? match[1] : "";
   };
 
   const startTimesheetEdit = (uid: string, span: {
@@ -4597,7 +4657,7 @@ export default function EventDashboardPage() {
           )}
         </div>
         <div>
-          Event window (CA time):{" "}
+          Event window ({event?.state || "CA"} time):{" "}
           {isoToPacificHHMM(event?.start_time)}{" "}
           – {isoToPacificHHMM(event?.end_time)}{" "}
           {getPacificTzAbbr(event?.start_time || event?.end_time)}

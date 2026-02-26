@@ -6,6 +6,31 @@ import { supabase } from "@/lib/supabase";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
 
 // ─── Types ───────────────────────────────────────────────────────────
+const STATE_TIMEZONE_MAP: Record<string, string> = {
+  AL: "America/Chicago", AK: "America/Anchorage", AZ: "America/Phoenix",
+  AR: "America/Chicago", CA: "America/Los_Angeles", CO: "America/Denver",
+  CT: "America/New_York", DE: "America/New_York", FL: "America/New_York",
+  GA: "America/New_York", HI: "Pacific/Honolulu", ID: "America/Denver",
+  IL: "America/Chicago", IN: "America/Indiana/Indianapolis", IA: "America/Chicago",
+  KS: "America/Chicago", KY: "America/New_York", LA: "America/Chicago",
+  ME: "America/New_York", MD: "America/New_York", MA: "America/New_York",
+  MI: "America/Detroit", MN: "America/Chicago", MS: "America/Chicago",
+  MO: "America/Chicago", MT: "America/Denver", NE: "America/Chicago",
+  NV: "America/Los_Angeles", NH: "America/New_York", NJ: "America/New_York",
+  NM: "America/Denver", NY: "America/New_York", NC: "America/New_York",
+  ND: "America/Chicago", OH: "America/New_York", OK: "America/Chicago",
+  OR: "America/Los_Angeles", PA: "America/New_York", RI: "America/New_York",
+  SC: "America/New_York", SD: "America/Chicago", TN: "America/Chicago",
+  TX: "America/Chicago", UT: "America/Denver", VT: "America/New_York",
+  VA: "America/New_York", WA: "America/Los_Angeles", WV: "America/New_York",
+  WI: "America/Chicago", WY: "America/Denver", DC: "America/New_York",
+};
+
+function getTimezoneForState(state: string | null | undefined): string {
+  if (!state) return "America/Los_Angeles";
+  return STATE_TIMEZONE_MAP[state.toUpperCase().trim()] ?? "America/Los_Angeles";
+}
+
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
@@ -146,7 +171,7 @@ export default function CheckInKioskPage() {
   const inactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const INACTIVITY_TIMEOUT = 30_000;
 
-  const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string } | null>(
+  const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string; state: string | null } | null>(
     null
   );
 
@@ -289,6 +314,7 @@ export default function CheckInKioskPage() {
           name: typeof event.name === "string" ? event.name : null,
           startIso: String(event.startIso),
           endIso: String(event.endIso),
+          state: typeof event.state === "string" ? event.state : null,
         });
       } else {
         setActiveEvent(null);
@@ -514,7 +540,7 @@ export default function CheckInKioskPage() {
     return d.toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
-      timeZone: "America/Los_Angeles",
+      timeZone: getTimezoneForState(activeEvent?.state),
     });
   };
 
