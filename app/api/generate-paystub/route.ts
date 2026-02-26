@@ -640,7 +640,10 @@ export async function POST(req: NextRequest) {
         // For paystub display/pay, use the persisted vendor tip when available;
         // fall back to pro-rated event tips if needed.
         const tips = tipsFromPayment > 0 ? tipsFromPayment : proratedTips;
-        const commission = totalFinalCommissionAmt;
+        // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
+        // Falls back to recomputed value if payment data has not been saved yet.
+        const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);
+        const commission = storedFinalCommission > 0 ? storedFinalCommission : totalFinalCommissionAmt;
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = Number(paymentData?.regular_pay || 0);
@@ -648,7 +651,7 @@ export async function POST(req: NextRequest) {
         const dtPay = Number(paymentData?.doubletime_pay || 0);
 
         const restBreak = includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0;
-        const computedTotalPay = totalFinalCommissionAmt + tips + restBreak;
+        const computedTotalPay = commission + tips + restBreak;
         const computedTotalGrossPay = computedTotalPay + other;
 
         totalRegHours += regHours;
@@ -679,10 +682,10 @@ export async function POST(req: NextRequest) {
         stateIncomeAmt +
         stateDIAmt +
         miscDeductionAmt;
-      const netPay = totalGross - totalDeductions + reimbursement;
-      const effectiveRate = totalHoursWorked > 0 ? totalCommission / totalHoursWorked : 0;
-      const mealPremiumThisPeriod = 0;
+      const mealPremiumThisPeriod = 10;
       const sickThisPeriod = 0;
+      const netPay = totalGross + mealPremiumThisPeriod - totalDeductions + reimbursement;
+      const effectiveRate = totalHoursWorked > 0 ? totalCommission / totalHoursWorked : 0;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -847,26 +850,26 @@ export async function POST(req: NextRequest) {
       const doubleTimeRateAvg = totalDtHours > 0 ? (totalDoubletimePayAmount / totalDtHours) : 0;
 
       const earningsRows = [
-        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay },
+        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay, hideThisPeriod: true },
         { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayAmount, ytd: ytdOvertimePay },
         { y: 216, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
         { y: 224, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommission, ytd: ytdCommission },
         { y: 232, label: "Double-time", color: black, rate: doubleTimeRateAvg, hours: totalDtHours, thisPeriod: totalDoubletimePayAmount, ytd: ytdDoubleTimePay },
-        { y: 240, label: "Rest Break", color: black, rate: totalRestBreak > 0 ? effectiveRate : 0, hours: totalRestBreak > 0 ? totalHoursWorked : 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
+        { y: 240, label: "Rest Break", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
         { y: 248, label: "Sick", color: black, rate: sickThisPeriod > 0 ? effectiveRate : 0, hours: sickThisPeriod > 0 ? totalHoursWorked : 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
-        { y: 256, label: "Meal Premium", color: black, rate: mealPremiumThisPeriod > 0 ? effectiveRate : 0, hours: mealPremiumThisPeriod > 0 ? totalHoursWorked : 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
+        { y: 256, label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
       ];
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
         if (row.rate > 0) drawTopText(fmt(row.rate), 145, row.y, { size: 8 });
         if (row.hours > 0) drawTopText(fmt(row.hours), 210, row.y, { size: 8 });
-        drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
+        if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
       }
 
       drawTopLine(40, 259, 332);
       drawTopText("Gross Pay", 95, 266, { size: 8, bold: true });
-      drawTopText(money(totalGross), 255, 266, { size: 8, bold: true });
+      drawTopText(money(totalGross + mealPremiumThisPeriod), 255, 266, { size: 8, bold: true });
 
       drawTopText("Statutory Deductions", 112, 277, { size: 8, bold: true });
       drawTopText("this period", 233, 277, { size: 8 });
@@ -1205,7 +1208,10 @@ export async function POST(req: NextRequest) {
         // For paystub display/pay, use the persisted vendor tip when available;
         // fall back to pro-rated event tips if needed.
         const tips = tipsFromPayment > 0 ? tipsFromPayment : proratedTips;
-        const commission = totalFinalCommissionAmt;
+        // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
+        // Falls back to recomputed value if payment data has not been saved yet.
+        const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);
+        const commission = storedFinalCommission > 0 ? storedFinalCommission : totalFinalCommissionAmt;
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = Number(paymentData?.regular_pay || 0);
@@ -1227,7 +1233,7 @@ export async function POST(req: NextRequest) {
         // If persisted total_pay exists and is non-zero, keep it for non-CA; otherwise use computed.
         const persistedTotal = Number(paymentData?.total_pay || 0);
         const persistedTotalGrossPay = persistedTotal + other;
-        const computedTotalPay = totalFinalCommissionAmt + tips + restBreak;
+        const computedTotalPay = commission + tips + restBreak;
         const computedTotalGrossPay = computedTotalPay + other;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
 
