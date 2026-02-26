@@ -559,7 +559,7 @@ export async function GET(req: NextRequest) {
           request_count: sickRequestCountByUser.get(id) || 0,
         };
       })
-      .filter((row) => row.accrued_hours > 0)
+      .filter((row) => row.accrued_hours > 0 || row.worked_hours > 0 || row.used_hours > 0 || row.request_count > 0)
       .sort((a, b) =>
         a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: "base" })
       );

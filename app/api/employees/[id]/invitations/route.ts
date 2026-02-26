@@ -74,7 +74,8 @@ export async function GET(
         event_id,
         created_at,
         event_locations (
-          name
+          name,
+          call_time
         ),
         events (
           event_name,
@@ -122,7 +123,7 @@ export async function GET(
         event_id: row.event_id,
         event_name: ev?.event_name ?? null,
         event_date: ev?.event_date ?? null,
-        start_time: ev?.start_time ?? null,
+        start_time: loc?.call_time ?? ev?.start_time ?? null,
         venue: ev?.venue ?? null,
         city: ev?.city ?? null,
         state: ev?.state ?? null,

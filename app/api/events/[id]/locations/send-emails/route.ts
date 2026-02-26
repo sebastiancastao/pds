@@ -31,6 +31,7 @@ type EventLocationRow = {
   id: string;
   name: string;
   notes: string | null;
+  call_time: string | null;
 };
 
 type AssignmentRow = {
@@ -56,6 +57,7 @@ type Recipient = {
   lastName: string;
   locationName: string;
   locationNotes: string;
+  locationCallTime: string;
 };
 
 function normalizeText(value: unknown): string {
@@ -143,7 +145,7 @@ function buildEmailHtml(params: {
   firstName: string;
   eventName: string;
   eventDate: string;
-  startTime: string;
+  callTime: string;
   venue: string;
   city: string;
   state: string;
@@ -153,7 +155,7 @@ function buildEmailHtml(params: {
   const firstName = escapeHtml(params.firstName || "Team Member");
   const eventName = escapeHtml(params.eventName);
   const eventDate = escapeHtml(params.eventDate);
-  const startTime = escapeHtml(params.startTime);
+  const callTime = escapeHtml(params.callTime);
   const venue = escapeHtml(params.venue || "TBD");
   const city = escapeHtml(params.city || "");
   const state = escapeHtml(params.state || "");
@@ -172,7 +174,7 @@ function buildEmailHtml(params: {
     <div style="border:1px solid #e5e7eb;border-radius:8px;padding:16px;background:#f8fafc;">
       <p style="margin:0 0 8px;"><strong>Event:</strong> ${eventName}</p>
       <p style="margin:0 0 8px;"><strong>Date:</strong> ${eventDate}</p>
-      ${startTime ? `<p style="margin:0 0 8px;"><strong>Call Time:</strong> ${startTime}</p>` : ""}
+      ${callTime ? `<p style="margin:0 0 8px;"><strong>Call Time:</strong> ${callTime}</p>` : ""}
       <p style="margin:0 0 8px;"><strong>Venue:</strong> ${venue}</p>
       <p style="margin:0 0 8px;"><strong>City/State:</strong> ${cityState}</p>
       <p style="margin:0 0 8px;"><strong>Assigned Location:</strong> ${locationName}</p>
@@ -289,7 +291,7 @@ export async function POST(
         .maybeSingle(),
       supabaseAdmin
         .from("event_locations")
-        .select("id, name, notes")
+        .select("id, name, notes, call_time")
         .eq("event_id", eventId),
       supabaseAdmin
         .from("event_location_assignments")
@@ -352,6 +354,7 @@ export async function POST(
       locationById.set(normalizeText(location.id), location);
     });
 
+    const defaultCallTime = formatTime(eventData?.start_time || null);
     const recipients: Recipient[] = [];
     const seenUsers = new Set<string>();
     let skippedDuplicateUsers = 0;
@@ -404,6 +407,7 @@ export async function POST(
         lastName,
         locationName: normalizeText(location.name),
         locationNotes: normalizeText(location.notes),
+        locationCallTime: formatTime(location.call_time) || defaultCallTime,
       });
       seenUsers.add(userId);
     }
@@ -417,7 +421,6 @@ export async function POST(
 
     const eventName = normalizeText(eventData?.event_name) || "Event";
     const eventDate = formatEventDate(eventData?.event_date || null);
-    const startTime = formatTime(eventData?.start_time || null);
     const venue = normalizeText(eventData?.venue);
     const city = normalizeText(eventData?.city);
     const state = normalizeText(eventData?.state);
@@ -450,7 +453,7 @@ export async function POST(
           firstName: fullName || recipient.firstName || "Team Member",
           eventName,
           eventDate,
-          startTime,
+          callTime: recipient.locationCallTime,
           venue,
           city,
           state,

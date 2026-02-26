@@ -47,6 +47,7 @@ type EventLocation = {
   event_id: string;
   name: string;
   notes: string | null;
+  call_time: string | null;
   display_order: number;
   created_at: string;
   updated_at: string;
@@ -193,6 +194,57 @@ const getTeamMemberSortFields = (member: any): {
   };
 };
 
+const LOCATION_SPECIFIC_CALL_TIME_VENUES = new Set(
+  [
+    "Golden 1 Center",
+    "Levi's Stadium",
+    "SaveMart Center",
+    "Save Mart Center",
+    "Cow Palace Arena & Event Center",
+    "Cow Palace Arena and Event Center",
+  ].map((venueName) => venueName.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim())
+);
+
+const normalizeVenueKey = (value: unknown): string =>
+  String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+
+const normalizeTimeForInput = (value: string | null | undefined): string => {
+  if (!value) return "";
+  const raw = String(value).trim();
+  const match = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return "";
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return "";
+  }
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+};
+
+const formatCallTimeLabel = (value: string | null | undefined): string => {
+  const hhmm = normalizeTimeForInput(value);
+  if (!hhmm) return "";
+
+  const [hoursRaw, minutes] = hhmm.split(":");
+  const hours = Number(hoursRaw);
+  const period = hours >= 12 ? "PM" : "AM";
+  const displayHour = hours % 12 === 0 ? 12 : hours % 12;
+  return `${displayHour}:${minutes} ${period}`;
+};
+
 export default function EventDashboardPage() {
   const router = useRouter();
   const params = useParams();
@@ -300,13 +352,16 @@ export default function EventDashboardPage() {
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
   const [newLocationName, setNewLocationName] = useState("");
   const [newLocationNotes, setNewLocationNotes] = useState("");
+  const [newLocationCallTime, setNewLocationCallTime] = useState("");
   const [loadingLocations, setLoadingLocations] = useState(false);
   const [creatingLocation, setCreatingLocation] = useState(false);
   const [savingLocationId, setSavingLocationId] = useState<string | null>(null);
+  const [savingLocationCallTimeId, setSavingLocationCallTimeId] = useState<string | null>(null);
   const [deletingLocationId, setDeletingLocationId] = useState<string | null>(null);
   const [sendingLocationEmails, setSendingLocationEmails] = useState(false);
   const [editingLocationIds, setEditingLocationIds] = useState<Record<string, boolean>>({});
   const [locationAssignmentDrafts, setLocationAssignmentDrafts] = useState<Record<string, string[]>>({});
+  const [locationCallTimeDrafts, setLocationCallTimeDrafts] = useState<Record<string, string>>({});
   const [invitingLocationVendorIds, setInvitingLocationVendorIds] = useState<Set<string>>(new Set());
   const [invitingAllLocationVendors, setInvitingAllLocationVendors] = useState(false);
   const [sendingLocationInviteRequests, setSendingLocationInviteRequests] = useState(false);
@@ -340,6 +395,10 @@ export default function EventDashboardPage() {
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
 
   const eventTimezone = useMemo(() => getTimezoneForState(event?.state), [event?.state]);
+  const supportsLocationCallTimes = useMemo(
+    () => LOCATION_SPECIFIC_CALL_TIME_VENUES.has(normalizeVenueKey(event?.venue)),
+    [event?.venue]
+  );
 
   const sortedTeamMembers = useMemo(() => {
     return [...(teamMembers || [])].sort((a: any, b: any) => {
@@ -1391,8 +1450,10 @@ export default function EventDashboardPage() {
       const assignments: EventLocationAssignment[] = data?.assignments || [];
 
       const assignmentMap: Record<string, string[]> = {};
+      const callTimeDraftMap: Record<string, string> = {};
       for (const location of locations) {
         assignmentMap[location.id] = [];
+        callTimeDraftMap[location.id] = normalizeTimeForInput(location.call_time);
       }
       for (const assignment of assignments) {
         if (!assignmentMap[assignment.location_id]) {
@@ -1405,6 +1466,7 @@ export default function EventDashboardPage() {
       setLocationAssignments(assignmentMap);
       setEditingLocationIds({});
       setLocationAssignmentDrafts({});
+      setLocationCallTimeDrafts(callTimeDraftMap);
       setLocationsLoaded(true);
     } catch (err: any) {
       setMessage(err?.message || "Failed to load locations");
@@ -1416,6 +1478,9 @@ export default function EventDashboardPage() {
   const handleAddLocation = async () => {
     const name = newLocationName.trim();
     const notes = newLocationNotes.trim();
+    const callTime = supportsLocationCallTimes
+      ? normalizeTimeForInput(newLocationCallTime)
+      : "";
     if (!eventId || !name) return;
 
     setCreatingLocation(true);
@@ -1428,7 +1493,11 @@ export default function EventDashboardPage() {
           "Content-Type": "application/json",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ name, notes: notes || null }),
+        body: JSON.stringify({
+          name,
+          notes: notes || null,
+          ...(supportsLocationCallTimes ? { callTime: callTime || null } : {}),
+        }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -1438,12 +1507,48 @@ export default function EventDashboardPage() {
 
       setNewLocationName("");
       setNewLocationNotes("");
+      setNewLocationCallTime("");
       setMessage("Location added successfully");
       await loadLocations();
     } catch (err: any) {
       setMessage(err?.message || "Failed to create location");
     } finally {
       setCreatingLocation(false);
+    }
+  };
+
+  const saveLocationCallTime = async (locationId: string) => {
+    if (!eventId || !locationId || !supportsLocationCallTimes) return;
+
+    const callTime = normalizeTimeForInput(locationCallTimeDrafts[locationId] || "");
+
+    setSavingLocationCallTimeId(locationId);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          locationId,
+          callTime: callTime || null,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to save location call time");
+      }
+
+      setMessage("Location call time saved successfully");
+      await loadLocations();
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to save location call time");
+    } finally {
+      setSavingLocationCallTimeId(null);
     }
   };
 
@@ -1799,9 +1904,22 @@ export default function EventDashboardPage() {
         const assignedMembers = sortedTeamMembers.filter((member: any) =>
           assignedIdSet.has(getTeamMemberId(member))
         );
+        const locationCallTimeLabel =
+          formatCallTimeLabel(loc.call_time) ||
+          formatCallTimeLabel(event?.start_time) ||
+          "";
 
         ensureSpace(44);
         drawLine(`Station: ${loc.name}`, boldFont, 12, rgb(0.1, 0.1, 0.1));
+        if (supportsLocationCallTimes) {
+          ensureSpace(18);
+          drawLine(
+            `Call Time: ${locationCallTimeLabel || "Not set"}`,
+            regularFont,
+            10,
+            rgb(0.25, 0.25, 0.25)
+          );
+        }
         if (loc.notes) {
           const noteLines = wrapText(`Notes: ${loc.notes}`, regularFont, 10, pageWidth - margin * 2);
           for (const noteLine of noteLines) {
@@ -4373,7 +4491,9 @@ export default function EventDashboardPage() {
               </div>
 
               <div className="bg-white border rounded-lg p-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div
+                  className={`grid grid-cols-1 ${supportsLocationCallTimes ? "md:grid-cols-3" : "md:grid-cols-2"} gap-4`}
+                >
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-2">
                       Location Name
@@ -4400,6 +4520,20 @@ export default function EventDashboardPage() {
                       disabled={!canManageLocations}
                     />
                   </div>
+                  {supportsLocationCallTimes && (
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                        Call Time (Optional)
+                      </label>
+                      <input
+                        type="time"
+                        value={newLocationCallTime}
+                        onChange={(e) => setNewLocationCallTime(e.target.value)}
+                        className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
+                        disabled={!canManageLocations}
+                      />
+                    </div>
+                  )}
                 </div>
                 <div className="mt-4 flex justify-end">
                   <button
@@ -4434,6 +4568,15 @@ export default function EventDashboardPage() {
                     const assignedIds = locationAssignments[loc.id] || [];
                     const isEditing = !!editingLocationIds[loc.id];
                     const selectedIds = locationAssignmentDrafts[loc.id] || [];
+                    const currentLocationCallTime = normalizeTimeForInput(loc.call_time);
+                    const locationCallTimeDraft =
+                      locationCallTimeDrafts[loc.id] ?? currentLocationCallTime;
+                    const locationCallTimeChanged =
+                      locationCallTimeDraft !== currentLocationCallTime;
+                    const locationCallTimeLabel =
+                      formatCallTimeLabel(locationCallTimeDraft) ||
+                      formatCallTimeLabel(event?.start_time) ||
+                      "";
                     const assignedMembers = assignedIds.map((memberId) => {
                       const existing = locationAssignableMemberById.get(memberId);
                       if (existing) return existing;
@@ -4462,6 +4605,41 @@ export default function EventDashboardPage() {
                             </p>
                             {loc.notes && (
                               <p className="text-sm text-gray-600 mt-2">{loc.notes}</p>
+                            )}
+                            {supportsLocationCallTimes && (
+                              <div className="mt-3">
+                                <p className="text-xs font-medium text-gray-500">
+                                  Call Time: {locationCallTimeLabel || "Not set"}
+                                </p>
+                                {canManageLocations && (
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <input
+                                      type="time"
+                                      value={locationCallTimeDraft}
+                                      onChange={(e) =>
+                                        setLocationCallTimeDrafts((prev) => ({
+                                          ...prev,
+                                          [loc.id]: e.target.value,
+                                        }))
+                                      }
+                                      className="w-36 px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                                      disabled={savingLocationCallTimeId === loc.id}
+                                    />
+                                    <button
+                                      onClick={() => {
+                                        void saveLocationCallTime(loc.id);
+                                      }}
+                                      disabled={
+                                        savingLocationCallTimeId === loc.id ||
+                                        !locationCallTimeChanged
+                                      }
+                                      className="bg-slate-700 hover:bg-slate-800 text-white text-sm font-semibold py-1.5 px-3 rounded transition disabled:bg-gray-400"
+                                    >
+                                      {savingLocationCallTimeId === loc.id ? "Saving..." : "Save"}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                           <button

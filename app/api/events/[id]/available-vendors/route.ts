@@ -40,6 +40,23 @@ type AvailabilityDay = {
   available: boolean;
 };
 
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
+}
+
 function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
   if (Array.isArray(payload)) {
     return payload.filter((day: any) => day && typeof day.date === "string");
@@ -121,7 +138,7 @@ export async function GET(
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('event_date, venue, created_by')
+      .select('event_date, venue, city, state, created_by')
       .eq('id', eventId)
       .single();
 
@@ -140,23 +157,51 @@ export async function GET(
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
-    // Get venue coordinates
-    const { data: venueData, error: venueError } = await supabaseAdmin
+    // Get venue coordinates. Some venue names are reused across cities/states, so
+    // prefer an exact city/state match to avoid incorrect distance calculations.
+    const { data: venueMatches, error: venueError } = await supabaseAdmin
       .from('venue_reference')
-      .select('latitude, longitude')
-      .eq('venue_name', event.venue)
-      .single();
+      .select('latitude, longitude, city, state')
+      .eq('venue_name', event.venue);
 
     console.log('🔍 DEBUG - Venue Lookup:', {
       venueName: event.venue,
-      venueData,
+      eventCity: event.city,
+      eventState: event.state,
+      venueMatchCount: venueMatches?.length || 0,
       venueError
     });
 
-    if (venueError || !venueData) {
+    if (venueError || !venueMatches || venueMatches.length === 0) {
       console.log('❌ Venue not found, returning empty vendors list');
       return NextResponse.json({
         error: 'Venue not found',
+        vendors: []
+      }, { status: 200 });
+    }
+
+    const eventCity = normalizeText(event.city);
+    const eventState = normalizeText(event.state);
+    const venueData =
+      venueMatches.find((candidate: any) => {
+        const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+        const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
+        return cityMatches && stateMatches;
+      }) || venueMatches[0];
+
+    const venueLat = toFiniteNumber((venueData as any)?.latitude);
+    const venueLng = toFiniteNumber((venueData as any)?.longitude);
+
+    if (venueLat == null || venueLng == null) {
+      console.log('❌ Venue coordinates missing or invalid, returning empty vendors list', {
+        venueName: event.venue,
+        venueCity: (venueData as any)?.city,
+        venueState: (venueData as any)?.state,
+        latitude: (venueData as any)?.latitude,
+        longitude: (venueData as any)?.longitude
+      });
+      return NextResponse.json({
+        error: 'Venue coordinates unavailable',
         vendors: []
       }, { status: 200 });
     }
@@ -299,31 +344,45 @@ export async function GET(
           .single();
 
         if (regionData) {
-          console.log('[AVAILABLE-VENDORS] 📍 Region center:', {
-            lat: regionData.center_lat,
-            lng: regionData.center_lng,
-            radius: FIXED_REGION_RADIUS_MILES
-          });
+          const regionCenterLat = toFiniteNumber(regionData.center_lat);
+          const regionCenterLng = toFiniteNumber(regionData.center_lng);
 
-          filteredVendors = filteredVendors.filter((vendor: any) => {
-            if (!vendor.profiles.latitude || !vendor.profiles.longitude) {
-              console.log(`  ⚠️ Vendor ${vendor.id} has no coordinates, excluding`);
-              return false;
-            }
+          if (regionCenterLat == null || regionCenterLng == null) {
+            console.log('[AVAILABLE-VENDORS] ⚠️ Region center coordinates are invalid; skipping geo filter', {
+              regionId,
+              center_lat: regionData.center_lat,
+              center_lng: regionData.center_lng
+            });
+          } else {
+            console.log('[AVAILABLE-VENDORS] 📍 Region center:', {
+              lat: regionCenterLat,
+              lng: regionCenterLng,
+              radius: FIXED_REGION_RADIUS_MILES
+            });
 
-            const distance = calculateDistance(
-              regionData.center_lat,
-              regionData.center_lng,
-              vendor.profiles.latitude,
-              vendor.profiles.longitude
-            );
+            filteredVendors = filteredVendors.filter((vendor: any) => {
+              const vendorLat = toFiniteNumber(vendor.profiles?.latitude);
+              const vendorLng = toFiniteNumber(vendor.profiles?.longitude);
 
-            const isInRegion = distance <= FIXED_REGION_RADIUS_MILES;
-            console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${FIXED_REGION_RADIUS_MILES}mi)`);
-            return isInRegion;
-          });
+              if (vendorLat == null || vendorLng == null) {
+                console.log(`  ⚠️ Vendor ${vendor.id} has no coordinates, excluding`);
+                return false;
+              }
 
-          console.log('[AVAILABLE-VENDORS] ✅ After geo filter:', filteredVendors.length, 'vendors');
+              const distance = calculateDistance(
+                regionCenterLat,
+                regionCenterLng,
+                vendorLat,
+                vendorLng
+              );
+
+              const isInRegion = distance <= FIXED_REGION_RADIUS_MILES;
+              console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${FIXED_REGION_RADIUS_MILES}mi)`);
+              return isInRegion;
+            });
+
+            console.log('[AVAILABLE-VENDORS] ✅ After geo filter:', filteredVendors.length, 'vendors');
+          }
         }
       } else {
         // Simple region_id filtering
@@ -356,13 +415,15 @@ export async function GET(
           lastName = lastName || '';
           phone = phone || '';
         }
+        const vendorLat = toFiniteNumber(vendor.profiles?.latitude);
+        const vendorLng = toFiniteNumber(vendor.profiles?.longitude);
         let distance: number | null = null;
-        if (vendor.profiles.latitude != null && vendor.profiles.longitude != null) {
+        if (vendorLat != null && vendorLng != null) {
           distance = calculateDistance(
-            venueData.latitude,
-            venueData.longitude,
-            vendor.profiles.latitude,
-            vendor.profiles.longitude
+            venueLat,
+            venueLng,
+            vendorLat,
+            vendorLng
           );
         }
         return {
@@ -378,8 +439,8 @@ export async function GET(
             phone: phone,
             city: vendor.profiles.city,
             state: vendor.profiles.state,
-            latitude: vendor.profiles.latitude,
-            longitude: vendor.profiles.longitude,
+            latitude: vendorLat,
+            longitude: vendorLng,
             region_id: vendor.profiles.region_id
           },
           distance: distance !== null ? Math.round(distance * 10) / 10 : null

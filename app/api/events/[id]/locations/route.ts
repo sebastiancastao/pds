@@ -24,6 +24,49 @@ function normalizeText(value: unknown): string {
   return String(value ?? "").trim();
 }
 
+function normalizeCallTime(
+  value: unknown
+): { value: string | null; error: string | null } {
+  if (value === undefined || value === null) {
+    return { value: null, error: null };
+  }
+
+  const raw = String(value).trim();
+  if (!raw) {
+    return { value: null, error: null };
+  }
+
+  const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+  if (!match) {
+    return { value: null, error: "Call time must use HH:MM format" };
+  }
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3] || "00");
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    !Number.isInteger(seconds) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59 ||
+    seconds < 0 ||
+    seconds > 59
+  ) {
+    return { value: null, error: "Call time must use a valid 24-hour HH:MM value" };
+  }
+
+  return {
+    value: `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(
+      seconds
+    ).padStart(2, "0")}`,
+    error: null,
+  };
+}
+
 type AvailabilityDay = {
   date: string;
   available: boolean;
@@ -161,7 +204,7 @@ async function getLocationsAndAssignments(eventId: string) {
   const [locationsResult, assignmentsResult] = await Promise.all([
     supabaseAdmin
       .from("event_locations")
-      .select("id, event_id, name, notes, display_order, created_at, updated_at")
+      .select("id, event_id, name, notes, call_time, display_order, created_at, updated_at")
       .eq("event_id", eventId)
       .order("display_order", { ascending: true })
       .order("created_at", { ascending: true }),
@@ -233,6 +276,11 @@ export async function POST(
     const body = await req.json().catch(() => ({}));
     const name = normalizeText(body?.name);
     const notes = normalizeText(body?.notes) || null;
+    const callTimeResult = normalizeCallTime(body?.callTime);
+    if (callTimeResult.error) {
+      return NextResponse.json({ error: callTimeResult.error }, { status: 400 });
+    }
+    const callTime = callTimeResult.value;
 
     if (!name) {
       return NextResponse.json({ error: "Location name is required" }, { status: 400 });
@@ -264,10 +312,11 @@ export async function POST(
         event_id: eventId,
         name,
         notes,
+        call_time: callTime,
         display_order: maxDisplayOrder,
         created_by: auth.user.id,
       })
-      .select("id, event_id, name, notes, display_order, created_at, updated_at")
+      .select("id, event_id, name, notes, call_time, display_order, created_at, updated_at")
       .single();
 
     if (insertError) {
@@ -308,6 +357,12 @@ export async function PUT(
     const teamMemberIdsRaw: unknown[] | null = Array.isArray(body?.teamMemberIds) ? body.teamMemberIds : null;
     const name = body?.name !== undefined ? normalizeText(body?.name) : undefined;
     const notes = body?.notes !== undefined ? normalizeText(body?.notes) : undefined;
+    const hasCallTime = body && Object.prototype.hasOwnProperty.call(body, "callTime");
+    const callTimeResult = hasCallTime ? normalizeCallTime(body?.callTime) : null;
+    if (callTimeResult?.error) {
+      return NextResponse.json({ error: callTimeResult.error }, { status: 400 });
+    }
+    const callTime = hasCallTime ? callTimeResult?.value ?? null : undefined;
 
     if (!locationId) {
       return NextResponse.json({ error: "locationId is required" }, { status: 400 });
@@ -327,7 +382,7 @@ export async function PUT(
       return NextResponse.json({ error: "Location not found for this event" }, { status: 404 });
     }
 
-    if (name !== undefined || notes !== undefined) {
+    if (name !== undefined || notes !== undefined || callTime !== undefined) {
       const updatePayload: Record<string, any> = {};
       if (name !== undefined) {
         if (!name) {
@@ -357,6 +412,9 @@ export async function PUT(
       }
       if (notes !== undefined) {
         updatePayload.notes = notes || null;
+      }
+      if (callTime !== undefined) {
+        updatePayload.call_time = callTime;
       }
 
       if (Object.keys(updatePayload).length > 0) {
