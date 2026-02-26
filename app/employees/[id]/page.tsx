@@ -489,7 +489,7 @@ export default function WorkerProfilePage() {
     try {
       const { error } = await supabase
         .from("profiles")
-        .update({ region_id: selectedRegion || null } as any)
+        .update({ region_id: selectedRegion || null } as never)
         .eq("user_id", employee.id);
       if (error) throw error;
       setRegionMessage("Region saved.");
