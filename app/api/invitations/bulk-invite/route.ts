@@ -17,6 +17,7 @@ const supabaseAnon = createClient(
 );
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEFAULT_AVAILABILITY_DURATION_WEEKS = 6;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
@@ -50,7 +51,8 @@ export async function POST(req: NextRequest) {
 
     // Get request body
     const body = await req.json();
-    const { vendorIds, durationWeeks = 3 } = body;
+    const { vendorIds } = body;
+    const durationWeeks = DEFAULT_AVAILABILITY_DURATION_WEEKS;
 
     if (!vendorIds || !Array.isArray(vendorIds) || vendorIds.length === 0) {
       return NextResponse.json({ error: 'Vendor IDs are required' }, { status: 400 });

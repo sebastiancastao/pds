@@ -88,5 +88,5 @@ CREATE POLICY "Admins can update all vendor invitations"
 
 COMMENT ON TABLE public.vendor_invitations IS 'Tracks event invitations sent to vendors with their availability responses';
 COMMENT ON COLUMN public.vendor_invitations.token IS 'Unique token for the invitation link';
-COMMENT ON COLUMN public.vendor_invitations.availability IS 'JSON object containing the vendor''s availability for the next 21 days';
+COMMENT ON COLUMN public.vendor_invitations.availability IS 'JSON object containing the vendor''s availability for the next 42 days (6 weeks)';
 COMMENT ON COLUMN public.vendor_invitations.status IS 'Invitation status: pending, accepted, declined, or expired';

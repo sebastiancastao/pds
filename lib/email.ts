@@ -678,7 +678,7 @@ export async function sendVendorEventInvitationEmail(data: {
                     <p style="color: #0c5280; margin: 0 0 10px 0; font-size: 14px;"><strong>📝 Next Steps:</strong></p>
                     <ol style="color: #0c5280; margin: 0; padding-left: 20px; font-size: 14px; line-height: 1.6;">
                       <li>Click the "Confirm Your Availability" button above</li>
-                      <li>Review the next 21 days and mark which days you're available</li>
+                      <li>Review the next 6 weeks and mark which days you're available</li>
                       <li>Add any notes or special requirements</li>
                       <li>Submit your availability</li>
                     </ol>

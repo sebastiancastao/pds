@@ -18,11 +18,11 @@ export default function InvitationPage() {
   const [message, setMessage] = useState<string>("");
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
-  // Generate the next 21 days (including today)
-  const buildNext21Days = (): DayAvailability[] => {
+  // Generate the next 42 days (including today)
+  const buildNext42Days = (): DayAvailability[] => {
     const arr: DayAvailability[] = [];
     const today = new Date();
-    for (let i = 0; i < 21; i++) {
+    for (let i = 0; i < 42; i++) {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
       const iso = d.toISOString().slice(0, 10);
@@ -34,8 +34,8 @@ export default function InvitationPage() {
   useEffect(() => {
     if (!token) return;
     setLoading(true);
-    // Initialize with 21 days
-    const initial = buildNext21Days();
+    // Initialize with 42 days
+    const initial = buildNext42Days();
     setDays(initial);
 
     // Try to load existing availability
@@ -44,7 +44,7 @@ export default function InvitationPage() {
         if (!res.ok) throw new Error("No data");
         const data = await res.json();
         const existing: DayAvailability[] = data.availability || [];
-        // Merge existing data with the 21-day range
+        // Merge existing data with the 42-day range
         const map = new Map(existing.map(e => [e.date, e]));
         const merged = initial.map(d => map.get(d.date) ? { ...d, ...map.get(d.date) } : d);
         setDays(merged);
@@ -104,7 +104,7 @@ export default function InvitationPage() {
         {/* Header */}
         <div className="mb-10">
           <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Your Availability</h1>
-          <p className="text-lg text-gray-600 font-normal">Select the days you're available to work over the next 3 weeks.</p>
+          <p className="text-lg text-gray-600 font-normal">Select the days you're available to work over the next 6 weeks.</p>
         </div>
 
         {/* Error Message */}

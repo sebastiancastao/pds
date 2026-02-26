@@ -101,6 +101,8 @@ type Department = {
   color: string;
 };
 
+const BULK_AVAILABILITY_DURATION_WEEKS = 6;
+
 export default function DashboardPage() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
@@ -982,7 +984,7 @@ export default function DashboardPage() {
           "Content-Type": "application/json",
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ vendorIds: Array.from(selectedVendors), durationWeeks: 3 }),
+        body: JSON.stringify({ vendorIds: Array.from(selectedVendors), durationWeeks: BULK_AVAILABILITY_DURATION_WEEKS }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -2293,7 +2295,7 @@ export default function DashboardPage() {
             <div className="apple-modal-header">
               <div>
                 <h2 className="text-2xl font-semibold text-gray-900">Calendar Availability Request</h2>
-                <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 3 weeks</p>
+                <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 6 weeks</p>
               </div>
               <button onClick={closeVendorModal} className="apple-close-button">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
