@@ -4312,6 +4312,16 @@ export default function EventDashboardPage() {
                               const lastName = profile?.last_name || "";
                               const email = member.users?.email || "N/A";
                               const phone = profile?.phone || "N/A";
+                              const parsedDistance =
+                                typeof member?.distance === "number"
+                                  ? member.distance
+                                  : typeof member?.distance === "string" && member.distance.trim() !== ""
+                                    ? Number(member.distance)
+                                    : null;
+                              const distanceFromVenue =
+                                parsedDistance !== null && Number.isFinite(parsedDistance)
+                                  ? Math.round(parsedDistance * 10) / 10
+                                  : null;
                               const attestationStatus = String(member?.attestation_status || "").trim().toLowerCase();
                               const hasSubmittedAttestation =
                                 attestationStatus === "submitted" ||
@@ -4353,8 +4363,21 @@ export default function EventDashboardPage() {
                               return (
                                 <tr key={member.id} className="hover:bg-gray-50">
                                   <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-sm font-medium text-gray-900">
-                                      {firstName} {lastName}
+                                    <div className="flex items-center gap-2">
+                                      <div className="text-sm font-medium text-gray-900">
+                                        {firstName} {lastName}
+                                      </div>
+                                      {distanceFromVenue !== null && (
+                                        <span
+                                          className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                            distanceFromVenue <= 50
+                                              ? "bg-green-100 text-green-700"
+                                              : "bg-gray-100 text-gray-700"
+                                          }`}
+                                        >
+                                          {distanceFromVenue} mi from venue
+                                        </span>
+                                      )}
                                     </div>
                                   </td>
                                   <td className="px-6 py-4 whitespace-nowrap">

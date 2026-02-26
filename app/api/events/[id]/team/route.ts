@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
+import { calculateDistanceMiles } from "@/lib/geocoding";
 import crypto from "crypto";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -74,6 +75,23 @@ function formatEventStartTime(value: string | null | undefined): string {
   const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) return normalized;
   return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+}
+
+function normalizeText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value.trim());
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  return null;
 }
 
 /**
@@ -457,6 +475,43 @@ export async function GET(
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
 
+    const { data: eventData, error: eventError } = await supabaseAdmin
+      .from('events')
+      .select('venue, city, state')
+      .eq('id', eventId)
+      .maybeSingle();
+
+    if (eventError) {
+      console.error('Error loading event for team distance calculation:', eventError);
+    }
+
+    let venueCoordinates: { latitude: number; longitude: number } | null = null;
+    if (eventData?.venue) {
+      const { data: venueMatches, error: venueError } = await supabaseAdmin
+        .from('venue_reference')
+        .select('latitude, longitude, city, state')
+        .eq('venue_name', eventData.venue);
+
+      if (venueError) {
+        console.error('Error loading venue coordinates for team distance calculation:', venueError);
+      } else if (Array.isArray(venueMatches) && venueMatches.length > 0) {
+        const eventCity = normalizeText(eventData.city);
+        const eventState = normalizeText(eventData.state);
+        const matchedVenue =
+          venueMatches.find((candidate: any) => {
+            const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+            const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
+            return cityMatches && stateMatches;
+          }) || venueMatches[0];
+
+        const latitude = toFiniteNumber((matchedVenue as any)?.latitude);
+        const longitude = toFiniteNumber((matchedVenue as any)?.longitude);
+        if (latitude != null && longitude != null) {
+          venueCoordinates = { latitude, longitude };
+        }
+      }
+    }
+
     // Keep payload lean and stable: do not include raw profile photo blobs here.
     const selectFields = `
       id,
@@ -470,7 +525,9 @@ export async function GET(
         profiles (
           first_name,
           last_name,
-          phone
+          phone,
+          latitude,
+          longitude
         )
       )
     `;
@@ -631,6 +688,19 @@ export async function GET(
       const profile = Array.isArray(member.users?.profiles)
         ? member.users.profiles[0]
         : (member.users?.profiles || {});
+      const profileLatitude = toFiniteNumber(profile?.latitude);
+      const profileLongitude = toFiniteNumber(profile?.longitude);
+      const distance =
+        venueCoordinates && profileLatitude != null && profileLongitude != null
+          ? Math.round(
+              calculateDistanceMiles(
+                venueCoordinates.latitude,
+                venueCoordinates.longitude,
+                profileLatitude,
+                profileLongitude
+              ) * 10
+            ) / 10
+          : null;
 
       const profilePhone = profile?.phone
         ? safeDecrypt(String(profile.phone))
@@ -655,6 +725,7 @@ export async function GET(
 
       return {
         ...member,
+        distance,
         has_attestation: hasSubmittedAttestation,
         attestation_status: attestationStatus,
         users: {
