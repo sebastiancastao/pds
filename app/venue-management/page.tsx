@@ -132,6 +132,33 @@ export default function VenueManagementPage() {
     loadData();
   }, []);
 
+  // Re-fetch managers whenever the assign modal opens so newly promoted managers appear
+  useEffect(() => {
+    if (!showAssignManager) return;
+
+    const refreshManagers = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+
+        const managersRes = await fetch("/api/users/managers", {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
+
+        if (managersRes.ok) {
+          const managersData = await managersRes.json();
+          setManagers(managersData.managers || []);
+        }
+      } catch (error) {
+        console.error("Error refreshing managers:", error);
+      }
+    };
+
+    refreshManagers();
+  }, [showAssignManager]);
+
   // Create venue
   const handleCreateVenue = async () => {
     if (!newVenue.venue_name || !newVenue.city || !newVenue.state) {

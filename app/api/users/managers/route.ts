@@ -44,12 +44,7 @@ export async function GET(request: NextRequest) {
 
     const { data: managers, error: managersError } = await supabaseAdmin
       .from('users')
-      .select(`
-        id,
-        email,
-        role,
-        profiles(first_name, last_name)
-      `)
+      .select('id, email, role')
       .eq('role', 'manager');
 
     if (managersError) {
@@ -57,14 +52,32 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch managers' }, { status: 500 });
     }
 
-    // Transform the data to flatten the profiles and decrypt names
-    const transformedManagers = (managers || []).map((manager: any) => ({
-      id: manager.id,
-      email: manager.email,
-      role: manager.role,
-      first_name: safeDecrypt(manager.profiles?.first_name || ''),
-      last_name: safeDecrypt(manager.profiles?.last_name || ''),
-    })).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
+    // Fetch profiles separately to avoid PostgREST join ambiguity
+    const managerIds = (managers || []).map((m: any) => m.id);
+    const profilesMap: Record<string, any> = {};
+
+    if (managerIds.length > 0) {
+      const { data: profiles } = await supabaseAdmin
+        .from('profiles')
+        .select('user_id, first_name, last_name')
+        .in('user_id', managerIds);
+
+      (profiles || []).forEach((p: any) => {
+        profilesMap[p.user_id] = p;
+      });
+    }
+
+    // Transform the data, decrypt names
+    const transformedManagers = (managers || []).map((manager: any) => {
+      const profile = profilesMap[manager.id];
+      return {
+        id: manager.id,
+        email: manager.email,
+        role: manager.role,
+        first_name: safeDecrypt(profile?.first_name || ''),
+        last_name: safeDecrypt(profile?.last_name || ''),
+      };
+    }).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
 
     return NextResponse.json({ managers: transformedManagers }, { status: 200 });
   } catch (err: any) {
