@@ -20,11 +20,22 @@ export async function GET(request: NextRequest) {
       global: { headers: { Authorization: `Bearer ${token}` } }
     });
 
+    // Verify token is valid before returning assignment data
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    if (authError || !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    // Admin client for data reads to avoid missing joined manager/profile data
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false }
+    });
+
     const { searchParams } = new URL(request.url);
     const venueId = searchParams.get('venue_id');
     const managerId = searchParams.get('manager_id');
 
-    let query = supabase
+    let query = supabaseAdmin
       .from('venue_managers')
       .select(`
         *,
@@ -49,21 +60,76 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch venue assignments' }, { status: 500 });
     }
 
+    const managerIds = Array.from(
+      new Set(
+        (assignments || [])
+          .map((assignment: any) => assignment.manager_id)
+          .filter((id: any) => Boolean(id))
+      )
+    );
+
+    const fallbackUsersById: Record<string, any> = {};
+    const fallbackProfilesByUserId: Record<string, any> = {};
+
+    if (managerIds.length > 0) {
+      const { data: fallbackUsers, error: fallbackUsersError } = await supabaseAdmin
+        .from('users')
+        .select('id, email, role')
+        .in('id', managerIds);
+
+      if (fallbackUsersError) {
+        console.error('[VENUE_MANAGERS] Error fetching fallback users:', fallbackUsersError);
+      } else {
+        (fallbackUsers || []).forEach((row: any) => {
+          fallbackUsersById[row.id] = row;
+        });
+      }
+
+      const { data: fallbackProfiles, error: fallbackProfilesError } = await supabaseAdmin
+        .from('profiles')
+        .select('user_id, first_name, last_name')
+        .in('user_id', managerIds);
+
+      if (fallbackProfilesError) {
+        console.error('[VENUE_MANAGERS] Error fetching fallback profiles:', fallbackProfilesError);
+      } else {
+        (fallbackProfiles || []).forEach((row: any) => {
+          fallbackProfilesByUserId[row.user_id] = row;
+        });
+      }
+    }
+
+    const getProfile = (profileData: any) => {
+      if (!profileData) return null;
+      if (Array.isArray(profileData)) return profileData[0] || null;
+      return profileData;
+    };
+
     // Transform the data to flatten the profiles structure and decrypt names
     const transformedAssignments = (assignments || []).map((assignment: any) => ({
       ...assignment,
-      manager: assignment.manager ? {
-        id: assignment.manager.id,
-        email: assignment.manager.email,
-        role: assignment.manager.role,
-        first_name: safeDecrypt(assignment.manager.profiles?.first_name || ''),
-        last_name: safeDecrypt(assignment.manager.profiles?.last_name || ''),
-      } : null,
+      manager: (() => {
+        const joinedManager = assignment.manager;
+        const fallbackUser = fallbackUsersById[assignment.manager_id];
+        const fallbackProfile = fallbackProfilesByUserId[assignment.manager_id];
+        const joinedProfile = getProfile(joinedManager?.profiles);
+        const resolvedId = joinedManager?.id || fallbackUser?.id || assignment.manager_id;
+
+        if (!resolvedId) return null;
+
+        return {
+          id: resolvedId,
+          email: joinedManager?.email || fallbackUser?.email || '',
+          role: joinedManager?.role || fallbackUser?.role || '',
+          first_name: safeDecrypt(joinedProfile?.first_name || fallbackProfile?.first_name || ''),
+          last_name: safeDecrypt(joinedProfile?.last_name || fallbackProfile?.last_name || ''),
+        };
+      })(),
       assigned_by_user: assignment.assigned_by_user ? {
         id: assignment.assigned_by_user.id,
         email: assignment.assigned_by_user.email,
-        first_name: safeDecrypt(assignment.assigned_by_user.profiles?.first_name || ''),
-        last_name: safeDecrypt(assignment.assigned_by_user.profiles?.last_name || ''),
+        first_name: safeDecrypt(getProfile(assignment.assigned_by_user.profiles)?.first_name || ''),
+        last_name: safeDecrypt(getProfile(assignment.assigned_by_user.profiles)?.last_name || ''),
       } : null,
     }));
 

@@ -32,7 +32,7 @@ type VenueAssignment = {
   notes: string | null;
   assigned_at: string;
   venue: Venue;
-  manager: Manager;
+  manager: Manager | null;
 };
 
 export default function VenueManagementPage() {
@@ -253,16 +253,41 @@ export default function VenueManagementPage() {
     }
   };
 
-  // Remove assignment
-  const handleRemoveAssignment = async (assignmentId: string) => {
-    if (!confirm("Are you sure you want to remove this assignment?")) {
+  const getAssignmentManagerDetails = (assignment: VenueAssignment) => {
+    if (assignment.manager) {
+      const fullName = `${assignment.manager.first_name || ""} ${assignment.manager.last_name || ""}`.trim();
+      return {
+        name: fullName || assignment.manager.email || "Unknown manager",
+        email: assignment.manager.email || "",
+      };
+    }
+
+    const fallback = managers.find((manager) => manager.id === assignment.manager_id);
+    if (fallback) {
+      const fullName = `${fallback.first_name || ""} ${fallback.last_name || ""}`.trim();
+      return {
+        name: fullName || fallback.email || "Unknown manager",
+        email: fallback.email || "",
+      };
+    }
+
+    return {
+      name: "Unknown manager",
+      email: assignment.manager_id ? `ID: ${assignment.manager_id}` : "",
+    };
+  };
+
+  // Unassign manager from venue
+  const handleRemoveAssignment = async (assignment: VenueAssignment) => {
+    const managerInfo = getAssignmentManagerDetails(assignment);
+    if (!confirm(`Unassign ${managerInfo.name} from this venue?`)) {
       return;
     }
 
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
-      const response = await fetch(`/api/venue-managers?id=${assignmentId}`, {
+      const response = await fetch(`/api/venue-managers?id=${assignment.id}`, {
         method: "DELETE",
         headers: {
           Authorization: `Bearer ${session?.access_token}`,
@@ -270,15 +295,15 @@ export default function VenueManagementPage() {
       });
 
       if (response.ok) {
-        setAssignments(assignments.filter(a => a.id !== assignmentId));
-        alert("Assignment removed successfully!");
+        setAssignments(assignments.filter((a) => a.id !== assignment.id));
+        alert("Manager unassigned successfully!");
       } else {
         const error = await response.json();
-        alert(error.error || "Failed to remove assignment");
+        alert(error.error || "Failed to unassign manager");
       }
     } catch (error) {
       console.error("Error removing assignment:", error);
-      alert("Failed to remove assignment");
+      alert("Failed to unassign manager");
     }
   };
 
@@ -461,7 +486,7 @@ export default function VenueManagementPage() {
                   ) : (
                     <div className="space-y-2">
                       {venueAssignments.map((assignment) => {
-                        if (!assignment.manager) return null;
+                        const managerInfo = getAssignmentManagerDetails(assignment);
                         return (
                           <div
                             key={assignment.id}
@@ -469,15 +494,17 @@ export default function VenueManagementPage() {
                           >
                             <div>
                               <p className="text-sm font-medium text-gray-900">
-                                {assignment.manager.first_name} {assignment.manager.last_name}
+                                {managerInfo.name}
                               </p>
-                              <p className="text-xs text-gray-500">{assignment.manager.email}</p>
+                              {managerInfo.email && (
+                                <p className="text-xs text-gray-500">{managerInfo.email}</p>
+                              )}
                             </div>
                             <button
-                              onClick={() => handleRemoveAssignment(assignment.id)}
+                              onClick={() => handleRemoveAssignment(assignment)}
                               className="text-red-600 hover:text-red-700 text-xs font-medium"
                             >
-                              Remove
+                              Unassign
                             </button>
                           </div>
                         );
