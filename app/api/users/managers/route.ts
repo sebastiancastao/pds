@@ -6,6 +6,8 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const TARGET_MANAGER_ROLE = 'manager';
+const PAGE_SIZE = 1000;
 
 // GET: Retrieve all manager users
 export async function GET(request: NextRequest) {
@@ -37,34 +39,54 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
     }
 
-    // Use service role to bypass RLS and get all managers
+    // Use service role to bypass RLS and fetch users with manager role.
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { persistSession: false }
     });
 
-    const { data: managers, error: managersError } = await supabaseAdmin
-      .from('users')
-      .select('id, email, role')
-      .eq('role', 'manager');
+    const managers: Array<{ id: string; email: string; role: string }> = [];
+    let from = 0;
 
-    if (managersError) {
-      console.error('[MANAGERS] Error fetching managers:', managersError);
-      return NextResponse.json({ error: 'Failed to fetch managers' }, { status: 500 });
+    while (true) {
+      const { data: page, error: managersError } = await supabaseAdmin
+        .from('users')
+        .select('id, email, role')
+        .eq('role', TARGET_MANAGER_ROLE)
+        .range(from, from + PAGE_SIZE - 1);
+
+      if (managersError) {
+        console.error('[MANAGERS] Error fetching managers:', managersError);
+        return NextResponse.json({ error: 'Failed to fetch managers' }, { status: 500 });
+      }
+
+      const rows = page || [];
+      managers.push(...rows);
+      if (rows.length < PAGE_SIZE) break;
+
+      from += PAGE_SIZE;
     }
 
     // Fetch profiles separately to avoid PostgREST join ambiguity
-    const managerIds = (managers || []).map((m: any) => m.id);
+    const managerIds = managers.map((m) => m.id);
     const profilesMap: Record<string, any> = {};
 
     if (managerIds.length > 0) {
-      const { data: profiles } = await supabaseAdmin
-        .from('profiles')
-        .select('user_id, first_name, last_name')
-        .in('user_id', managerIds);
+      for (let i = 0; i < managerIds.length; i += PAGE_SIZE) {
+        const chunk = managerIds.slice(i, i + PAGE_SIZE);
+        const { data: profiles, error: profilesError } = await supabaseAdmin
+          .from('profiles')
+          .select('user_id, first_name, last_name')
+          .in('user_id', chunk);
 
-      (profiles || []).forEach((p: any) => {
-        profilesMap[p.user_id] = p;
-      });
+        if (profilesError) {
+          console.error('[MANAGERS] Error fetching profiles:', profilesError);
+          return NextResponse.json({ error: 'Failed to fetch manager profiles' }, { status: 500 });
+        }
+
+        (profiles || []).forEach((p: any) => {
+          profilesMap[p.user_id] = p;
+        });
+      }
     }
 
     // Transform the data, decrypt names
@@ -77,7 +99,11 @@ export async function GET(request: NextRequest) {
         first_name: safeDecrypt(profile?.first_name || ''),
         last_name: safeDecrypt(profile?.last_name || ''),
       };
-    }).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
+    }).sort((a: any, b: any) => {
+      const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim() || a.email || '';
+      const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.email || '';
+      return aName.localeCompare(bName);
+    });
 
     return NextResponse.json({ managers: transformedManagers }, { status: 200 });
   } catch (err: any) {

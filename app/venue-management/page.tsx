@@ -132,31 +132,41 @@ export default function VenueManagementPage() {
     loadData();
   }, []);
 
-  // Re-fetch managers whenever the assign modal opens so newly promoted managers appear
+  // Fetch managers fresh and poll every 8s while the assign modal is open
   useEffect(() => {
     if (!showAssignManager) return;
 
-    const refreshManagers = async () => {
+    const fetchManagers = async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
+        if (!session) {
+          console.warn("[MANAGERS] No active session");
+          return;
+        }
 
-        const managersRes = await fetch("/api/users/managers", {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+        const res = await fetch("/api/users/managers", {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
 
-        if (managersRes.ok) {
-          const managersData = await managersRes.json();
-          setManagers(managersData.managers || []);
+        console.log("[MANAGERS] API status:", res.status);
+
+        if (res.ok) {
+          const data = await res.json();
+          console.log("[MANAGERS] Received:", data.managers?.length ?? 0, "managers", data.managers);
+          setManagers(data.managers || []);
+        } else {
+          const body = await res.text();
+          console.error("[MANAGERS] API error:", res.status, body);
         }
       } catch (error) {
-        console.error("Error refreshing managers:", error);
+        console.error("[MANAGERS] Fetch exception:", error);
       }
     };
 
-    refreshManagers();
+    fetchManagers();
+    const interval = setInterval(fetchManagers, 8000);
+    return () => clearInterval(interval);
   }, [showAssignManager]);
 
   // Create venue

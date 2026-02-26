@@ -55,8 +55,10 @@ export async function GET(req: NextRequest) {
     // If user is a manager or supervisor, only return assigned venues
     // Supervisors see the same venues as their lead manager(s)
     if (userData.role === 'manager' || userData.role === 'supervisor' || userData.role === 'supervisor2') {
-      // For supervisors, look up their manager IDs to get their venue access
-      const managerIds: string[] = [];
+      // Always include direct assignments for the current user.
+      const managerIds: string[] = [user.id];
+
+      // For supervisors, also include their lead manager IDs.
       if (userData.role === 'supervisor' || userData.role === 'supervisor2') {
         const { data: teamLinks } = await supabaseAdmin
           .from('manager_team_members')
@@ -65,11 +67,11 @@ export async function GET(req: NextRequest) {
           .eq('is_active', true);
         if (teamLinks) {
           for (const link of teamLinks) {
-            managerIds.push(link.manager_id);
+            if (link.manager_id && !managerIds.includes(link.manager_id)) {
+              managerIds.push(link.manager_id);
+            }
           }
         }
-      } else {
-        managerIds.push(user.id);
       }
 
       if (managerIds.length === 0) {
