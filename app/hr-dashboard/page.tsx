@@ -22,6 +22,9 @@ type Employee = {
   profile_photo_url?: string | null;
   state: string;
   city: string | null;
+  region_id?: string | null;
+  region_name?: string | null;
+  worked_venues?: string[];
   performance_score: number;
   projects_completed: number;
   attendance_rate: number;
@@ -1602,6 +1605,50 @@ function HRDashboardContent() {
     return employeeCards.filter((card) => card.searchText.includes(q));
   }, [employeeCards, employeeSearch]);
 
+  const regionNameById = useMemo(() => {
+    return regions.reduce<Record<string, string>>((acc, region) => {
+      if (region.id) acc[region.id] = region.name || region.id;
+      return acc;
+    }, {});
+  }, [regions]);
+
+  const exportEmployeeRosterToExcel = useCallback(() => {
+    if (employees.length === 0) {
+      alert("No employee data to export.");
+      return;
+    }
+
+    const rows = employees.map((employee) => {
+      const firstName = employee.first_name ? safeDecrypt(employee.first_name) : "";
+      const lastName = employee.last_name ? safeDecrypt(employee.last_name) : "";
+      const fullName = `${firstName} ${lastName}`.trim() || employee.email || "N/A";
+      const regionName = employee.region_name
+        || (employee.region_id ? (regionNameById[employee.region_id] || "Unassigned") : "Unassigned");
+
+      return {
+        "User Name": fullName,
+        Email: employee.email || "",
+        State: employee.state || "",
+        Region: regionName,
+        "Venues Worked": Array.isArray(employee.worked_venues) ? employee.worked_venues.join(", ") : "",
+      };
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    worksheet["!cols"] = [
+      { wch: 30 }, // User Name
+      { wch: 32 }, // Email
+      { wch: 10 }, // State
+      { wch: 24 }, // Region
+      { wch: 60 }, // Venues Worked
+    ];
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Employee Roster");
+
+    const today = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(workbook, `employee_roster_${today}.xlsx`);
+  }, [employees, regionNameById]);
+
   const filteredSickLeaveAccruals = useMemo(() => {
     const q = sickLeaveSearch.trim().toLowerCase();
     if (!q) return sickLeaveAccruals;
@@ -1787,9 +1834,18 @@ function HRDashboardContent() {
         {hrView === "overview" && (
           <div className="space-y-8">
             <section>
-              <div className="flex items-center justify-between mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
                 <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Key Metrics</h2>
-                <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={exportEmployeeRosterToExcel}
+                    className={`apple-button ${employees.length === 0 ? "apple-button-disabled" : "apple-button-secondary"}`}
+                    disabled={employees.length === 0}
+                  >
+                    Export Employee Roster
+                  </button>
+                  <span className="text-sm text-gray-500 font-medium">HR Dashboard</span>
+                </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 <div className="group relative bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-6 shadow-sm hover:shadow-xl transition-all duration-300 hover:-translate-y-1 overflow-hidden">
