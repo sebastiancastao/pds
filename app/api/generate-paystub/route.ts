@@ -7,6 +7,8 @@ const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+const CARRY_OVER_OVERRIDE_REASON_MARKER = "HR_CARRY_OVER_OVERRIDE";
+const YEAR_TO_DATE_OVERRIDE_REASON_MARKER = "HR_YEAR_TO_DATE_OVERRIDE";
 
 interface EventEarning {
   date: string;
@@ -256,6 +258,224 @@ export async function POST(req: NextRequest) {
       return regHours + otHours + dtHours;
     };
 
+    const isUsedSickLeaveRow = (row: any): boolean => {
+      const status = String(row?.status || "").toLowerCase().trim();
+      if (status !== "approved") return false;
+      const reasonUpper = String(row?.reason || "").toUpperCase();
+      if (
+        reasonUpper.includes(CARRY_OVER_OVERRIDE_REASON_MARKER) ||
+        reasonUpper.includes(YEAR_TO_DATE_OVERRIDE_REASON_MARKER)
+      ) {
+        return false;
+      }
+      return true;
+    };
+
+    const toDateSafe = (value: any): Date | null => {
+      if (!value) return null;
+      const d = new Date(String(value));
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
+    const getAccrualOverrideFieldFromReason = (
+      reason: unknown
+    ): "carry_over" | "year_to_date" | null => {
+      const reasonUpper = String(reason || "").toUpperCase();
+      if (reasonUpper.includes(CARRY_OVER_OVERRIDE_REASON_MARKER)) return "carry_over";
+      if (reasonUpper.includes(YEAR_TO_DATE_OVERRIDE_REASON_MARKER)) return "year_to_date";
+      return null;
+    };
+
+    const normalizeSickStatus = (raw: unknown): "pending" | "approved" | "denied" => {
+      const normalized = String(raw || "pending").toLowerCase();
+      if (normalized === "approved") return "approved";
+      if (normalized === "denied") return "denied";
+      return "pending";
+    };
+
+    const round2 = (n: number) => Number(n.toFixed(2));
+    const round3 = (n: number) => Number(n.toFixed(3));
+
+    const computeSickAccrualSnapshotForPayPeriod = async (
+      userId: string,
+      periodStart: string,
+      periodEnd: string
+    ) => {
+      const PAGE_SIZE = 1000;
+      const periodStartDate = new Date(`${periodStart}T00:00:00.000Z`);
+      const periodEndDate = new Date(`${periodEnd}T23:59:59.999Z`);
+      const yearStartDate = new Date(Date.UTC(periodEndDate.getUTCFullYear(), 0, 1, 0, 0, 0, 0));
+
+      // Match HR sick-leaves logic: only count time_entries tied to events where the vendor is on event_teams.
+      const vendorEventIds = new Set<string>();
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const { data: teams, error: teamsError } = await supabaseAdmin
+          .from("event_teams")
+          .select("event_id")
+          .eq("vendor_id", userId)
+          .range(from, from + PAGE_SIZE - 1);
+        if (teamsError) throw teamsError;
+        if (!teams || teams.length === 0) break;
+        for (const row of teams as Array<{ event_id: string | null }>) {
+          if (row?.event_id) vendorEventIds.add(row.event_id);
+        }
+        if (teams.length < PAGE_SIZE) break;
+      }
+
+      let workedHours = 0;
+      let workedHoursYtd = 0;
+      if (vendorEventIds.size > 0) {
+        const entriesByUserEvent = new Map<string, Array<{ action: string; timestamp: string }>>();
+        for (let from = 0; ; from += PAGE_SIZE) {
+          const { data: timeRows, error: timeRowsError } = await supabaseAdmin
+            .from("time_entries")
+            .select("event_id, action, timestamp")
+            .eq("user_id", userId)
+            .in("action", ["clock_in", "clock_out"])
+            .order("timestamp", { ascending: true })
+            .range(from, from + PAGE_SIZE - 1);
+          if (timeRowsError) throw timeRowsError;
+          if (!timeRows || timeRows.length === 0) break;
+
+          for (const row of timeRows as Array<{ event_id: string | null; action: string | null; timestamp: string | null }>) {
+            if (!row?.event_id || !vendorEventIds.has(row.event_id)) continue;
+            if (!row?.action || !row?.timestamp) continue;
+            const action = String(row.action).toLowerCase();
+            if (action !== "clock_in" && action !== "clock_out") continue;
+            const key = `${userId}::${row.event_id}`;
+            const existing = entriesByUserEvent.get(key) ?? [];
+            existing.push({ action, timestamp: row.timestamp });
+            entriesByUserEvent.set(key, existing);
+          }
+
+          if (timeRows.length < PAGE_SIZE) break;
+        }
+
+        for (const entries of entriesByUserEvent.values()) {
+          entries.sort((a, b) => {
+            const aTime = new Date(a.timestamp).getTime();
+            const bTime = new Date(b.timestamp).getTime();
+            if (Number.isNaN(aTime) || Number.isNaN(bTime)) return 0;
+            return aTime - bTime;
+          });
+
+          let clockIn: string | null = null;
+          for (const row of entries) {
+            if (row.action === "clock_in") {
+              clockIn = row.timestamp;
+              continue;
+            }
+            if (row.action === "clock_out" && clockIn) {
+              const shiftHours = Math.max(
+                0,
+                (new Date(row.timestamp).getTime() - new Date(clockIn).getTime()) / (1000 * 60 * 60)
+              );
+              workedHours += shiftHours;
+              const clockOutAt = toDateSafe(row.timestamp);
+              if (clockOutAt && clockOutAt >= yearStartDate && clockOutAt <= periodEndDate) {
+                workedHoursYtd += shiftHours;
+              }
+              clockIn = null;
+            }
+          }
+        }
+      }
+
+      let sickHoursAllTime = 0;
+      let sickHoursYtd = 0;
+      let sickHoursBeforeYear = 0;
+      let sickHoursThisPeriod = 0;
+      let carryOverOverride: { hours: number; ts: number } | null = null;
+      let yearToDateOverride: { hours: number; ts: number } | null = null;
+
+      for (let from = 0; ; from += PAGE_SIZE) {
+        const { data: sickRows, error: sickRowsError } = await supabaseAdmin
+          .from("sick_leaves")
+          .select("duration_hours, status, start_date, approved_at, created_at, updated_at, reason")
+          .eq("user_id", userId)
+          .range(from, from + PAGE_SIZE - 1);
+        if (sickRowsError) throw sickRowsError;
+        if (!sickRows || sickRows.length === 0) break;
+
+        for (const row of sickRows as Array<{
+          duration_hours: number | string | null;
+          status: string | null;
+          start_date: string | null;
+          approved_at: string | null;
+          created_at: string | null;
+          updated_at: string | null;
+          reason: string | null;
+        }>) {
+          const overrideField = getAccrualOverrideFieldFromReason(row.reason);
+          if (overrideField) {
+            const overrideHours = Number(row.duration_hours || 0);
+            const ts =
+              toDateSafe(row.updated_at)?.getTime() ||
+              toDateSafe(row.created_at)?.getTime() ||
+              toDateSafe(row.approved_at)?.getTime() ||
+              toDateSafe(row.start_date)?.getTime() ||
+              0;
+            if (overrideField === "carry_over") {
+              if (!carryOverOverride || ts >= carryOverOverride.ts) {
+                carryOverOverride = { hours: round2(overrideHours), ts };
+              }
+            } else if (!yearToDateOverride || ts >= yearToDateOverride.ts) {
+              yearToDateOverride = { hours: round2(overrideHours), ts };
+            }
+            continue;
+          }
+
+          if (normalizeSickStatus(row.status) !== "approved") continue;
+          const duration = Number(row.duration_hours || 0);
+          if (!Number.isFinite(duration) || duration <= 0) continue;
+
+          sickHoursAllTime += duration;
+          const usedAt =
+            toDateSafe(row.start_date) ||
+            toDateSafe(row.approved_at) ||
+            toDateSafe(row.created_at);
+
+          if (!usedAt || usedAt < yearStartDate) {
+            sickHoursBeforeYear += duration;
+            continue;
+          }
+          if (usedAt <= periodEndDate) {
+            sickHoursYtd += duration;
+          }
+          if (usedAt >= periodStartDate && usedAt <= periodEndDate) {
+            sickHoursThisPeriod += duration;
+          }
+        }
+
+        if (sickRows.length < PAGE_SIZE) break;
+      }
+
+      const workedHoursRounded = round3(workedHours);
+      const workedHoursYtdRounded = round3(workedHoursYtd);
+      const workedHoursBeforeYear = round3(Math.max(0, workedHoursRounded - workedHoursYtdRounded));
+      const baseYearToDateHours = round2(workedHoursYtdRounded / 30);
+      const accruedHoursBeforeYear = round2(workedHoursBeforeYear / 30);
+      const baseCarryOverHours = round2(Math.max(0, accruedHoursBeforeYear - round2(sickHoursBeforeYear)));
+
+      const carryOverHours = round2(Math.max(0, carryOverOverride?.hours ?? baseCarryOverHours));
+      const yearToDateHours = round2(Math.max(0, yearToDateOverride?.hours ?? baseYearToDateHours));
+      const takenYtdHours = round2(Math.max(0, sickHoursYtd));
+      const takenThisPeriodHours = round2(Math.max(0, sickHoursThisPeriod));
+      const balanceYtdHours = round2(Math.max(0, carryOverHours + yearToDateHours - takenYtdHours));
+      const accruedAllTimeHours = round2(carryOverHours + yearToDateHours);
+      const balanceAllTimeHours = round2(Math.max(0, accruedAllTimeHours - round2(sickHoursAllTime)));
+
+      return {
+        carryOverHours,
+        yearToDateHours,
+        takenYtdHours,
+        takenThisPeriodHours,
+        balanceYtdHours,
+        accruedAllTimeHours,
+        balanceAllTimeHours,
+      };
+    };
+
     // AZ/NY weekly OT needs prior weekly hours per worker per event (Mon..day before event)
     const weeklyPriorHoursByEventId: Record<string, Record<string, number>> = {};
     if (azNyMode) {
@@ -364,9 +584,7 @@ export async function POST(req: NextRequest) {
     };
 
     const addCommissionReportPage = (
-      rows: CommissionReportRow[],
-      totalHoursWorkedAmt: number,
-      totalCommissionAmt: number
+      rows: CommissionReportRow[]
     ) => {
       if (rows.length === 0) return;
       const reportPage = pdfDoc.addPage([612, 792]);
@@ -441,12 +659,6 @@ export async function POST(req: NextRequest) {
       drawRL(20, y + 9, 592);
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 8 });
       drawR(fmtMoney(grandTotal), C.comm, y, { bold: true, size: 8 });
-      y -= 14;
-      const effectiveCommissionTotal = grandTotal > 0 ? grandTotal : totalCommissionAmt;
-      if (totalHoursWorkedAmt > 0 && effectiveCommissionTotal > 0) {
-        const effRate = effectiveCommissionTotal / totalHoursWorkedAmt;
-        drawR(effRate.toFixed(8), C.comm, y, { size: 8 });
-      }
     };
 
     if (paystubState === "CA") {
@@ -480,6 +692,15 @@ export async function POST(req: NextRequest) {
           maximumFractionDigits: 2,
         });
       const money = (value: number) => `$${fmt(value)}`;
+      const formatHoursHHMM = (value: number) => {
+        const hours = Number(value || 0);
+        if (!Number.isFinite(hours)) return "00:00";
+        const sign = hours < 0 ? "-" : "";
+        const totalMinutes = Math.round(Math.abs(hours) * 60);
+        const hh = Math.floor(totalMinutes / 60);
+        const mm = totalMinutes % 60;
+        return `${sign}${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+      };
       const topY = (valueFromTop: number) => height - valueFromTop;
       const drawTopText = (text: string, x: number, yFromTop: number, options: any = {}) => {
         drawText(text, x, topY(yFromTop), options);
@@ -733,6 +954,7 @@ export async function POST(req: NextRequest) {
       const ytdRegularPay = runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayAmount);
       const ytdOvertimePay = runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayAmount);
       const ytdDoubleTimePay = runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayAmount);
+      const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
       const ytdCommission = totalCommission;
       const ytdTips = totalTips;
       const ytdRestBreak = totalRestBreak;
@@ -746,52 +968,35 @@ export async function POST(req: NextRequest) {
       const ytdStateDI = runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt);
       const ytdNet = runningYtd(ytdSnapshot?.ytd_net, netPay);
 
-      const sickCarryOverYtd = 0;
-      const sickAccruedYtd = Number(sickLeave?.accrued_hours || 0);
-      const sickTakenYtd = Number(sickLeave?.total_hours || 0);
-      const sickBalanceYtd = Number(sickLeave?.balance_hours || 0);
-
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
-      const sickAccruedThisPeriod = totalHoursWorked > 0 ? totalHoursWorked / SICK_ACCRUAL_RATE : 0;
+      const sickAccruedThisPeriod =
+        totalHoursWorked > 0 ? totalHoursWorked / SICK_ACCRUAL_RATE : 0;
 
-      // Sick leave taken this period and YTD from Jan 1 (queried from DB)
+      // Sick leave breakdown for this pay period and YTD
       let sickTakenThisPeriod = 0;
-      let sickTakenYtdFromJan = sickTakenYtd; // fallback to all-time total
+      let sickTakenYtdFromJan = Number(sickLeave?.total_hours || 0); // fallback if DB query fails
+      let sickCarryOverYtd = 0;
+      let sickAccruedYtd = Number(sickLeave?.accrued_hours || 0); // fallback if DB query fails
+      let sickBalanceYtd = Number(sickLeave?.balance_hours || 0); // fallback if DB query fails
 
       if (matchedUserId && (effectivePeriodStart || effectivePeriodEnd)) {
         try {
-          const periodEndStr = effectivePeriodEnd || effectivePeriodStart || '';
-          const periodYear = periodEndStr.substring(0, 4);
-          const yearStart = periodYear ? `${periodYear}-01-01` : null;
           const periodEnd = effectivePeriodEnd || new Date().toISOString().slice(0, 10);
+          const periodYear = periodEnd.substring(0, 4);
+          const yearStart = periodYear ? `${periodYear}-01-01` : periodEnd;
           const periodStart = effectivePeriodStart || yearStart || periodEnd;
 
-          if (yearStart && periodEnd) {
-            const { data: periodSick } = await supabaseAdmin
-              .from("sick_leaves")
-              .select("duration_hours")
-              .eq("user_id", matchedUserId)
-              .gte("start_date", periodStart)
-              .lte("start_date", periodEnd);
-
-            sickTakenThisPeriod = (periodSick || []).reduce(
-              (sum: number, r: any) => sum + Number(r.duration_hours || 0),
-              0
-            );
-
-            const { data: ytdSick } = await supabaseAdmin
-              .from("sick_leaves")
-              .select("duration_hours")
-              .eq("user_id", matchedUserId)
-              .gte("start_date", yearStart)
-              .lte("start_date", periodEnd);
-
-            sickTakenYtdFromJan = (ytdSick || []).reduce(
-              (sum: number, r: any) => sum + Number(r.duration_hours || 0),
-              0
-            );
-          }
+          const sickSnapshot = await computeSickAccrualSnapshotForPayPeriod(
+            matchedUserId,
+            periodStart,
+            periodEnd
+          );
+          sickTakenThisPeriod = sickSnapshot.takenThisPeriodHours;
+          sickTakenYtdFromJan = sickSnapshot.takenYtdHours;
+          sickCarryOverYtd = sickSnapshot.carryOverHours;
+          sickAccruedYtd = sickSnapshot.yearToDateHours;
+          sickBalanceYtd = sickSnapshot.balanceYtdHours;
         } catch {
           // Non-fatal: keep fallback values
         }
@@ -863,7 +1068,7 @@ export async function POST(req: NextRequest) {
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
         if (row.rate > 0) drawTopText(fmt(row.rate), 145, row.y, { size: 8 });
-        if (row.hours > 0) drawTopText(fmt(row.hours), 210, row.y, { size: 8 });
+        if (row.hours > 0) drawTopText(formatHoursHHMM(row.hours), 210, row.y, { size: 8 });
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
       }
 
@@ -911,13 +1116,13 @@ export async function POST(req: NextRequest) {
       drawTopText("- Accrued Hours", 358.5, 222.1, { size: 8 });
       drawTopText("- Taken Hours", 358.3, 229.8, { size: 8 });
       drawTopText("- Balance", 358.2, 237.0, { size: 8 });
-      drawTopText(fmt(0), 492.9, 214.9, { size: 8 });
-      drawTopText(fmt(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
-      drawTopText(fmt(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
-      drawTopText(fmt(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
-      drawTopText(fmt(sickAccruedYtd), 547.6, 222.1, { size: 8 });
-      drawTopText(fmt(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
-      drawTopText(fmt(sickBalanceYtd), 547.7, 237.0, { size: 8 });
+      drawTopText(formatHoursHHMM(0), 492.9, 214.9, { size: 8 });
+      drawTopText(formatHoursHHMM(sickAccruedThisPeriod), 492.9, 222.1, { size: 8 });
+      drawTopText(formatHoursHHMM(sickTakenThisPeriod), 492.9, 229.8, { size: 8 });
+      drawTopText(formatHoursHHMM(sickCarryOverYtd), 548.1, 214.9, { size: 8 });
+      drawTopText(formatHoursHHMM(sickAccruedYtd), 547.6, 222.1, { size: 8 });
+      drawTopText(formatHoursHHMM(sickTakenYtdFromJan), 551.4, 229.8, { size: 8 });
+      drawTopText(formatHoursHHMM(sickBalanceYtd), 547.7, 237.0, { size: 8 });
 
       drawTopText("Deposits", 353.1, 251.4, { size: 8, bold: true });
       drawTopText("account number", 353, 259.1, { size: 8 });
@@ -931,7 +1136,7 @@ export async function POST(req: NextRequest) {
       if (totalCommission > 0) {
         drawTopText("IMPORTANT NOTES", 353, 290, { bold: true, size: 8 });
         drawTopText("Total Hours Worked:", 353, 300, { size: 8 });
-        drawTopText(fmt(totalHoursWorked), 492.9, 300, { size: 8 });
+        drawTopText(formatHoursHHMM(totalHoursWorked), 492.9, 300, { size: 8 });
         drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
         drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
       }
@@ -961,7 +1166,7 @@ export async function POST(req: NextRequest) {
       if (addressLine2) drawTopText(addressLine2, 139.2, 703.5, { size: 10 });
       if (addressLine3) drawTopText(addressLine3, 139.2, 714.0, { size: 10 });
 
-      addCommissionReportPage(caCommissionRows, totalHoursWorked, totalCommission);
+      addCommissionReportPage(caCommissionRows);
       const pdfBytes = await pdfDoc.save();
 
       return new NextResponse(Buffer.from(pdfBytes), {
@@ -1443,7 +1648,7 @@ export async function POST(req: NextRequest) {
     yPosition -= 12;
     drawText(address || '', 50, yPosition, { size: 9 });
 
-    addCommissionReportPage(nonCaCommissionRows, totalHoursWorked, totalCommission);
+    addCommissionReportPage(nonCaCommissionRows);
 
     // Serialize the PDF
     const pdfBytes = await pdfDoc.save();
