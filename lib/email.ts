@@ -805,6 +805,7 @@ export async function sendVendorBulkInvitationEmail(data: {
 
           <!-- Header -->
           <tr>
+          
             <td style="background: linear-gradient(135deg, #007AFF 0%, #0051D5 100%); padding: 50px 40px; text-align: center;">
               <h1 style="color: #ffffff; margin: 0; font-size: 32px; font-weight: 600; letter-spacing: -0.5px;">🎉 Calendar Request</h1>
               <p style="color: rgba(255, 255, 255, 0.9); margin: 12px 0 0 0; font-size: 18px; font-weight: 400;">${durationWeeks}-Week Event Series</p>
