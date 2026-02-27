@@ -13,6 +13,43 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+type AvailabilityDay = {
+  date: string;
+  available: boolean;
+  notes: string | null;
+};
+
+const normalizeAvailabilityPayload = (payload: unknown): AvailabilityDay[] => {
+  if (Array.isArray(payload)) {
+    return payload
+      .filter(
+        (
+          day
+        ): day is { date: string; available?: unknown; notes?: unknown } =>
+          !!day &&
+          typeof day === "object" &&
+          typeof (day as { date?: unknown }).date === "string"
+      )
+      .map((day) => ({
+        date: day.date.slice(0, 10),
+        available: day.available === true,
+        notes: typeof day.notes === "string" ? day.notes : null,
+      }));
+  }
+
+  if (payload && typeof payload === "object") {
+    return Object.entries(payload as Record<string, unknown>).map(
+      ([date, available]) => ({
+        date: date.slice(0, 10),
+        available: available === true,
+        notes: null,
+      })
+    );
+  }
+
+  return [];
+};
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -40,10 +77,15 @@ export async function GET(
       return NextResponse.json({ error: "User id is required" }, { status: 400 });
     }
 
-    // Fetch team invitations from event_teams
-    const { data: teamRows, error: teamErr } = await supabaseAdmin
-      .from("event_teams")
-      .select(`
+    const [
+      { data: teamRows, error: teamErr },
+      { data: locationRows, error: locationErr },
+      { data: availabilityRows, error: availabilityErr },
+    ] = await Promise.all([
+      // Fetch team invitations from event_teams
+      supabaseAdmin
+        .from("event_teams")
+        .select(`
         id,
         event_id,
         status,
@@ -58,18 +100,13 @@ export async function GET(
           state
         )
       `)
-      .eq("vendor_id", userId)
-      .order("created_at", { ascending: false });
+        .eq("vendor_id", userId)
+        .order("created_at", { ascending: false }),
 
-    if (teamErr) {
-      console.error("event_teams query error:", teamErr);
-      return NextResponse.json({ error: teamErr.message }, { status: 500 });
-    }
-
-    // Fetch location invitations from event_location_assignments
-    const { data: locationRows, error: locationErr } = await supabaseAdmin
-      .from("event_location_assignments")
-      .select(`
+      // Fetch location invitations from event_location_assignments
+      supabaseAdmin
+        .from("event_location_assignments")
+        .select(`
         id,
         event_id,
         created_at,
@@ -86,13 +123,75 @@ export async function GET(
           state
         )
       `)
-      .eq("vendor_id", userId)
-      .order("created_at", { ascending: false });
+        .eq("vendor_id", userId)
+        .order("created_at", { ascending: false }),
+
+      // Fetch submitted availability from vendor invitations
+      supabaseAdmin
+        .from("vendor_invitations")
+        .select("availability, responded_at, updated_at, created_at")
+        .eq("vendor_id", userId)
+        .not("availability", "is", null)
+        .order("responded_at", { ascending: false, nullsFirst: false })
+        .order("updated_at", { ascending: false }),
+    ]);
+
+    if (teamErr) {
+      console.error("event_teams query error:", teamErr);
+      return NextResponse.json({ error: teamErr.message }, { status: 500 });
+    }
 
     if (locationErr) {
       console.error("event_location_assignments query error:", locationErr);
       return NextResponse.json({ error: locationErr.message }, { status: 500 });
     }
+
+    if (availabilityErr) {
+      console.error("vendor_invitations query error:", availabilityErr);
+      return NextResponse.json({ error: availabilityErr.message }, { status: 500 });
+    }
+
+    // Build a latest-per-date view of submitted availability.
+    const availabilityByDate = new Map<
+      string,
+      {
+        available: boolean;
+        notes: string | null;
+        submitted_at: string | null;
+      }
+    >();
+    const latestSubmission =
+      (availabilityRows || [])
+        .map(
+          (row: any) =>
+            row.responded_at || row.updated_at || row.created_at || null
+        )
+        .find((value: string | null): value is string => typeof value === "string") ||
+      null;
+
+    for (const row of availabilityRows || []) {
+      const submittedAt =
+        row.responded_at || row.updated_at || row.created_at || null;
+      const days = normalizeAvailabilityPayload(row.availability);
+
+      for (const day of days) {
+        if (!day.date || availabilityByDate.has(day.date)) continue;
+        availabilityByDate.set(day.date, {
+          available: day.available,
+          notes: day.notes,
+          submitted_at: submittedAt,
+        });
+      }
+    }
+
+    const availabilitySubmissions = Array.from(availabilityByDate.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, value]) => ({
+        date,
+        available: value.available,
+        notes: value.notes,
+        submitted_at: value.submitted_at,
+      }));
 
     // Normalize team rows
     const teamInvitations = (teamRows || []).map((row: any) => {
@@ -139,7 +238,11 @@ export async function GET(
       (a, b) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime()
     );
 
-    return NextResponse.json({ invitations: all });
+    return NextResponse.json({
+      invitations: all,
+      availability_submissions: availabilitySubmissions,
+      availability_last_submitted_at: latestSubmission,
+    });
   } catch (err: any) {
     console.error("invitations route error:", err);
     return NextResponse.json({ error: err.message || "Internal error" }, { status: 500 });

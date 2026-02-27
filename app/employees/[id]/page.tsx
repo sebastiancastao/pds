@@ -148,6 +148,13 @@ type EventInvitation = {
   confirmation_token?: string | null;
 };
 
+type SubmittedAvailabilityDay = {
+  date: string;
+  available: boolean;
+  notes?: string | null;
+  submitted_at?: string | null;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -260,6 +267,8 @@ export default function WorkerProfilePage() {
   const [regionMessage, setRegionMessage] = useState("");
 
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
+  const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
+  const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth()); // 0-11
@@ -475,9 +484,18 @@ export default function WorkerProfilePage() {
         if (res.ok) {
           const data = await res.json();
           setEventInvitations(data.invitations || []);
+          setSubmittedAvailability(data.availability_submissions || []);
+          setAvailabilityLastSubmittedAt(data.availability_last_submitted_at || null);
+        } else {
+          setEventInvitations([]);
+          setSubmittedAvailability([]);
+          setAvailabilityLastSubmittedAt(null);
         }
       } catch (e) {
         console.error("Error loading event invitations:", e);
+        setEventInvitations([]);
+        setSubmittedAvailability([]);
+        setAvailabilityLastSubmittedAt(null);
       } finally {
         setInvitationsLoading(false);
       }
@@ -538,9 +556,12 @@ export default function WorkerProfilePage() {
   // Build a map of YYYY-MM-DD → set of marker types for the calendar
   // and a map of YYYY-MM-DD → confirmed event details
   const { calDots, calEventDetails } = useMemo(() => {
-    const map = new Map<string, Set<"event" | "shift" | "sick">>();
+    const map = new Map<string, Set<"event" | "shift" | "sick" | "available" | "unavailable">>();
     const events = new Map<string, { name: string; start_time: string | null }[]>();
-    const mark = (dateStr: string | null | undefined, type: "event" | "shift" | "sick") => {
+    const mark = (
+      dateStr: string | null | undefined,
+      type: "event" | "shift" | "sick" | "available" | "unavailable"
+    ) => {
       if (!dateStr) return;
       const d = dateStr.slice(0, 10);
       if (!map.has(d)) map.set(d, new Set());
@@ -565,8 +586,11 @@ export default function WorkerProfilePage() {
         mark(d.toISOString().slice(0, 10), "sick");
       }
     });
+    submittedAvailability.forEach((day) => {
+      mark(day.date, day.available ? "available" : "unavailable");
+    });
     return { calDots: map, calEventDetails: events };
-  }, [eventInvitations, entries, sickLeaveEntries]);
+  }, [eventInvitations, entries, sickLeaveEntries, submittedAvailability]);
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
@@ -1036,12 +1060,30 @@ export default function WorkerProfilePage() {
                         const dots = calDots.get(dateStr);
                         const evs = calEventDetails.get(dateStr) ?? [];
                         const isToday = dateStr === todayStr;
+                        const hasAvailableSubmission = dots?.has("available");
+                        const hasUnavailableSubmission = dots?.has("unavailable");
+                        const availabilityLabel = hasAvailableSubmission
+                          ? "Available"
+                          : hasUnavailableSubmission
+                            ? "Unavailable"
+                            : null;
                         return (
                           <div key={i} className="flex flex-col items-center py-1 px-0.5 min-h-[3.5rem]">
                             <div className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium shrink-0
                               ${isToday ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"}`}>
                               {day}
                             </div>
+                            {availabilityLabel && (
+                              <div
+                                className={`mt-0.5 px-1 rounded text-[9px] font-semibold leading-tight ${
+                                  hasAvailableSubmission
+                                    ? "bg-emerald-100 text-emerald-800"
+                                    : "bg-rose-100 text-rose-800"
+                                }`}
+                              >
+                                {availabilityLabel}
+                              </div>
+                            )}
                             {evs.map((ev, ei) => (
                               <div key={ei} className="mt-0.5 w-full text-center">
                                 <div className="bg-blue-100 text-blue-800 rounded text-[9px] font-medium leading-tight px-0.5 truncate">
@@ -1056,7 +1098,7 @@ export default function WorkerProfilePage() {
                             ))}
                             {dots && (dots.has("shift") || dots.has("sick")) && (
                               <div className="flex gap-0.5 mt-0.5">
-                                {dots.has("shift") && <span className="w-1.5 h-1.5 rounded-full bg-green-500" />}
+                                {dots.has("shift") && <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />}
                                 {dots.has("sick")  && <span className="w-1.5 h-1.5 rounded-full bg-pink-500" />}
                               </div>
                             )}
@@ -1067,9 +1109,16 @@ export default function WorkerProfilePage() {
                     {/* Legend */}
                     <div className="flex gap-4 mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"/>Event</span>
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500 inline-block"/>Shift</span>
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">Available</span>Submitted availability</span>
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold">Unavailable</span>Submitted availability</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"/>Shift</span>
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-500 inline-block"/>Sick leave</span>
                     </div>
+                    {availabilityLastSubmittedAt && (
+                      <div className="mt-2 text-xs text-gray-500">
+                        Latest availability submission: {formatDateTime(availabilityLastSubmittedAt)}
+                      </div>
+                    )}
                   </div>
                 </section>
               );
