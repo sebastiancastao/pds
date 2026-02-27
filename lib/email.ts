@@ -819,14 +819,14 @@ export async function sendVendorBulkInvitationEmail(data: {
               </p>
 
               <p style="color: #1d1d1f; font-size: 17px; line-height: 1.6; margin: 0 0 24px 0; font-weight: 400;">
-                You're invited to work across multiple events over the next ${durationWeeks} weeks! We think you'd be a great fit for this opportunity.
+                Please share your availabity for the next ${durationWeeks} weeks! Please provide your schedule. You will hear from us if any opportunities are available.
               </p>
 
               <!-- Opportunity Details Box -->
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: linear-gradient(135deg, #f5f7fa 0%, #f0f2f5 100%); border-radius: 12px; margin: 32px 0; border: 1px solid #e5e7eb;">
                 <tr>
                   <td style="padding: 32px;">
-                    <h2 style="color: #007AFF; margin: 0 0 24px 0; font-size: 22px; font-weight: 600; letter-spacing: -0.5px;">📋 Opportunity Details</h2>
+                    <h2 style="color: #007AFF; margin: 0 0 24px 0; font-size: 22px; font-weight: 600; letter-spacing: -0.5px;">📋 Calendar Request</h2>
 
                     <table cellpadding="0" cellspacing="0" border="0" width="100%">
                       <tr>
@@ -845,14 +845,7 @@ export async function sendVendorBulkInvitationEmail(data: {
                           <span style="color: #1d1d1f; font-size: 15px; font-weight: 500;">${startDate}<br>to ${endDate}</span>
                         </td>
                       </tr>
-                      <tr>
-                        <td style="padding: 10px 0; vertical-align: top;">
-                          <span style="color: #6b7280; font-size: 15px; font-weight: 500;">Events:</span>
-                        </td>
-                        <td style="padding: 10px 0; text-align: right;">
-                          <span style="color: #1d1d1f; font-size: 17px; font-weight: 600;">${eventCount} Event${eventCount !== 1 ? 's' : ''}</span>
-                        </td>
-                      </tr>
+                    
                       ${managerName ? `
                       <tr>
                         <td style="padding: 10px 0; vertical-align: top;">
