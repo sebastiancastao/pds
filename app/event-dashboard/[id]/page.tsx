@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
@@ -377,9 +377,20 @@ export default function EventDashboardPage() {
         secondMealStart: string | null;
         secondMealEnd: string | null;
         managerEdited?: boolean;
+        managerEditNote?: string | null;
+        managerEditedByRole?: string | null;
+        managerEditedByName?: string | null;
+        managerEditSignatureData?: string | null;
       }
     >
   >({});
+  const [managerEditDetailsOpen, setManagerEditDetailsOpen] = useState(false);
+  const [managerEditDetails, setManagerEditDetails] = useState<{
+    editorName: string;
+    editorRole: string;
+    note: string;
+    signatureData: string;
+  } | null>(null);
 
   // HR/Payroll adjustments (user_id -> adjustment amount)
   const [adjustments, setAdjustments] = useState<Record<string, number>>({});
@@ -389,6 +400,13 @@ export default function EventDashboardPage() {
   const [editingTimesheetUserId, setEditingTimesheetUserId] = useState<string | null>(null);
   const [timesheetDrafts, setTimesheetDrafts] = useState<Record<string, TimesheetEditDraft>>({});
   const [savingTimesheetUserId, setSavingTimesheetUserId] = useState<string | null>(null);
+  const [showTimesheetEditModal, setShowTimesheetEditModal] = useState(false);
+  const [pendingTimesheetEditUid, setPendingTimesheetEditUid] = useState<string | null>(null);
+  const [timesheetEditNote, setTimesheetEditNote] = useState("");
+  const [timesheetEditSignature, setTimesheetEditSignature] = useState("");
+  const [signatureIsEmpty, setSignatureIsEmpty] = useState(true);
+  const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const isDrawingRef = useRef(false);
 
   // HR/Payments filters
   const [staffSearch, setStaffSearch] = useState<string>("");
@@ -2738,11 +2756,104 @@ export default function EventDashboardPage() {
     setMessage("");
   };
 
-  const saveTimesheetEdit = async (uid: string) => {
+  const openTimesheetEditModal = (uid: string) => {
+    setPendingTimesheetEditUid(uid);
+    setTimesheetEditNote("");
+    setTimesheetEditSignature("");
+    setSignatureIsEmpty(true);
+    setShowTimesheetEditModal(true);
+    // Clear canvas on next paint (canvas mounts after state flip)
+    setTimeout(() => {
+      const canvas = signatureCanvasRef.current;
+      if (canvas) {
+        const ctx = canvas.getContext("2d");
+        ctx?.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }, 0);
+  };
+
+  const clearSignaturePad = () => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx?.clearRect(0, 0, canvas.width, canvas.height);
+    setSignatureIsEmpty(true);
+    setTimesheetEditSignature("");
+  };
+
+  const getCanvasPos = (canvas: HTMLCanvasElement, clientX: number, clientY: number) => {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
+  };
+
+  const handleSignatureMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    isDrawingRef.current = true;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = getCanvasPos(canvas, e.clientX, e.clientY);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  }, []);
+
+  const handleSignatureMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current) return;
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = getCanvasPos(canvas, e.clientX, e.clientY);
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#1e3a5f";
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    setSignatureIsEmpty(false);
+  }, []);
+
+  const handleSignatureMouseUp = useCallback(() => {
+    isDrawingRef.current = false;
+  }, []);
+
+  const handleSignatureTouchStart = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    isDrawingRef.current = true;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const touch = e.touches[0];
+    const { x, y } = getCanvasPos(canvas, touch.clientX, touch.clientY);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  }, []);
+
+  const handleSignatureTouchMove = useCallback((e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!isDrawingRef.current) return;
+    const canvas = signatureCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const touch = e.touches[0];
+    const { x, y } = getCanvasPos(canvas, touch.clientX, touch.clientY);
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#1e3a5f";
+    ctx.lineTo(x, y);
+    ctx.stroke();
+    setSignatureIsEmpty(false);
+  }, []);
+
+  const saveTimesheetEdit = async (uid: string, editNote: string, editSignature: string) => {
     if (!eventId || !canEditTimesheets) return;
     const draft = timesheetDrafts[uid];
     if (!draft) return;
 
+    setShowTimesheetEditModal(false);
     setSavingTimesheetUserId(uid);
     setMessage("");
     try {
@@ -2753,7 +2864,7 @@ export default function EventDashboardPage() {
           "Content-Type": "application/json",
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ userId: uid, spans: draft }),
+        body: JSON.stringify({ userId: uid, spans: draft, editNote, editSignature }),
       });
 
       const data = await res.json().catch(() => ({}));
@@ -2764,7 +2875,8 @@ export default function EventDashboardPage() {
 
       await loadTimesheetTotals();
       setEditingTimesheetUserId(null);
-      setMessage("Timesheet updated.");
+      setPendingTimesheetEditUid(null);
+      setMessage("Timesheet updated successfully.");
       setTimeout(() => setMessage(""), 3000);
     } catch (err: any) {
       setMessage(err?.message || "Network error while saving timesheet.");
@@ -4360,8 +4472,16 @@ export default function EventDashboardPage() {
                                   statusColor = "bg-gray-100 text-gray-800";
                               }
 
+                              const withinRadius = distanceFromVenue !== null && distanceFromVenue <= 50;
+                              const outsideRadius = distanceFromVenue !== null && distanceFromVenue > 50;
+                              const rowBg = outsideRadius
+                                ? "bg-red-50 hover:bg-red-100"
+                                : withinRadius
+                                  ? "bg-gray-50 hover:bg-gray-100"
+                                  : "hover:bg-gray-50";
+
                               return (
-                                <tr key={member.id} className="hover:bg-gray-50">
+                                <tr key={member.id} className={rowBg}>
                                   <td className="px-6 py-4 whitespace-nowrap">
                                     <div className="flex items-center gap-2">
                                       <div className="text-sm font-medium text-gray-900">
@@ -4371,8 +4491,8 @@ export default function EventDashboardPage() {
                                         <span
                                           className={`px-2 py-0.5 rounded text-xs font-medium ${
                                             distanceFromVenue <= 50
-                                              ? "bg-green-100 text-green-700"
-                                              : "bg-gray-100 text-gray-700"
+                                              ? "bg-gray-200 text-gray-700"
+                                              : "bg-red-100 text-red-700"
                                           }`}
                                         >
                                           {distanceFromVenue} mi from venue
@@ -4886,39 +5006,19 @@ export default function EventDashboardPage() {
 
     {/* Table */}
     <div className="bg-white border rounded-lg overflow-x-auto">
-      <table className="w-full divide-y divide-gray-200">
+      <table className="w-full divide-y divide-gray-200 text-xs">
         <thead className="bg-gray-50">
           <tr>
-            <th className="px-3 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              Staff
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              Admin response time / entry processing time
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              Clock In
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              M1 Start
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              M1 End
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              M2 Start
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              M2 End
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              Clock Out
-            </th>
-            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-600 uppercase">
-              Hours
-            </th>
-            <th className="px-3 py-2 text-right text-xs font-semibold text-gray-600 uppercase">
-              Actions
-            </th>
+            <th className="px-3 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Staff</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Gate</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">In</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 Start</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 End</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Out</th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Hrs</th>
+            <th className="px-2 py-2 text-right font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
           </tr>
         </thead>
         <tbody className="divide-y">
@@ -4983,130 +5083,130 @@ export default function EventDashboardPage() {
               );
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
 
+              const inputCls = (editable: boolean) =>
+                `border rounded px-1 py-0.5 text-xs w-[68px] ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
+
               return (
                 <tr key={m.id} className="hover:bg-gray-50">
-                  <td className="px-3 py-2 whitespace-nowrap">
+                  {/* Staff */}
+                  <td className="px-3 py-1.5 whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
                       <span
                         className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
-                          span.lastOut
-                            ? "bg-red-500"
-                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd)
-                              ? "bg-orange-400"
-                              : span.firstIn
-                                ? "bg-green-500"
-                                : "bg-gray-300"
+                          span.lastOut ? "bg-red-500"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) ? "bg-orange-400"
+                            : span.firstIn ? "bg-green-500"
+                            : "bg-gray-300"
                         }`}
                         title={
-                          span.lastOut
-                            ? "Clocked out"
-                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd)
-                              ? "Meal break"
-                              : span.firstIn
-                                ? "Clocked in"
-                                : "No activity"
+                          span.lastOut ? "Clocked out"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) ? "Meal break"
+                            : span.firstIn ? "Clocked in"
+                            : "No activity"
                         }
                       />
-                      <div>
-                        <div className="font-medium text-xs text-gray-900">
+                      <div className="min-w-0">
+                        <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
                           {firstName} {lastName}
                         </div>
-                        <div className="text-xs text-gray-500 truncate max-w-[120px]">{m.users?.email || "N/A"}</div>
+                        <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
+                          <span className={`text-xs font-medium ${attestationStatusClass}`}>
+                            {attestationStatusLabel}
+                          </span>
+                          {span.managerEdited && (
+                            userRole === "exec" ? (
+                              <button
+                                onClick={() => {
+                                  setManagerEditDetails({
+                                    editorName: span.managerEditedByName || "Unknown",
+                                    editorRole: span.managerEditedByRole || "manager",
+                                    note: span.managerEditNote || "(no note recorded)",
+                                    signatureData: span.managerEditSignatureData || "",
+                                  });
+                                  setManagerEditDetailsOpen(true);
+                                }}
+                                className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0 hover:bg-amber-100 underline decoration-dotted leading-tight"
+                              >
+                                {span.managerEditedByName || span.managerEditedByRole || "manager"} ↗
+                              </button>
+                            ) : (
+                              <span className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1 py-0 leading-tight">
+                                {span.managerEditedByName || span.managerEditedByRole || "manager"}
+                              </span>
+                            )
+                          )}
+                        </div>
                       </div>
                     </div>
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={gatePhoneTime}
-                      placeholder="--:--"
-                      readOnly
-                      className="border rounded px-1 py-1 text-xs w-24 bg-gray-100 cursor-not-allowed"
-                    />
+                  {/* Gate */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={gatePhoneTime} placeholder="--:--" readOnly
+                      className={inputCls(false)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.firstIn : firstClockIn}
+                  {/* Clock In */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.firstIn : firstClockIn}
                       onChange={(e) => updateTimesheetDraft(uid, "firstIn", e.target.value)}
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.firstMealStart : firstMealStart}
+                  {/* M1 Start */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.firstMealStart : firstMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
-                      placeholder="--:--"
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.lastMealEnd : lastMealEnd}
+                  {/* M1 End */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.lastMealEnd : lastMealEnd}
                       onChange={(e) => updateTimesheetDraft(uid, "lastMealEnd", e.target.value)}
-                      placeholder="--:--"
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.secondMealStart : secondMealStart}
+                  {/* M2 Start */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.secondMealStart : secondMealStart}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
-                      placeholder="--:--"
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.secondMealEnd : secondMealEnd}
+                  {/* M2 End */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.secondMealEnd : secondMealEnd}
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
-                      placeholder="--:--"
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2">
-                    <input
-                      type="time"
-                      value={isEditing ? draft.lastOut : lastClockOut}
+                  {/* Clock Out */}
+                  <td className="px-1 py-1.5">
+                    <input type="time" value={isEditing ? draft.lastOut : lastClockOut}
                       onChange={(e) => updateTimesheetDraft(uid, "lastOut", e.target.value)}
-                      readOnly={!isEditing}
-                      className={`border rounded px-1 py-1 text-xs w-24 ${isEditing ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`}
-                    />
+                      readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  <td className="px-2 py-2 text-xs font-medium whitespace-nowrap">{hours}</td>
+                  {/* Hours */}
+                  <td className="px-1 py-1.5 font-medium whitespace-nowrap">{hours}</td>
 
-                  <td className="px-3 py-2 text-right whitespace-nowrap">
+                  {/* Actions */}
+                  <td className="px-2 py-1.5 text-right whitespace-nowrap">
                     {canEditTimesheets ? (
                       isEditing ? (
                         <>
                           <button
-                            onClick={() => saveTimesheetEdit(uid)}
+                            onClick={() => openTimesheetEditModal(uid)}
                             disabled={savingTimesheetUserId === uid}
-                            className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="text-blue-600 hover:text-blue-700 font-medium text-xs mr-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
                           >
-                            {savingTimesheetUserId === uid ? "Saving..." : "Save"}
+                            {savingTimesheetUserId === uid ? "Saving…" : "Save"}
                           </button>
                           <button
                             onClick={cancelTimesheetEdit}
                             disabled={savingTimesheetUserId === uid}
-                            className="text-gray-600 hover:text-gray-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="text-gray-500 hover:text-gray-700 font-medium text-xs disabled:opacity-50 disabled:cursor-not-allowed"
                           >
                             Cancel
                           </button>
@@ -5119,14 +5219,6 @@ export default function EventDashboardPage() {
                           >
                             Edit
                           </button>
-                          <span className={`ml-2 text-xs font-medium ${attestationStatusClass}`}>
-                            {attestationStatusLabel}
-                          </span>
-                          {span.managerEdited && (
-                            <span className="ml-2 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                              Manager edited
-                            </span>
-                          )}
                           {userRole === "exec" && hasSubmittedAttestation && (
                             <button
                               onClick={async () => {
@@ -5167,12 +5259,7 @@ export default function EventDashboardPage() {
                         </>
                       )
                     ) : (
-                      <div className="inline-flex items-center gap-2">
-                        <span className={`text-xs font-medium ${attestationStatusClass}`}>
-                          {attestationStatusLabel}
-                        </span>
-                        <span className="text-xs text-gray-400">View only</span>
-                      </div>
+                      <span className="text-xs text-gray-400">View only</span>
                     )}
                   </td>
                 </tr>
@@ -5945,6 +6032,177 @@ export default function EventDashboardPage() {
                 className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {managerEditDetailsOpen && managerEditDetails && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setManagerEditDetailsOpen(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Timesheet Edit Details</h3>
+                <p className="text-xs text-gray-500 mt-0.5">Recorded at time of save</p>
+              </div>
+              <button
+                onClick={() => setManagerEditDetailsOpen(false)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Edited by</p>
+                <p className="text-sm font-semibold text-gray-900 capitalize">
+                  {managerEditDetails.editorName}{" "}
+                  <span className="font-normal text-gray-500">({managerEditDetails.editorRole})</span>
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Reason</p>
+                <p className="text-sm text-gray-800 bg-gray-50 rounded-lg px-3 py-2 border border-gray-200">
+                  {managerEditDetails.note}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Signature</p>
+                {managerEditDetails.signatureData ? (
+                  <div className="border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                    <img
+                      src={managerEditDetails.signatureData}
+                      alt="Manager signature"
+                      className="w-full h-28 object-contain"
+                    />
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400 italic">Signature not available</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setManagerEditDetailsOpen(false)}
+                className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showTimesheetEditModal && pendingTimesheetEditUid && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowTimesheetEditModal(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Confirm Timesheet Edit</h3>
+                <p className="text-xs text-gray-500 mt-0.5">A note and signature are required before saving.</p>
+              </div>
+              <button
+                onClick={() => setShowTimesheetEditModal(false)}
+                className="text-gray-400 hover:text-gray-600"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Reason for edit <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  value={timesheetEditNote}
+                  onChange={(e) => setTimesheetEditNote(e.target.value)}
+                  placeholder="Explain why you are editing this timesheet…"
+                  rows={3}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Signature <span className="text-red-500">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={clearSignaturePad}
+                    className="text-xs text-gray-400 hover:text-red-500 underline"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className={`border-2 rounded-lg overflow-hidden ${signatureIsEmpty ? "border-gray-300" : "border-blue-400"}`}>
+                  <canvas
+                    ref={signatureCanvasRef}
+                    width={440}
+                    height={120}
+                    className="w-full h-28 cursor-crosshair touch-none bg-gray-50"
+                    onMouseDown={handleSignatureMouseDown}
+                    onMouseMove={handleSignatureMouseMove}
+                    onMouseUp={handleSignatureMouseUp}
+                    onMouseLeave={handleSignatureMouseUp}
+                    onTouchStart={handleSignatureTouchStart}
+                    onTouchMove={handleSignatureTouchMove}
+                    onTouchEnd={handleSignatureMouseUp}
+                  />
+                </div>
+                {signatureIsEmpty && (
+                  <p className="text-xs text-gray-400 mt-1">Draw your signature above</p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
+              <button
+                onClick={() => setShowTimesheetEditModal(false)}
+                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  if (!timesheetEditNote.trim()) {
+                    alert("Please provide a reason for the edit.");
+                    return;
+                  }
+                  if (signatureIsEmpty) {
+                    alert("Please draw your signature.");
+                    return;
+                  }
+                  const sigDataUrl = signatureCanvasRef.current?.toDataURL("image/png") ?? "";
+                  saveTimesheetEdit(pendingTimesheetEditUid!, timesheetEditNote.trim(), sigDataUrl);
+                }}
+                className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-semibold hover:bg-blue-700"
+              >
+                Confirm &amp; Save
               </button>
             </div>
           </div>

@@ -128,6 +128,12 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
+  const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [approvalFile, setApprovalFile] = useState<File | null>(null);
+  const [sendingApproval, setSendingApproval] = useState(false);
+  const [approvalError, setApprovalError] = useState<string>('');
+  const [approvalSubmissions, setApprovalSubmissions] = useState<Array<{ id: string; file_name: string; status: string; submitted_at: string }>>([]);
+  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
   const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
   const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
@@ -1068,6 +1074,53 @@ function HRDashboardContent() {
     }
   }, [paymentsByVenue]);
 
+  const loadApprovalSubmissions = useCallback(async () => {
+    setLoadingSubmissions(true);
+    try {
+      const { data, error } = await supabase
+        .from('payroll_approval_submissions')
+        .select('id, file_name, status, submitted_at')
+        .order('submitted_at', { ascending: false });
+      if (error) throw error;
+      setApprovalSubmissions(data ?? []);
+    } catch (e: any) {
+      console.error('[loadApprovalSubmissions]', e.message);
+    } finally {
+      setLoadingSubmissions(false);
+    }
+  }, []);
+
+  const sendToApproval = useCallback(async () => {
+    if (!approvalFile) {
+      setApprovalError('Please select an Excel file to attach.');
+      return;
+    }
+    setSendingApproval(true);
+    setApprovalError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const fd = new FormData();
+      fd.append('file', approvalFile);
+      const res = await fetch('/api/payroll/send-approval', {
+        method: 'POST',
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: fd,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to send email');
+      setShowApprovalModal(false);
+      setApprovalFile(null);
+      await loadApprovalSubmissions();
+      alert('Payroll approval email sent successfully.');
+    } catch (e: any) {
+      setApprovalError(e.message || 'Failed to send approval email');
+    } finally {
+      setSendingApproval(false);
+    }
+  }, [approvalFile, loadApprovalSubmissions]);
+
   // Export payments to Excel
   const exportPaymentsToExcel = useCallback(() => {
     if (paymentsByVenue.length === 0) {
@@ -1340,6 +1393,12 @@ function HRDashboardContent() {
       loadSickLeaves();
     }
   }, [hrView, loadSickLeaves]);
+
+  useEffect(() => {
+    if (hrView === "payments") {
+      loadApprovalSubmissions();
+    }
+  }, [hrView, loadApprovalSubmissions]);
 
   const updateSickLeaveStatus = useCallback(async (id: string, status: SickLeaveStatus) => {
     setUpdatingSickLeaveId(id);
@@ -1970,8 +2029,68 @@ function HRDashboardContent() {
                 <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
                   Export to Excel
                 </button>
+                <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
+                  Send to Approval
+                </button>
+                <Link href="/payroll-approvals">
+                  <button className="apple-button apple-button-secondary">View Approvals</button>
+                </Link>
               </div>
             </div>
+
+            {/* Send to Approval Modal */}
+            {showApprovalModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-xl font-semibold text-gray-900">Send Payroll for Approval</h2>
+                    <button
+                      onClick={() => { setShowApprovalModal(false); setApprovalFile(null); setApprovalError(''); }}
+                      className="text-gray-400 hover:text-gray-600 transition-colors text-2xl leading-none"
+                      aria-label="Close"
+                    >
+                      &times;
+                    </button>
+                  </div>
+                  <p className="text-sm text-gray-500 mb-5">
+                    Upload the payroll Excel file to send it as an attachment for approval.
+                  </p>
+                  <label className="apple-label" htmlFor="approval-file">Excel File (.xlsx / .xls)</label>
+                  <input
+                    id="approval-file"
+                    type="file"
+                    accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                    className="block w-full mt-1 mb-4 text-sm text-gray-700 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-indigo-50 file:text-indigo-700 hover:file:bg-indigo-100 cursor-pointer"
+                    onChange={(e) => {
+                      setApprovalFile(e.target.files?.[0] ?? null);
+                      setApprovalError('');
+                    }}
+                  />
+                  {approvalFile && (
+                    <p className="text-xs text-gray-500 mb-4">Selected: <span className="font-medium text-gray-700">{approvalFile.name}</span></p>
+                  )}
+                  {approvalError && (
+                    <div className="apple-alert apple-alert-error mb-4">{approvalError}</div>
+                  )}
+                  <div className="flex gap-3 justify-end mt-2">
+                    <button
+                      onClick={() => { setShowApprovalModal(false); setApprovalFile(null); setApprovalError(''); }}
+                      className="apple-button apple-button-secondary"
+                      disabled={sendingApproval}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={sendToApproval}
+                      className={`apple-button ${sendingApproval || !approvalFile ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                      disabled={sendingApproval || !approvalFile}
+                    >
+                      {sendingApproval ? 'Sending…' : 'Send Email'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {paymentsError && <div className="apple-alert apple-alert-error mb-6">{paymentsError}</div>}
 
@@ -2220,6 +2339,56 @@ function HRDashboardContent() {
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+
+            {/* Approval Submissions History */}
+            <div className="apple-card mt-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">Payroll Approval Submissions</h2>
+                <button
+                  onClick={loadApprovalSubmissions}
+                  className="apple-button apple-button-secondary text-sm"
+                  disabled={loadingSubmissions}
+                >
+                  {loadingSubmissions ? 'Refreshing…' : 'Refresh'}
+                </button>
+              </div>
+              {loadingSubmissions ? (
+                <p className="text-sm text-gray-500">Loading submissions…</p>
+              ) : approvalSubmissions.length === 0 ? (
+                <p className="text-sm text-gray-500">No approval submissions yet.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-gray-200 text-sm">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">File Name</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Submitted At</th>
+                        <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-100">
+                      {approvalSubmissions.map(s => (
+                        <tr key={s.id}>
+                          <td className="px-4 py-2 text-gray-800 font-medium">{s.file_name}</td>
+                          <td className="px-4 py-2 text-gray-500">
+                            {new Date(s.submitted_at).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${
+                              s.status === 'submitted' ? 'bg-blue-100 text-blue-700' :
+                              s.status === 'approved'  ? 'bg-green-100 text-green-700' :
+                                                         'bg-red-100 text-red-700'
+                            }`}>
+                              {s.status.charAt(0).toUpperCase() + s.status.slice(1)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
             </div>
           </>

@@ -4,8 +4,11 @@ import { useParams } from "next/navigation";
 import "./invitation-styles.css";
 
 type DayAvailability = {
-  date: string; // YYYY-MM-DD
+  date: string;       // YYYY-MM-DD
   available: boolean;
+  allDay?: boolean;   // true = available all day (default when checked)
+  startTime?: string; // HH:MM — only when allDay is false
+  endTime?: string;   // HH:MM — only when allDay is false
 };
 
 export default function InvitationPage() {
@@ -26,7 +29,7 @@ export default function InvitationPage() {
       const d = new Date(today);
       d.setDate(today.getDate() + i);
       const iso = d.toISOString().slice(0, 10);
-      arr.push({ date: iso, available: false });
+      arr.push({ date: iso, available: false, allDay: true });
     }
     return arr;
   };
@@ -34,19 +37,25 @@ export default function InvitationPage() {
   useEffect(() => {
     if (!token) return;
     setLoading(true);
-    // Initialize with 42 days
     const initial = buildNext42Days();
     setDays(initial);
 
-    // Try to load existing availability
     fetch(`/api/invitations/${encodeURIComponent(token)}`)
       .then(async (res) => {
         if (!res.ok) throw new Error("No data");
         const data = await res.json();
         const existing: DayAvailability[] = data.availability || [];
-        // Merge existing data with the 42-day range
         const map = new Map(existing.map(e => [e.date, e]));
-        const merged = initial.map(d => map.get(d.date) ? { ...d, ...map.get(d.date) } : d);
+        const merged = initial.map(d => {
+          const saved = map.get(d.date);
+          if (!saved) return d;
+          // Normalise: if available and allDay is undefined treat as allDay
+          return {
+            ...d,
+            ...saved,
+            allDay: saved.allDay !== false,
+          };
+        });
         setDays(merged);
       })
       .catch(() => {
@@ -58,7 +67,36 @@ export default function InvitationPage() {
   const toggleDay = (idx: number) => {
     setDays(prev => {
       const copy = [...prev];
-      copy[idx] = { ...copy[idx], available: !copy[idx].available };
+      const wasAvailable = copy[idx].available;
+      copy[idx] = {
+        ...copy[idx],
+        available: !wasAvailable,
+        // When turning a day on, default to all-day
+        allDay: !wasAvailable ? true : copy[idx].allDay,
+      };
+      return copy;
+    });
+  };
+
+  const toggleAllDay = (idx: number) => {
+    setDays(prev => {
+      const copy = [...prev];
+      const currentAllDay = copy[idx].allDay !== false;
+      copy[idx] = {
+        ...copy[idx],
+        allDay: !currentAllDay,
+        // Pre-fill sensible defaults when switching to partial-day
+        startTime: !currentAllDay ? undefined : (copy[idx].startTime || "09:00"),
+        endTime:   !currentAllDay ? undefined : (copy[idx].endTime   || "17:00"),
+      };
+      return copy;
+    });
+  };
+
+  const setDayTime = (idx: number, field: "startTime" | "endTime", value: string) => {
+    setDays(prev => {
+      const copy = [...prev];
+      copy[idx] = { ...copy[idx], [field]: value };
       return copy;
     });
   };
@@ -84,6 +122,9 @@ export default function InvitationPage() {
     }
   };
 
+  const availableCount = days.filter(d => d.available).length;
+  const partialCount   = days.filter(d => d.available && d.allDay === false).length;
+
   if (!token) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center p-4">
@@ -104,14 +145,14 @@ export default function InvitationPage() {
         {/* Header */}
         <div className="mb-10">
           <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Your Availability</h1>
-          <p className="text-lg text-gray-600 font-normal">Select the days you're available to work over the next 6 weeks.</p>
+          <p className="text-lg text-gray-600 font-normal">
+            Check a day if you're available. If you're only free for part of the day, uncheck "All Day" and pick your hours.
+          </p>
         </div>
 
         {/* Error Message */}
-        {message && message.toLowerCase().includes("error") && (
-          <div className="apple-alert apple-alert-error mb-6">
-            {message}
-          </div>
+        {message && (
+          <div className="apple-alert apple-alert-error mb-6">{message}</div>
         )}
 
         {loading ? (
@@ -126,7 +167,7 @@ export default function InvitationPage() {
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-4 mb-8">
               <button
-                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: true })))}
+                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: true, allDay: true })))}
                 className="group relative inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white font-semibold rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"
               >
                 <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -136,7 +177,7 @@ export default function InvitationPage() {
               </button>
 
               <button
-                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: false })))}
+                onClick={() => setDays(prev => prev.map(d => ({ ...d, available: false, allDay: true, startTime: undefined, endTime: undefined })))}
                 className="group relative inline-flex items-center px-6 py-3 bg-white text-gray-700 font-semibold rounded-xl border-2 border-gray-200 hover:border-gray-300 shadow-sm hover:shadow-md transform hover:-translate-y-0.5 transition-all duration-200"
               >
                 <svg className="w-5 h-5 mr-2 text-gray-500 group-hover:text-red-500 group-hover:scale-110 transition-all" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -153,13 +194,15 @@ export default function InvitationPage() {
                 const dayName = dt.toLocaleDateString('en-US', { weekday: 'long' });
                 const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                 const isToday = d.date === new Date().toISOString().slice(0, 10);
+                const isPartial = d.available && d.allDay === false;
 
                 return (
                   <div
                     key={d.date}
-                    className={`invitation-day-card ${d.available ? 'available' : ''} ${isToday ? 'today' : ''}`}
+                    className={`invitation-day-card ${d.available ? (isPartial ? 'partial' : 'available') : ''} ${isToday ? 'today' : ''}`}
                   >
-                    <div className="flex items-center justify-between mb-3">
+                    {/* Day header row */}
+                    <div className="flex items-center justify-between mb-2">
                       <div>
                         <div className="font-semibold text-gray-900 text-lg">{dayName}</div>
                         <div className="text-sm text-gray-500">
@@ -178,6 +221,50 @@ export default function InvitationPage() {
                         <span className="checkmark"></span>
                       </label>
                     </div>
+
+                    {/* Time section — shown only when day is checked */}
+                    {d.available && (
+                      <div className="invitation-time-section">
+                        {/* All Day toggle */}
+                        <label className="invitation-allday-label">
+                          <input
+                            type="checkbox"
+                            checked={d.allDay !== false}
+                            onChange={() => toggleAllDay(i)}
+                            className="invitation-allday-checkbox"
+                          />
+                          <span className="invitation-allday-track">
+                            <span className="invitation-allday-thumb" />
+                          </span>
+                          <span className="text-sm font-medium text-gray-700 select-none">All Day</span>
+                        </label>
+
+                        {/* Time pickers — shown when NOT all day */}
+                        {d.allDay === false && (
+                          <div className="invitation-time-row">
+                            <div className="invitation-time-field">
+                              <label className="invitation-time-label">From</label>
+                              <input
+                                type="time"
+                                value={d.startTime || "09:00"}
+                                onChange={e => setDayTime(i, "startTime", e.target.value)}
+                                className="invitation-time-input"
+                              />
+                            </div>
+                            <span className="invitation-time-separator">–</span>
+                            <div className="invitation-time-field">
+                              <label className="invitation-time-label">To</label>
+                              <input
+                                type="time"
+                                value={d.endTime || "17:00"}
+                                onChange={e => setDayTime(i, "endTime", e.target.value)}
+                                className="invitation-time-input"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -189,7 +276,12 @@ export default function InvitationPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <div className="text-sm text-gray-700">
-                <span className="font-semibold">{days.filter(d => d.available).length} day{days.filter(d => d.available).length !== 1 ? 's' : ''}</span> selected out of {days.length}
+                <span className="font-semibold">{availableCount} day{availableCount !== 1 ? 's' : ''}</span> selected out of {days.length}
+                {partialCount > 0 && (
+                  <span className="ml-2 text-amber-600">
+                    ({partialCount} partial-day{partialCount !== 1 ? 's' : ''})
+                  </span>
+                )}
               </div>
             </div>
 
@@ -234,21 +326,25 @@ export default function InvitationPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="text-center">
-              {/* Success Icon */}
               <div className="mx-auto w-20 h-20 bg-gradient-to-br from-green-400 to-green-600 rounded-full flex items-center justify-center mb-6 shadow-lg shadow-green-500/50 animate-bounce-once">
                 <svg className="w-10 h-10 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
                 </svg>
               </div>
 
-              {/* Success Message */}
               <h2 className="text-3xl font-bold text-gray-900 mb-3">Success!</h2>
               <p className="text-lg text-gray-600 mb-2">Your availability has been saved.</p>
               <p className="text-sm text-gray-500 mb-8">
-                You selected <span className="font-semibold text-green-600">{days.filter(d => d.available).length} day{days.filter(d => d.available).length !== 1 ? 's' : ''}</span>. Thank you!
+                You selected{" "}
+                <span className="font-semibold text-green-600">
+                  {availableCount} day{availableCount !== 1 ? 's' : ''}
+                </span>
+                {partialCount > 0 && (
+                  <span> ({partialCount} with custom hours)</span>
+                )}
+                . Thank you!
               </p>
 
-              {/* Close Button */}
               <button
                 onClick={() => setShowSuccessModal(false)}
                 className="group w-full inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-gradient-to-r from-green-500 to-green-600 rounded-xl shadow-lg shadow-green-500/30 hover:shadow-xl hover:shadow-green-500/40 hover:from-green-600 hover:to-green-700 transform hover:-translate-y-0.5 transition-all duration-200"

@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { createHash } from "crypto";
+import { safeDecrypt } from "@/lib/encryption";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -197,10 +199,34 @@ export async function GET(
       secondMealStart: string | null;
       secondMealEnd: string | null;
       managerEdited: boolean;
+      managerEditNote: string | null;
+      managerEditSignatureId: string | null;
+      managerEditedByRole: string | null;
+      managerEditSignatureData: string | null;
+      managerEditedByName: string | null;
     }> = {};
+
+    // Parse notes like: "Manual edit by manager | Reason: ... | Signature: <uuid>"
+    const parseEditNotes = (notes: string) => {
+      const reasonMatch = notes.match(/\| Reason: (.+?) \| Signature:/);
+      const sigMatch = notes.match(/\| Signature: ([0-9a-f-]{36})/i);
+      const roleMatch = notes.match(/^Manual edit by (\w+)/i);
+      return {
+        editNote: reasonMatch?.[1] ?? null,
+        sigId: sigMatch?.[1] ?? null,
+        editRole: roleMatch?.[1] ?? null,
+      };
+    };
 
     for (const uid of userIds) {
       const userEntries = entriesByUser[uid] || [];
+
+      // Find first manager-edited entry that has a structured note
+      const editedEntry = userEntries.find(e => {
+        const n = (e.notes || "").toLowerCase();
+        return n.includes("manual edit by manager") || n.includes("manual edit by supervisor") || n.includes("manual edit by exec");
+      });
+      const parsed = editedEntry ? parseEditNotes(editedEntry.notes || "") : null;
 
       totals[uid] = 0;
       spans[uid] = {
@@ -210,10 +236,12 @@ export async function GET(
         lastMealEnd: null,
         secondMealStart: null,
         secondMealEnd: null,
-        managerEdited: userEntries.some(e => {
-          const notes = (e.notes || "").toLowerCase();
-          return notes.includes("manual edit by manager") || notes.includes("manual edit by supervisor");
-        }),
+        managerEdited: !!editedEntry,
+        managerEditNote: parsed?.editNote ?? null,
+        managerEditSignatureId: parsed?.sigId ?? null,
+        managerEditedByRole: parsed?.editRole ?? null,
+        managerEditSignatureData: null,
+        managerEditedByName: null,
       };
 
       // Track first clock_in and last clock_out
@@ -290,6 +318,61 @@ export async function GET(
         if (gaps[1]) {
           spans[uid].secondMealStart = gaps[1].start.toISOString();
           spans[uid].secondMealEnd = gaps[1].end.toISOString();
+        }
+      }
+    }
+
+    // For exec: resolve signature data + editor name for manager-edited entries
+    const sigIds = Object.values(spans)
+      .map(s => s.managerEditSignatureId)
+      .filter((id): id is string => !!id);
+
+    if (sigIds.length > 0) {
+      const { data: sigRows } = await supabaseAdmin
+        .from("form_signatures")
+        .select("id, user_id, signature_data")
+        .in("id", sigIds);
+
+      const editorUserIds = [...new Set((sigRows || []).map(r => r.user_id).filter(Boolean))];
+      let editorNames: Record<string, string> = {};
+      if (editorUserIds.length > 0) {
+        // Name is in profiles table (first_name + last_name); fall back to email from users
+        const [{ data: profiles }, { data: editorUsers }] = await Promise.all([
+          supabaseAdmin
+            .from("profiles")
+            .select("user_id, first_name, last_name")
+            .in("user_id", editorUserIds),
+          supabaseAdmin
+            .from("users")
+            .select("id, email")
+            .in("id", editorUserIds),
+        ]);
+        const emailMap: Record<string, string> = {};
+        for (const u of editorUsers || []) emailMap[u.id] = u.email;
+        for (const p of profiles || []) {
+          const first = p.first_name ? safeDecrypt(p.first_name) : "";
+          const last = p.last_name ? safeDecrypt(p.last_name) : "";
+          const full = [first, last].filter(Boolean).join(" ").trim();
+          editorNames[p.user_id] = full || emailMap[p.user_id] || p.user_id;
+        }
+        // Fill in any user_ids that had no profile row
+        for (const uid of editorUserIds) {
+          if (!editorNames[uid]) editorNames[uid] = emailMap[uid] || uid;
+        }
+      }
+
+      const sigMap: Record<string, { sigData: string; editorName: string }> = {};
+      for (const row of sigRows || []) {
+        sigMap[row.id] = {
+          sigData: row.signature_data,
+          editorName: editorNames[row.user_id] ?? "Unknown",
+        };
+      }
+
+      for (const span of Object.values(spans)) {
+        if (span.managerEditSignatureId && sigMap[span.managerEditSignatureId]) {
+          span.managerEditSignatureData = sigMap[span.managerEditSignatureId].sigData;
+          span.managerEditedByName = sigMap[span.managerEditSignatureId].editorName;
         }
       }
     }
@@ -379,10 +462,57 @@ export async function PUT(
     const body = await req.json().catch(() => null);
     const targetUserId = String(body?.userId || "").trim();
     const spans: TimesheetSpanPayload = body?.spans || {};
+    const editNote = String(body?.editNote || "").trim();
+    const editSignatureDataUrl = String(body?.editSignature || "").trim();
     console.log("[timesheet-PUT] received:", { userId: targetUserId, spans });
     if (!targetUserId) {
       return NextResponse.json({ error: "userId is required" }, { status: 400 });
     }
+    if (!editNote) {
+      return NextResponse.json({ error: "A reason for the edit is required." }, { status: 400 });
+    }
+    if (!editSignatureDataUrl.startsWith("data:image/png;base64,")) {
+      return NextResponse.json({ error: "A drawn signature is required to save timesheet edits." }, { status: 400 });
+    }
+
+    // Insert drawn signature into form_signatures table
+    const now = new Date().toISOString();
+    const ipAddress = req.headers.get("x-forwarded-for") ?? req.headers.get("x-real-ip") ?? "unknown";
+    const userAgent = req.headers.get("user-agent") ?? "";
+    const formId = `timesheet_edit_${eventId}_${targetUserId}_${Date.now()}`;
+    const formDataHash = createHash("sha256")
+      .update(JSON.stringify({ eventId, targetUserId, spans, editNote }))
+      .digest("hex");
+    const signatureHash = createHash("sha256")
+      .update(`${editSignatureDataUrl}${now}${user.id}${ipAddress}`)
+      .digest("hex");
+    const bindingHash = createHash("sha256")
+      .update(`${formDataHash}${signatureHash}`)
+      .digest("hex");
+
+    const { data: sigRow, error: sigError } = await supabaseAdmin
+      .from("form_signatures")
+      .insert({
+        form_id: formId,
+        form_type: "timesheet_edit",
+        user_id: user.id,
+        signature_role: "employer",
+        signature_data: editSignatureDataUrl,
+        signature_type: "drawn",
+        form_data_hash: formDataHash,
+        signature_hash: signatureHash,
+        binding_hash: bindingHash,
+        ip_address: ipAddress,
+        user_agent: userAgent,
+        signed_at: now,
+      })
+      .select("id")
+      .single();
+    if (sigError) {
+      console.error("[timesheet-PUT] form_signatures insert error:", sigError.message);
+      return NextResponse.json({ error: "Failed to store signature: " + sigError.message }, { status: 500 });
+    }
+    const editSignature = sigRow.id;
 
     const { data: teamMember, error: teamError } = await supabaseAdmin
       .from("event_teams")
@@ -527,7 +657,7 @@ export async function PUT(
         if (i < existingList.length && i < newList.length) {
           toUpdate.push({ id: existingList[i].id, timestamp: newList[i].timestamp! });
         } else if (i < newList.length) {
-          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: `Manual edit by ${requesterRole}` });
+          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: `Manual edit by ${requesterRole} | Reason: ${editNote} | Signature: ${editSignature}` });
         } else {
           toDelete.push(existingList[i].id);
         }
@@ -547,7 +677,7 @@ export async function PUT(
     for (const upd of toUpdate) {
       const { error: updateError } = await supabaseAdmin
         .from("time_entries")
-        .update({ timestamp: upd.timestamp, event_id: eventId, notes: `Manual edit by ${requesterRole}` })
+        .update({ timestamp: upd.timestamp, event_id: eventId, notes: `Manual edit by ${requesterRole} | Reason: ${editNote} | Signature: ${editSignature}` })
         .eq("id", upd.id);
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 });

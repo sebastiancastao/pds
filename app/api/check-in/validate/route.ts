@@ -172,6 +172,7 @@ export async function POST(req: NextRequest) {
       codeId: codeRecord.id,
       status,
       clockedInAt,
+      mealStartedAt: isOnMeal ? (lastAction?.timestamp ?? null) : null,
     });
   } catch (err) {
     console.error("Error validating check-in code:", err);

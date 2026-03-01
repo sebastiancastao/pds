@@ -91,6 +91,123 @@
   transform: rotate(45deg);
 }
 
+/* Partial-day card state */
+.invitation-day-card.partial {
+  background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+  border-color: #fbbf24;
+  box-shadow: 0 2px 4px rgba(245, 158, 11, 0.1), 0 1px 2px rgba(245, 158, 11, 0.06);
+}
+
+.invitation-day-card.partial:hover {
+  box-shadow: 0 6px 12px rgba(245, 158, 11, 0.15), 0 3px 6px rgba(245, 158, 11, 0.1);
+}
+
+/* Time section container */
+.invitation-time-section {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+}
+
+/* All Day toggle row */
+.invitation-allday-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.invitation-allday-checkbox {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+/* Pill-style toggle track */
+.invitation-allday-track {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  background-color: #d1d5db;
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+  flex-shrink: 0;
+}
+
+.invitation-allday-checkbox:checked ~ .invitation-allday-track {
+  background-color: #007AFF;
+}
+
+.invitation-allday-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.2s ease;
+}
+
+.invitation-allday-checkbox:checked ~ .invitation-allday-track .invitation-allday-thumb {
+  transform: translateX(16px);
+}
+
+/* Time row (From – To) */
+.invitation-time-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.invitation-time-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.invitation-time-label {
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.invitation-time-input {
+  width: 100%;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.875rem;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  background: white;
+  color: #1f2937;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
+}
+
+.invitation-time-input:focus {
+  outline: none;
+  border-color: #007AFF;
+  box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.12);
+}
+
+.invitation-time-separator {
+  font-size: 1rem;
+  color: #9ca3af;
+  font-weight: 500;
+  padding-bottom: 0.375rem;
+  flex-shrink: 0;
+}
+
 /* Notes Input */
 .invitation-notes-input {
   width: 100%;

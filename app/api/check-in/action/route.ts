@@ -178,6 +178,17 @@ export async function POST(req: NextRequest) {
       if (lastAction !== "meal_start") {
         return jsonError("Worker is not on a meal break", 409);
       }
+      // Enforce 30-minute minimum meal break
+      const mealStartMs = new Date(lastEntry!.timestamp).getTime();
+      const elapsedMs = Date.now() - mealStartMs;
+      const THIRTY_MINUTES_MS = 30 * 60 * 1000;
+      if (elapsedMs < THIRTY_MINUTES_MS) {
+        const remainingMins = Math.ceil((THIRTY_MINUTES_MS - elapsedMs) / 60000);
+        return jsonError(
+          `Meal break must be at least 30 minutes. ${remainingMins} minute(s) remaining.`,
+          409
+        );
+      }
     }
 
     // Insert the time entry

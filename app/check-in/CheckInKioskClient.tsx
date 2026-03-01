@@ -56,6 +56,7 @@ type ValidatedWorker = {
   codeId: string;
   status: WorkerStatus;
   clockedInAt: string | null;
+  mealStartedAt: string | null;
   code: string;
 };
 
@@ -160,6 +161,7 @@ export default function CheckInKioskPage() {
   } | null>(null);
   const [attestationSummaryLoading, setAttestationSummaryLoading] = useState(false);
   const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
+  const [mealNowMs, setMealNowMs] = useState<number>(() => Date.now());
 
   // Online / offline
   const [isOnline, setIsOnline] = useState(true);
@@ -197,6 +199,14 @@ export default function CheckInKioskPage() {
     const t = setInterval(() => setAttestationNowMs(Date.now()), 1000);
     return () => clearInterval(t);
   }, [showAttestation, worker]);
+
+  // Meal break countdown clock
+  useEffect(() => {
+    if (!worker || worker.status !== "on_meal") return;
+    setMealNowMs(Date.now());
+    const t = setInterval(() => setMealNowMs(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [worker]);
 
   // Load shift summary when attestation opens (meal time, etc.)
   useEffect(() => {
@@ -687,6 +697,7 @@ export default function CheckInKioskPage() {
         codeId: data.codeId,
         status: data.status,
         clockedInAt: data.clockedInAt,
+        mealStartedAt: data.mealStartedAt ?? null,
         code,
       });
     } catch {
@@ -1154,19 +1165,30 @@ export default function CheckInKioskPage() {
                   )}
 
                   {/* ON MEAL → End Meal + Clock Out */}
-                  {worker.status === "on_meal" && (
+                  {worker.status === "on_meal" && (() => {
+                    const THIRTY_MIN_MS = 30 * 60 * 1000;
+                    const mealElapsedMs = worker.mealStartedAt
+                      ? mealNowMs - new Date(worker.mealStartedAt).getTime()
+                      : THIRTY_MIN_MS;
+                    const mealReady = mealElapsedMs >= THIRTY_MIN_MS;
+                    const remainingMs = Math.max(0, THIRTY_MIN_MS - mealElapsedMs);
+                    const remainingMins = Math.floor(remainingMs / 60000);
+                    const remainingSecs = Math.floor((remainingMs % 60000) / 1000);
+                    return (
                     <>
                       <button
                         onClick={handleMealEnd}
-                        disabled={isActioning}
-                        className="w-full py-4 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-semibold text-lg transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50"
+                        disabled={isActioning || !mealReady}
+                        className={`w-full py-4 px-4 text-white rounded-xl font-semibold text-lg transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50 ${mealReady ? "bg-amber-500 hover:bg-amber-600" : "bg-gray-400 cursor-not-allowed"}`}
                       >
                         {isActioning ? "Processing..." : (
                           <>
                             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                             </svg>
-                            End Meal
+                            {mealReady
+                              ? "End Meal"
+                              : `End Meal (${remainingMins}:${remainingSecs.toString().padStart(2, "0")} remaining)`}
                           </>
                         )}
                       </button>
@@ -1181,7 +1203,8 @@ export default function CheckInKioskPage() {
                         Clock Out
                       </button>
                     </>
-                  )}
+                    );
+                  })()}
 
                   {/* Cancel / back to code entry */}
                   <button
