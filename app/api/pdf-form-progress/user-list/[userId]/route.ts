@@ -20,7 +20,7 @@ const formDisplayNames: Record<string, string> = {
   "survivors-rights": "Survivors Rights",
   "transgender-rights": "Transgender Rights",
   "health-insurance": "Health Insurance",
-  "time-of-hire": "Time of Hire Notice",
+  "time-of-hire": "Workers Compensation",
   "discrimination-law": "Discrimination Law",
   "immigration-rights": "Immigration Rights",
   "military-rights": "Military Rights",
