@@ -38,6 +38,9 @@ function calculateDistance(
 type AvailabilityDay = {
   date: string;
   available: boolean;
+  allDay?: boolean;   // undefined or true = all day; false = partial
+  startTime?: string; // "HH:MM"
+  endTime?: string;   // "HH:MM"
 };
 
 function normalizeText(value: unknown): string {
@@ -74,6 +77,53 @@ function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
   }
 
   return [];
+}
+
+const MIN_OVERLAP_MINUTES = 1; // Include vendors with any positive overlap
+
+/**
+ * Returns the number of minutes that two time windows overlap.
+ * Times are "HH:MM" or "HH:MM:SS" strings (24-hour).
+ * Supports ranges that cross midnight (e.g. 23:00-01:00).
+ */
+function overlapMinutes(
+  vendorStart: string,
+  vendorEnd: string,
+  eventStart: string,
+  eventEnd: string
+): number {
+  const toMins = (t: string) => {
+    const [h, m = "0"] = t.slice(0, 5).split(":");
+    return parseInt(h, 10) * 60 + parseInt(m, 10);
+  };
+
+  const toSegments = (startRaw: string, endRaw: string): Array<[number, number]> => {
+    const start = toMins(startRaw);
+    const end = toMins(endRaw);
+
+    // Same-day range.
+    if (end > start) return [[start, end]];
+
+    // Cross-midnight range (or equal times, which is treated as crossing midnight window).
+    return [
+      [start, 24 * 60],
+      [0, end],
+    ];
+  };
+
+  const vendorSegments = toSegments(vendorStart, vendorEnd);
+  const eventSegments = toSegments(eventStart, eventEnd);
+
+  let total = 0;
+  for (const [vs, ve] of vendorSegments) {
+    for (const [es, ee] of eventSegments) {
+      const overlapStart = Math.max(vs, es);
+      const overlapEnd = Math.min(ve, ee);
+      total += Math.max(0, overlapEnd - overlapStart);
+    }
+  }
+
+  return total;
 }
 
 /**
@@ -138,7 +188,7 @@ export async function GET(
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('event_date, venue, city, state, created_by')
+      .select('event_date, start_time, end_time, venue, city, state, created_by')
       .eq('id', eventId)
       .single();
 
@@ -246,43 +296,62 @@ export async function GET(
         : new Date(event.event_date).toISOString().slice(0, 10);
     console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date, 'normalized:', eventDateKey);
 
-    const availableVendorIds = (invitations || [])
-      .map((inv, index) => {
-        console.log(`🔍 DEBUG - Processing Invitation ${index + 1}:`, {
-          vendor_id: inv.vendor_id,
-          has_availability: !!inv.availability,
-          status: inv.status
-        });
+    const eventStart = typeof event.start_time === "string" ? event.start_time : null;
+    const eventEnd   = typeof event.end_time   === "string" ? event.end_time   : null;
 
-        if (!inv.availability) {
-          console.log(`  ❌ No availability data for vendor ${inv.vendor_id}`);
-          return null;
+    // Map of vendorId → availability metadata (only vendors with at least partial overlap)
+    type VendorAvailMeta = { isPartial: boolean; startTime?: string; endTime?: string };
+    const vendorMetaMap = new Map<string, VendorAvailMeta>();
+
+    for (const inv of (invitations || [])) {
+      if (!inv.availability) {
+        console.log(`  ❌ No availability data for vendor ${inv.vendor_id}`);
+        continue;
+      }
+      // Use the most-recent invitation per vendor (already de-duped below)
+      if (vendorMetaMap.has(inv.vendor_id)) continue;
+
+      const availability = normalizeAvailabilityPayload(inv.availability);
+
+      for (const day of availability) {
+        const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
+        if (dayDate !== eventDateKey || day.available !== true) continue;
+
+        // All-day (or legacy without allDay) → full availability, not partial
+        if (day.allDay !== false) {
+          console.log(`  ✅ ${dayDate} all-day for vendor ${inv.vendor_id}`);
+          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+          break;
         }
 
-        const availability = normalizeAvailabilityPayload(inv.availability);
-        console.log(`  📅 Checking ${availability.length} days for vendor ${inv.vendor_id}`);
+        const vendorStart: string | undefined = day.startTime;
+        const vendorEnd:   string | undefined = day.endTime;
 
-        const isAvailable = availability.some((day: any) => {
-          const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
-          const match = dayDate === eventDateKey && day.available === true;
-          if (dayDate === eventDateKey) {
-            console.log(`  🎯 Found matching date: ${dayDate}, available: ${day.available}, match: ${match}`);
-          }
-          return match;
-        });
+        // No event time data or no vendor times → treat as full availability
+        if (!eventStart || !eventEnd || !vendorStart || !vendorEnd) {
+          console.log(`  ✅ ${dayDate} partial (missing times, treating as all-day) for vendor ${inv.vendor_id}`);
+          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+          break;
+        }
 
-        if (isAvailable) {
-          console.log(`  ✅ Vendor ${inv.vendor_id} is available on ${eventDateKey}`);
-          return inv.vendor_id;
+        const mins = overlapMinutes(vendorStart, vendorEnd, eventStart, eventEnd);
+        if (mins >= MIN_OVERLAP_MINUTES) {
+          console.log(`  ✅ ${dayDate} partial ${vendorStart}-${vendorEnd} vs event ${eventStart}-${eventEnd} — overlap: ${mins}min`);
+          vendorMetaMap.set(inv.vendor_id, {
+            isPartial: true,
+            startTime: vendorStart,
+            endTime:   vendorEnd,
+          });
         } else {
-          console.log(`  ❌ Vendor ${inv.vendor_id} is NOT available on ${eventDateKey}`);
-          return null;
+          console.log(`  ❌ ${dayDate} partial ${vendorStart}-${vendorEnd} — no overlap with event ${eventStart}-${eventEnd} — excluding vendor ${inv.vendor_id}`);
         }
-      })
-      .filter(id => id !== null);
-    const uniqueAvailableVendorIds = Array.from(new Set(availableVendorIds));
+        break;
+      }
+    }
 
-    console.log('🔍 DEBUG - Available Vendor IDs (NO EVENT_TEAMS FILTERING):', uniqueAvailableVendorIds);
+    const uniqueAvailableVendorIds = Array.from(vendorMetaMap.keys());
+    console.log('🔍 DEBUG - Available Vendor IDs with meta:', uniqueAvailableVendorIds);
+
 
     if (uniqueAvailableVendorIds.length === 0) {
       console.log('❌ No available vendors found for this date');
@@ -443,7 +512,10 @@ export async function GET(
             longitude: vendorLng,
             region_id: vendor.profiles.region_id
           },
-          distance: distance !== null ? Math.round(distance * 10) / 10 : null
+          distance: distance !== null ? Math.round(distance * 10) / 10 : null,
+          partialAvailability: vendorMetaMap.get(vendor.id)?.isPartial ?? false,
+          availableFrom: vendorMetaMap.get(vendor.id)?.startTime ?? null,
+          availableTo:   vendorMetaMap.get(vendor.id)?.endTime   ?? null,
         };
       })
       .sort((a: any, b: any) => {

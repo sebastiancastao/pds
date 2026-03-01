@@ -79,6 +79,32 @@ interface SickLeaveBalance {
   balance_days: number;
 }
 
+interface FinalPayEvent {
+  eventId: string;
+  eventName: string;
+  eventDate: string;
+  venue: string;
+  city: string | null;
+  state: string | null;
+  actualHours: number;
+  regularPay: number;
+  overtimePay: number;
+  doubletimePay: number;
+  commissions: number;
+  tips: number;
+  totalPay: number;
+  adjustmentAmount: number;
+  adjustmentType: string | null;
+  finalPay: number;
+}
+
+interface FinalPayTotals {
+  commissions: number;
+  tips: number;
+  totalPay: number;
+  finalPay: number;
+}
+
 export default function PaystubGenerator() {
   const [formData, setFormData] = useState({
     // Employee Information
@@ -128,6 +154,23 @@ export default function PaystubGenerator() {
   const [sickLeave, setSickLeave] = useState<SickLeaveBalance | null>(null);
   const [sickLeaveLoading, setSickLeaveLoading] = useState(false);
   const [sickLeaveError, setSickLeaveError] = useState<string | null>(null);
+
+  // Per-employee meal premium & sick overrides (keyed by matchedUserId)
+  const [employeeOverrides, setEmployeeOverrides] = useState<Record<string, { mealPremium: string; sick: string }>>({});
+
+  const getOverride = (userId: string) => employeeOverrides[userId] ?? { mealPremium: '', sick: '' };
+  const setOverride = (userId: string, field: 'mealPremium' | 'sick', value: string) =>
+    setEmployeeOverrides(prev => ({
+      ...prev,
+      [userId]: { ...getOverride(userId), [field]: value },
+    }));
+
+  // Final Pay from HR Dashboard
+  const [finalPayEvents, setFinalPayEvents] = useState<FinalPayEvent[]>([]);
+  const [finalPayTotals, setFinalPayTotals] = useState<FinalPayTotals | null>(null);
+  const [finalPayLoading, setFinalPayLoading] = useState(false);
+  const [finalPayError, setFinalPayError] = useState<string | null>(null);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -253,6 +296,54 @@ export default function PaystubGenerator() {
       isMounted = false;
     };
   }, [matchedUserId]);
+
+  // Fetch Final Pay from HR Dashboard data when employee + dates are ready
+  useEffect(() => {
+    let isMounted = true;
+
+    if (!matchedUserId || !formData.payPeriodStart || !formData.payPeriodEnd) {
+      setFinalPayEvents([]);
+      setFinalPayTotals(null);
+      setFinalPayError(null);
+      return;
+    }
+
+    const fetchFinalPay = async () => {
+      setFinalPayLoading(true);
+      setFinalPayError(null);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(
+          `/api/employee-final-pay?userId=${encodeURIComponent(matchedUserId)}&startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}`,
+          {
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          }
+        );
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || 'Failed to load final pay data');
+        }
+        const data = await res.json();
+        if (isMounted) {
+          setFinalPayEvents(data.events || []);
+          setFinalPayTotals(data.totals || null);
+        }
+      } catch (err: any) {
+        if (!isMounted) return;
+        setFinalPayError(err.message || 'Failed to load final pay data');
+        setFinalPayEvents([]);
+        setFinalPayTotals(null);
+      } finally {
+        if (isMounted) setFinalPayLoading(false);
+      }
+    };
+
+    fetchFinalPay();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [matchedUserId, formData.payPeriodStart, formData.payPeriodEnd]);
 
   const calculateEarnings = () => {
     const regularPay = (parseFloat(formData.regularHours) || 0) * (parseFloat(formData.regularRate) || 0);
@@ -449,6 +540,8 @@ export default function PaystubGenerator() {
         // Other
         miscDeduction: formData.miscDeduction,
         miscReimbursement: formData.miscReimbursement,
+        mealPremium: resolvedUserId ? (parseFloat(getOverride(resolvedUserId).mealPremium) || 0) : 0,
+        sick: resolvedUserId ? (parseFloat(getOverride(resolvedUserId).sick) || 0) : 0,
 
         // Events data
         events: filteredEvents,
@@ -604,6 +697,8 @@ export default function PaystubGenerator() {
             // Other
             miscDeduction: emp.miscDeduction,
             miscReimbursement: emp.miscReimbursement,
+            mealPremium: parseFloat(getOverride(emp.matchedUserId).mealPremium) || 0,
+            sick: parseFloat(getOverride(emp.matchedUserId).sick) || 0,
 
             // Events data
             events: filteredEvents,
@@ -1115,38 +1210,68 @@ export default function PaystubGenerator() {
                           {importedEmployees.filter((e) => !!e.matchedUserId).length} matched / {importedEmployees.length} total
                         </div>
                       </div>
-                      <div className="mt-2 max-h-40 overflow-auto divide-y divide-slate-200 text-sm">
+                      <div className="mt-2 max-h-64 overflow-auto divide-y divide-slate-200 text-sm">
                         {importedEmployees.slice(0, 50).map((e) => (
-                          <div key={`${e.rowIndex}-${e.employeeName}`} className="py-2 flex items-center justify-between gap-3">
-                            <div className="truncate">
-                              <span className="text-slate-500">Row {e.rowIndex}:</span>{' '}
-                              <span className="font-medium text-slate-900">{e.employeeName || '(missing name)'}</span>
+                          <div key={`${e.rowIndex}-${e.employeeName}`} className="py-2 space-y-1.5">
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="truncate">
+                                <span className="text-slate-500">Row {e.rowIndex}:</span>{' '}
+                                <span className="font-medium text-slate-900">{e.employeeName || '(missing name)'}</span>
+                              </div>
+                              <div className="flex-shrink-0">
+                                {e.matchedUserId ? (() => {
+                                  const assignedCount = assignedEventsByUserId[e.matchedUserId] || 0;
+                                  const st = periodStatsByUserId[e.matchedUserId];
+                                  const hours = st ? st.hours : 0;
+                                  const eligible = hours > 0;
+                                  return eligible ? (
+                                    <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 text-xs font-semibold">
+                                      Eligible ({hours.toFixed(2)}h)
+                                    </span>
+                                  ) : assignedCount > 0 ? (
+                                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                                      Matched (0h, {assignedCount} event{assignedCount !== 1 ? 's' : ''})
+                                    </span>
+                                  ) : (
+                                    <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
+                                      Matched (no events)
+                                    </span>
+                                  );
+                                })() : (
+                                  <span className="px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 text-xs font-semibold">
+                                    {e.matchError ? 'Unmatched' : 'Pending'}
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            <div className="flex-shrink-0">
-                              {e.matchedUserId ? (() => {
-                                const assignedCount = assignedEventsByUserId[e.matchedUserId] || 0;
-                                const st = periodStatsByUserId[e.matchedUserId];
-                                const hours = st ? st.hours : 0;
-                                const eligible = hours > 0;
-                                return eligible ? (
-                                  <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 text-xs font-semibold">
-                                    Eligible ({hours.toFixed(2)}h)
-                                  </span>
-                                ) : assignedCount > 0 ? (
-                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
-                                    Matched (0h, {assignedCount} event{assignedCount !== 1 ? 's' : ''})
-                                  </span>
-                                ) : (
-                                  <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-xs font-semibold">
-                                    Matched (no events)
-                                  </span>
-                                );
-                              })() : (
-                                <span className="px-2 py-0.5 rounded bg-yellow-100 text-yellow-800 text-xs font-semibold">
-                                  {e.matchError ? 'Unmatched' : 'Pending'}
-                                </span>
-                              )}
-                            </div>
+                            {e.matchedUserId && (
+                              <div className="flex items-center gap-3 pl-1">
+                                <label className="flex items-center gap-1 text-xs text-slate-600 whitespace-nowrap">
+                                  <span>Meal Premium $</span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="0.00"
+                                    value={getOverride(e.matchedUserId).mealPremium}
+                                    onChange={(ev) => setOverride(e.matchedUserId!, 'mealPremium', ev.target.value)}
+                                    className="w-20 px-1.5 py-0.5 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                  />
+                                </label>
+                                <label className="flex items-center gap-1 text-xs text-slate-600 whitespace-nowrap">
+                                  <span>Sick $</span>
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    placeholder="0.00"
+                                    value={getOverride(e.matchedUserId).sick}
+                                    onChange={(ev) => setOverride(e.matchedUserId!, 'sick', ev.target.value)}
+                                    className="w-20 px-1.5 py-0.5 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                  />
+                                </label>
+                              </div>
+                            )}
                           </div>
                         ))}
                         {importedEmployees.length > 50 && (
@@ -1157,65 +1282,6 @@ export default function PaystubGenerator() {
                       </div>
                     </div>
                   )}
-                </div>
-              </div>
-            </div>
-
-            {/* Employee Information */}
-            <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-              <h2 className="text-lg font-semibold text-slate-900 mb-4">Employee Information</h2>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Employee Name
-                  </label>
-                  <input
-                    type="text"
-                    name="employeeName"
-                    value={formData.employeeName}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="John Doe"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    SSN
-                  </label>
-                  <input
-                    type="text"
-                    name="ssn"
-                    value={formData.ssn}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="XXX-XX-1234"
-                  />
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Address
-                  </label>
-                  <input
-                    type="text"
-                    name="address"
-                    value={formData.address}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="123 Main St, City, State 12345"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    Employee ID
-                  </label>
-                  <input
-                    type="text"
-                    name="employeeId"
-                    value={formData.employeeId}
-                    onChange={handleInputChange}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                    placeholder="EMP-001"
-                  />
                 </div>
               </div>
             </div>
@@ -1466,6 +1532,38 @@ export default function PaystubGenerator() {
                                       </div>
                                     )}
 
+                                    {matchedUserId && worker.user_id === matchedUserId && (
+                                      <div className="mt-3 pt-3 border-t border-slate-200">
+                                        <p className="text-xs font-semibold text-slate-700 mb-2">Pay Adjustments</p>
+                                        <div className="flex items-center gap-4">
+                                          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+                                            <span className="whitespace-nowrap">Meal Premium $</span>
+                                            <input
+                                              type="number"
+                                              min="0"
+                                              step="0.01"
+                                              placeholder="0.00"
+                                              value={getOverride(matchedUserId).mealPremium}
+                                              onChange={(ev) => setOverride(matchedUserId, 'mealPremium', ev.target.value)}
+                                              className="w-24 px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                            />
+                                          </label>
+                                          <label className="flex items-center gap-1.5 text-xs text-slate-600">
+                                            <span className="whitespace-nowrap">Sick $</span>
+                                            <input
+                                              type="number"
+                                              min="0"
+                                              step="0.01"
+                                              placeholder="0.00"
+                                              value={getOverride(matchedUserId).sick}
+                                              onChange={(ev) => setOverride(matchedUserId, 'sick', ev.target.value)}
+                                              className="w-24 px-2 py-1 border border-slate-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
+                                            />
+                                          </label>
+                                        </div>
+                                      </div>
+                                    )}
+
                                     {worker.payment_data && (
                                       <div className="mt-2 pt-2 border-t border-slate-200">
                                         <p className="text-xs font-semibold text-slate-600 mb-1">💳 Database Payment Data:</p>
@@ -1555,33 +1653,6 @@ export default function PaystubGenerator() {
           {/* Summary Section */}
           <div className="lg:col-span-1">
             <div className="sticky top-8 space-y-6">
-              {/* Summary Card */}
-              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
-                <h2 className="text-lg font-semibold text-slate-900 mb-4">Summary</h2>
-                <div className="space-y-3">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-slate-600">Gross Pay</span>
-                    <span className="text-lg font-semibold text-slate-900">
-                      ${grossPay.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm text-slate-600">Total Deductions</span>
-                    <span className="text-lg font-semibold text-red-600">
-                      -${totalDeductions.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="border-t border-slate-200 pt-3">
-                    <div className="flex justify-between items-center">
-                      <span className="text-sm font-semibold text-slate-900">Net Pay</span>
-                      <span className="text-2xl font-bold text-green-700">
-                        ${netPay.toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* Generate Button */}
               <button
                 onClick={handleGenerate}

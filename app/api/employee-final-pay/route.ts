@@ -1,0 +1,170 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const supabaseAdmin = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+const supabaseAnon = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+async function getAuthedUser(req: NextRequest) {
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+  if (token) {
+    const { data, error } = await supabaseAnon.auth.getUser(token);
+    if (!error && data?.user?.id) return data.user;
+  }
+  return null;
+}
+
+/**
+ * GET /api/employee-final-pay?userId=...&startDate=YYYY-MM-DD&endDate=YYYY-MM-DD
+ *
+ * Returns per-event final pay (commission + tips + total pay) for a specific
+ * employee within a date range, mirroring the HR Dashboard Payments tab data.
+ */
+export async function GET(req: NextRequest) {
+  try {
+    const user = await getAuthedUser(req);
+    if (!user?.id) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
+    const { searchParams } = new URL(req.url);
+    const userId = searchParams.get('userId');
+    const startDate = searchParams.get('startDate');
+    const endDate = searchParams.get('endDate');
+
+    if (!userId || !startDate || !endDate) {
+      return NextResponse.json(
+        { error: 'userId, startDate, and endDate are required' },
+        { status: 400 }
+      );
+    }
+
+    // Fetch events in the date range
+    const { data: events, error: eventsError } = await supabaseAdmin
+      .from('events')
+      .select('id, event_name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent')
+      .gte('event_date', startDate)
+      .lte('event_date', endDate)
+      .order('event_date', { ascending: true });
+
+    if (eventsError) {
+      return NextResponse.json({ error: eventsError.message }, { status: 500 });
+    }
+
+    if (!events || events.length === 0) {
+      return NextResponse.json({ events: [], totals: { commissions: 0, tips: 0, totalPay: 0, finalPay: 0 } });
+    }
+
+    const eventIds = events.map((e: any) => e.id);
+
+    // Fetch vendor payment records for this user in those events
+    const { data: vendorPayments, error: vpError } = await supabaseAdmin
+      .from('event_vendor_payments')
+      .select('event_id, actual_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
+      .eq('user_id', userId)
+      .in('event_id', eventIds);
+
+    if (vpError) {
+      return NextResponse.json({ error: vpError.message }, { status: 500 });
+    }
+
+    // Fetch event-level payment summaries (for net_sales, commission pool dollars)
+    const { data: eventPayments, error: epError } = await supabaseAdmin
+      .from('event_payments')
+      .select('event_id, net_sales, commission_pool_dollars, commission_pool_percent')
+      .in('event_id', eventIds);
+
+    if (epError) {
+      return NextResponse.json({ error: epError.message }, { status: 500 });
+    }
+
+    // Fetch payment adjustments for this user
+    const { data: adjustments, error: adjError } = await supabaseAdmin
+      .from('payment_adjustments')
+      .select('event_id, adjustment_amount, adjustment_type')
+      .eq('user_id', userId)
+      .in('event_id', eventIds);
+
+    if (adjError) {
+      return NextResponse.json({ error: adjError.message }, { status: 500 });
+    }
+
+    // Build lookup maps
+    const vpByEvent: Record<string, any> = {};
+    for (const vp of vendorPayments || []) {
+      vpByEvent[vp.event_id] = vp;
+    }
+
+    const epByEvent: Record<string, any> = {};
+    for (const ep of eventPayments || []) {
+      epByEvent[ep.event_id] = ep;
+    }
+
+    const adjByEvent: Record<string, any> = {};
+    for (const adj of adjustments || []) {
+      adjByEvent[adj.event_id] = adj;
+    }
+
+    // Build per-event final pay data
+    const eventResults = events
+      .filter((ev: any) => vpByEvent[ev.id]) // only events where this user has payment data
+      .map((ev: any) => {
+        const vp = vpByEvent[ev.id] || {};
+        const ep = epByEvent[ev.id] || {};
+        const adj = adjByEvent[ev.id] || {};
+
+        const commissions = Number(vp.commissions || 0);
+        const tips = Number(vp.tips || 0);
+        const totalPay = Number(vp.total_pay || 0);
+        const adjustmentAmount = Number(adj.adjustment_amount || 0);
+        const finalPay = totalPay + adjustmentAmount;
+
+        // Commission pool info for context
+        const netSales = Number(ep.net_sales || 0);
+        const commissionPoolDollars = Number(ep.commission_pool_dollars || 0);
+
+        return {
+          eventId: ev.id,
+          eventName: ev.event_name,
+          eventDate: ev.event_date,
+          venue: ev.venue,
+          city: ev.city,
+          state: ev.state,
+          actualHours: Number(vp.actual_hours || vp.regular_hours || 0),
+          regularPay: Number(vp.regular_pay || 0),
+          overtimePay: Number(vp.overtime_pay || 0),
+          doubletimePay: Number(vp.doubletime_pay || 0),
+          commissions,
+          tips,
+          totalPay,
+          adjustmentAmount,
+          adjustmentType: adj.adjustment_type || null,
+          finalPay,
+          netSales,
+          commissionPoolDollars,
+        };
+      });
+
+    const totals = eventResults.reduce(
+      (acc: any, ev: any) => ({
+        commissions: acc.commissions + ev.commissions,
+        tips: acc.tips + ev.tips,
+        totalPay: acc.totalPay + ev.totalPay,
+        finalPay: acc.finalPay + ev.finalPay,
+      }),
+      { commissions: 0, tips: 0, totalPay: 0, finalPay: 0 }
+    );
+
+    return NextResponse.json({ events: eventResults, totals });
+  } catch (err: any) {
+    console.error('[employee-final-pay] error:', err);
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+  }
+}

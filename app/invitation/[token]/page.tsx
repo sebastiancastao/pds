@@ -225,19 +225,47 @@ export default function InvitationPage() {
                     {/* Time section — shown only when day is checked */}
                     {d.available && (
                       <div className="invitation-time-section">
-                        {/* All Day toggle */}
-                        <label className="invitation-allday-label">
-                          <input
-                            type="checkbox"
-                            checked={d.allDay !== false}
-                            onChange={() => toggleAllDay(i)}
-                            className="invitation-allday-checkbox"
-                          />
-                          <span className="invitation-allday-track">
-                            <span className="invitation-allday-thumb" />
-                          </span>
-                          <span className="text-sm font-medium text-gray-700 select-none">All Day</span>
-                        </label>
+                        {/* All Day pill toggle — driven by React state */}
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleAllDay(i)}
+                            aria-pressed={d.allDay !== false}
+                            className="flex items-center gap-2 focus:outline-none"
+                          >
+                            {/* Track */}
+                            <span
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                width: 36,
+                                height: 20,
+                                borderRadius: 9999,
+                                padding: 2,
+                                backgroundColor: d.allDay !== false ? '#007AFF' : '#d1d5db',
+                                transition: 'background-color 0.2s ease',
+                                flexShrink: 0,
+                              }}
+                            >
+                              {/* Thumb */}
+                              <span
+                                style={{
+                                  display: 'block',
+                                  width: 16,
+                                  height: 16,
+                                  borderRadius: '50%',
+                                  backgroundColor: 'white',
+                                  boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                                  transform: d.allDay !== false ? 'translateX(16px)' : 'translateX(0)',
+                                  transition: 'transform 0.2s ease',
+                                }}
+                              />
+                            </span>
+                            <span className="text-sm font-medium text-gray-700 select-none">
+                              All Day
+                            </span>
+                          </button>
+                        </div>
 
                         {/* Time pickers — shown when NOT all day */}
                         {d.allDay === false && (
