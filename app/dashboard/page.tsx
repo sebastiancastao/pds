@@ -552,7 +552,7 @@ export default function DashboardPage() {
           }
         }
 
-        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2') {
+        if (role !== 'manager' && role !== 'exec' && role !== 'supervisor' && role !== 'supervisor2' && role !== 'supervisor3') {
           console.error('[DASHBOARD] Access denied - user role:', role);
           router.replace('/login');
           return;
@@ -599,7 +599,7 @@ export default function DashboardPage() {
 
                 // For managers, auto-set their region filter
                 // For executives, they can still change it
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                   setSelectedEmployeeRegion(userRegion.id);
@@ -627,7 +627,7 @@ export default function DashboardPage() {
               if (region) {
                 console.log('[DASHBOARD] â Region found from database:', region.name);
                 setDetectedRegion({ id: region.id, name: region.name });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   setSelectedRegion(region.id);
                   setSelectedEmployeeRegion(region.id);
                 }
@@ -674,7 +674,7 @@ export default function DashboardPage() {
                 console.log('[DASHBOARD] â User location detected in region:', userRegion.name);
                 setDetectedRegion({ id: userRegion.id, name: userRegion.name });
                 setUserCoordinates({ lat: currentLat, lng: currentLng });
-                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2') {
+                if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
                   setSelectedEmployeeRegion(userRegion.id);
@@ -763,9 +763,9 @@ export default function DashboardPage() {
 
     // For managers, use the detected region from geocoding (if available)
     // Otherwise, fall back to database region_id or 'all' for executives
-    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && detectedRegion
+    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion
       ? detectedRegion.id
-      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && userRegionId ? userRegionId : 'all');
+      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && userRegionId ? userRegionId : 'all');
 
     console.log('[DASHBOARD] ð Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
 
@@ -939,9 +939,9 @@ export default function DashboardPage() {
     setSelectedVendors(new Set());
     setVendorSearchQuery("");
     // For managers, use their detected region from geocoding; for execs, show all
-    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && detectedRegion
+    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion
       ? detectedRegion.id
-      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && userRegionId ? userRegionId : "all");
+      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && userRegionId ? userRegionId : "all");
     console.log('[DASHBOARD] ð Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
     setSelectedRegion(initialRegion);
     setMessage("");
@@ -1391,7 +1391,7 @@ export default function DashboardPage() {
 
   const handleEmployeeRegionChange = async (newRegion: string) => {
     // Prevent managers from changing regions
-    if ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2')) {
+    if ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3')) {
       console.warn('[DASHBOARD-HR] â ï¸ Managers cannot change regions');
       return;
     }
@@ -1463,7 +1463,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {userRole !== 'supervisor' && userRole !== 'supervisor2' && (
+              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor3' && (
                 <Link
                   href="/global-calendar"
                   className="apple-button apple-button-secondary flex items-center gap-2"
@@ -2042,7 +2042,7 @@ export default function DashboardPage() {
                       <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
                       {regions.map((r) => (
                         <option key={r.id} value={r.id}>
-                          {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id && (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') ? '(Your Region)' : ''}
+                          {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id && (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') ? '(Your Region)' : ''}
                         </option>
                       ))}
                     </select>
@@ -2075,7 +2075,7 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Manager Region Info Banner */}
-                {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && detectedRegion && selectedEmployeeRegion !== "all" && (
+                {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion && selectedEmployeeRegion !== "all" && (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
                     <div className="flex items-center text-xs text-blue-800">
                       <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2359,7 +2359,7 @@ export default function DashboardPage() {
                   {/* Region Filter - For both managers and executives */}
                   <div className="mb-6">
                     {/* Auto-detection notice for managers */}
-                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2') && detectedRegion && (
+                    {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion && (
                       <div className="mb-3 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
                         <div className="flex items-center text-xs text-blue-800">
                           <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">

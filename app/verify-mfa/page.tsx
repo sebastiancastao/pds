@@ -412,8 +412,8 @@ function VerifyMFAContent() {
         // Role-based routing
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
-        if (userRole === 'manager') {
-          console.log('[VERIFY-MFA DEBUG] Manager role - Redirecting to /dashboard');
+        if (userRole === 'manager' || userRole === 'supervisor3') {
+          console.log('[VERIFY-MFA DEBUG] Manager/Supervisor3 role - Redirecting to /dashboard');
           router.push('/dashboard');
         } else if (userRole === 'exec') {
           console.log('[VERIFY-MFA DEBUG] Exec role - Redirecting to /global-calendar');

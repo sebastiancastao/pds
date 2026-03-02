@@ -194,24 +194,6 @@ const getTeamMemberSortFields = (member: any): {
   };
 };
 
-const LOCATION_SPECIFIC_CALL_TIME_VENUES = new Set(
-  [
-    "Golden 1 Center",
-    "Levi's Stadium",
-    "SaveMart Center",
-    "Save Mart Center",
-    "Cow Palace Arena & Event Center",
-    "Cow Palace Arena and Event Center",
-  ].map((venueName) => venueName.toLowerCase().replace(/[’']/g, "").replace(/[^a-z0-9]+/g, " ").trim())
-);
-
-const normalizeVenueKey = (value: unknown): string =>
-  String(value ?? "")
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-
 const normalizeTimeForInput = (value: string | null | undefined): string => {
   if (!value) return "";
   const raw = String(value).trim();
@@ -413,10 +395,7 @@ export default function EventDashboardPage() {
   const [staffRoleFilter, setStaffRoleFilter] = useState<string>(""); // '', 'vendor', 'cwt'
 
   const eventTimezone = useMemo(() => getTimezoneForState(event?.state), [event?.state]);
-  const supportsLocationCallTimes = useMemo(
-    () => LOCATION_SPECIFIC_CALL_TIME_VENUES.has(normalizeVenueKey(event?.venue)),
-    [event?.venue]
-  );
+  const supportsLocationCallTimes = true;
 
   const sortedTeamMembers = useMemo(() => {
     return [...(teamMembers || [])].sort((a: any, b: any) => {
