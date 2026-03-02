@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -24,6 +24,13 @@ type TeamAssignment = {
   member: User | null;
 };
 
+type Venue = {
+  id: string;
+  venue_name: string;
+  city: string;
+  state: string;
+};
+
 type UserRoleRow = Pick<User, "role">;
 
 const AVAILABLE_ROLES = [
@@ -31,6 +38,7 @@ const AVAILABLE_ROLES = [
   { value: "worker", label: "Worker" },
   { value: "supervisor", label: "Supervisor" },
   { value: "supervisor2", label: "Supervisor 2 (Read-Only)" },
+  { value: "supervisor3", label: "Supervisor 3" },
   { value: "manager", label: "Manager" },
   { value: "finance", label: "Finance" },
   { value: "exec", label: "Exec" },
@@ -43,6 +51,7 @@ const ROLE_COLORS: Record<string, { bg: string; text: string }> = {
   worker: { bg: "#f3f4f6", text: "#374151" },
   supervisor: { bg: "#fef3c7", text: "#92400e" },
   supervisor2: { bg: "#fef9c3", text: "#854d0e" },
+  supervisor3: { bg: "#ffedd5", text: "#9a3412" },
   manager: { bg: "#dbeafe", text: "#1d4ed8" },
   finance: { bg: "#dcfce7", text: "#15803d" },
   exec: { bg: "#ede9fe", text: "#6d28d9" },
@@ -67,7 +76,7 @@ export default function RoleManagementPage() {
   const [successMessage, setSuccessMessage] = useState("");
 
   // --- Team Assignment State ---
-  const [activeTab, setActiveTab] = useState<"roles" | "teams">("roles");
+  const [activeTab, setActiveTab] = useState<"roles" | "teams" | "sup3venues">("roles");
   const [managers, setManagers] = useState<User[]>([]);
   const [selectedManagerId, setSelectedManagerId] = useState<string>("");
   const [teamMembers, setTeamMembers] = useState<TeamAssignment[]>([]);
@@ -77,6 +86,34 @@ export default function RoleManagementPage() {
   const [addMemberId, setAddMemberId] = useState<string>("");
   const [addingMember, setAddingMember] = useState(false);
   const [removingId, setRemovingId] = useState<string | null>(null);
+
+  // --- Supervisor 3 Venue State ---
+  const [supervisor3Users, setSupervisor3Users] = useState<User[]>([]);
+  const [selectedSup3Id, setSelectedSup3Id] = useState<string>("");
+  const [sup3VenueAssignments, setSup3VenueAssignments] = useState<any[]>([]);
+  const [allVenues, setAllVenues] = useState<Venue[]>([]);
+  const [sup3Loading, setSup3Loading] = useState(false);
+  const [sup3Error, setSup3Error] = useState("");
+  const [sup3Success, setSup3Success] = useState("");
+  const [addVenueId, setAddVenueId] = useState<string>("");
+  const [addingVenue, setAddingVenue] = useState(false);
+  const [removingSup3VenueId, setRemovingSup3VenueId] = useState<string | null>(null);
+
+  // --- Supervisor 3 Team State ---
+  const [sup3TeamMembers, setSup3TeamMembers] = useState<TeamAssignment[]>([]);
+  const [sup3TeamLoading, setSup3TeamLoading] = useState(false);
+  const [sup3TeamError, setSup3TeamError] = useState("");
+  const [sup3TeamSuccess, setSup3TeamSuccess] = useState("");
+  const [addSup3MemberId, setAddSup3MemberId] = useState<string>("");
+  const [addingSup3Member, setAddingSup3Member] = useState(false);
+  const [removingSup3TeamId, setRemovingSup3TeamId] = useState<string | null>(null);
+
+  // --- Supervisor 3 Team Venue Assignment State ---
+  const [expandedSup3MemberId, setExpandedSup3MemberId] = useState<string | null>(null);
+  const [sup3MemberVenues, setSup3MemberVenues] = useState<Record<string, any[]>>({});
+  const [addVenueToMemberVenueId, setAddVenueToMemberVenueId] = useState<string>("");
+  const [addingVenueToMember, setAddingVenueToMember] = useState(false);
+  const [removingVenueAssignmentId, setRemovingVenueAssignmentId] = useState<string | null>(null);
 
   // Check authorization
   useEffect(() => {
@@ -123,10 +160,10 @@ export default function RoleManagementPage() {
     }
   }, [isAuthorized]);
 
-  // Derive managers from users list
+  // Derive managers (include supervisor3) and supervisor3 users from users list
   useEffect(() => {
-    const mgrs = users.filter(u => ['manager', 'exec'].includes(u.role));
-    setManagers(mgrs);
+    setManagers(users.filter(u => ['manager', 'exec', 'supervisor3'].includes(u.role)));
+    setSupervisor3Users(users.filter(u => u.role === 'supervisor3'));
   }, [users]);
 
   // Load team when manager changes
@@ -137,6 +174,24 @@ export default function RoleManagementPage() {
       setTeamMembers([]);
     }
   }, [selectedManagerId]);
+
+  // Load all venues when sup3venues tab is first opened
+  useEffect(() => {
+    if (activeTab === 'sup3venues' && isAuthorized && allVenues.length === 0) {
+      loadAllVenues();
+    }
+  }, [activeTab, isAuthorized]);
+
+  // Load supervisor3 venue assignments and team when a supervisor3 user is selected
+  useEffect(() => {
+    if (selectedSup3Id) {
+      loadSup3Venues(selectedSup3Id);
+      loadSup3TeamMembers(selectedSup3Id);
+    } else {
+      setSup3VenueAssignments([]);
+      setSup3TeamMembers([]);
+    }
+  }, [selectedSup3Id]);
 
   const filteredUsers = useMemo(() => {
     let result = users;
@@ -307,6 +362,234 @@ export default function RoleManagementPage() {
     }
   };
 
+  // --- Supervisor 3 Venue Assignment ---
+  const loadAllVenues = async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/venues', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load venues');
+      setAllVenues(data.venues || []);
+    } catch (err: any) {
+      console.error('[ROLE-MANAGEMENT] Error loading venues:', err);
+    }
+  };
+
+  const loadSup3Venues = async (sup3Id: string) => {
+    setSup3Loading(true);
+    setSup3Error("");
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/venue-managers?manager_id=${sup3Id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load venue assignments');
+      setSup3VenueAssignments(data.assignments || []);
+    } catch (err: any) {
+      setSup3Error(err.message || 'Failed to load venue assignments');
+    } finally {
+      setSup3Loading(false);
+    }
+  };
+
+  const loadSup3TeamMembers = async (sup3Id: string) => {
+    setSup3TeamLoading(true);
+    setSup3TeamError("");
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/manager-teams?manager_id=${sup3Id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load team');
+      setSup3TeamMembers(data.teamMembers || []);
+    } catch (err: any) {
+      setSup3TeamError(err.message || 'Failed to load team');
+    } finally {
+      setSup3TeamLoading(false);
+    }
+  };
+
+  const handleAddSup3Member = async () => {
+    if (!selectedSup3Id || !addSup3MemberId) return;
+    setAddingSup3Member(true);
+    setSup3TeamError("");
+    setSup3TeamSuccess("");
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/manager-teams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ managerId: selectedSup3Id, memberId: addSup3MemberId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to assign member");
+      setSup3TeamSuccess("Supervisor assigned to team");
+      setTimeout(() => setSup3TeamSuccess(""), 4000);
+      setAddSup3MemberId("");
+      loadSup3TeamMembers(selectedSup3Id);
+    } catch (err: any) {
+      setSup3TeamError(err.message || "Failed to assign member");
+    } finally {
+      setAddingSup3Member(false);
+    }
+  };
+
+  const handleRemoveSup3Member = async (assignmentId: string, memberName: string) => {
+    const confirmed = confirm(`Remove ${memberName} from this Supervisor 3's team?`);
+    if (!confirmed) return;
+    setRemovingSup3TeamId(assignmentId);
+    setSup3TeamError("");
+    setSup3TeamSuccess("");
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/manager-teams", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ assignmentId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to remove member");
+      setSup3TeamMembers(prev => prev.filter(t => t.assignment_id !== assignmentId));
+      setSup3TeamSuccess("Supervisor removed from team");
+      setTimeout(() => setSup3TeamSuccess(""), 4000);
+    } catch (err: any) {
+      setSup3TeamError(err.message || "Failed to remove member");
+    } finally {
+      setRemovingSup3TeamId(null);
+    }
+  };
+
+  // --- Supervisor 3 Team Venue functions ---
+  const loadSup3MemberVenues = async (supervisor3Id: string, supervisorId: string) => {
+    try {
+      const token = await getToken();
+      const res = await fetch(
+        `/api/supervisor3-team-venues?supervisor3_id=${supervisor3Id}&supervisor_id=${supervisorId}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load venues');
+      setSup3MemberVenues(prev => ({ ...prev, [supervisorId]: data.assignments || [] }));
+    } catch (err: any) {
+      console.error('[ROLE-MANAGEMENT] Error loading member venues:', err);
+    }
+  };
+
+  const handleToggleMemberVenues = (supervisor3Id: string, supervisorId: string) => {
+    if (expandedSup3MemberId === supervisorId) {
+      setExpandedSup3MemberId(null);
+    } else {
+      setExpandedSup3MemberId(supervisorId);
+      setAddVenueToMemberVenueId("");
+      loadSup3MemberVenues(supervisor3Id, supervisorId);
+    }
+  };
+
+  const handleAddVenueToMember = async (supervisor3Id: string, supervisorId: string) => {
+    if (!addVenueToMemberVenueId) return;
+    setAddingVenueToMember(true);
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/supervisor3-team-venues', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          supervisor3_id: supervisor3Id,
+          supervisor_id: supervisorId,
+          venue_id: addVenueToMemberVenueId,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to assign venue');
+      setAddVenueToMemberVenueId("");
+      loadSup3MemberVenues(supervisor3Id, supervisorId);
+    } catch (err: any) {
+      console.error('[ROLE-MANAGEMENT] Error adding venue to member:', err);
+      setSup3TeamError(err.message || 'Failed to assign venue');
+    } finally {
+      setAddingVenueToMember(false);
+    }
+  };
+
+  const handleRemoveVenueFromMember = async (
+    assignmentId: string,
+    supervisor3Id: string,
+    supervisorId: string
+  ) => {
+    setRemovingVenueAssignmentId(assignmentId);
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/supervisor3-team-venues?id=${assignmentId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to remove venue');
+      setSup3MemberVenues(prev => ({
+        ...prev,
+        [supervisorId]: (prev[supervisorId] || []).filter((a: any) => a.id !== assignmentId),
+      }));
+    } catch (err: any) {
+      console.error('[ROLE-MANAGEMENT] Error removing venue from member:', err);
+      setSup3TeamError(err.message || 'Failed to remove venue');
+    } finally {
+      setRemovingVenueAssignmentId(null);
+    }
+  };
+
+  const handleAddVenueToSup3 = async () => {
+    if (!selectedSup3Id || !addVenueId) return;
+    setAddingVenue(true);
+    setSup3Error("");
+    setSup3Success("");
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/venue-managers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ venue_id: addVenueId, manager_id: selectedSup3Id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to assign venue');
+      setSup3Success("Venue assigned successfully");
+      setTimeout(() => setSup3Success(""), 4000);
+      setAddVenueId("");
+      loadSup3Venues(selectedSup3Id);
+    } catch (err: any) {
+      setSup3Error(err.message || 'Failed to assign venue');
+    } finally {
+      setAddingVenue(false);
+    }
+  };
+
+  const handleRemoveSup3Venue = async (assignmentId: string, venueName: string) => {
+    const confirmed = confirm(`Remove access to "${venueName}"?`);
+    if (!confirmed) return;
+    setRemovingSup3VenueId(assignmentId);
+    setSup3Error("");
+    setSup3Success("");
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/venue-managers?id=${assignmentId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to remove venue');
+      setSup3VenueAssignments(prev => prev.filter((a: any) => a.id !== assignmentId));
+      setSup3Success("Venue removed successfully");
+      setTimeout(() => setSup3Success(""), 4000);
+    } catch (err: any) {
+      setSup3Error(err.message || 'Failed to remove venue');
+    } finally {
+      setRemovingSup3VenueId(null);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('mfa_verified');
@@ -328,6 +611,26 @@ export default function RoleManagementPage() {
   const availableMembers = users.filter(u =>
     u.id !== selectedManagerId && !currentMemberIds.has(u.id)
   );
+
+  // Venues not yet assigned to the selected supervisor3
+  const assignedVenueIds = new Set(sup3VenueAssignments.map((a: any) => a.venue_id));
+  const availableVenuesForSup3 = allVenues.filter(v => !assignedVenueIds.has(v.id));
+
+  // Supervisors not yet on the selected supervisor3's team
+  const sup3CurrentMemberIds = new Set(sup3TeamMembers.map(t => t.member_id));
+  const availableSupervisorsForSup3 = users.filter(u =>
+    u.role === 'supervisor' &&
+    u.id !== selectedSup3Id &&
+    !sup3CurrentMemberIds.has(u.id)
+  );
+
+  // Venues from the supervisor3's pool not yet assigned to the expanded team member
+  const expandedMemberAssignedVenueIds = new Set(
+    (sup3MemberVenues[expandedSup3MemberId ?? ''] || []).map((a: any) => a.venue_id)
+  );
+  const venuesAvailableForMember = sup3VenueAssignments
+    .filter((a: any) => a.venue && !expandedMemberAssignedVenueIds.has(a.venue_id))
+    .map((a: any) => a.venue);
 
   if (authChecking) {
     return (
@@ -390,6 +693,22 @@ export default function RoleManagementPage() {
           }}
         >
           Manager Teams
+        </button>
+        <button
+          onClick={() => setActiveTab("sup3venues")}
+          style={{
+            padding: '0.75rem 1.5rem',
+            fontWeight: '600',
+            fontSize: '1rem',
+            border: 'none',
+            borderBottom: activeTab === "sup3venues" ? '2px solid #ea580c' : '2px solid transparent',
+            color: activeTab === "sup3venues" ? '#ea580c' : '#6b7280',
+            backgroundColor: 'transparent',
+            cursor: 'pointer',
+            marginBottom: '-2px',
+          }}
+        >
+          Supervisor 3 Venues
         </button>
       </div>
 
@@ -516,7 +835,7 @@ export default function RoleManagementPage() {
           {/* Manager Selector */}
           <div style={{ marginBottom: '1.5rem' }}>
             <label style={{ display: 'block', fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.875rem', color: '#374151' }}>
-              Select a Manager / Exec
+              Select a Manager / Exec / Supervisor 3
             </label>
             <select
               value={selectedManagerId}
@@ -654,6 +973,368 @@ export default function RoleManagementPage() {
           {!selectedManagerId && (
             <div style={{ textAlign: 'center', padding: '3rem', color: '#9ca3af' }}>
               <p style={{ fontSize: '1.125rem' }}>Select a manager above to view and manage their team</p>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ========== SUPERVISOR 3 VENUES TAB ========== */}
+      {activeTab === "sup3venues" && (
+        <>
+          <div style={{ marginBottom: '1.5rem', padding: '0.75rem 1rem', backgroundColor: '#fff7ed', border: '1px solid #fed7aa', borderRadius: '0.5rem', color: '#9a3412', fontSize: '0.875rem' }}>
+            Supervisor 3 users are assigned to specific venues. They can see and manage events only at those venues.
+          </div>
+
+          {/* Supervisor 3 Selector */}
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label style={{ display: 'block', fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.875rem', color: '#374151' }}>
+              Select a Supervisor 3
+            </label>
+            <select
+              value={selectedSup3Id}
+              onChange={(e) => setSelectedSup3Id(e.target.value)}
+              style={{ width: '100%', maxWidth: '400px', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: 'pointer' }}
+            >
+              <option value="">-- Select a Supervisor 3 --</option>
+              {supervisor3Users.map(u => (
+                <option key={u.id} value={u.id}>
+                  {u.first_name} {u.last_name}
+                </option>
+              ))}
+            </select>
+            {supervisor3Users.length === 0 && (
+              <p style={{ marginTop: '0.5rem', fontSize: '0.875rem', color: '#9ca3af' }}>
+                No Supervisor 3 users found. Assign the role first in the Assign Roles tab.
+              </p>
+            )}
+          </div>
+
+          {selectedSup3Id && (
+            <>
+              {/* Add Venue */}
+              <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9fafb', borderRadius: '0.5rem', border: '1px solid #e5e7eb' }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.875rem', color: '#374151' }}>
+                    Assign Venue
+                  </label>
+                  <select
+                    value={addVenueId}
+                    onChange={(e) => setAddVenueId(e.target.value)}
+                    style={{ width: '100%', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: 'pointer' }}
+                  >
+                    <option value="">-- Select a venue --</option>
+                    {availableVenuesForSup3.map(v => (
+                      <option key={v.id} value={v.id}>
+                        {v.venue_name} — {v.city}, {v.state}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button
+                  onClick={handleAddVenueToSup3}
+                  disabled={!addVenueId || addingVenue}
+                  style={{
+                    padding: '0.75rem 1.5rem',
+                    backgroundColor: !addVenueId || addingVenue ? '#9ca3af' : '#ea580c',
+                    color: 'white', border: 'none', borderRadius: '0.375rem',
+                    cursor: !addVenueId || addingVenue ? 'not-allowed' : 'pointer',
+                    fontWeight: '600', fontSize: '1rem', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {addingVenue ? 'Assigning...' : 'Assign Venue'}
+                </button>
+              </div>
+
+              {/* Messages */}
+              {sup3Success && (
+                <div style={{ padding: '1rem', backgroundColor: '#dcfce7', color: '#15803d', borderRadius: '0.375rem', marginBottom: '1.5rem', fontWeight: '500' }}>
+                  {sup3Success}
+                </div>
+              )}
+              {sup3Error && (
+                <div style={{ padding: '1rem', backgroundColor: '#fee2e2', color: '#dc2626', borderRadius: '0.375rem', marginBottom: '1.5rem' }}>
+                  {sup3Error}
+                </div>
+              )}
+
+              {sup3Loading && (
+                <div style={{ textAlign: 'center', padding: '2rem' }}><p>Loading venue assignments...</p></div>
+              )}
+
+              {/* Assigned Venues Table */}
+              {!sup3Loading && (
+                <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: '0.5rem' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#f9fafb' }}>
+                        <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Venue</th>
+                        <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>City</th>
+                        <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>State</th>
+                        <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Assigned</th>
+                        <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sup3VenueAssignments.length === 0 ? (
+                        <tr>
+                          <td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                            No venues assigned to this Supervisor 3 yet
+                          </td>
+                        </tr>
+                      ) : (
+                        sup3VenueAssignments.map((a: any) => {
+                          const venue = a.venue;
+                          const isRemoving = removingSup3VenueId === a.id;
+                          return (
+                            <tr key={a.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                              <td style={{ padding: '0.75rem', fontWeight: '500' }}>{venue?.venue_name || '—'}</td>
+                              <td style={{ padding: '0.75rem', color: '#4b5563' }}>{venue?.city || '—'}</td>
+                              <td style={{ padding: '0.75rem', color: '#4b5563' }}>{venue?.state || '—'}</td>
+                              <td style={{ padding: '0.75rem', color: '#6b7280', fontSize: '0.875rem' }}>
+                                {new Date(a.assigned_at).toLocaleDateString()}
+                              </td>
+                              <td style={{ padding: '0.75rem' }}>
+                                <button
+                                  onClick={() => handleRemoveSup3Venue(a.id, venue?.venue_name || 'this venue')}
+                                  disabled={isRemoving}
+                                  style={{
+                                    padding: '0.375rem 0.75rem',
+                                    backgroundColor: isRemoving ? '#9ca3af' : '#ef4444',
+                                    color: 'white', border: 'none', borderRadius: '0.375rem',
+                                    cursor: isRemoving ? 'not-allowed' : 'pointer',
+                                    fontWeight: '500', fontSize: '0.875rem',
+                                  }}
+                                >
+                                  {isRemoving ? 'Removing...' : 'Remove'}
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {!sup3Loading && sup3VenueAssignments.length > 0 && (
+                <div style={{ marginTop: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
+                  {sup3VenueAssignments.length} venue{sup3VenueAssignments.length !== 1 ? 's' : ''} assigned
+                </div>
+              )}
+
+              {/* ---- Team Members ---- */}
+              <div style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '2px solid #e5e7eb' }}>
+                <h3 style={{ fontSize: '1.125rem', fontWeight: '700', marginBottom: '0.25rem' }}>Team Members</h3>
+                <p style={{ fontSize: '0.875rem', color: '#6b7280', marginBottom: '1.25rem' }}>
+                  Supervisors on this team will only see venues assigned to this Supervisor 3.
+                </p>
+
+                {/* Add member row */}
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-end', marginBottom: '1.5rem', padding: '1rem', backgroundColor: '#f9fafb', borderRadius: '0.5rem', border: '1px solid #e5e7eb' }}>
+                  <div style={{ flex: 1 }}>
+                    <label style={{ display: 'block', fontWeight: '600', marginBottom: '0.5rem', fontSize: '0.875rem', color: '#374151' }}>
+                      Add Supervisor to Team
+                    </label>
+                    <select
+                      value={addSup3MemberId}
+                      onChange={(e) => setAddSup3MemberId(e.target.value)}
+                      style={{ width: '100%', padding: '0.75rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: 'pointer' }}
+                    >
+                      <option value="">-- Select a supervisor --</option>
+                      {availableSupervisorsForSup3.map(u => (
+                        <option key={u.id} value={u.id}>
+                          {u.first_name} {u.last_name} — {u.email}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    onClick={handleAddSup3Member}
+                    disabled={!addSup3MemberId || addingSup3Member}
+                    style={{
+                      padding: '0.75rem 1.5rem',
+                      backgroundColor: !addSup3MemberId || addingSup3Member ? '#9ca3af' : '#ea580c',
+                      color: 'white', border: 'none', borderRadius: '0.375rem',
+                      cursor: !addSup3MemberId || addingSup3Member ? 'not-allowed' : 'pointer',
+                      fontWeight: '600', fontSize: '1rem', whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {addingSup3Member ? 'Adding...' : 'Add to Team'}
+                  </button>
+                </div>
+
+                {/* Messages */}
+                {sup3TeamSuccess && (
+                  <div style={{ padding: '1rem', backgroundColor: '#dcfce7', color: '#15803d', borderRadius: '0.375rem', marginBottom: '1.5rem', fontWeight: '500' }}>
+                    {sup3TeamSuccess}
+                  </div>
+                )}
+                {sup3TeamError && (
+                  <div style={{ padding: '1rem', backgroundColor: '#fee2e2', color: '#dc2626', borderRadius: '0.375rem', marginBottom: '1.5rem' }}>
+                    {sup3TeamError}
+                  </div>
+                )}
+
+                {sup3TeamLoading && (
+                  <div style={{ textAlign: 'center', padding: '2rem' }}><p>Loading team...</p></div>
+                )}
+
+                {/* Team members table */}
+                {!sup3TeamLoading && (
+                  <div style={{ overflowX: 'auto', border: '1px solid #e5e7eb', borderRadius: '0.5rem' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ backgroundColor: '#f9fafb' }}>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Name</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Email</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Role</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Assigned</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sup3TeamMembers.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                              No supervisors assigned to this team yet
+                            </td>
+                          </tr>
+                        ) : (
+                          sup3TeamMembers.map((tm) => {
+                            const m = tm.member;
+                            if (!m) return null;
+                            const colors = getRoleColors(m.role);
+                            const isRemoving = removingSup3TeamId === tm.assignment_id;
+                            const isExpanded = expandedSup3MemberId === m.id;
+                            const memberVenues = sup3MemberVenues[m.id] || [];
+                            return (
+                              <React.Fragment key={tm.assignment_id}>
+                                <tr style={{ borderBottom: isExpanded ? 'none' : '1px solid #e5e7eb' }}>
+                                  <td style={{ padding: '0.75rem' }}>{m.first_name} {m.last_name}</td>
+                                  <td style={{ padding: '0.75rem', color: '#4b5563' }}>{m.email}</td>
+                                  <td style={{ padding: '0.75rem' }}>
+                                    <span style={{ padding: '0.25rem 0.5rem', backgroundColor: colors.bg, color: colors.text, borderRadius: '0.25rem', fontSize: '0.875rem', fontWeight: '500' }}>
+                                      {m.role}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: '0.75rem', color: '#6b7280', fontSize: '0.875rem' }}>
+                                    {new Date(tm.assigned_at).toLocaleDateString()}
+                                  </td>
+                                  <td style={{ padding: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                    <button
+                                      onClick={() => handleToggleMemberVenues(selectedSup3Id, m.id)}
+                                      style={{
+                                        padding: '0.375rem 0.75rem',
+                                        backgroundColor: isExpanded ? '#f97316' : '#ea580c',
+                                        color: 'white', border: 'none', borderRadius: '0.375rem',
+                                        cursor: 'pointer', fontWeight: '500', fontSize: '0.875rem',
+                                      }}
+                                    >
+                                      {isExpanded ? 'Hide Venues' : 'Manage Venues'}
+                                    </button>
+                                    <button
+                                      onClick={() => handleRemoveSup3Member(tm.assignment_id, `${m.first_name} ${m.last_name}`)}
+                                      disabled={isRemoving}
+                                      style={{
+                                        padding: '0.375rem 0.75rem',
+                                        backgroundColor: isRemoving ? '#9ca3af' : '#ef4444',
+                                        color: 'white', border: 'none', borderRadius: '0.375rem',
+                                        cursor: isRemoving ? 'not-allowed' : 'pointer',
+                                        fontWeight: '500', fontSize: '0.875rem',
+                                      }}
+                                    >
+                                      {isRemoving ? 'Removing...' : 'Remove'}
+                                    </button>
+                                  </td>
+                                </tr>
+
+                                {/* Expandable venue assignment row */}
+                                {isExpanded && (
+                                  <tr key={`${tm.assignment_id}-venues`} style={{ borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff7ed' }}>
+                                    <td colSpan={5} style={{ padding: '1rem 1.5rem' }}>
+                                      <div style={{ marginBottom: '0.75rem', fontWeight: '600', fontSize: '0.875rem', color: '#9a3412' }}>
+                                        Assigned Venues for {m.first_name} {m.last_name}
+                                      </div>
+
+                                      {/* Add venue row */}
+                                      <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginBottom: '0.75rem' }}>
+                                        <select
+                                          value={addVenueToMemberVenueId}
+                                          onChange={(e) => setAddVenueToMemberVenueId(e.target.value)}
+                                          style={{ flex: 1, maxWidth: '360px', padding: '0.5rem 0.75rem', border: '1px solid #fed7aa', borderRadius: '0.375rem', fontSize: '0.875rem', cursor: 'pointer' }}
+                                        >
+                                          <option value="">— Select a venue to assign —</option>
+                                          {venuesAvailableForMember.map((v: any) => (
+                                            <option key={v.id} value={v.id}>
+                                              {v.venue_name} — {v.city}, {v.state}
+                                            </option>
+                                          ))}
+                                        </select>
+                                        <button
+                                          onClick={() => handleAddVenueToMember(selectedSup3Id, m.id)}
+                                          disabled={!addVenueToMemberVenueId || addingVenueToMember}
+                                          style={{
+                                            padding: '0.5rem 1rem',
+                                            backgroundColor: !addVenueToMemberVenueId || addingVenueToMember ? '#9ca3af' : '#ea580c',
+                                            color: 'white', border: 'none', borderRadius: '0.375rem',
+                                            cursor: !addVenueToMemberVenueId || addingVenueToMember ? 'not-allowed' : 'pointer',
+                                            fontWeight: '600', fontSize: '0.875rem', whiteSpace: 'nowrap',
+                                          }}
+                                        >
+                                          {addingVenueToMember ? 'Adding...' : 'Assign Venue'}
+                                        </button>
+                                      </div>
+
+                                      {/* Current venue list */}
+                                      {memberVenues.length === 0 ? (
+                                        <p style={{ fontSize: '0.875rem', color: '#6b7280', fontStyle: 'italic' }}>
+                                          No venues assigned yet — this supervisor inherits all of Supervisor 3&apos;s venues until specific venues are assigned.
+                                        </p>
+                                      ) : (
+                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                                          {memberVenues.map((a: any) => (
+                                            <span
+                                              key={a.id}
+                                              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.375rem', padding: '0.25rem 0.625rem', backgroundColor: '#ffedd5', color: '#9a3412', borderRadius: '9999px', fontSize: '0.8125rem', fontWeight: '500' }}
+                                            >
+                                              {a.venue?.venue_name || a.venue_id}
+                                              <button
+                                                onClick={() => handleRemoveVenueFromMember(a.id, selectedSup3Id, m.id)}
+                                                disabled={removingVenueAssignmentId === a.id}
+                                                style={{ background: 'none', border: 'none', cursor: removingVenueAssignmentId === a.id ? 'not-allowed' : 'pointer', color: '#c2410c', fontWeight: '700', fontSize: '0.9rem', lineHeight: 1, padding: '0 2px' }}
+                                                title="Remove venue"
+                                              >
+                                                ×
+                                              </button>
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </td>
+                                  </tr>
+                                )}
+                              </React.Fragment>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {!sup3TeamLoading && sup3TeamMembers.length > 0 && (
+                  <div style={{ marginTop: '1rem', color: '#6b7280', fontSize: '0.875rem' }}>
+                    {sup3TeamMembers.length} supervisor{sup3TeamMembers.length !== 1 ? 's' : ''} on this team
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {!selectedSup3Id && supervisor3Users.length > 0 && (
+            <div style={{ textAlign: 'center', padding: '3rem', color: '#9ca3af' }}>
+              <p style={{ fontSize: '1.125rem' }}>Select a Supervisor 3 above to manage their venue assignments</p>
             </div>
           )}
         </>

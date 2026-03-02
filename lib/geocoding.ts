@@ -20,10 +20,11 @@ export interface Region {
   radius_miles: number;
 }
 
-// Fixed business radius for region-based matching across the app.
+// Fallback radius used only when a region has no radius_miles set.
 export const FIXED_REGION_RADIUS_MILES = 200;
 
-export function getEffectiveRegionRadiusMiles(_radiusMiles: number | null | undefined): number {
+export function getEffectiveRegionRadiusMiles(radiusMiles: number | null | undefined): number {
+  if (radiusMiles != null && radiusMiles > 0) return radiusMiles;
   return FIXED_REGION_RADIUS_MILES;
 }
 

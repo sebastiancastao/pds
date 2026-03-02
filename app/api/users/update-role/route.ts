@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
-const ALLOWED_ROLES = ['employee', 'worker', 'supervisor', 'supervisor2', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
+const ALLOWED_ROLES = ['employee', 'worker', 'supervisor', 'supervisor2', 'supervisor3', 'manager', 'finance', 'exec', 'hr', 'backgroundchecker'];
 const NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
 };

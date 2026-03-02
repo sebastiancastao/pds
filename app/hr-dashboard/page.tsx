@@ -329,8 +329,7 @@ function HRDashboardContent() {
       if (s && s !== "all") params.append("state", s);
       if (r && r !== "all") {
         params.append("region_id", r);
-        // Toggle to true to use geographic filtering if your regions use radius/center
-        // params.append("geo_filter", "true");
+        params.append("geo_filter", "true");
       }
 
       const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}` , {
@@ -1677,7 +1676,15 @@ function HRDashboardContent() {
       return;
     }
 
-    const rows = employees.map((employee) => {
+    const colWidths = [
+      { wch: 30 }, // User Name
+      { wch: 32 }, // Email
+      { wch: 10 }, // State
+      { wch: 24 }, // Region
+      { wch: 60 }, // Venues Worked
+    ];
+
+    const toRow = (employee: typeof employees[number]) => {
       const firstName = employee.first_name ? safeDecrypt(employee.first_name) : "";
       const lastName = employee.last_name ? safeDecrypt(employee.last_name) : "";
       const fullName = `${firstName} ${lastName}`.trim() || employee.email || "N/A";
@@ -1691,18 +1698,35 @@ function HRDashboardContent() {
         Region: regionName,
         "Venues Worked": Array.isArray(employee.worked_venues) ? employee.worked_venues.join(", ") : "",
       };
+    };
+
+    const workbook = XLSX.utils.book_new();
+
+    // All employees sheet
+    const allSheet = XLSX.utils.json_to_sheet(employees.map(toRow));
+    allSheet["!cols"] = colWidths;
+    XLSX.utils.book_append_sheet(workbook, allSheet, "All Employees");
+
+    // Per-region sheets (includes San Diego and any other active regions)
+    const regionGroups = new Map<string, typeof employees>();
+    employees.forEach((employee) => {
+      const regionName = employee.region_name
+        || (employee.region_id ? (regionNameById[employee.region_id] || "Unassigned") : "Unassigned");
+      if (!regionGroups.has(regionName)) regionGroups.set(regionName, []);
+      regionGroups.get(regionName)!.push(employee);
     });
 
-    const worksheet = XLSX.utils.json_to_sheet(rows);
-    worksheet["!cols"] = [
-      { wch: 30 }, // User Name
-      { wch: 32 }, // Email
-      { wch: 10 }, // State
-      { wch: 24 }, // Region
-      { wch: 60 }, // Venues Worked
-    ];
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Employee Roster");
+    const sortedRegions = Array.from(regionGroups.keys()).sort((a, b) => {
+      if (a === "Unassigned") return 1;
+      if (b === "Unassigned") return -1;
+      return a.localeCompare(b);
+    });
+
+    sortedRegions.forEach((regionName) => {
+      const regionSheet = XLSX.utils.json_to_sheet(regionGroups.get(regionName)!.map(toRow));
+      regionSheet["!cols"] = colWidths;
+      XLSX.utils.book_append_sheet(workbook, regionSheet, regionName.slice(0, 31));
+    });
 
     const today = new Date().toISOString().slice(0, 10);
     XLSX.writeFile(workbook, `employee_roster_${today}.xlsx`);

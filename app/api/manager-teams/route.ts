@@ -170,8 +170,8 @@ export async function POST(request: NextRequest) {
     if (managerError || !manager) {
       return NextResponse.json({ error: 'Manager not found' }, { status: 404 });
     }
-    if (!['manager', 'exec'].includes(manager.role)) {
-      return NextResponse.json({ error: 'Target user is not a manager or exec' }, { status: 400 });
+    if (!['manager', 'exec', 'supervisor3'].includes(manager.role)) {
+      return NextResponse.json({ error: 'Target user is not a manager, exec, or supervisor3' }, { status: 400 });
     }
 
     // Verify member exists

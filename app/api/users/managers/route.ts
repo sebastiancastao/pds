@@ -6,7 +6,7 @@ export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const TARGET_MANAGER_ROLE = 'manager';
+const MANAGER_ROLES = ['manager', 'supervisor3'];
 const PAGE_SIZE = 1000;
 
 // GET: Retrieve all manager users
@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
       const { data: page, error: managersError } = await supabaseAdmin
         .from('users')
         .select('id, email, role')
-        .eq('role', TARGET_MANAGER_ROLE)
+        .in('role', MANAGER_ROLES)
         .range(from, from + PAGE_SIZE - 1);
 
       if (managersError) {

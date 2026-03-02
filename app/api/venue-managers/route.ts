@@ -4,7 +4,7 @@ import { safeDecrypt } from '@/lib/encryption';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-const ASSIGNABLE_VENUE_MANAGER_ROLE = 'manager';
+const ASSIGNABLE_VENUE_MANAGER_ROLES = ['manager', 'supervisor3'];
 
 // GET: Retrieve all venue manager assignments
 export async function GET(request: NextRequest) {
@@ -200,9 +200,9 @@ export async function POST(request: NextRequest) {
     }
 
     const normalizedManagerRole = String(managerData.role || '').trim().toLowerCase();
-    if (normalizedManagerRole !== ASSIGNABLE_VENUE_MANAGER_ROLE) {
+    if (!ASSIGNABLE_VENUE_MANAGER_ROLES.includes(normalizedManagerRole)) {
       return NextResponse.json({
-        error: 'User must have manager role'
+        error: 'User must have manager or supervisor3 role'
       }, { status: 400 });
     }
 

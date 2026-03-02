@@ -54,7 +54,7 @@ export async function GET(req: NextRequest) {
 
     // If user is a manager or supervisor, only return assigned venues
     // Supervisors see the same venues as their lead manager(s)
-    if (userData.role === 'manager' || userData.role === 'supervisor' || userData.role === 'supervisor2') {
+    if (userData.role === 'manager' || userData.role === 'supervisor' || userData.role === 'supervisor2' || userData.role === 'supervisor3') {
       // Always include direct assignments for the current user.
       const managerIds: string[] = [user.id];
 
@@ -100,6 +100,24 @@ export async function GET(req: NextRequest) {
         }
         venues = Array.from(venueMap.values())
           .sort((a: any, b: any) => a.venue_name.localeCompare(b.venue_name));
+      }
+
+      // For supervisors: if they have specific sup3 venue assignments, those override the chain.
+      if (userData.role === 'supervisor' || userData.role === 'supervisor2') {
+        const { data: sup3Specific } = await supabaseAdmin
+          .from('supervisor3_team_venue_assignments')
+          .select('venue:venue_reference(*)')
+          .eq('supervisor_id', user.id);
+
+        if (sup3Specific && sup3Specific.length > 0) {
+          const sup3Map = new Map();
+          for (const row of sup3Specific) {
+            const v = (row as any).venue;
+            if (v && !sup3Map.has(v.id)) sup3Map.set(v.id, v);
+          }
+          venues = Array.from(sup3Map.values())
+            .sort((a: any, b: any) => a.venue_name.localeCompare(b.venue_name));
+        }
       }
     } else {
       // For exec, admin, and other roles, return all venues

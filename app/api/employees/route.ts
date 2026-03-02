@@ -8,6 +8,8 @@ import {
   isWithinRegion,
   calculateDistanceMiles,
   getUserRegion,
+  geocodeAddress,
+  delay,
   type Region,
 } from "@/lib/geocoding";
 
@@ -17,6 +19,8 @@ const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const MAX_GEOCODES_PER_REQUEST = 8;
 
 type Employee = {
   id: string;
@@ -53,6 +57,16 @@ const chunkArray = <T>(items: T[], chunkSize: number): T[][] => {
     chunks.push(items.slice(i, i + chunkSize));
   }
   return chunks;
+};
+
+const toPlainText = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return safeDecrypt(value).trim();
+};
+
+const normalizeStreetAddress = (address: string): string => {
+  if (!address) return "";
+  return address.replace(/^(\d+)([A-Z])/i, "$1 $2").trim();
 };
 
 /**
@@ -125,8 +139,10 @@ export async function GET(req: NextRequest) {
           first_name,
           last_name,
           phone,
+          address,
           city,
           state,
+          zip_code,
           latitude,
           longitude,
           region_id
@@ -187,22 +203,124 @@ export async function GET(req: NextRequest) {
       regionsForMatching.map((region) => [region.id, region.name])
     );
 
+    // Geocode missing coordinates so region assignment works for exports even when lat/lng
+    // were never persisted for a user profile.
+    const usersNeedingGeocode = (users || []).filter((user: any) => {
+      const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+      const latitude = toFiniteNumber(profile?.latitude);
+      const longitude = toFiniteNumber(profile?.longitude);
+      if (latitude != null && longitude != null) return false;
+
+      const address = normalizeStreetAddress(toPlainText(profile?.address));
+      const city = toPlainText(profile?.city);
+      const state = toPlainText(profile?.state);
+      const zipCode = toPlainText(profile?.zip_code);
+      return !!(address || city || state || zipCode);
+    });
+
+    if (usersNeedingGeocode.length > 0) {
+      console.log("[EMPLOYEES] Profiles missing coordinates before region assignment:", {
+        count: usersNeedingGeocode.length,
+      });
+
+      const targets = usersNeedingGeocode.slice(0, MAX_GEOCODES_PER_REQUEST);
+      for (let i = 0; i < targets.length; i++) {
+        const user = targets[i];
+        const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
+        if (!profile) continue;
+
+        const address = normalizeStreetAddress(toPlainText(profile?.address));
+        const city = toPlainText(profile?.city);
+        const state = toPlainText(profile?.state);
+        const zipCode = toPlainText(profile?.zip_code);
+
+        try {
+          let geocodeResult = await geocodeAddress(address, city, state, zipCode || undefined);
+
+          // Fallbacks for partially populated profile data
+          if (!geocodeResult && (city || state || zipCode)) {
+            geocodeResult = await geocodeAddress("", city, state, zipCode || undefined);
+          }
+          if (!geocodeResult && address) {
+            geocodeResult = await geocodeAddress(address, "", state, zipCode || undefined);
+          }
+
+          if (!geocodeResult) {
+            console.log("[EMPLOYEES] Geocoding returned no result for user:", {
+              userId: user.id,
+              email: user.email,
+              city,
+              state,
+            });
+            continue;
+          }
+
+          const { error: updateError } = await supabaseAdmin
+            .from("profiles")
+            .update({
+              latitude: geocodeResult.latitude,
+              longitude: geocodeResult.longitude,
+            })
+            .eq("user_id", user.id);
+
+          if (updateError) {
+            console.error("[EMPLOYEES] Failed to persist geocoded coordinates:", {
+              userId: user.id,
+              error: updateError.message,
+            });
+            continue;
+          }
+
+          profile.latitude = geocodeResult.latitude;
+          profile.longitude = geocodeResult.longitude;
+
+          console.log("[EMPLOYEES] Geocoded and saved coordinates for user:", {
+            userId: user.id,
+            latitude: geocodeResult.latitude,
+            longitude: geocodeResult.longitude,
+          });
+        } catch (geocodeErr: any) {
+          console.error("[EMPLOYEES] Geocoding failed for user:", {
+            userId: user.id,
+            error: geocodeErr?.message || geocodeErr,
+          });
+        }
+
+        if (i < targets.length - 1) {
+          await delay(1100);
+        }
+      }
+
+      if (usersNeedingGeocode.length > MAX_GEOCODES_PER_REQUEST) {
+        console.log("[EMPLOYEES] Geocode pass capped for this request:", {
+          total_missing: usersNeedingGeocode.length,
+          processed_now: MAX_GEOCODES_PER_REQUEST,
+        });
+      }
+    }
+
     const regionBackfills = new Map<string, string>();
-    // Transform users into employee format and derive missing region_id from geocoded coordinates.
+    // Transform users into employee format and derive region_id from geocoded coordinates.
     let employees: Employee[] = (users || []).map((user: any) => {
       const profile = Array.isArray(user?.profiles) ? user.profiles[0] : user?.profiles;
       const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : "N/A";
       const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : "N/A";
+      const city = toPlainText(profile?.city) || null;
+      const state = toPlainText(profile?.state) || "N/A";
       const latitude = toFiniteNumber(profile?.latitude);
       const longitude = toFiniteNumber(profile?.longitude);
 
-      let resolvedRegionId: string | null = profile?.region_id || null;
-      if (!resolvedRegionId && latitude != null && longitude != null && regionsForMatching.length > 0) {
-        const matchedRegion = getUserRegion(latitude, longitude, regionsForMatching);
-        if (matchedRegion?.id) {
-          resolvedRegionId = matchedRegion.id;
-          regionBackfills.set(user.id, matchedRegion.id);
-        }
+      const cachedRegionId: string | null = profile?.region_id || null;
+      const matchedRegion =
+        latitude != null && longitude != null && regionsForMatching.length > 0
+          ? getUserRegion(latitude, longitude, regionsForMatching)
+          : null;
+
+      // Prefer live geocoded match when available, otherwise keep cached assignment.
+      const resolvedRegionId: string | null = matchedRegion?.id || cachedRegionId;
+
+      if (matchedRegion?.id && matchedRegion.id !== cachedRegionId) {
+        regionBackfills.set(user.id, matchedRegion.id);
       }
 
       return {
@@ -217,8 +335,8 @@ export async function GET(req: NextRequest) {
         status: "active", // Default status - you can add this field to profiles table later
         salary: 0, // Default - you can add this field to profiles table later
         profile_photo_url: null, // Photo handling will be added later if needed
-        state: profile?.state || "N/A",
-        city: profile?.city,
+        state,
+        city,
         region_id: resolvedRegionId,
         region_name: resolvedRegionId ? regionNameById.get(resolvedRegionId) || null : null,
         worked_venues: [],
@@ -235,8 +353,7 @@ export async function GET(req: NextRequest) {
           const { error: updateError } = await supabaseAdmin
             .from("profiles")
             .update({ region_id: matchedRegionId })
-            .eq("user_id", userId)
-            .is("region_id", null);
+            .eq("user_id", userId);
           if (updateError) {
             console.error("[EMPLOYEES] Failed to backfill region_id:", {
               userId,
