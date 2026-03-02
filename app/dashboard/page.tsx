@@ -2351,7 +2351,7 @@ export default function DashboardPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <div className="text-sm text-gray-700">
-                      <div className="font-semibold mb-1">3-Week Work Period</div>
+                      <div className="font-semibold mb-1">6-Week Work Period</div>
                       <div className="text-xs text-gray-600">Weâll invite selected vendors to share availability</div>
                     </div>
                   </div>

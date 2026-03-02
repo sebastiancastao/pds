@@ -382,7 +382,7 @@
 1684:             <div className="apple-modal-header">
 1685:               <div>
 1686:                 <h2 className="text-2xl font-semibold text-gray-900">Calendar Availability Request</h2>
-1687:                 <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 3 weeks</p>
+1687:                 <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 6 weeks</p>
 1688:               </div>
 1689:               <button onClick={closeVendorModal} className="apple-close-button">
 1690:                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

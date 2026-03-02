@@ -405,7 +405,14 @@ export default function RoleManagementPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load team');
-      setSup3TeamMembers(data.teamMembers || []);
+      const members: TeamAssignment[] = data.teamMembers || [];
+      setSup3TeamMembers(members);
+      // Pre-load venues for all team members
+      await Promise.all(
+        members
+          .filter((tm) => tm.member)
+          .map((tm) => loadSup3MemberVenues(sup3Id, tm.member!.id))
+      );
     } catch (err: any) {
       setSup3TeamError(err.message || 'Failed to load team');
     } finally {
@@ -1190,13 +1197,14 @@ export default function RoleManagementPage() {
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Email</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Role</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Assigned</th>
+                          <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Venues</th>
                           <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {sup3TeamMembers.length === 0 ? (
                           <tr>
-                            <td colSpan={5} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                            <td colSpan={6} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
                               No supervisors assigned to this team yet
                             </td>
                           </tr>
@@ -1220,6 +1228,22 @@ export default function RoleManagementPage() {
                                   </td>
                                   <td style={{ padding: '0.75rem', color: '#6b7280', fontSize: '0.875rem' }}>
                                     {new Date(tm.assigned_at).toLocaleDateString()}
+                                  </td>
+                                  <td style={{ padding: '0.75rem' }}>
+                                    {memberVenues.length === 0 ? (
+                                      <span style={{ fontSize: '0.8rem', color: '#9ca3af', fontStyle: 'italic' }}>All venues</span>
+                                    ) : (
+                                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
+                                        {memberVenues.map((a: any) => (
+                                          <span
+                                            key={a.id}
+                                            style={{ padding: '0.125rem 0.5rem', backgroundColor: '#ffedd5', color: '#9a3412', borderRadius: '9999px', fontSize: '0.75rem', fontWeight: '500', whiteSpace: 'nowrap' }}
+                                          >
+                                            {a.venue?.venue_name || a.venue_id}
+                                          </span>
+                                        ))}
+                                      </div>
+                                    )}
                                   </td>
                                   <td style={{ padding: '0.75rem', display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
                                     <button
@@ -1252,7 +1276,7 @@ export default function RoleManagementPage() {
                                 {/* Expandable venue assignment row */}
                                 {isExpanded && (
                                   <tr key={`${tm.assignment_id}-venues`} style={{ borderBottom: '1px solid #e5e7eb', backgroundColor: '#fff7ed' }}>
-                                    <td colSpan={5} style={{ padding: '1rem 1.5rem' }}>
+                                    <td colSpan={6} style={{ padding: '1rem 1.5rem' }}>
                                       <div style={{ marginBottom: '0.75rem', fontWeight: '600', fontSize: '0.875rem', color: '#9a3412' }}>
                                         Assigned Venues for {m.first_name} {m.last_name}
                                       </div>
