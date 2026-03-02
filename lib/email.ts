@@ -789,7 +789,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   // Build invitation URL with token
   const invitationUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/invitation/${invitationToken}`;
 
-  const emailSubject = `Work Opportunity: ${durationWeeks}-Week Event Series`;
+  const emailSubject = `Calendar Request: ${durationWeeks}-Week Event Series`;
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -892,21 +892,8 @@ export async function sendVendorBulkInvitationEmail(data: {
                 </tr>
               </table>
 
-              <!-- What to Expect -->
-              <h3 style="color: #1d1d1f; font-size: 20px; margin: 36px 0 16px 0; font-weight: 600; letter-spacing: -0.5px;">📅 What to Expect</h3>
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb; margin: 20px 0;">
-                <tr>
-                  <td style="padding: 24px;">
-                    <ul style="color: #4b5563; margin: 0; padding-left: 24px; font-size: 16px; line-height: 1.8;">
-                      <li style="margin-bottom: 10px;">Multiple events across ${durationWeeks} weeks</li>
-                      <li style="margin-bottom: 10px;">Flexible schedule - choose your available dates</li>
-                      <li style="margin-bottom: 10px;">Work with professional event teams</li>
-                      <li style="margin-bottom: 10px;">Competitive compensation</li>
-                      <li style="margin-bottom: 0;">Opportunity for future events</li>
-                    </ul>
-                  </td>
-                </tr>
-              </table>
+             
+              
 
               <!-- Instructions -->
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background: linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%); border-radius: 12px; margin: 28px 0; border: 1px solid #93c5fd;">
