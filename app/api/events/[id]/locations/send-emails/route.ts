@@ -15,7 +15,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3"]);
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_BATCH_DELAY_MS = 350;
@@ -239,7 +239,7 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
   if (auth.role === "exec" || auth.role === "admin") return true;
   if (event.created_by === auth.user.id) return true;
 
-  if (auth.role === "supervisor" || auth.role === "supervisor2") {
+  if (auth.role === "supervisor" || auth.role === "supervisor2" || auth.role === "supervisor3") {
     const { data: links, error: linksError } = await supabaseAdmin
       .from("manager_team_members")
       .select("manager_id")
