@@ -190,6 +190,7 @@ export async function POST(req: NextRequest) {
         );
       }
     }
+    
 
     // Insert the time entry
     const division = await getUserDivision(workerId);
