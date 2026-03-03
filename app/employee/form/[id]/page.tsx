@@ -10,6 +10,7 @@ type FormMeta = {
   title: string;
   requires_signature: boolean;
   allow_date_input: boolean;
+  allow_print_name: boolean;
 };
 
 type UploadedDoc = {
@@ -62,6 +63,9 @@ export default function EmployeeFormPage() {
 
   // Date input (shown when admin enabled allow_date_input for this form)
   const [formDate, setFormDate] = useState('');
+
+  // Print name (shown when admin enabled allow_print_name for this form)
+  const [printName, setPrintName] = useState('');
 
   // Already-submitted state
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
@@ -219,6 +223,9 @@ export default function EmployeeFormPage() {
     if (meta?.allow_date_input && !formDate) {
       setError('Please enter the form date before submitting.'); return;
     }
+    if (meta?.allow_print_name && !printName.trim()) {
+      setError('Please print your name before submitting.'); return;
+    }
 
     setSaving(true); setError('');
     try {
@@ -231,6 +238,9 @@ export default function EmployeeFormPage() {
       }
       if (meta?.allow_date_input && formDate) {
         finalBytes = await embedDateIntoPdf(finalBytes, formDate);
+      }
+      if (meta?.allow_print_name && printName.trim()) {
+        finalBytes = await embedPrintNameIntoPdf(finalBytes, printName.trim());
       }
 
       const base64 = uint8ArrayToBase64(finalBytes);
@@ -278,6 +288,17 @@ export default function EmployeeFormPage() {
     lastPage.drawText('Employee Signature', { x, y: y + h + 4, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
     // Underline baseline shared with the date field
     lastPage.drawLine({ start: { x, y: y - 2 }, end: { x: x + w, y: y - 2 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    return pdfDoc.save();
+  };
+
+  const embedPrintNameIntoPdf = async (pdfBytes: Uint8Array, name: string): Promise<Uint8Array> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    lastPage.drawText('Print Name', { x: 40, y: 180, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(name, { x: 40, y: 155, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({ start: { x: 40, y: 140 }, end: { x: 240, y: 140 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
     return pdfDoc.save();
   };
 
@@ -510,6 +531,23 @@ export default function EmployeeFormPage() {
           />
         )}
       </div>
+
+      {/* ── Print Name ───────────────────────────────────────────────────────── */}
+      {meta?.allow_print_name && (
+        <div className="bg-white border-t border-gray-200 px-4 py-8">
+          <div className="max-w-2xl mx-auto">
+            <h3 className="text-lg font-semibold text-gray-900 mb-1">Print Name</h3>
+            <p className="text-sm text-gray-500 mb-4">Type your full legal name clearly.</p>
+            <input
+              type="text"
+              value={printName}
+              onChange={e => setPrintName(e.target.value)}
+              placeholder="Full legal name"
+              className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-full max-w-xs"
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Date Input ───────────────────────────────────────────────────────── */}
       {meta?.allow_date_input && (

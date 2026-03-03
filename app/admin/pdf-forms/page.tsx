@@ -9,6 +9,7 @@ type CustomForm = {
   title: string;
   requires_signature: boolean;
   allow_date_input: boolean;
+  allow_print_name: boolean;
   created_at: string;
   is_active: boolean;
   target_state: string | null;
@@ -79,6 +80,7 @@ export default function AdminPdfFormsPage() {
   const [title, setTitle] = useState('');
   const [requiresSignature, setRequiresSignature] = useState(false);
   const [allowDateInput, setAllowDateInput] = useState(false);
+  const [allowPrintName, setAllowPrintName] = useState(false);
   const [targetState, setTargetState] = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -169,6 +171,7 @@ export default function AdminPdfFormsPage() {
       fd.append('title', title.trim());
       fd.append('requiresSignature', String(requiresSignature));
       fd.append('allowDateInput', String(allowDateInput));
+      fd.append('allowPrintName', String(allowPrintName));
       fd.append('targetState', targetState);
 
       const res = await fetch('/api/custom-forms/upload', {
@@ -184,6 +187,7 @@ export default function AdminPdfFormsPage() {
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
+      setAllowPrintName(false);
       setTargetState('');
       setSelectedPreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -335,6 +339,19 @@ export default function AdminPdfFormsPage() {
               </label>
             </div>
 
+            <div className="flex items-center gap-3">
+              <input
+                id="allowPrintName"
+                type="checkbox"
+                checked={allowPrintName}
+                onChange={e => setAllowPrintName(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="allowPrintName" className="text-sm font-medium text-gray-700">
+                Allow employee to print their name on this form
+              </label>
+            </div>
+
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Restrict to State
@@ -417,6 +434,11 @@ export default function AdminPdfFormsPage() {
                       {form.allow_date_input && (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">
                           Date input
+                        </span>
+                      )}
+                      {form.allow_print_name && (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                          Print name
                         </span>
                       )}
                       {form.target_state && (
