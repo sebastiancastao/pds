@@ -247,17 +247,19 @@ export default function EventDashboardPage() {
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor";
+  const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor" || userRole === "supervisor3";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
     userRole === "manager" ||
     userRole === "supervisor" ||
-    userRole === "supervisor2";
+    userRole === "supervisor2" ||
+    userRole === "supervisor3";
   const canManageTeam =
     userRole === "exec" ||
     userRole === "manager" ||
-    userRole === "supervisor";
+    userRole === "supervisor" ||
+    userRole === "supervisor3";
   const isEventCreator = Boolean(
     currentUserId &&
     event?.created_by &&
@@ -268,7 +270,8 @@ export default function EventDashboardPage() {
     userRole === "exec" ||
     userRole === "manager" ||
     userRole === "supervisor" ||
-    userRole === "supervisor2";
+    userRole === "supervisor2" ||
+    userRole === "supervisor3";
   const canUninviteTeamMember =
     canManageTeam ||
     userRole === "admin" ||

@@ -764,9 +764,9 @@ export default function DashboardPage() {
           return;
         }
 
-        // Only allow admin, exec, and manager users
+        // Only allow admin, exec, manager, and supervisor3 users
         const role = userData.role as string;
-        if (role !== 'admin' && role !== 'exec' && role !== 'manager') {
+        if (role !== 'admin' && role !== 'exec' && role !== 'manager' && role !== 'supervisor3') {
           console.error('[GLOBAL-CALENDAR] Access denied - user role:', role);
           router.replace('/dashboard');
           return;
@@ -1583,7 +1583,7 @@ export default function DashboardPage() {
         {activeTab === "events" && (
           <>
             {/* Actions */}
-            {userRole !== "manager" && (
+            {userRole !== "manager" && userRole !== "supervisor3" && (
               <div className="flex flex-wrap gap-3 mb-10">
                 <Link href="/create-event?returnTo=global-calendar">
                   <button className="apple-button apple-button-primary">

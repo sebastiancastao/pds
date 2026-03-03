@@ -1463,7 +1463,7 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {userRole !== 'supervisor' && userRole !== 'supervisor2' && userRole !== 'supervisor3' && (
+              {userRole !== 'supervisor' && userRole !== 'supervisor2' && (
                 <Link
                   href="/global-calendar"
                   className="apple-button apple-button-secondary flex items-center gap-2"
