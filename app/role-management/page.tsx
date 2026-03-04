@@ -160,11 +160,17 @@ export default function RoleManagementPage() {
     }
   }, [isAuthorized]);
 
-  // Derive managers (include supervisor3) and supervisor3 users from users list
+  // Derive supervisor3 users from users list
   useEffect(() => {
-    setManagers(users.filter(u => ['manager', 'exec', 'supervisor3'].includes(u.role)));
     setSupervisor3Users(users.filter(u => u.role === 'supervisor3'));
   }, [users]);
+
+  // Load managers live from API when teams tab is opened
+  useEffect(() => {
+    if (activeTab === 'teams' && isAuthorized) {
+      loadManagers();
+    }
+  }, [activeTab, isAuthorized]);
 
   // Load team when manager changes
   useEffect(() => {
@@ -237,6 +243,25 @@ export default function RoleManagementPage() {
       setError(err.message || 'Failed to load users');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadManagers = async () => {
+    try {
+      const token = await getToken();
+      const res = await fetch('/api/users/managers', {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to load managers');
+      setManagers((data.managers || []).map((m: any) => ({
+        ...m,
+        division: null,
+        is_active: true,
+      })));
+    } catch (err: any) {
+      console.error('[ROLE-MANAGEMENT] Error loading managers:', err);
     }
   };
 
