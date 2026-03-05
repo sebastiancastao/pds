@@ -4992,7 +4992,7 @@ export default function EventDashboardPage() {
         <thead className="bg-gray-50">
           <tr>
             <th className="px-3 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Staff</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin Time/Gate </th>
+            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">In</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
