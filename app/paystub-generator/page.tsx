@@ -863,6 +863,25 @@ export default function PaystubGenerator() {
           ]
         : [];
 
+      const finalCommissionRows = finalPayEvents.map(fp => ({
+        event_id: fp.eventId,
+        event_name: fp.eventName,
+        event_date: fp.eventDate,
+        venue: fp.venue,
+        city: fp.city ?? '',
+        state: fp.state ?? '',
+        actual_hours: fp.actualHours,
+        regular_pay: fp.regularPay,
+        overtime_pay: fp.overtimePay,
+        doubletime_pay: fp.doubletimePay,
+        commissions: fp.commissions,
+        tips: fp.tips,
+        total_pay: fp.totalPay,
+        adjustment_amount: fp.adjustmentAmount,
+        adjustment_type: fp.adjustmentType ?? '',
+        final_commission: fp.finalPay,
+      }));
+
       const wb = XLSX.utils.book_new();
       const summarySheet = XLSX.utils.aoa_to_sheet([['Field', 'Value'], ...summaryRows.map(([k, v]) => [k, v])]);
       XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
@@ -870,6 +889,9 @@ export default function PaystubGenerator() {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(earningsRows), 'Earnings');
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(deductionsRows), 'Deductions');
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(eventsRows), 'Events');
+      if (finalCommissionRows.length > 0) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(finalCommissionRows), 'FinalCommission');
+      }
       XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(sickLeaveRows), 'SickLeave');
 
       const safeName = formData.employeeName ? sanitizeFilePart(formData.employeeName) : 'employee';

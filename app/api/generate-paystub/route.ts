@@ -883,7 +883,7 @@ export async function POST(req: NextRequest) {
             adjGrossSales: evtNetSalesCa,
             commissionPool: commissionPoolDollars,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: perVendorCommissionShare,
+            commissionPerEmployee: commission,
             finalPay: computedTotalGrossPay,
           });
         }
@@ -919,7 +919,7 @@ export async function POST(req: NextRequest) {
       const mealPremiumThisPeriod = Math.abs(Number(mealPremium) || 0);
       const sickThisPeriod = Math.abs(Number(sick) || 0);
       const netPay = totalGross + mealPremiumThisPeriod + sickThisPeriod - totalDeductions + reimbursement;
-      const effectiveRate = totalHoursWorked > 0 ? totalCommission / totalHoursWorked : 0;
+      const effectiveRate = totalHoursWorked > 0 ? totalGross / totalHoursWorked : 0;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -1071,7 +1071,7 @@ export async function POST(req: NextRequest) {
         { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay, hideThisPeriod: true },
         { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayAmount, ytd: ytdOvertimePay },
         { y: 216, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
-        { y: 224, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommission, ytd: ytdCommission },
+        { y: 224, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalGross, ytd: ytdCommission },
         { y: 232, label: "Double-time", color: black, rate: doubleTimeRateAvg, hours: totalDtHours, thisPeriod: totalDoubletimePayAmount, ytd: ytdDoubleTimePay },
         { y: 240, label: "Rest Break", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
         { y: 248, label: "Sick", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
@@ -1452,7 +1452,7 @@ export async function POST(req: NextRequest) {
             adjGrossSales: evtNetSalesNonCa,
             commissionPool: commissionPoolDollars,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: perVendorCommissionShare,
+            commissionPerEmployee: commission,
             finalPay: total,
           });
         }
@@ -1510,7 +1510,7 @@ export async function POST(req: NextRequest) {
           if (regRate > 0) drawText(`$${regRate.toFixed(2)}`, colX.regRate, yPosition, { size: 8 });
           if (otRate > 0) drawText(`$${otRate.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak | typeof vendorColXNoRestBreak).otRate, yPosition, { size: 8 });
           if (displayHours > 0) drawText(displayHours.toFixed(2), colX.hoursWorked, yPosition, { size: 8 });
-          if (commission > 0) drawText(`$${commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (total > 0) drawText(`$${total.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
           if (tips > 0) drawText(`$${tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
           if (includeRestBreakColumn) {
             // Always render rest break so it's visible (even when $0.00).
@@ -1528,7 +1528,7 @@ export async function POST(req: NextRequest) {
           if (dtHours > 0) drawText(`$${(dtHours > 0 ? (dtPay / dtHours) : 0).toFixed(2)}`, colX.dtRate, yPosition, { size: 8 });
           if (dtHours > 0) drawText(dtHours.toString(), colX.dtHrs, yPosition, { size: 8 });
           if (tips > 0) drawText(`$${tips.toFixed(2)}`, colX.tips, yPosition, { size: 8 });
-          if (commission > 0) drawText(`$${commission.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
+          if (total > 0) drawText(`$${total.toFixed(2)}`, colX.comm, yPosition, { size: 8 });
           drawText(`$${total.toFixed(2)}`, colX.total, yPosition, { size: 8 });
         }
 
@@ -1543,7 +1543,7 @@ export async function POST(req: NextRequest) {
     if (useVendorLayout) {
       const colX = includeRestBreakColumn ? vendorColXWithRestBreak : vendorColXNoRestBreak;
       drawText(totalHoursWorked.toFixed(2), colX.hoursWorked, yPosition, { size: 8, bold: true });
-      drawText(`$${totalCommission.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
+      drawText(`$${totalGross.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
       drawText(`$${totalTips.toFixed(2)}`, colX.tips, yPosition, { size: 8, bold: true });
       if (includeRestBreakColumn) {
         drawText(`$${totalRestBreak.toFixed(2)}`, (colX as typeof vendorColXWithRestBreak).restBreak, yPosition, { size: 8, bold: true });
@@ -1556,7 +1556,7 @@ export async function POST(req: NextRequest) {
       drawText(totalOtHours.toFixed(2), colX.otHrs, yPosition, { size: 8, bold: true });
       drawText(totalDtHours.toFixed(2), colX.dtHrs, yPosition, { size: 8, bold: true });
       drawText(`$${totalTips.toFixed(2)}`, colX.tips, yPosition, { size: 8, bold: true });
-      drawText(`$${totalCommission.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
+      drawText(`$${totalGross.toFixed(2)}`, colX.comm, yPosition, { size: 8, bold: true });
       drawText(`$${totalGross.toFixed(2)}`, colX.total, yPosition, { size: 8, bold: true });
     }
 

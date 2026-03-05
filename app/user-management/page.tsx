@@ -60,6 +60,7 @@ export default function UserManagementPage() {
   const [updatingUser, setUpdatingUser] = useState<string | null>(null);
   const [resettingDownloads, setResettingDownloads] = useState<string | null>(null);
   const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
+  const [downloadingRoster, setDownloadingRoster] = useState(false);
 
   // Check authorization
   useEffect(() => {
@@ -386,6 +387,75 @@ export default function UserManagementPage() {
     XLSX.writeFile(workbook, fileName);
   };
 
+  const downloadVendorRosterWithVenues = async () => {
+    setDownloadingRoster(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error('No session found');
+
+      const res = await fetch('/api/vendor-roster-with-venues', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to fetch vendor roster');
+
+      const vendors: Record<string, any>[] = data.vendors ?? [];
+      if (vendors.length === 0) {
+        alert('No vendor data found');
+        return;
+      }
+
+      // Build column headers: base fields + venue distance columns
+      const baseHeaders = [
+        'Last Name', 'First Name', 'Email', 'Phone',
+        'Address', 'City', 'State', 'Zip Code',
+        'Division', 'Region',
+      ];
+
+      // Collect all venue column keys (everything beyond the base fields)
+      const venueKeys = Object.keys(vendors[0]).filter(
+        k => !['last_name','first_name','email','phone','address','city','state','zip_code','division','region'].includes(k)
+      );
+
+      const rows = vendors.map(v => {
+        const row: Record<string, any> = {
+          'Last Name': v.last_name,
+          'First Name': v.first_name,
+          'Email': v.email,
+          'Phone': v.phone,
+          'Address': v.address,
+          'City': v.city,
+          'State': v.state,
+          'Zip Code': v.zip_code,
+          'Division': v.division,
+          'Region': v.region,
+        };
+        for (const key of venueKeys) {
+          row[key] = v[key];
+        }
+        return row;
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(rows, { header: [...baseHeaders, ...venueKeys] });
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Vendor Roster');
+
+      // Auto-width columns
+      const colWidths = [...baseHeaders, ...venueKeys].map(h => ({ wch: Math.max(h.length + 2, 14) }));
+      worksheet['!cols'] = colWidths;
+
+      const fileName = `vendor_roster_with_venues_${new Date().toISOString().split('T')[0]}.xlsx`;
+      XLSX.writeFile(workbook, fileName);
+    } catch (err: any) {
+      console.error('[USER-MANAGEMENT] Error downloading vendor roster:', err);
+      alert(err.message || 'Failed to download vendor roster');
+    } finally {
+      setDownloadingRoster(false);
+    }
+  };
+
   const handleLogout = async () => {
     try {
       sessionStorage.removeItem('mfa_verified');
@@ -429,6 +499,22 @@ export default function UserManagementPage() {
             }}
           >
             Export to Excel
+          </button>
+          <button
+            onClick={downloadVendorRosterWithVenues}
+            disabled={downloadingRoster}
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#0369a1',
+              color: 'white',
+              border: 'none',
+              borderRadius: '0.375rem',
+              cursor: downloadingRoster ? 'not-allowed' : 'pointer',
+              fontWeight: '500',
+              opacity: downloadingRoster ? 0.5 : 1
+            }}
+          >
+            {downloadingRoster ? 'Downloading...' : 'Vendor Roster + Venues'}
           </button>
           <Link
             href="/reset-user-password"
