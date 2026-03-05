@@ -6,6 +6,7 @@ import QRCode from 'qrcode';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
+
 /**
  * Password strength levels
  */
