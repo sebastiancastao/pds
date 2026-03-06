@@ -1,5 +1,7 @@
 // app/api/employees/[id]/invitations/route.ts
 import { NextRequest, NextResponse } from "next/server";
+
+export const dynamic = 'force-dynamic';
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createClient } from "@supabase/supabase-js";
@@ -233,8 +235,35 @@ export async function GET(
       };
     });
 
-    // Merge and sort by assigned_at descending
-    const all = [...teamInvitations, ...locationInvitations].sort(
+    // Status priority: team entries (with real statuses) win over location "assigned"
+    const STATUS_PRIORITY: Record<string, number> = {
+      confirmed: 5,
+      declined: 4,
+      pending_confirmation: 3,
+      pending: 2,
+      assigned: 1,
+    };
+
+    // Merge, then deduplicate by event_id keeping the highest-priority status
+    const merged = [...teamInvitations, ...locationInvitations].sort(
+      (a, b) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime()
+    );
+
+    const seen = new Map<string, typeof merged[0]>();
+    for (const inv of merged) {
+      const existing = seen.get(inv.event_id);
+      if (!existing) {
+        seen.set(inv.event_id, inv);
+      } else {
+        const existingPriority = STATUS_PRIORITY[existing.status] ?? 0;
+        const newPriority = STATUS_PRIORITY[inv.status] ?? 0;
+        if (newPriority > existingPriority) {
+          seen.set(inv.event_id, inv);
+        }
+      }
+    }
+
+    const all = Array.from(seen.values()).sort(
       (a, b) => new Date(b.assigned_at).getTime() - new Date(a.assigned_at).getTime()
     );
 

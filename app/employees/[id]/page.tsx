@@ -480,6 +480,7 @@ export default function WorkerProfilePage() {
         const { data: { session } } = await supabase.auth.getSession();
         const res = await fetch(`/api/employees/${employeeId}/invitations`, {
           headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: 'no-store',
         });
         if (res.ok) {
           const data = await res.json();
@@ -1195,10 +1196,10 @@ export default function WorkerProfilePage() {
                                   <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
                                   <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
                                   <td className="p-3">
-                                    {inv.source === "team" && inv.confirmation_token && inv.status === "pending_confirmation" ? (
+                                    {inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") ? (
                                       <Link href={`/team-confirmation/${inv.confirmation_token}`}
                                         className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors">
-                                        Confirm / Decline
+                                        Confirm Participation
                                       </Link>
                                     ) : <span className="text-gray-400 text-xs">—</span>}
                                   </td>

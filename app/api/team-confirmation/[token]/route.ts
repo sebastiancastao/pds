@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { decrypt } from "@/lib/encryption";
 
+export const dynamic = 'force-dynamic';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -135,7 +137,7 @@ export async function GET(
         }
       : null;
 
-    // Check if already responded
+    // Check if already responded (confirmed or declined)
     if (teamInvitation.status === 'confirmed' || teamInvitation.status === 'declined') {
       return NextResponse.json({
         alreadyResponded: true,
@@ -211,7 +213,7 @@ export async function POST(
     }
 
     // Check if already responded
-    if (teamInvitation.status !== 'pending_confirmation') {
+    if (teamInvitation.status !== 'pending_confirmation' && teamInvitation.status !== 'pending') {
       console.log('⚠️ Already responded with status:', teamInvitation.status);
       return NextResponse.json({
         error: 'This invitation has already been responded to',

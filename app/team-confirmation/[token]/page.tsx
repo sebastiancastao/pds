@@ -48,7 +48,7 @@ export default function TeamConfirmationPage() {
     try {
       setLoading(true);
       console.log('🔍 Fetching invitation with token:', token);
-      const response = await fetch(`/api/team-confirmation/${token}`);
+      const response = await fetch(`/api/team-confirmation/${token}`, { cache: 'no-store' });
       const data = await response.json();
 
       console.log('📥 Response status:', response.status);
