@@ -231,17 +231,44 @@ export async function GET(
 
     if (userErr) {
       console.error("users query error:", userErr);
-      return NextResponse.json(
-        { error: userErr.message || "Failed to load user" },
-        { status: 500 }
-      );
-    }
-    if (!user || !user.profiles) {
-      return NextResponse.json({ error: "Employee not found" }, { status: 404 });
     }
 
-    // profiles is an array even with inner join, so we need to access the first element
-    const profile = (user.profiles as any)?.[0] || user.profiles;
+    let profile: any = null;
+    let employeeEmail: string | null = null;
+    let employeeCreatedAt: string | null = null;
+
+    if (user && user.profiles) {
+      // Found in users table with profiles join
+      profile = (user.profiles as any)?.[0] || user.profiles;
+      employeeEmail = user.email;
+      employeeCreatedAt = user.created_at;
+    } else {
+      // Fall back: query profiles directly (user may exist only in profiles table)
+      const { data: profileData, error: profileErr } = await supabaseAdmin
+        .from("profiles")
+        .select(`
+          first_name,
+          last_name,
+          phone,
+          city,
+          state,
+          profile_photo_data,
+          region_id,
+          regions ( id, name )
+        `)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (profileErr) {
+        console.error("profiles fallback query error:", profileErr);
+      }
+
+      if (!profileData) {
+        return NextResponse.json({ error: "Employee not found" }, { status: 404 });
+      }
+
+      profile = profileData;
+    }
 
     // Safely decrypt names (handles both encrypted and non-encrypted data)
     const firstName = profile.first_name ? safeDecrypt(profile.first_name) : "N/A";
@@ -250,17 +277,17 @@ export async function GET(
     // Combine user and profile data into employee object
     const region = (profile.regions as any)?.[0] || profile.regions || null;
     const employee = {
-      id: user.id,
+      id: userId,
       first_name: firstName,
       last_name: lastName,
-      email: user.email,
+      email: employeeEmail,
       phone: profile.phone,
       city: profile.city,
       state: profile.state,
       profile_photo_url: null, // Binary data not exposed as URL
       department: "General",
       position: "Vendor",
-      hire_date: user.created_at,
+      hire_date: employeeCreatedAt,
       status: "active" as const,
       salary: null,
       region_id: profile.region_id || null,

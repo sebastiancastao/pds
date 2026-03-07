@@ -332,6 +332,7 @@ export default function WorkerProfilePage() {
       load();
     } else {
       console.log("🔴 [DEBUG] No employeeId provided");
+      setLoading(false);
     }
   }, [employeeId]);
 
