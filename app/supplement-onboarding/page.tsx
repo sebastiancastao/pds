@@ -503,22 +503,26 @@ export default function SupplementOnboardingPage() {
                             {/* Download Forms */}
                             <td className="px-6 py-4 text-center">
                               <div className="flex flex-wrap gap-1 justify-center">
-                                {applicable.map(f => (
-                                  <a
-                                    key={f.id}
-                                    href={`/api/custom-forms/${f.id}/pdf`}
-                                    download={`${f.title}.pdf`}
-                                    className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300 max-w-[150px] truncate"
-                                    title={`Download ${f.title}`}
-                                  >
-                                    <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                      <polyline points="7 10 12 15 17 10" />
-                                      <line x1="12" y1="15" x2="12" y2="3" />
-                                    </svg>
-                                    {f.title}
-                                  </a>
-                                ))}
+                                {completed.length === 0 ? (
+                                  <span className="text-xs text-gray-400">No submissions yet</span>
+                                ) : (
+                                  completed.map(f => (
+                                    <a
+                                      key={f.id}
+                                      href={`/api/custom-forms/${f.id}/pdf`}
+                                      download={`${f.title}.pdf`}
+                                      className="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border text-green-600 hover:text-green-800 hover:bg-green-50 border-green-300 max-w-[150px] truncate"
+                                      title={`Download ${f.title}`}
+                                    >
+                                      <svg className="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                        <polyline points="7 10 12 15 17 10" />
+                                        <line x1="12" y1="15" x2="12" y2="3" />
+                                      </svg>
+                                      {f.title}
+                                    </a>
+                                  ))
+                                )}
                               </div>
                             </td>
 
