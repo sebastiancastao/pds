@@ -257,7 +257,6 @@ export default function EmployeeProfilePage() {
   const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
-  const [customFormsStateFilter, setCustomFormsStateFilter] = useState<string>("all");
 
   useEffect(() => {
     const load = async () => {
@@ -393,8 +392,9 @@ export default function EmployeeProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
-  // Fetch all custom forms (HR sees all states)
+  // Fetch custom forms filtered by employee's state
   useEffect(() => {
+    if (!employee) return;
     const loadCustomForms = async () => {
       setCustomFormsLoading(true);
       try {
@@ -404,7 +404,11 @@ export default function EmployeeProfilePage() {
         });
         if (res.ok) {
           const data = await res.json();
-          setCustomFormsList(data.forms || []);
+          const allForms = data.forms || [];
+          const filtered = allForms.filter((f: { target_state: string | null }) =>
+            !f.target_state || f.target_state === employee.state
+          );
+          setCustomFormsList(filtered);
         }
       } catch (e) {
         console.error('Error loading custom forms list:', e);
@@ -413,7 +417,7 @@ export default function EmployeeProfilePage() {
       }
     };
     loadCustomForms();
-  }, []);
+  }, [employee]);
 
   // Load supporting docs for each submitted custom form
   useEffect(() => {
@@ -1527,24 +1531,7 @@ export default function EmployeeProfilePage() {
 
             {/* Custom Forms */}
             <section className="mb-8">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Custom Forms</h2>
-                {customFormsList.length > 0 && (
-                  <div className="flex items-center gap-2">
-                    <label className="text-sm text-gray-600 font-medium">State:</label>
-                    <select
-                      value={customFormsStateFilter}
-                      onChange={(e) => setCustomFormsStateFilter(e.target.value)}
-                      className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="all">All States</option>
-                      {Array.from(new Set(customFormsList.map(f => f.target_state ?? "—"))).sort().map(s => (
-                        <option key={s} value={s}>{s === "—" ? "No State Restriction" : s}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-              </div>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Custom Forms</h2>
               <div className="apple-card p-6">
                 {customFormsLoading ? (
                   <div className="flex items-center justify-center py-8">
@@ -1556,23 +1543,12 @@ export default function EmployeeProfilePage() {
                     <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
-                    <p className="text-gray-500 font-medium">No custom forms uploaded yet</p>
+                    <p className="text-gray-500 font-medium">No custom forms for this employee&apos;s state</p>
                   </div>
-                ) : (() => {
-                  const filtered = customFormsStateFilter === "all"
-                    ? customFormsList
-                    : customFormsList.filter(f => (f.target_state ?? "—") === customFormsStateFilter);
-                  if (filtered.length === 0) {
-                    return (
-                      <div className="text-center py-8">
-                        <p className="text-gray-500 font-medium">No forms for state "{customFormsStateFilter}"</p>
-                      </div>
-                    );
-                  }
-                  return (
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {filtered.map((form) => {
-                        const progressKey = `custom-form-${form.id}`;
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {customFormsList.map((form) => {
+                      const progressKey = `custom-form-${form.id}`;
                         const submitted = pdfForms.find(p => p.form_name === progressKey);
                         return (
                           <div
@@ -1662,8 +1638,7 @@ export default function EmployeeProfilePage() {
                         );
                       })}
                     </div>
-                  );
-                })()}
+                  )}
               </div>
             </section>
 
