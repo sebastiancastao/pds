@@ -370,7 +370,7 @@ export default function HREmployeesPage() {
             href="/hr-dashboard"
             style={{
               padding: '0.5rem 1rem',
-              backgroundColor: '#3b82f6',
+              backgroundColor: '#6366f1',
               color: 'white',
               borderRadius: '0.375rem',
               textDecoration: 'none',

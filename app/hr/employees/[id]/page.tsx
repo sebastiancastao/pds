@@ -128,6 +128,84 @@ type OnboardingTemplate = {
   updated_at: string;
 };
 
+type EventInvitation = {
+  id: string;
+  event_id: string;
+  event_name: string | null;
+  event_date: string | null;
+  start_time: string | null;
+  venue: string | null;
+  city: string | null;
+  state: string | null;
+  status: string;
+  source: "team" | "location";
+  location_name: string | null;
+  assigned_at: string;
+  confirmation_token?: string | null;
+};
+
+type SubmittedAvailabilityDay = {
+  date: string;
+  available: boolean;
+  notes?: string | null;
+  submitted_at?: string | null;
+};
+
+function formatEventDate(d?: string | null) {
+  if (!d) return "—";
+  const match = d.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (match) {
+    const dt = new Date(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3]));
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  }
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return d;
+  return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+function formatEventTime(t?: string | null) {
+  if (!t) return null;
+  const match = t.match(/^(\d{1,2}):(\d{2})/);
+  if (!match) return t;
+  const h = parseInt(match[1]);
+  const m = match[2];
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${m} ${ampm}`;
+}
+
+const STATE_TIMEZONES: Record<string, string> = {
+  AL: "America/Chicago", AK: "America/Anchorage", AZ: "America/Phoenix",
+  AR: "America/Chicago", CA: "America/Los_Angeles", CO: "America/Denver",
+  CT: "America/New_York", DE: "America/New_York", FL: "America/New_York",
+  GA: "America/New_York", HI: "Pacific/Honolulu", ID: "America/Boise",
+  IL: "America/Chicago", IN: "America/Indiana/Indianapolis", IA: "America/Chicago",
+  KS: "America/Chicago", KY: "America/Kentucky/Louisville", LA: "America/Chicago",
+  ME: "America/New_York", MD: "America/New_York", MA: "America/New_York",
+  MI: "America/Detroit", MN: "America/Chicago", MS: "America/Chicago",
+  MO: "America/Chicago", MT: "America/Denver", NE: "America/Chicago",
+  NV: "America/Los_Angeles", NH: "America/New_York", NJ: "America/New_York",
+  NM: "America/Denver", NY: "America/New_York", NC: "America/New_York",
+  ND: "America/Chicago", OH: "America/New_York", OK: "America/Chicago",
+  OR: "America/Los_Angeles", PA: "America/New_York", RI: "America/New_York",
+  SC: "America/New_York", SD: "America/Chicago", TN: "America/Chicago",
+  TX: "America/Chicago", UT: "America/Denver", VT: "America/New_York",
+  VA: "America/New_York", WA: "America/Los_Angeles", WV: "America/New_York",
+  WI: "America/Chicago", WY: "America/Denver",
+};
+
+function formatDateTime(d?: string | null, state?: string | null) {
+  if (!d) return "—";
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return d;
+  const tz = (state && STATE_TIMEZONES[state.toUpperCase()]) || undefined;
+  return dt.toLocaleString(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", hour12: true,
+    ...(tz ? { timeZone: tz } : {}),
+  });
+}
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -137,11 +215,10 @@ function hoursBetween(clock_in: string | null, clock_out: string | null) {
 }
 
 function formatHours(h: number) {
-  // Show 2 decimals for small numbers (< 1), 1 decimal for larger numbers
-  if (h < 1) {
-    return h.toFixed(2);
-  }
-  return (Math.round(h * 10) / 10).toFixed(1);
+  const totalMinutes = Math.round(h * 60);
+  const hh = Math.floor(totalMinutes / 60);
+  const mm = totalMinutes % 60;
+  return `${hh}:${mm.toString().padStart(2, "0")}`;
 }
 
 function formatDate(d?: string | null) {
@@ -169,6 +246,18 @@ export default function EmployeeProfilePage() {
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
+
+  const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
+  const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
+  const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  const [invitationsLoading, setInvitationsLoading] = useState(false);
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
+  const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
+
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
+  const [customFormsLoading, setCustomFormsLoading] = useState(false);
+  const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
+  const [customFormsStateFilter, setCustomFormsStateFilter] = useState<string>("all");
 
   useEffect(() => {
     const load = async () => {
@@ -304,6 +393,91 @@ export default function EmployeeProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
+  // Fetch all custom forms (HR sees all states)
+  useEffect(() => {
+    const loadCustomForms = async () => {
+      setCustomFormsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/custom-forms/list', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setCustomFormsList(data.forms || []);
+        }
+      } catch (e) {
+        console.error('Error loading custom forms list:', e);
+      } finally {
+        setCustomFormsLoading(false);
+      }
+    };
+    loadCustomForms();
+  }, []);
+
+  // Load supporting docs for each submitted custom form
+  useEffect(() => {
+    if (!customFormsList.length || !pdfForms.length || !employeeId) return;
+    const submittedFormIds = customFormsList
+      .filter(f => pdfForms.some(p => p.form_name === `custom-form-${f.id}`))
+      .map(f => f.id);
+    if (!submittedFormIds.length) return;
+
+    const loadDocs = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const results = await Promise.all(
+        submittedFormIds.map(async (formId) => {
+          try {
+            const res = await fetch(
+              `/api/custom-forms/${formId}/docs?userId=${employeeId}`,
+              { headers: { Authorization: `Bearer ${session.access_token}` } },
+            );
+            if (!res.ok) return [formId, []] as const;
+            const data = await res.json();
+            return [formId, data.docs ?? []] as const;
+          } catch {
+            return [formId, []] as const;
+          }
+        }),
+      );
+      setCustomFormDocs(Object.fromEntries(results));
+    };
+    loadDocs();
+  }, [customFormsList, pdfForms, employeeId]);
+
+  // Fetch event invitations (team + location assignments) and availability
+  useEffect(() => {
+    if (!employeeId) return;
+    const loadInvitations = async () => {
+      setInvitationsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/employees/${employeeId}/invitations`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setEventInvitations(data.invitations || []);
+          setSubmittedAvailability(data.availability_submissions || []);
+          setAvailabilityLastSubmittedAt(data.availability_last_submitted_at || null);
+        } else {
+          setEventInvitations([]);
+          setSubmittedAvailability([]);
+          setAvailabilityLastSubmittedAt(null);
+        }
+      } catch (e) {
+        console.error("Error loading event invitations:", e);
+        setEventInvitations([]);
+        setSubmittedAvailability([]);
+        setAvailabilityLastSubmittedAt(null);
+      } finally {
+        setInvitationsLoading(false);
+      }
+    };
+    loadInvitations();
+  }, [employeeId]);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -336,6 +510,42 @@ export default function EmployeeProfilePage() {
 
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+
+  // Build calendar dot map
+  const { calDots, calEventDetails } = useMemo(() => {
+    const map = new Map<string, Set<"event" | "shift" | "sick" | "available" | "unavailable">>();
+    const events = new Map<string, { name: string; start_time: string | null }[]>();
+    const mark = (dateStr: string | null | undefined, type: "event" | "shift" | "sick" | "available" | "unavailable") => {
+      if (!dateStr) return;
+      const d = dateStr.slice(0, 10);
+      if (!map.has(d)) map.set(d, new Set());
+      map.get(d)!.add(type);
+    };
+    eventInvitations.filter(inv => inv.status === "confirmed").forEach(inv => {
+      mark(inv.event_date, "event");
+      if (inv.event_date) {
+        const d = inv.event_date.slice(0, 10);
+        if (!events.has(d)) events.set(d, []);
+        events.get(d)!.push({ name: inv.event_name ?? "Event", start_time: inv.start_time ?? null });
+      }
+    });
+    entries.forEach(e => {
+      if (e.clock_in) mark(e.clock_in.slice(0, 10), "shift");
+    });
+    sickLeaveEntries.forEach(sl => {
+      if (!sl.start_date) return;
+      const start = new Date(sl.start_date);
+      const end = sl.end_date ? new Date(sl.end_date) : start;
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        mark(d.toISOString().slice(0, 10), "sick");
+      }
+    });
+    submittedAvailability.forEach((day) => {
+      mark(day.date, day.available ? "available" : "unavailable");
+    });
+    return { calDots: map, calEventDetails: events };
+  }, [eventInvitations, entries, sickLeaveEntries, submittedAvailability]);
+
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
@@ -716,6 +926,168 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
 
+            {/* Personal Calendar */}
+            {(() => {
+              const today = new Date();
+              const todayStr = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+              const firstDay = new Date(calYear, calMonth, 1).getDay();
+              const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+              const monthName = new Date(calYear, calMonth, 1).toLocaleString(undefined, { month: "long", year: "numeric" });
+              const prevMonth = () => { if (calMonth === 0) { setCalMonth(11); setCalYear(y => y - 1); } else setCalMonth(m => m - 1); };
+              const nextMonth = () => { if (calMonth === 11) { setCalMonth(0); setCalYear(y => y + 1); } else setCalMonth(m => m + 1); };
+              const cells: (number | null)[] = [...Array(firstDay).fill(null), ...Array.from({length: daysInMonth}, (_, i) => i + 1)];
+              while (cells.length % 7 !== 0) cells.push(null);
+              return (
+                <section className="mb-8">
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Calendar</h2>
+                  </div>
+                  <div className="apple-card p-4">
+                    <div className="flex items-center justify-between mb-4">
+                      <button onClick={prevMonth} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-600">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+                      </button>
+                      <span className="font-semibold text-gray-800 text-sm">{monthName}</span>
+                      <button onClick={nextMonth} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors text-gray-600">
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-7 mb-1">
+                      {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => (
+                        <div key={d} className="text-center text-xs font-medium text-gray-400 py-1">{d}</div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-7 gap-y-1">
+                      {cells.map((day, i) => {
+                        if (!day) return <div key={i} />;
+                        const dateStr = `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+                        const dots = calDots.get(dateStr);
+                        const evs = calEventDetails.get(dateStr) ?? [];
+                        const isToday = dateStr === todayStr;
+                        const hasAvailableSubmission = dots?.has("available");
+                        const hasUnavailableSubmission = dots?.has("unavailable");
+                        const availabilityLabel = hasAvailableSubmission ? "Available" : hasUnavailableSubmission ? "Unavailable" : null;
+                        return (
+                          <div key={i} className="flex flex-col items-center py-1 px-0.5 min-h-[3.5rem]">
+                            <div className={`w-7 h-7 flex items-center justify-center rounded-full text-xs font-medium shrink-0
+                              ${isToday ? "bg-blue-600 text-white" : "text-gray-700 hover:bg-gray-100"}`}>
+                              {day}
+                            </div>
+                            {availabilityLabel && (
+                              <div className={`mt-0.5 px-1 rounded text-[9px] font-semibold leading-tight ${
+                                hasAvailableSubmission ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                              }`}>
+                                {availabilityLabel}
+                              </div>
+                            )}
+                            {evs.map((ev, ei) => (
+                              <div key={ei} className="mt-0.5 w-full text-center">
+                                <div className="bg-blue-100 text-blue-800 rounded text-[9px] font-medium leading-tight px-0.5 truncate">
+                                  {ev.name}
+                                </div>
+                                {ev.start_time && (
+                                  <div className="text-[9px] text-blue-500 leading-tight">
+                                    {formatEventTime(ev.start_time)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                            {dots && (dots.has("shift") || dots.has("sick")) && (
+                              <div className="flex gap-0.5 mt-0.5">
+                                {dots.has("shift") && <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />}
+                                {dots.has("sick")  && <span className="w-1.5 h-1.5 rounded-full bg-pink-500" />}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="flex gap-4 mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"/>Event</span>
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">Available</span>Submitted availability</span>
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold">Unavailable</span>Submitted availability</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"/>Shift</span>
+                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-pink-500 inline-block"/>Sick leave</span>
+                    </div>
+                    {availabilityLastSubmittedAt && (
+                      <div className="mt-2 text-xs text-gray-500">
+                        Latest availability submission: {formatDateTime(availabilityLastSubmittedAt)}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              );
+            })()}
+
+            {/* Events Recap */}
+            <section className="mb-8">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Events Recap</h2>
+              </div>
+              <div className="apple-card overflow-hidden">
+                {invitationsLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading…</span>
+                  </div>
+                ) : (() => {
+                  const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full">
+                        <thead className="bg-gray-50 border-b border-gray-200">
+                          <tr>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Event</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Date</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Venue</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Status</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Shifts</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Hours</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {eventInvitations.length === 0 && (
+                            <tr>
+                              <td colSpan={6} className="p-6 text-center text-gray-500">No event invitations yet.</td>
+                            </tr>
+                          )}
+                          {eventInvitations.map((inv) => {
+                            const agg = perEventMap.get(inv.event_id);
+                            return (
+                              <tr key={`inv-${inv.source}-${inv.id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                                <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
+                                <td className="p-3 text-gray-700 text-sm">
+                                  <div>{formatEventDate(inv.event_date)}</div>
+                                  {formatEventTime(inv.start_time) && (
+                                    <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
+                                  )}
+                                </td>
+                                <td className="p-3 text-gray-600 text-sm">
+                                  {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                                </td>
+                                <td className="p-3">
+                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                                    inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
+                                    : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
+                                    : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
+                                    : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                                  }`}>
+                                    {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                                  </span>
+                                </td>
+                                <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
+                                <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
+            </section>
+
             {/* Sick Leave Summary */}
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
@@ -806,54 +1178,6 @@ export default function EmployeeProfilePage() {
                     })}
                   </div>
                 )}
-              </div>
-            </section>
-
-            {/* All Vendor Events (Confirmed) */}
-            <section className="mb-8">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">All Vendor Events</h2>
-              </div>
-              <div className="apple-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Date</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Shifts</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {(summary?.per_event || []).map((row) => (
-                        <tr key={row.event_id} className="hover:bg-gray-50 transition-colors">
-                          <td className="p-4">
-                            <div className="font-medium text-gray-900">
-                              {row.event_name || row.event_id}
-                            </div>
-                          </td>
-                          <td className="p-4 text-gray-600 text-sm">
-                            {row.event_date || "—"}
-                          </td>
-                          <td className="p-4 text-gray-900 font-medium">
-                            {row.shifts}
-                          </td>
-                          <td className="p-4 text-gray-900 font-medium">
-                            {formatHours(row.hours)}
-                          </td>
-                        </tr>
-                      ))}
-                      {(!summary?.per_event || summary.per_event.length === 0) && (
-                        <tr>
-                          <td colSpan={4} className="p-6 text-center text-gray-500">
-                            No shifts recorded for events yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
               </div>
             </section>
 
@@ -1201,54 +1525,148 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
 
-            {/* Raw Time Entries */}
-            <section className="mb-16">
+            {/* Custom Forms */}
+            <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
-                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Time Entries</h2>
+                <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Custom Forms</h2>
+                {customFormsList.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <label className="text-sm text-gray-600 font-medium">State:</label>
+                    <select
+                      value={customFormsStateFilter}
+                      onChange={(e) => setCustomFormsStateFilter(e.target.value)}
+                      className="text-sm border border-gray-300 rounded-lg px-3 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="all">All States</option>
+                      {Array.from(new Set(customFormsList.map(f => f.target_state ?? "—"))).sort().map(s => (
+                        <option key={s} value={s}>{s === "—" ? "No State Restriction" : s}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
-              <div className="apple-card overflow-hidden">
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-gray-50 border-b border-gray-200">
-                      <tr>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock In</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Clock Out</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left p-4 font-semibold text-gray-700">Event</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-200">
-                      {entries.map((e) => {
-                        const h = hoursBetween(e.clock_in, e.clock_out);
+              <div className="apple-card p-6">
+                {customFormsLoading ? (
+                  <div className="flex items-center justify-center py-8">
+                    <div className="apple-spinner" />
+                    <span className="ml-3 text-gray-600">Loading custom forms…</span>
+                  </div>
+                ) : customFormsList.length === 0 ? (
+                  <div className="text-center py-8">
+                    <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p className="text-gray-500 font-medium">No custom forms uploaded yet</p>
+                  </div>
+                ) : (() => {
+                  const filtered = customFormsStateFilter === "all"
+                    ? customFormsList
+                    : customFormsList.filter(f => (f.target_state ?? "—") === customFormsStateFilter);
+                  if (filtered.length === 0) {
+                    return (
+                      <div className="text-center py-8">
+                        <p className="text-gray-500 font-medium">No forms for state "{customFormsStateFilter}"</p>
+                      </div>
+                    );
+                  }
+                  return (
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {filtered.map((form) => {
+                        const progressKey = `custom-form-${form.id}`;
+                        const submitted = pdfForms.find(p => p.form_name === progressKey);
                         return (
-                          <tr key={e.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="p-4 text-gray-900">{formatDate(e.clock_in)}</td>
-                            <td className="p-4 text-gray-900">{formatDate(e.clock_out)}</td>
-                            <td className="p-4 text-gray-900 font-medium">{formatHours(h)}</td>
-                            <td className="p-4 text-gray-600 text-sm">
-                              {e.event_id ? (
-                                <Link href={`/event-dashboard/${e.event_id}`} className="text-blue-600 hover:text-blue-700">
-                                  {eventNameMap.get(e.event_id) || e.event_id}
-                                </Link>
-                              ) : (
-                                "—"
-                              )}
-                            </td>
-                          </tr>
+                          <div
+                            key={form.id}
+                            className={`border rounded-xl p-4 hover:shadow-md transition-all ${
+                              submitted ? 'border-green-200 bg-green-50' : 'border-amber-200 bg-amber-50'
+                            }`}
+                          >
+                            <div className="flex items-start gap-3 mb-3">
+                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                                submitted ? 'bg-green-500 text-white' : 'bg-amber-400 text-white'
+                              }`}>
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  {submitted ? (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                  ) : (
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                  )}
+                                </svg>
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
+                                <div className="flex flex-wrap gap-1 mt-1">
+                                  <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
+                                    {form.target_state ? `State: ${form.target_state}` : "All States"}
+                                  </span>
+                                  {form.requires_signature && (
+                                    <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
+                                      Sig. required
+                                    </span>
+                                  )}
+                                  <span className={`text-xs font-medium rounded-full px-2 py-0.5 border ${
+                                    submitted
+                                      ? 'text-green-700 bg-green-100 border-green-200'
+                                      : 'text-amber-700 bg-amber-100 border-amber-200'
+                                  }`}>
+                                    {submitted ? `Submitted ${formatDate(submitted.updated_at)}` : 'Pending'}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                            {submitted && (
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => viewPDFForm(submitted)}
+                                  className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                  </svg>
+                                  View
+                                </button>
+                                <button
+                                  onClick={() => downloadPDFForm(submitted)}
+                                  className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download
+                                </button>
+                              </div>
+                            )}
+                            {submitted && customFormDocs[form.id]?.length > 0 && (
+                              <div className="mt-3 pt-3 border-t border-green-200">
+                                <p className="text-xs font-semibold text-gray-500 mb-1.5">Supporting Documents</p>
+                                <div className="space-y-1">
+                                  {customFormDocs[form.id].map(doc => (
+                                    <div key={doc.slot} className="flex items-center justify-between gap-2">
+                                      <div className="min-w-0">
+                                        <p className="text-xs text-gray-400 leading-none">{doc.label}</p>
+                                        <p className="text-xs text-gray-700 font-medium truncate">{doc.filename}</p>
+                                      </div>
+                                      {doc.url && (
+                                        <a href={doc.url} target="_blank" rel="noopener noreferrer"
+                                          className="shrink-0 text-xs font-medium text-blue-600 hover:text-blue-800 px-2 py-0.5 rounded hover:bg-blue-50 border border-blue-200 transition-colors">
+                                          View
+                                        </a>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
                         );
                       })}
-                      {entries.length === 0 && (
-                        <tr>
-                          <td colSpan={4} className="p-6 text-center text-gray-500">
-                            No time entries yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
+                    </div>
+                  );
+                })()}
               </div>
             </section>
+
           </>
         )}
 
