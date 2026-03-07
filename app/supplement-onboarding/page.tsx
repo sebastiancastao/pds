@@ -10,6 +10,7 @@ type CustomForm = {
   id: string;
   title: string;
   requires_signature: boolean;
+  target_state: string | null;
 };
 
 type Employee = {
@@ -18,6 +19,7 @@ type Employee = {
   last_name: string;
   email: string;
   status: string;
+  state: string;
 };
 
 type Completion = {
@@ -192,11 +194,14 @@ export default function SupplementOnboardingPage() {
     }
   };
 
-  const getCompleted = (employeeId: string) =>
-    forms.filter(f => completions.some(c => c.employeeId === employeeId && c.formName === `${f.title} ${year}`));
+  const getApplicableForms = (emp: Employee) =>
+    forms.filter(f => !f.target_state || f.target_state === emp.state);
 
-  const getMissing = (employeeId: string) =>
-    forms.filter(f => !completions.some(c => c.employeeId === employeeId && c.formName === `${f.title} ${year}`));
+  const getCompleted = (emp: Employee) =>
+    getApplicableForms(emp).filter(f => completions.some(c => c.employeeId === emp.id && c.formName === `${f.title} ${year}`));
+
+  const getMissing = (emp: Employee) =>
+    getApplicableForms(emp).filter(f => !completions.some(c => c.employeeId === emp.id && c.formName === `${f.title} ${year}`));
 
   const getCompletedAt = (employeeId: string, form: CustomForm) =>
     completions.find(c => c.employeeId === employeeId && c.formName === `${form.title} ${year}`)?.updatedAt ?? null;
@@ -208,20 +213,22 @@ export default function SupplementOnboardingPage() {
       if (!matchesSearch) return false;
 
       if (forms.length === 0) return true;
-      const done = getCompleted(e.id).length;
-      if (filterStatus === 'completed') return done === forms.length;
-      if (filterStatus === 'partial') return done > 0 && done < forms.length;
+      const applicable = getApplicableForms(e);
+      const done = getCompleted(e).length;
+      if (filterStatus === 'completed') return done === applicable.length;
+      if (filterStatus === 'partial') return done > 0 && done < applicable.length;
       if (filterStatus === 'none') return done === 0;
       return true;
     })
-    .sort((a, b) => getCompleted(b.id).length - getCompleted(a.id).length);
+    .sort((a, b) => getCompleted(b).length - getCompleted(a).length);
 
-  const totalCompletions = employees.reduce((acc, e) => acc + getCompleted(e.id).length, 0);
-  const totalPossible = forms.length * employees.length;
+  const totalCompletions = employees.reduce((acc, e) => acc + getCompleted(e).length, 0);
+  const totalPossible = employees.reduce((acc, e) => acc + getApplicableForms(e).length, 0);
   const completionPct = totalPossible > 0 ? Math.round((totalCompletions / totalPossible) * 100) : 0;
-  const fullyDoneCount = forms.length > 0
-    ? employees.filter(e => getCompleted(e.id).length === forms.length).length
-    : 0;
+  const fullyDoneCount = employees.filter(e => {
+    const applicable = getApplicableForms(e);
+    return applicable.length > 0 && getCompleted(e).length === applicable.length;
+  }).length;
 
   if (loading) {
     return (
@@ -346,6 +353,7 @@ export default function SupplementOnboardingPage() {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Custom Form Progress</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Form Requirements</th>
                       <th className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Download Forms</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Vendor Onboarding Actions</th>
                     </tr>
@@ -353,7 +361,7 @@ export default function SupplementOnboardingPage() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {filteredEmployees.length === 0 ? (
                       <tr>
-                        <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                        <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                           {search || filterStatus !== 'all'
                             ? 'No employees found matching your filters.'
                             : 'No employees found.'}
@@ -361,11 +369,12 @@ export default function SupplementOnboardingPage() {
                       </tr>
                     ) : (
                       filteredEmployees.map(emp => {
-                        const completed = getCompleted(emp.id);
-                        const missing = getMissing(emp.id);
+                        const applicable = getApplicableForms(emp);
+                        const completed = getCompleted(emp);
+                        const missing = getMissing(emp);
                         const doneCount = completed.length;
-                        const progressPct = Math.round((doneCount / forms.length) * 100);
-                        const isFullyDone = doneCount === forms.length;
+                        const progressPct = applicable.length > 0 ? Math.round((doneCount / applicable.length) * 100) : 100;
+                        const isFullyDone = applicable.length > 0 && doneCount === applicable.length;
                         const notStarted = doneCount === 0;
 
                         const vendorStatus = vendorStatuses[emp.id];
@@ -386,7 +395,7 @@ export default function SupplementOnboardingPage() {
                             <td className="px-6 py-4">
                               <div className="min-w-[220px]">
                                 <div className="flex items-center justify-between mb-1">
-                                  <span className="text-xs font-medium text-gray-700">{doneCount}/{forms.length} forms</span>
+                                  <span className="text-xs font-medium text-gray-700">{doneCount}/{applicable.length} forms</span>
                                   <span className="text-xs text-gray-500">{progressPct}%</span>
                                 </div>
                                 <div className="w-full bg-gray-200 rounded-full h-2">
@@ -450,10 +459,51 @@ export default function SupplementOnboardingPage() {
                               )}
                             </td>
 
+                            {/* Form Requirements */}
+                            <td className="px-6 py-4">
+                              <div className="min-w-[180px] space-y-2">
+                                {(() => {
+                                  const universal = applicable.filter(f => !f.target_state);
+                                  const stateSpecific = applicable.filter(f => f.target_state);
+                                  return (
+                                    <>
+                                      {universal.length > 0 && (
+                                        <div>
+                                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mb-1">
+                                            All States
+                                          </span>
+                                          <ul className="text-xs text-gray-600 pl-1 space-y-0.5">
+                                            {universal.map(f => (
+                                              <li key={f.id} className="truncate" title={f.title}>• {f.title}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      {stateSpecific.length > 0 && (
+                                        <div>
+                                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 mb-1">
+                                            {emp.state} Only
+                                          </span>
+                                          <ul className="text-xs text-gray-600 pl-1 space-y-0.5">
+                                            {stateSpecific.map(f => (
+                                              <li key={f.id} className="truncate" title={f.title}>• {f.title}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
+                                      {applicable.length === 0 && (
+                                        <span className="text-xs text-gray-400">No forms required</span>
+                                      )}
+                                    </>
+                                  );
+                                })()}
+                              </div>
+                            </td>
+
                             {/* Download Forms */}
                             <td className="px-6 py-4 text-center">
                               <div className="flex flex-wrap gap-1 justify-center">
-                                {forms.map(f => (
+                                {applicable.map(f => (
                                   <a
                                     key={f.id}
                                     href={`/api/custom-forms/${f.id}/pdf`}
