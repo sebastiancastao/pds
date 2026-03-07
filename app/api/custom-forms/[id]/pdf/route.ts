@@ -56,6 +56,35 @@ export async function GET(
       return NextResponse.json({ error: 'Form is no longer available' }, { status: 410 });
     }
 
+    // Virtual path: proxy to the corresponding payroll-packet API route
+    if (form.storage_path.startsWith('payroll-packet:')) {
+      const [, stateCode, formType] = form.storage_path.split(':');
+      const origin = new URL(request.url).origin;
+      const packetUrl = `${origin}/api/payroll-packet-${stateCode}/${formType}`;
+
+      const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
+      const queryToken = new URL(request.url).searchParams.get('token');
+      const rawToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : queryToken;
+
+      const proxyRes = await fetch(packetUrl, {
+        headers: rawToken ? { Authorization: `Bearer ${rawToken}` } : {},
+      });
+
+      if (!proxyRes.ok) {
+        console.error('[CUSTOM-FORMS PDF] Payroll-packet proxy failed:', stateCode, formType, proxyRes.status);
+        return NextResponse.json({ error: 'Failed to load state form PDF' }, { status: 502 });
+      }
+
+      const pdfBytes = await proxyRes.arrayBuffer();
+      return new NextResponse(pdfBytes, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/pdf',
+          'Cache-Control': 'private, no-cache',
+        },
+      });
+    }
+
     // Download from storage
     const { data: fileData, error: downloadError } = await adminClient.storage
       .from(BUCKET)

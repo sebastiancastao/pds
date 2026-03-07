@@ -69,6 +69,27 @@ const FORM_PRESETS: FormPreset[] = [
   { code: 'safety-training',           label: 'Safety Training',       description: 'OSHA Safety Training Acknowledgment',     requiresSignature: true  },
 ];
 
+type StateFormPreset = {
+  code: string;
+  label: string;
+  description: string;
+  state: string;
+  requiresSignature: boolean;
+  allowDateInput: boolean;
+  allowPrintName: boolean;
+};
+
+// Only state tax forms with actual managed PDFs in the payroll-packet system.
+// Settings match how each payroll-packet handles the form:
+//   requiresSignature: true  — all state withholding certs require a signature
+//   allowDateInput/allowPrintName: false — employees fill those directly in the PDF form fields
+const STATE_FORM_PRESETS: StateFormPreset[] = [
+  { code: 'ca-de4',   label: 'CA DE-4',    description: 'CA Employee Withholding Certificate (DE-4)',   state: 'CA', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'az-a4',    label: 'AZ A-4',     description: 'AZ Employee Withholding Certificate (A-4)',    state: 'AZ', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'ny-it2104',label: 'NY IT-2104', description: 'NY State Withholding Certificate (IT-2104)',   state: 'NY', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'wi-wt4',   label: 'WI WT-4',    description: 'WI Withholding Exemption Certificate (WT-4)',  state: 'WI', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+];
+
 export default function AdminPdfFormsPage() {
   const router = useRouter();
   const [forms, setForms] = useState<CustomForm[]>([]);
@@ -83,6 +104,8 @@ export default function AdminPdfFormsPage() {
   const [allowPrintName, setAllowPrintName] = useState(false);
   const [targetState, setTargetState] = useState('');
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
+  const [uploadTab, setUploadTab] = useState<'standard' | 'state'>('standard');
+  const [selectedStatePreset, setSelectedStatePreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentYear = new Date().getFullYear();
@@ -130,7 +153,6 @@ export default function AdminPdfFormsPage() {
   const applyPreset = (preset: FormPreset) => {
     const isAlreadySelected = selectedPreset === preset.code;
     if (isAlreadySelected) {
-      // Deselect
       setSelectedPreset(null);
       setTitle('');
       setRequiresSignature(false);
@@ -138,18 +160,76 @@ export default function AdminPdfFormsPage() {
       return;
     }
     setSelectedPreset(preset.code);
+    setSelectedStatePreset(null);
     setTitle(`${preset.code}-${currentYear}`);
     setRequiresSignature(preset.requiresSignature);
+    setTargetState('');
     setError('');
     setSuccessMsg('');
-    // Open file picker so admin can immediately pick the PDF
     setTimeout(() => fileInputRef.current?.click(), 50);
+  };
+
+  const applyStatePreset = (preset: StateFormPreset) => {
+    const isAlreadySelected = selectedStatePreset === preset.code;
+    if (isAlreadySelected) {
+      setSelectedStatePreset(null);
+      setTitle('');
+      setRequiresSignature(false);
+      setAllowDateInput(false);
+      setAllowPrintName(false);
+      setTargetState('');
+      return;
+    }
+    setSelectedStatePreset(preset.code);
+    setSelectedPreset(null);
+    setTitle(`${preset.code}-${currentYear}`);
+    setRequiresSignature(preset.requiresSignature);
+    setAllowDateInput(preset.allowDateInput);
+    setAllowPrintName(preset.allowPrintName);
+    setTargetState(preset.state);
+    setError('');
+    setSuccessMsg('');
+  };
+
+  const handleRegisterStateForm = async () => {
+    setError('');
+    setSuccessMsg('');
+    if (!title.trim()) { setError('Please enter a form title.'); return; }
+    const preset = STATE_FORM_PRESETS.find(p => p.code === selectedStatePreset);
+    if (!preset) { setError('No state form selected.'); return; }
+
+    setUploading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const res = await fetch('/api/custom-forms/register-state-form', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ title: title.trim(), requiresSignature, targetState }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
+
+      setSuccessMsg(`"${title}" registered successfully.`);
+      setTitle('');
+      setRequiresSignature(false);
+      setTargetState('');
+      setSelectedStatePreset(null);
+      await loadForms(session.access_token);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleTitleChange = (val: string) => {
     setTitle(val);
     const match = FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
     setSelectedPreset(match?.code ?? null);
+    const stateMatch = STATE_FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
+    setSelectedStatePreset(stateMatch?.code ?? null);
   };
 
   const handleUpload = async (e: React.FormEvent) => {
@@ -190,6 +270,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setTargetState('');
       setSelectedPreset(null);
+      setSelectedStatePreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       await loadForms(session.access_token);
     } catch (err: any) {
@@ -240,36 +321,96 @@ export default function AdminPdfFormsPage() {
         {/* Upload Form */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
           <h2 className="text-lg font-semibold text-gray-800 mb-1">Upload New Form</h2>
-          <p className="text-sm text-gray-500 mb-5">
-            Pick a preset to auto-fill the title and signature setting, then upload the PDF.
+          <p className="text-sm text-gray-500 mb-4">
+            Pick a preset to auto-fill the title and settings, then upload the PDF.
           </p>
 
-          {/* Preset grid */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
-            {FORM_PRESETS.map(preset => {
-              const isSelected = selectedPreset === preset.code;
-              return (
-                <button
-                  key={preset.code}
-                  type="button"
-                  onClick={() => applyPreset(preset)}
-                  className={`text-left p-3 rounded-lg border transition-all ${
-                    isSelected
-                      ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-300'
-                      : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
-                  }`}
-                >
-                  <p className="text-sm font-semibold text-gray-900 leading-tight">{preset.label}</p>
-                  <p className="text-xs text-gray-500 mt-0.5 leading-tight">{preset.description}</p>
-                  {preset.requiresSignature && (
-                    <span className="inline-block mt-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
-                      Sig. required
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          {/* Tab switcher */}
+          <div className="flex gap-1 mb-5 bg-gray-100 rounded-lg p-1">
+            <button
+              type="button"
+              onClick={() => { setUploadTab('standard'); setSelectedStatePreset(null); }}
+              className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                uploadTab === 'standard'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Standard Forms
+            </button>
+            <button
+              type="button"
+              onClick={() => { setUploadTab('state'); setSelectedPreset(null); }}
+              className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                uploadTab === 'state'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              State Forms
+            </button>
           </div>
+
+          {/* Standard preset grid */}
+          {uploadTab === 'standard' && (
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
+              {FORM_PRESETS.map(preset => {
+                const isSelected = selectedPreset === preset.code;
+                return (
+                  <button
+                    key={preset.code}
+                    type="button"
+                    onClick={() => applyPreset(preset)}
+                    className={`text-left p-3 rounded-lg border transition-all ${
+                      isSelected
+                        ? 'border-blue-500 bg-blue-50 ring-2 ring-blue-300'
+                        : 'border-gray-200 hover:border-blue-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-gray-900 leading-tight">{preset.label}</p>
+                    <p className="text-xs text-gray-500 mt-0.5 leading-tight">{preset.description}</p>
+                    {preset.requiresSignature && (
+                      <span className="inline-block mt-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
+                        Sig. required
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* State form preset grid */}
+          {uploadTab === 'state' && (
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 mb-3">
+                State withholding certificates managed by payroll packets. Select one, then upload the corresponding PDF.
+              </p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {STATE_FORM_PRESETS.map(preset => {
+                  const isSelected = selectedStatePreset === preset.code;
+                  return (
+                    <button
+                      key={preset.code}
+                      type="button"
+                      onClick={() => applyStatePreset(preset)}
+                      className={`text-left p-3 rounded-lg border transition-all ${
+                        isSelected
+                          ? 'border-indigo-500 bg-indigo-50 ring-2 ring-indigo-300'
+                          : 'border-gray-200 hover:border-indigo-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      <p className="text-sm font-semibold text-gray-900 leading-tight">{preset.label}</p>
+                      <p className="text-xs text-gray-500 mt-0.5 leading-tight">{preset.description}</p>
+                      <span className="inline-block mt-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
+                        Sig. required
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-3 mb-5">
             <div className="flex-1 h-px bg-gray-200" />
@@ -294,24 +435,40 @@ export default function AdminPdfFormsPage() {
                   <span className="font-mono">{title}</span>
                 </p>
               )}
+              {selectedStatePreset && (() => {
+                const sp = STATE_FORM_PRESETS.find(p => p.code === selectedStatePreset);
+                return sp ? (
+                  <p className="text-xs text-indigo-600 mt-1">
+                    State preset: <span className="font-semibold">{sp.label}</span> ({sp.state}) — title set to{' '}
+                    <span className="font-mono">{title}</span>
+                  </p>
+                ) : null;
+              })()}
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                PDF File{selectedPreset && (
-                  <span className="text-gray-400 font-normal ml-1">
-                    — upload the {FORM_PRESETS.find(p => p.code === selectedPreset)?.label} PDF
-                  </span>
-                )}
-              </label>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/pdf"
-                className="w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
-                required
-              />
-            </div>
+            {!selectedStatePreset && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  PDF File{selectedPreset && (
+                    <span className="text-gray-400 font-normal ml-1">
+                      — upload the {FORM_PRESETS.find(p => p.code === selectedPreset)?.label} PDF
+                    </span>
+                  )}
+                </label>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="application/pdf"
+                  className="w-full text-sm text-gray-600 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  required
+                />
+              </div>
+            )}
+            {selectedStatePreset && (
+              <div className="rounded-lg bg-indigo-50 border border-indigo-200 px-4 py-3 text-sm text-indigo-800">
+                PDF served directly from the <span className="font-semibold">/payroll-packet-{targetState.toLowerCase()}/form-viewer</span> route — no file upload needed.
+              </div>
+            )}
 
             <div className="flex items-center gap-3">
               <input
@@ -355,18 +512,25 @@ export default function AdminPdfFormsPage() {
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Restrict to State
-                <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
+                {!selectedStatePreset && <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>}
               </label>
-              <select
-                value={targetState}
-                onChange={e => setTargetState(e.target.value)}
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              >
-                <option value="">All states</option>
-                {US_STATES.map(s => (
-                  <option key={s.value} value={s.value}>{s.value} — {s.label}</option>
-                ))}
-              </select>
+              {selectedStatePreset ? (
+                <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-700">
+                  <span className="font-semibold">{targetState}</span>
+                  <span className="text-gray-400">— locked by state preset</span>
+                </div>
+              ) : (
+                <select
+                  value={targetState}
+                  onChange={e => setTargetState(e.target.value)}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
+                >
+                  <option value="">All states</option>
+                  {US_STATES.map(s => (
+                    <option key={s.value} value={s.value}>{s.value} — {s.label}</option>
+                  ))}
+                </select>
+              )}
             </div>
 
             {error && (
@@ -380,13 +544,24 @@ export default function AdminPdfFormsPage() {
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={uploading}
-              className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
-            >
-              {uploading ? 'Uploading...' : 'Upload Form'}
-            </button>
+            {selectedStatePreset ? (
+              <button
+                type="button"
+                onClick={handleRegisterStateForm}
+                disabled={uploading}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
+              >
+                {uploading ? 'Registering...' : 'Register State Form'}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={uploading}
+                className="w-full bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
+              >
+                {uploading ? 'Uploading...' : 'Upload Form'}
+              </button>
+            )}
           </form>
         </div>
 
