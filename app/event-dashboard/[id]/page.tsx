@@ -4990,6 +4990,7 @@ export default function EventDashboardPage() {
     <div className="bg-white border rounded-lg overflow-x-auto">
       <table className="w-full divide-y divide-gray-200 text-xs">
         <thead className="bg-gray-50">
+          
           <tr>
             <th className="px-3 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Staff</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
