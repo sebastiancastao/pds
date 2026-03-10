@@ -665,6 +665,12 @@ export async function PUT(
     }
 
     if (toDelete.length > 0) {
+      if (requesterRole !== "exec") {
+        return NextResponse.json(
+          { error: "Only execs can delete time entries. Managers and supervisors may only update existing entries." },
+          { status: 403 }
+        );
+      }
       const { error: deleteError } = await supabaseAdmin
         .from("time_entries")
         .delete()

@@ -2835,6 +2835,24 @@ export default function EventDashboardPage() {
     const draft = timesheetDrafts[uid];
     if (!draft) return;
 
+    // Only execs may delete time entries (clear a field that had a value)
+    if (userRole !== "exec") {
+      const original = timesheetSpans[uid];
+      if (original) {
+        const wouldDelete =
+          (original.firstIn && !draft.firstIn) ||
+          (original.lastOut && !draft.lastOut) ||
+          (original.firstMealStart && !draft.firstMealStart) ||
+          (original.lastMealEnd && !draft.lastMealEnd) ||
+          (original.secondMealStart && !draft.secondMealStart) ||
+          (original.secondMealEnd && !draft.secondMealEnd);
+        if (wouldDelete) {
+          setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
+          return;
+        }
+      }
+    }
+
     setShowTimesheetEditModal(false);
     setSavingTimesheetUserId(uid);
     setMessage("");

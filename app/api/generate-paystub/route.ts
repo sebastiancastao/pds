@@ -875,15 +875,19 @@ export async function POST(req: NextRequest) {
         const computedTotalPay = commission + tips + restBreak;
         const computedTotalGrossPay = computedTotalPay + other;
 
+        const reportCommissionPool = Math.max(0, evtNetSalesCa * 0.03);
+        const reportCommissionPerEmployee =
+          vendorCountForCommission > 0 ? reportCommissionPool / vendorCountForCommission : 0;
+
         if (commissionPoolDollars > 0 || perVendorCommissionShare > 0) {
           caCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
-            show: (event?.artist ?? event?.name ?? '').toString(),
+            show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: evtNetSalesCa,
-            commissionPool: commissionPoolDollars,
+            commissionPool: reportCommissionPool,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: commission,
+            commissionPerEmployee: reportCommissionPerEmployee,
             finalPay: computedTotalGrossPay,
           });
         }
@@ -1444,15 +1448,19 @@ export async function POST(req: NextRequest) {
         const computedTotalGrossPay = computedTotalPay + other;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
 
+        const reportCommissionPool = Math.max(0, evtNetSalesNonCa * 0.03);
+        const reportCommissionPerEmployee =
+          vendorCountForCommission > 0 ? reportCommissionPool / vendorCountForCommission : 0;
+
         if (commissionPoolDollars > 0 || perVendorCommissionShare > 0) {
           nonCaCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
-            show: (event?.artist ?? event?.name ?? '').toString(),
+            show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: evtNetSalesNonCa,
-            commissionPool: commissionPoolDollars,
+            commissionPool: reportCommissionPool,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: commission,
+            commissionPerEmployee: reportCommissionPerEmployee,
             finalPay: total,
           });
         }

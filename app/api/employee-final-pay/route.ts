@@ -49,7 +49,7 @@ export async function GET(req: NextRequest) {
     // Fetch events in the date range
     const { data: events, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, event_name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent')
+      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent')
       .gte('event_date', startDate)
       .lte('event_date', endDate)
       .order('event_date', { ascending: true });
@@ -73,6 +73,21 @@ export async function GET(req: NextRequest) {
 
     if (vpError) {
       return NextResponse.json({ error: vpError.message }, { status: 500 });
+    }
+
+    // Fetch vendor counts per event (to compute commission = adj_gross / num_vendors)
+    const { data: allVendorPayments, error: allVpError } = await supabaseAdmin
+      .from('event_vendor_payments')
+      .select('event_id, user_id')
+      .in('event_id', eventIds);
+
+    if (allVpError) {
+      return NextResponse.json({ error: allVpError.message }, { status: 500 });
+    }
+
+    const vendorCountByEvent: Record<string, number> = {};
+    for (const vp of allVendorPayments || []) {
+      vendorCountByEvent[vp.event_id] = (vendorCountByEvent[vp.event_id] || 0) + 1;
     }
 
     // Fetch event-level payment summaries (for net_sales, commission pool dollars)
@@ -120,19 +135,25 @@ export async function GET(req: NextRequest) {
         const ep = epByEvent[ev.id] || {};
         const adj = adjByEvent[ev.id] || {};
 
-        const commissions = Number(vp.commissions || 0);
         const tips = Number(vp.tips || 0);
         const totalPay = Number(vp.total_pay || 0);
         const adjustmentAmount = Number(adj.adjustment_amount || 0);
         const finalPay = totalPay + adjustmentAmount;
 
-        // Commission pool info for context
+        // Commission = (Adj. Gross * commission_pool%) / # of vendors
+        // Use commission_pool_dollars if available; otherwise recalculate using the
+        // authoritative rate from events.commission_pool (fraction, e.g. 0.03 for 3%)
         const netSales = Number(ep.net_sales || 0);
         const commissionPoolDollars = Number(ep.commission_pool_dollars || 0);
+        const adjGrossPool = commissionPoolDollars > 0
+          ? commissionPoolDollars
+          : netSales * Number(ev.commission_pool || 0);
+        const numVendors = vendorCountByEvent[ev.id] || 1;
+        const commissions = numVendors > 0 ? adjGrossPool / numVendors : 0;
 
         return {
           eventId: ev.id,
-          eventName: ev.event_name,
+          eventName: ev.name,
           eventDate: ev.event_date,
           venue: ev.venue,
           city: ev.city,
