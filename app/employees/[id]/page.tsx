@@ -250,7 +250,8 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
+  const [assignedFormIds, setAssignedFormIds] = useState<Set<string>>(new Set());
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
@@ -408,27 +409,49 @@ export default function WorkerProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
-  // Fetch available custom forms list, filtered by employee's state and region
+  // Fetch available custom forms list + user-specific assignments
   useEffect(() => {
     if (!employee) return;
     const loadCustomForms = async () => {
       setCustomFormsLoading(true);
       try {
         const { data: { session } } = await supabase.auth.getSession();
+        const headers = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} as Record<string, string>;
 
-        const res = await fetch('/api/custom-forms/list', {
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-        });
+        const [formsRes, assignmentsRes] = await Promise.all([
+          fetch('/api/custom-forms/list', { headers }),
+          fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers }),
+        ]);
 
-        if (res.ok) {
-          const data = await res.json();
+        let stateForms: typeof customFormsList = [];
+        if (formsRes.ok) {
+          const data = await formsRes.json();
           const allForms = data.forms || [];
-          // Filter: only include forms where target_state matches employee's state (or has no restriction)
-          const filtered = allForms.filter((f: { target_state: string | null }) =>
+          stateForms = allForms.filter((f: { target_state: string | null }) =>
             !f.target_state || f.target_state === employee.state
           );
-          setCustomFormsList(filtered);
         }
+
+        let specificIds = new Set<string>();
+        let assignedAtMap: Record<string, string | null> = {};
+        let specificForms: typeof customFormsList = [];
+        if (assignmentsRes.ok) {
+          const data = await assignmentsRes.json();
+          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
+          specificIds = new Set(assigned.map(f => f.id));
+          assignedAtMap = Object.fromEntries(assigned.map(f => [f.id, f.assigned_at ?? null]));
+          // Add assigned forms not already in the state list
+          specificForms = assigned.filter(f => !stateForms.find(sf => sf.id === f.id));
+        }
+
+        // Inject assigned_at into state-filtered forms that are also directly assigned
+        const mergedStateForms = stateForms.map(f =>
+          specificIds.has(f.id) ? { ...f, assigned_at: assignedAtMap[f.id] } : f
+        );
+
+        setAssignedFormIds(specificIds);
+        // Merge: state-filtered forms first, then any extra assigned forms
+        setCustomFormsList([...mergedStateForms, ...specificForms]);
       } catch (e) {
         console.error('Error loading custom forms list:', e);
       } finally {
@@ -1726,6 +1749,7 @@ export default function WorkerProfilePage() {
                     {customFormsList.map((form) => {
                       const progressKey = `${form.title} ${new Date().getFullYear()}`;
                       const submitted = pdfForms.find(p => p.form_name === progressKey);
+                      const isDirectlyAssigned = assignedFormIds.has(form.id);
                       return (
                         <div
                           key={form.id}
@@ -1750,6 +1774,16 @@ export default function WorkerProfilePage() {
                             <div className="flex-1 min-w-0">
                               <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
                               <div className="flex flex-wrap gap-1 mt-1">
+                                {isDirectlyAssigned && (
+                                  <span className="text-xs font-medium text-purple-700 bg-purple-100 border border-purple-200 rounded-full px-2 py-0.5">
+                                    Assigned
+                                  </span>
+                                )}
+                                {form.created_at && (
+                                  <span className="text-xs font-medium text-gray-600 bg-gray-100 border border-gray-200 rounded-full px-2 py-0.5">
+                                    Distribution Date: {formatDate(form.created_at)}
+                                  </span>
+                                )}
                                 {form.requires_signature && (
                                   <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
                                     Sig. required

@@ -11,6 +11,27 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const GATE_PHONE_OFFSET_HOURS = 0.5;
+
+const addGatePhoneLeadHours = (hours: number): number =>
+  Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
+
+const getEffectiveHours = (payment: any): number => {
+  if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
+    const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
+    if (Number.isFinite(effective) && effective >= 0) return addGatePhoneLeadHours(effective);
+  }
+  const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
+  if (actual > 0) return actual;
+  const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
+  if (worked > 0) return worked;
+  const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
+  const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
+  const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
+  const summed = reg + ot + dt;
+  return summed > 0 ? summed : 0;
+};
+
 async function getAuthedUser(req: NextRequest) {
   const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
   const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
@@ -46,12 +67,19 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // Fetch events in the date range
+    // Fetch events in the date range (inclusive of the full endDate day).
+    const endDatePlusOne = new Date(`${endDate}T00:00:00Z`);
+    if (Number.isNaN(endDatePlusOne.getTime())) {
+      return NextResponse.json({ error: 'Invalid endDate format' }, { status: 400 });
+    }
+    endDatePlusOne.setUTCDate(endDatePlusOne.getUTCDate() + 1);
+    const endDateExclusive = endDatePlusOne.toISOString().slice(0, 10);
+
     const { data: events, error: eventsError } = await supabaseAdmin
       .from('events')
       .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent')
       .gte('event_date', startDate)
-      .lte('event_date', endDate)
+      .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
 
     if (eventsError) {
@@ -67,7 +95,7 @@ export async function GET(req: NextRequest) {
     // Fetch vendor payment records for this user in those events
     const { data: vendorPayments, error: vpError } = await supabaseAdmin
       .from('event_vendor_payments')
-      .select('event_id, actual_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
+      .select('event_id, effective_hours, actual_hours, worked_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
       .eq('user_id', userId)
       .in('event_id', eventIds);
 
@@ -134,6 +162,7 @@ export async function GET(req: NextRequest) {
         const vp = vpByEvent[ev.id] || {};
         const ep = epByEvent[ev.id] || {};
         const adj = adjByEvent[ev.id] || {};
+        const actualHours = getEffectiveHours(vp);
 
         const tips = Number(vp.tips || 0);
         const totalPay = Number(vp.total_pay || 0);
@@ -158,7 +187,7 @@ export async function GET(req: NextRequest) {
           venue: ev.venue,
           city: ev.city,
           state: ev.state,
-          actualHours: Number(vp.actual_hours || vp.regular_hours || 0),
+          actualHours,
           regularPay: Number(vp.regular_pay || 0),
           overtimePay: Number(vp.overtime_pay || 0),
           doubletimePay: Number(vp.doubletime_pay || 0),

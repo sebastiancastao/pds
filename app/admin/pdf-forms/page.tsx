@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
@@ -14,6 +14,21 @@ type CustomForm = {
   is_active: boolean;
   target_state: string | null;
   target_region: string | null;
+};
+
+type EmployeeResult = {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  city: string | null;
+  state: string | null;
+};
+
+type Assignee = {
+  user_id: string;
+  assigned_at: string;
+  profiles: { first_name: string; last_name: string; email: string } | null;
 };
 
 const US_STATES = [
@@ -103,16 +118,175 @@ export default function AdminPdfFormsPage() {
   const [allowDateInput, setAllowDateInput] = useState(false);
   const [allowPrintName, setAllowPrintName] = useState(false);
   const [targetState, setTargetState] = useState('');
+  const [targetUsers, setTargetUsers] = useState<EmployeeResult[]>([]);
+  const [targetUserSearch, setTargetUserSearch] = useState('');
+  const [targetUserResults, setTargetUserResults] = useState<EmployeeResult[]>([]);
+  const [targetUserSearchLoading, setTargetUserSearchLoading] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [uploadTab, setUploadTab] = useState<'standard' | 'state'>('standard');
   const [selectedStatePreset, setSelectedStatePreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Send-to-users modal state
+  const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
+  const [employeeSearch, setEmployeeSearch] = useState('');
+  const [employeeResults, setEmployeeResults] = useState<EmployeeResult[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedUsers, setSelectedUsers] = useState<EmployeeResult[]>([]);
+  const [assignees, setAssignees] = useState<Assignee[]>([]);
+  const [assigneesLoading, setAssigneesLoading] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [sendSuccess, setSendSuccess] = useState('');
 
   const currentYear = new Date().getFullYear();
 
   useEffect(() => {
     checkAuthAndLoad();
   }, []);
+
+  // Debounced employee search
+  const searchEmployees = useCallback(async (q: string) => {
+    setSearchLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(`/api/employees/search?q=${encodeURIComponent(q)}&limit=20`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const data = await res.json();
+      setEmployeeResults(data.employees || []);
+    } catch {
+      setEmployeeResults([]);
+    } finally {
+      setSearchLoading(false);
+    }
+  }, []);
+
+  // Debounce for send-modal search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (sendModalForm) searchEmployees(employeeSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [employeeSearch, sendModalForm, searchEmployees]);
+
+  // Debounce for upload-form target-user search
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      if (targetUserSearch.trim().length === 0 && targetUserResults.length > 0) return;
+      setTargetUserSearchLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+        const res = await fetch(`/api/employees/search?q=${encodeURIComponent(targetUserSearch)}&limit=20`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const data = await res.json();
+        setTargetUserResults(data.employees || []);
+      } catch {
+        setTargetUserResults([]);
+      } finally {
+        setTargetUserSearchLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [targetUserSearch]);
+
+  const openSendModal = async (form: CustomForm) => {
+    setSendModalForm(form);
+    setEmployeeSearch('');
+    setEmployeeResults([]);
+    setSelectedUsers([]);
+    setSendError('');
+    setSendSuccess('');
+    setAssignees([]);
+    setAssigneesLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(`/api/custom-forms/${form.id}/assign`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAssignees(data.assignees || []);
+      }
+    } catch { /* ignore */ } finally {
+      setAssigneesLoading(false);
+    }
+    // Load initial employee list
+    searchEmployees('');
+  };
+
+  const closeSendModal = () => {
+    setSendModalForm(null);
+    setEmployeeSearch('');
+    setEmployeeResults([]);
+    setSelectedUsers([]);
+    setSendError('');
+    setSendSuccess('');
+  };
+
+  const toggleUserSelection = (emp: EmployeeResult) => {
+    setSelectedUsers(prev =>
+      prev.find(u => u.id === emp.id)
+        ? prev.filter(u => u.id !== emp.id)
+        : [...prev, emp]
+    );
+  };
+
+  const handleSendToUsers = async () => {
+    if (!sendModalForm || selectedUsers.length === 0) return;
+    setSending(true);
+    setSendError('');
+    setSendSuccess('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(`/api/custom-forms/${sendModalForm.id}/assign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userIds: selectedUsers.map(u => u.id) }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to assign');
+      setSendSuccess(`Form assigned to ${selectedUsers.length} user${selectedUsers.length !== 1 ? 's' : ''}.`);
+      setSelectedUsers([]);
+      // Refresh assignee list
+      const res2 = await fetch(`/api/custom-forms/${sendModalForm.id}/assign`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (res2.ok) {
+        const data2 = await res2.json();
+        setAssignees(data2.assignees || []);
+      }
+    } catch (err: any) {
+      setSendError(err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handleRemoveAssignee = async (userId: string) => {
+    if (!sendModalForm) return;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      await fetch(`/api/custom-forms/${sendModalForm.id}/assign`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userId }),
+      });
+      setAssignees(prev => prev.filter(a => a.user_id !== userId));
+    } catch { /* ignore */ }
+  };
 
   const checkAuthAndLoad = async () => {
     const { data: { session } } = await supabase.auth.getSession();
@@ -211,10 +385,23 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
-      setSuccessMsg(`"${title}" registered successfully.`);
+      // Assign to specific users if selected
+      if (targetUsers.length > 0 && json.form?.id) {
+        await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+        });
+      }
+
+      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
+      setSuccessMsg(`"${title}" registered successfully${userNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
+      setTargetUsers([]);
+      setTargetUserSearch('');
+      setTargetUserResults([]);
       setSelectedStatePreset(null);
       await loadForms(session.access_token);
     } catch (err: any) {
@@ -263,12 +450,25 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
 
-      setSuccessMsg(`"${title}" uploaded successfully.`);
+      // If specific users were selected, assign this form to them
+      if (targetUsers.length > 0 && json.form?.id) {
+        await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+        });
+      }
+
+      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
+      setSuccessMsg(`"${title}" uploaded successfully${userNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
       setAllowPrintName(false);
       setTargetState('');
+      setTargetUsers([]);
+      setTargetUserSearch('');
+      setTargetUserResults([]);
       setSelectedPreset(null);
       setSelectedStatePreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -309,6 +509,7 @@ export default function AdminPdfFormsPage() {
   }
 
   return (
+    <>
     <div className="min-h-screen bg-gray-50 py-10 px-4">
       <div className="max-w-3xl mx-auto">
         <div className="flex items-center justify-between mb-8">
@@ -533,6 +734,64 @@ export default function AdminPdfFormsPage() {
               )}
             </div>
 
+            {/* Restrict to specific users */}
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Restrict to Specific Users
+                <span className="ml-1 text-xs text-gray-400 font-normal">(optional — leave empty to show to all eligible employees)</span>
+              </label>
+              <input
+                type="text"
+                value={targetUserSearch}
+                onChange={e => setTargetUserSearch(e.target.value)}
+                placeholder="Search by name or email..."
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {targetUserSearchLoading && <p className="text-xs text-gray-400 mt-1">Searching...</p>}
+              {!targetUserSearchLoading && targetUserSearch && targetUserResults.length > 0 && (
+                <div className="mt-1 border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-40 overflow-y-auto">
+                  {targetUserResults
+                    .filter(r => !targetUsers.find(u => u.id === r.id))
+                    .map(emp => (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        onClick={() => {
+                          setTargetUsers(prev => [...prev, emp]);
+                          setTargetUserSearch('');
+                          setTargetUserResults([]);
+                        }}
+                        className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-blue-50 transition-colors"
+                      >
+                        <span className="text-sm font-medium text-gray-900">{emp.first_name} {emp.last_name}</span>
+                        <span className="text-xs text-gray-500">{emp.email}{emp.state ? ` · ${emp.state}` : ''}</span>
+                      </button>
+                    ))}
+                </div>
+              )}
+              {targetUsers.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {targetUsers.map(u => (
+                    <span
+                      key={u.id}
+                      className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-blue-200"
+                    >
+                      {u.first_name} {u.last_name}
+                      <button
+                        type="button"
+                        onClick={() => setTargetUsers(prev => prev.filter(x => x.id !== u.id))}
+                        className="text-blue-500 hover:text-blue-700 rounded-full p-0.5 hover:bg-blue-200 transition-colors"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {error && (
               <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-700">
                 {error}
@@ -626,6 +885,12 @@ export default function AdminPdfFormsPage() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
+                      onClick={() => openSendModal(form)}
+                      className="text-sm text-purple-600 hover:text-purple-800 font-medium px-3 py-1 rounded-lg hover:bg-purple-50 transition-colors"
+                    >
+                      Send
+                    </button>
+                    <button
                       onClick={() => router.push(`/employee/form/${form.id}`)}
                       className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors"
                     >
@@ -645,5 +910,171 @@ export default function AdminPdfFormsPage() {
         </div>
       </div>
     </div>
+
+    {/* Send to Users Modal */}
+    {sendModalForm && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+            <div>
+              <h2 className="text-lg font-bold text-gray-900">Send Form to Users</h2>
+              <p className="text-sm text-gray-500 mt-0.5 font-mono">{sendModalForm.title}</p>
+            </div>
+            <button
+              onClick={closeSendModal}
+              className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100 transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+            {/* Employee search */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Search Employees</label>
+              <input
+                type="text"
+                value={employeeSearch}
+                onChange={e => setEmployeeSearch(e.target.value)}
+                placeholder="Name or email..."
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+              />
+              {/* Results */}
+              {searchLoading ? (
+                <p className="text-xs text-gray-400 mt-2">Searching...</p>
+              ) : employeeResults.length > 0 ? (
+                <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-48 overflow-y-auto">
+                  {employeeResults.map(emp => {
+                    const isSelected = !!selectedUsers.find(u => u.id === emp.id);
+                    const isAlreadyAssigned = assignees.some(a => a.user_id === emp.id);
+                    return (
+                      <button
+                        key={emp.id}
+                        type="button"
+                        onClick={() => !isAlreadyAssigned && toggleUserSelection(emp)}
+                        disabled={isAlreadyAssigned}
+                        className={`w-full text-left flex items-center gap-3 px-3 py-2 transition-colors ${
+                          isAlreadyAssigned
+                            ? 'bg-gray-50 cursor-default opacity-60'
+                            : isSelected
+                            ? 'bg-purple-50'
+                            : 'hover:bg-gray-50'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                          isAlreadyAssigned
+                            ? 'border-gray-300 bg-gray-200'
+                            : isSelected
+                            ? 'border-purple-600 bg-purple-600'
+                            : 'border-gray-300'
+                        }`}>
+                          {(isSelected || isAlreadyAssigned) && (
+                            <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                            </svg>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">
+                            {emp.first_name} {emp.last_name}
+                            {isAlreadyAssigned && <span className="ml-1.5 text-xs text-gray-400 font-normal">already assigned</span>}
+                          </p>
+                          <p className="text-xs text-gray-500 truncate">{emp.email}{emp.state ? ` · ${emp.state}` : ''}</p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400 mt-2">No employees found.</p>
+              )}
+            </div>
+
+            {/* Selected users */}
+            {selectedUsers.length > 0 && (
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">Selected ({selectedUsers.length})</p>
+                <div className="flex flex-wrap gap-2">
+                  {selectedUsers.map(u => (
+                    <span
+                      key={u.id}
+                      className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-purple-200"
+                    >
+                      {u.first_name} {u.last_name}
+                      <button
+                        onClick={() => toggleUserSelection(u)}
+                        className="text-purple-500 hover:text-purple-700 rounded-full p-0.5 hover:bg-purple-200 transition-colors"
+                      >
+                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {sendError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-700">{sendError}</div>
+            )}
+            {sendSuccess && (
+              <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-2 text-sm text-green-700">{sendSuccess}</div>
+            )}
+
+            {/* Current assignees */}
+            <div>
+              <p className="text-sm font-medium text-gray-700 mb-2">
+                Currently Assigned
+                {assigneesLoading && <span className="text-xs text-gray-400 font-normal ml-1">(loading…)</span>}
+              </p>
+              {!assigneesLoading && assignees.length === 0 ? (
+                <p className="text-xs text-gray-400">No specific users assigned — form is shown to all eligible employees.</p>
+              ) : (
+                <div className="space-y-1.5">
+                  {assignees.map(a => (
+                    <div key={a.user_id} className="flex items-center justify-between gap-2 bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
+                      <div>
+                        <p className="text-sm font-medium text-gray-800">
+                          {a.profiles ? `${a.profiles.first_name} ${a.profiles.last_name}` : a.user_id}
+                        </p>
+                        {a.profiles?.email && <p className="text-xs text-gray-500">{a.profiles.email}</p>}
+                      </div>
+                      <button
+                        onClick={() => handleRemoveAssignee(a.user_id)}
+                        className="text-xs text-red-500 hover:text-red-700 px-2 py-0.5 rounded hover:bg-red-50 transition-colors"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Footer */}
+          <div className="px-6 py-4 border-t border-gray-200 flex items-center gap-3">
+            <button
+              onClick={closeSendModal}
+              className="flex-1 py-2 px-4 rounded-lg border border-gray-300 text-sm font-medium text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Close
+            </button>
+            <button
+              onClick={handleSendToUsers}
+              disabled={selectedUsers.length === 0 || sending}
+              className="flex-1 py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
+            >
+              {sending ? 'Sending...' : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

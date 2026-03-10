@@ -33,6 +33,7 @@ interface Worker {
 interface Event {
   id: string;
   name: string;
+  event_name?: string | null;
   artist: string | null;
   venue: string;
   event_type: string;
@@ -381,6 +382,27 @@ export default function PaystubGenerator() {
     return sum > 0 ? sum : 0;
   };
 
+  const hasWorkerCompensationData = (worker?: Worker | null): boolean => {
+    const pd = worker?.payment_data;
+    if (!pd) return false;
+    const values = [
+      pd.actual_hours,
+      pd.regular_hours,
+      pd.overtime_hours,
+      pd.doubletime_hours,
+      pd.regular_pay,
+      pd.overtime_pay,
+      pd.doubletime_pay,
+      pd.commissions,
+      pd.tips,
+      pd.total_pay,
+    ];
+    return values.some((v) => {
+      const n = Number(v ?? 0);
+      return Number.isFinite(n) && Math.abs(n) > 0;
+    });
+  };
+
   const periodStatsByUserId = useMemo(() => {
     const stats: Record<string, { hours: number; events: number }> = {};
     for (const event of events || []) {
@@ -423,6 +445,20 @@ export default function PaystubGenerator() {
       : events;
   };
 
+  const formatEventDateForCard = (rawValue: string) => {
+    const raw = (rawValue || '').toString();
+    const dateOnly = raw.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+      const [yy, mm, dd] = dateOnly.split('-').map((n) => Number(n));
+      return new Date(Date.UTC(yy, mm - 1, dd)).toLocaleDateString('en-US', { dateStyle: 'medium' });
+    }
+    const asDate = new Date(raw);
+    if (!Number.isNaN(asDate.getTime())) {
+      return asDate.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' });
+    }
+    return raw || 'N/A';
+  };
+
   const filterEventsForUserId = (userId: string | null) => {
     if (!userId) return events;
     return events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
@@ -430,10 +466,7 @@ export default function PaystubGenerator() {
 
   const filterEventsForUserIdWithHours = (userId: string | null) => {
     if (!userId) return [];
-    return events.filter((event) => {
-      const w = (event.workers || []).find((x) => x.user_id === userId);
-      return getWorkerHoursForEligibility(w) > 0;
-    });
+    return events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
   };
 
   const resolveEmployeeUserIdByOfficialName = async (
@@ -650,16 +683,14 @@ export default function PaystubGenerator() {
 
           const assignedCount = assignedEventsByUserId[emp.matchedUserId] || 0;
           const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
-          const st = periodStatsByUserId[emp.matchedUserId];
-          const hoursInPeriod = st ? st.hours : 0;
           if (assignedCount <= 0) {
             skipped++;
             errors.push(`Row ${emp.rowIndex} (${employeeName}): not in any event teams during selected period`);
             continue;
           }
-          if (filteredEvents.length === 0 || hoursInPeriod <= 0) {
+          if (filteredEvents.length === 0) {
             skipped++;
-            errors.push(`Row ${emp.rowIndex} (${employeeName}): no hours found in selected period`);
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable data found in selected period`);
             continue;
           }
 
@@ -1245,7 +1276,7 @@ export default function PaystubGenerator() {
                                   const assignedCount = assignedEventsByUserId[e.matchedUserId] || 0;
                                   const st = periodStatsByUserId[e.matchedUserId];
                                   const hours = st ? st.hours : 0;
-                                  const eligible = hours > 0;
+                                  const eligible = filterEventsForUserIdWithHours(e.matchedUserId).length > 0;
                                   return eligible ? (
                                     <span className="px-2 py-0.5 rounded bg-green-100 text-green-800 text-xs font-semibold">
                                       Eligible ({hours.toFixed(2)}h)
@@ -1382,7 +1413,7 @@ export default function PaystubGenerator() {
                       <div key={event.id} className="border border-slate-200 rounded-lg p-4 hover:border-blue-300 transition-colors">
                         <div className="flex items-start justify-between gap-4 mb-3">
                           <div className="flex-1">
-                            <h3 className="font-semibold text-slate-900">{event.name}</h3>
+                            <h3 className="font-semibold text-slate-900">{event.name || event.event_name || 'Unnamed Event'}</h3>
                             {event.artist && (
                               <p className="text-sm text-slate-600 mt-1">Artist: {event.artist}</p>
                             )}
@@ -1393,15 +1424,12 @@ export default function PaystubGenerator() {
                               </p>
                             )}
                             <p className="text-xs text-slate-500 mt-2">
-                              {new Date(event.event_date).toLocaleString('en-US', {
-                                dateStyle: 'medium',
-                                timeStyle: 'short'
-                              })}
+                              {formatEventDateForCard(event.event_date)}
                             </p>
                           </div>
                           <div className="flex-shrink-0">
                             <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
-                              {event.event_type}
+                              {event.event_type || 'Event'}
                             </span>
                           </div>
                         </div>

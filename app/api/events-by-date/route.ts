@@ -23,19 +23,44 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Missing required parameters: startDate and endDate' }, { status: 400 });
     }
 
-    // Query events within the date range
-    // Note: We're using event_date field which is timestamptz
-    // Add one day to endDate to include events throughout the entire end date
-    const endDatePlusOne = new Date(endDate);
-    endDatePlusOne.setDate(endDatePlusOne.getDate() + 1);
-    const endDateStr = endDatePlusOne.toISOString().split('T')[0];
+    const validIsoDate = /^\d{4}-\d{2}-\d{2}$/;
+    if (!validIsoDate.test(startDate) || !validIsoDate.test(endDate)) {
+      return NextResponse.json({ error: 'Invalid date format. Expected YYYY-MM-DD for startDate/endDate' }, { status: 400 });
+    }
+    if (startDate > endDate) {
+      return NextResponse.json({ error: 'startDate must be before or equal to endDate' }, { status: 400 });
+    }
+
+    const toSeconds = (value?: string | null): number | null => {
+      const raw = (value || '').toString().trim();
+      if (!raw) return null;
+      const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+      if (!match) return null;
+      const hh = Number(match[1]);
+      const mm = Number(match[2]);
+      const ss = Number(match[3] || 0);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm) || !Number.isFinite(ss)) return null;
+      return hh * 3600 + mm * 60 + ss;
+    };
+
+    const getEventDateStr = (event: any): string => {
+      const fromEventDate = (event?.event_date || '').toString().split('T')[0];
+      if (fromEventDate) return fromEventDate;
+      return (event?.datetime || '').toString().split('T')[0];
+    };
+
+    // Query events within the date range (both limits inclusive).
+    // Use UTC arithmetic to avoid local-timezone off-by-one when adding 1 day.
+    const endDatePlusOne = new Date(`${endDate}T00:00:00Z`);
+    endDatePlusOne.setUTCDate(endDatePlusOne.getUTCDate() + 1);
+    const endDateExclusive = endDatePlusOne.toISOString().slice(0, 10);
 
     // Fetch events
     const { data: events, error: eventsError } = await supabaseAdmin
       .from('events')
       .select('*')
       .gte('event_date', startDate)
-      .lt('event_date', endDateStr)
+      .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
 
     if (eventsError) {
@@ -46,7 +71,7 @@ export async function GET(req: NextRequest) {
       console.log('[EVENTS-BY-DATE][debug] request', {
         startDate,
         endDate,
-        endDateStr,
+        endDateExclusive,
         includeHours,
         eventsCount: (events || []).length,
       });
@@ -90,17 +115,91 @@ export async function GET(req: NextRequest) {
           return { ...event, workers: [] };
         }
 
-        const vendorIds = Array.from(new Set((eventTeams || []).map((t: any) => t.vendor_id).filter(Boolean)));
+        // Also include vendors that have persisted payment rows even if they are no longer on event_teams.
+        const { data: eventVendorPayments, error: eventVendorPaymentsError } = await supabaseAdmin
+          .from('event_vendor_payments')
+          .select('*')
+          .eq('event_id', event.id);
+
+        if (eventVendorPaymentsError) {
+          console.error('Error fetching event vendor payments:', eventVendorPaymentsError);
+        }
+
+        const teamStatusByVendorId: Record<string, string> = {};
+        for (const team of eventTeams || []) {
+          if (!team?.vendor_id) continue;
+          teamStatusByVendorId[team.vendor_id] = team.status || '';
+        }
+
+        const paymentDataByVendorId: Record<string, any> = {};
+        for (const row of eventVendorPayments || []) {
+          if (!row?.user_id) continue;
+          paymentDataByVendorId[row.user_id] = row;
+        }
+
+        const vendorIds = Array.from(
+          new Set([
+            ...(eventTeams || []).map((t: any) => t.vendor_id).filter(Boolean),
+            ...Object.keys(paymentDataByVendorId),
+          ])
+        );
+        let resolvedVendorIds = vendorIds;
+
+        // Fallback: if a worker has time_entries but no event_team/payment row yet,
+        // infer that worker so paystub period data is complete.
+        if (resolvedVendorIds.length === 0) {
+          const { data: inferredByEventId, error: inferredByEventIdError } = await supabaseAdmin
+            .from('time_entries')
+            .select('user_id')
+            .eq('event_id', event.id);
+          if (inferredByEventIdError) {
+            console.error('Error inferring workers from time_entries by event_id:', inferredByEventIdError);
+          } else {
+            resolvedVendorIds = Array.from(new Set((inferredByEventId || []).map((r: any) => r.user_id).filter(Boolean)));
+          }
+        }
+
+        if (resolvedVendorIds.length === 0) {
+          const dateStr = getEventDateStr(event);
+          if (dateStr) {
+            const startSec = toSeconds((event as any)?.start_time);
+            const endSec = toSeconds((event as any)?.end_time);
+            const endsNextDay =
+              Boolean((event as any)?.ends_next_day) ||
+              (startSec !== null && endSec !== null && endSec <= startSec);
+            const startDateObj = new Date(`${dateStr}T00:00:00Z`);
+            const endDateObj = new Date(`${dateStr}T23:59:59.999Z`);
+            if (endsNextDay) endDateObj.setUTCDate(endDateObj.getUTCDate() + 1);
+
+            const { data: inferredByWindow, error: inferredByWindowError } = await supabaseAdmin
+              .from('time_entries')
+              .select('user_id, event_id')
+              .gte('timestamp', startDateObj.toISOString())
+              .lte('timestamp', endDateObj.toISOString());
+            if (inferredByWindowError) {
+              console.error('Error inferring workers from time_entries window:', inferredByWindowError);
+            } else {
+              resolvedVendorIds = Array.from(
+                new Set(
+                  (inferredByWindow || [])
+                    .filter((r: any) => !r?.event_id || r.event_id === event.id)
+                    .map((r: any) => r.user_id)
+                    .filter(Boolean)
+                )
+              );
+            }
+          }
+        }
 
         // Payment adjustments (aka "Other" in HR Payroll tab)
         const adjustmentByVendorId: Record<string, number> = {};
-        if (vendorIds.length > 0) {
+        if (resolvedVendorIds.length > 0) {
           try {
             const { data: adjustments, error: adjustmentsError } = await supabaseAdmin
               .from('payment_adjustments')
               .select('user_id, adjustment_amount')
               .eq('event_id', event.id)
-              .in('user_id', vendorIds);
+              .in('user_id', resolvedVendorIds);
 
             if (adjustmentsError) {
               console.error('Error fetching payment adjustments:', adjustmentsError);
@@ -125,27 +224,16 @@ export async function GET(req: NextRequest) {
         // Compute worked hours from time_entries scoped to this event.
         // Prefer entries linked by event_id to avoid counting hours from other same-day events.
         const workedHoursByVendorId: Record<string, number> = {};
-        if (includeHours && vendorIds.length > 0) {
+        if (includeHours && resolvedVendorIds.length > 0) {
           try {
-            const timeToSeconds = (value?: string | null): number | null => {
-              const raw = (value || '').toString().trim();
-              if (!raw) return null;
-              const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
-              if (!match) return null;
-              const hh = Number(match[1]);
-              const mm = Number(match[2]);
-              const ss = Number(match[3] || 0);
-              if (!Number.isFinite(hh) || !Number.isFinite(mm) || !Number.isFinite(ss)) return null;
-              return hh * 3600 + mm * 60 + ss;
-            };
             const getEntryTimestamp = (row: any): string | null =>
               (row?.timestamp || row?.started_at || null) as string | null;
 
-            const dateStr = (event.event_date || '').toString().split('T')[0];
+            const dateStr = getEventDateStr(event);
             const eventId = (event?.id || '').toString();
             if (dateStr && eventId) {
-              const startSec = timeToSeconds((event as any)?.start_time);
-              const endSec = timeToSeconds((event as any)?.end_time);
+              const startSec = toSeconds((event as any)?.start_time);
+              const endSec = toSeconds((event as any)?.end_time);
               const endsNextDay =
                 Boolean((event as any)?.ends_next_day) ||
                 (startSec !== null && endSec !== null && endSec <= startSec);
@@ -160,7 +248,7 @@ export async function GET(req: NextRequest) {
                 .from('time_entries')
                 .select('id, user_id, action, timestamp, started_at, event_id')
                 .eq('event_id', eventId)
-                .in('user_id', vendorIds)
+                .in('user_id', resolvedVendorIds)
                 .order('timestamp', { ascending: true });
 
               let entries = byEventIdEntries || [];
@@ -169,7 +257,7 @@ export async function GET(req: NextRequest) {
                 const { data: byTimestampEntries } = await supabaseAdmin
                   .from('time_entries')
                   .select('id, user_id, action, timestamp, started_at, event_id')
-                  .in('user_id', vendorIds)
+                  .in('user_id', resolvedVendorIds)
                   .gte('timestamp', startIso)
                   .lte('timestamp', endIso)
                   .order('timestamp', { ascending: true });
@@ -183,19 +271,19 @@ export async function GET(req: NextRequest) {
                   dateStr,
                   source,
                   endsNextDay,
-                  vendorCount: vendorIds.length,
+                  vendorCount: resolvedVendorIds.length,
                   entriesCount: (entries || []).length,
                 });
               }
 
               const entriesByUserId: Record<string, any[]> = {};
-              for (const uid of vendorIds) entriesByUserId[uid] = [];
+              for (const uid of resolvedVendorIds) entriesByUserId[uid] = [];
               for (const row of entries || []) {
                 if (!entriesByUserId[row.user_id]) entriesByUserId[row.user_id] = [];
                 entriesByUserId[row.user_id].push(row);
               }
 
-              for (const uid of vendorIds) {
+              for (const uid of resolvedVendorIds) {
                 const uEntries = [...(entriesByUserId[uid] || [])].sort((a: any, b: any) => {
                   const tsA = getEntryTimestamp(a);
                   const tsB = getEntryTimestamp(b);
@@ -226,7 +314,7 @@ export async function GET(req: NextRequest) {
                 workedHoursByVendorId[uid] = ms / (1000 * 60 * 60);
               }
               if (debug) {
-                const sample = vendorIds.slice(0, 5).map((uid) => ({
+                const sample = resolvedVendorIds.slice(0, 5).map((uid) => ({
                   user_id: uid,
                   worked_hours: workedHoursByVendorId[uid] ?? 0,
                 }));
@@ -243,32 +331,22 @@ export async function GET(req: NextRequest) {
 
         // For each vendor, get their user info and payment data
         const workersWithPayment = await Promise.all(
-          (eventTeams || []).map(async (team: any) => {
+          resolvedVendorIds.map(async (vendorId: string) => {
             // Get user email + division (needed for AZ/NY commission eligibility logic)
             const { data: userData } = await supabaseAdmin
               .from('users')
               .select('email, division')
-              .eq('id', team.vendor_id)
-              .single();
+              .eq('id', vendorId)
+              .maybeSingle();
 
             // Get user profile (name, phone, address)
             const { data: profileData } = await supabaseAdmin
               .from('profiles')
               .select('first_name, last_name, phone, address')
-              .eq('user_id', team.vendor_id)
-              .single();
+              .eq('user_id', vendorId)
+              .maybeSingle();
 
-            // Get payment data
-            const { data: paymentData, error: paymentError } = await supabaseAdmin
-              .from('event_vendor_payments')
-              .select('*')
-              .eq('event_id', event.id)
-              .eq('user_id', team.vendor_id)
-              .single();
-
-            if (paymentError && paymentError.code !== 'PGRST116') {
-              console.error('Error fetching payment data:', paymentError);
-            }
+            const paymentData = paymentDataByVendorId[vendorId] || null;
 
             // Decrypt encrypted profile fields
             let firstName = '';
@@ -292,22 +370,24 @@ export async function GET(req: NextRequest) {
               : 'Unknown';
 
             return {
-              user_id: team.vendor_id,
+              user_id: vendorId,
               user_name: fullName || 'Unknown',
               user_email: userData?.email || '',
               division: (userData as any)?.division ?? null,
               phone: phone,
               address: address,
-              status: team.status,
-              payment_data: paymentData || null,
-              adjustment_amount: adjustmentByVendorId[team.vendor_id] ?? 0,
-              worked_hours: includeHours ? (workedHoursByVendorId[team.vendor_id] ?? 0) : undefined
+              status: teamStatusByVendorId[vendorId] || (paymentData ? 'paid_only' : 'unassigned'),
+              payment_data: paymentData,
+              adjustment_amount: adjustmentByVendorId[vendorId] ?? 0,
+              worked_hours: includeHours ? (workedHoursByVendorId[vendorId] ?? 0) : undefined
             };
           })
         );
 
         return {
           ...event,
+          name: (event as any)?.name ?? (event as any)?.event_name ?? '',
+          event_name: (event as any)?.event_name ?? (event as any)?.name ?? '',
           event_payment: eventPaymentsByEventId[event.id] || null,
           workers: workersWithPayment
         };
