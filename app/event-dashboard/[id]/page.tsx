@@ -247,7 +247,7 @@ export default function EventDashboardPage() {
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
+  const canEditTimesheets = userRole === "exec" || userRole === "manager";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
@@ -2933,7 +2933,7 @@ export default function EventDashboardPage() {
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
     if (!canEditTimesheets) {
-      setMessage("Only exec can edit timesheets and payroll adjustments.");
+      setMessage("Only managers and exec can edit timesheets and payroll adjustments.");
       return;
     }
 
@@ -4988,7 +4988,7 @@ export default function EventDashboardPage() {
 
     {!canEditTimesheets && (
       <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-        Read-only access. Only exec can edit timesheets.
+        Read-only access. Only managers and exec can edit timesheets.
       </div>
     )}
 

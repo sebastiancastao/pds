@@ -146,7 +146,7 @@ export async function GET(req: NextRequest) {
     // Collect all user IDs whose events this user can see
     const creatorIds: string[] = [user.id];
 
-    if (userRole === 'supervisor' || userRole === 'supervisor2') {
+    if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
       // Look up which managers this supervisor is assigned to
       const { data: teamLinks } = await supabaseAdmin
         .from('manager_team_members')
@@ -155,9 +155,28 @@ export async function GET(req: NextRequest) {
         .eq('is_active', true);
 
       if (teamLinks && teamLinks.length > 0) {
+        const managerIds: string[] = [];
         for (const link of teamLinks) {
           if (!creatorIds.includes(link.manager_id)) {
             creatorIds.push(link.manager_id);
+            managerIds.push(link.manager_id);
+          }
+        }
+
+        // Also include co-supervisors (other active members under the same managers)
+        if (managerIds.length > 0) {
+          const { data: groupMembers } = await supabaseAdmin
+            .from('manager_team_members')
+            .select('member_id')
+            .in('manager_id', managerIds)
+            .eq('is_active', true);
+
+          if (groupMembers) {
+            for (const member of groupMembers) {
+              if (!creatorIds.includes(member.member_id)) {
+                creatorIds.push(member.member_id);
+              }
+            }
           }
         }
       }

@@ -55,7 +55,54 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch forms', details: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ forms: forms ?? [] });
+    const allForms = forms ?? [];
+
+    // Execs, admins, and HR always see all forms regardless of assignments
+    const { data: userRecord } = await adminClient
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .single();
+
+    if (userRecord && ['exec', 'admin', 'hr'].includes(userRecord.role)) {
+      return NextResponse.json({ forms: allForms });
+    }
+
+    // For employees/workers: filter by user-specific assignments.
+    // Forms with at least one assignment are restricted — only assigned users can see them.
+    // Forms with no assignments are visible to everyone.
+    const { data: allAssignments, error: assignErr } = await adminClient
+      .from('custom_form_assignments')
+      .select('form_id, user_id');
+
+    if (assignErr) {
+      if ((assignErr as any).code === '42P01') {
+        // Table doesn't exist yet — show all forms
+        return NextResponse.json({ forms: allForms });
+      }
+      console.error('[CUSTOM-FORMS LIST] Assignments error:', assignErr);
+      // On error, fail safe: show all forms
+      return NextResponse.json({ forms: allForms });
+    }
+
+    const assignments = allAssignments ?? [];
+
+    if (assignments.length === 0) {
+      // No assignments exist at all — show everything
+      return NextResponse.json({ forms: allForms });
+    }
+
+    // Build sets: which forms are restricted, and which are assigned to this user
+    const restrictedFormIds = new Set(assignments.map((a: any) => a.form_id));
+    const userAssignedFormIds = new Set(
+      assignments.filter((a: any) => a.user_id === user.id).map((a: any) => a.form_id)
+    );
+
+    const visibleForms = allForms.filter(
+      (f: any) => !restrictedFormIds.has(f.id) || userAssignedFormIds.has(f.id)
+    );
+
+    return NextResponse.json({ forms: visibleForms });
   } catch (err: any) {
     console.error('[CUSTOM-FORMS LIST] Unexpected error:', err);
     return NextResponse.json({ error: err?.message || 'Internal server error' }, { status: 500 });

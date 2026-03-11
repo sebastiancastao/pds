@@ -54,18 +54,35 @@ export async function GET(
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
-    // For supervisors/supervisor2, look up their lead manager(s) to grant access to those events
+    // For supervisors/supervisor2/supervisor3, look up their lead manager(s) and group members to grant access
     let allowedCreatorIds: string[] = [user.id];
-    if (userRole === "supervisor" || userRole === "supervisor2") {
+    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
         .select("manager_id")
         .eq("member_id", user.id)
         .eq("is_active", true);
       if (teamLinks) {
+        const managerIds: string[] = [];
         for (const link of teamLinks) {
           if (!allowedCreatorIds.includes(link.manager_id)) {
             allowedCreatorIds.push(link.manager_id);
+            managerIds.push(link.manager_id);
+          }
+        }
+        // Also include co-supervisors (other active members under the same managers)
+        if (managerIds.length > 0) {
+          const { data: groupMembers } = await supabaseAdmin
+            .from("manager_team_members")
+            .select("member_id")
+            .in("manager_id", managerIds)
+            .eq("is_active", true);
+          if (groupMembers) {
+            for (const member of groupMembers) {
+              if (!allowedCreatorIds.includes(member.member_id)) {
+                allowedCreatorIds.push(member.member_id);
+              }
+            }
           }
         }
       }
@@ -150,18 +167,34 @@ export async function PUT(
     const userRole = userData?.role as string;
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
-    // For supervisors, look up their lead manager(s) to grant edit access
+    // For supervisors, look up their lead manager(s) and group members to grant edit access
     let allowedCreatorIds: string[] = [user.id];
-    if (userRole === "supervisor") {
+    if (userRole === "supervisor" || userRole === "supervisor2" || userRole === "supervisor3") {
       const { data: teamLinks } = await supabaseAdmin
         .from("manager_team_members")
         .select("manager_id")
         .eq("member_id", user.id)
         .eq("is_active", true);
       if (teamLinks) {
+        const managerIds: string[] = [];
         for (const link of teamLinks) {
           if (!allowedCreatorIds.includes(link.manager_id)) {
             allowedCreatorIds.push(link.manager_id);
+            managerIds.push(link.manager_id);
+          }
+        }
+        if (managerIds.length > 0) {
+          const { data: groupMembers } = await supabaseAdmin
+            .from("manager_team_members")
+            .select("member_id")
+            .in("manager_id", managerIds)
+            .eq("is_active", true);
+          if (groupMembers) {
+            for (const member of groupMembers) {
+              if (!allowedCreatorIds.includes(member.member_id)) {
+                allowedCreatorIds.push(member.member_id);
+              }
+            }
           }
         }
       }

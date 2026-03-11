@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import '../../dashboard/dashboard-styles.css';
 
 type CustomForm = {
   id: string;
@@ -23,6 +24,7 @@ type EmployeeResult = {
   email: string;
   city: string | null;
   state: string | null;
+  role?: string;
 };
 
 type Assignee = {
@@ -119,9 +121,11 @@ export default function AdminPdfFormsPage() {
   const [allowPrintName, setAllowPrintName] = useState(false);
   const [targetState, setTargetState] = useState('');
   const [targetUsers, setTargetUsers] = useState<EmployeeResult[]>([]);
-  const [targetUserSearch, setTargetUserSearch] = useState('');
-  const [targetUserResults, setTargetUserResults] = useState<EmployeeResult[]>([]);
-  const [targetUserSearchLoading, setTargetUserSearchLoading] = useState(false);
+  const [showUserPickerModal, setShowUserPickerModal] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [pickerResults, setPickerResults] = useState<EmployeeResult[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerSelected, setPickerSelected] = useState<EmployeeResult[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
   const [uploadTab, setUploadTab] = useState<'standard' | 'state'>('standard');
   const [selectedStatePreset, setSelectedStatePreset] = useState<string | null>(null);
@@ -171,27 +175,50 @@ export default function AdminPdfFormsPage() {
     return () => clearTimeout(timer);
   }, [employeeSearch, sendModalForm, searchEmployees]);
 
-  // Debounce for upload-form target-user search
+  const fetchPickerUsers = useCallback(async (q: string) => {
+    setPickerLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(
+        `/api/employees/search?q=${encodeURIComponent(q)}&roles=employee,worker&limit=50`,
+        { headers: { Authorization: `Bearer ${session.access_token}` } }
+      );
+      const data = await res.json();
+      setPickerResults(data.employees || []);
+    } catch {
+      setPickerResults([]);
+    } finally {
+      setPickerLoading(false);
+    }
+  }, []);
+
+  // Debounce typed searches inside the picker modal
   useEffect(() => {
-    const timer = setTimeout(async () => {
-      if (targetUserSearch.trim().length === 0 && targetUserResults.length > 0) return;
-      setTargetUserSearchLoading(true);
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session) return;
-        const res = await fetch(`/api/employees/search?q=${encodeURIComponent(targetUserSearch)}&limit=20`, {
-          headers: { Authorization: `Bearer ${session.access_token}` },
-        });
-        const data = await res.json();
-        setTargetUserResults(data.employees || []);
-      } catch {
-        setTargetUserResults([]);
-      } finally {
-        setTargetUserSearchLoading(false);
-      }
-    }, 300);
+    if (!showUserPickerModal || pickerSearch === '') return;
+    const timer = setTimeout(() => fetchPickerUsers(pickerSearch), 200);
     return () => clearTimeout(timer);
-  }, [targetUserSearch]);
+  }, [pickerSearch, showUserPickerModal, fetchPickerUsers]);
+
+  const openUserPicker = () => {
+    setPickerSelected([...targetUsers]);
+    setPickerSearch('');
+    setPickerResults([]);
+    setPickerLoading(true); // show loading state before modal renders
+    setShowUserPickerModal(true);
+    fetchPickerUsers('');
+  };
+
+  const confirmUserPicker = () => {
+    setTargetUsers(pickerSelected);
+    setShowUserPickerModal(false);
+  };
+
+  const togglePickerUser = (emp: EmployeeResult) => {
+    setPickerSelected(prev =>
+      prev.find(u => u.id === emp.id) ? prev.filter(u => u.id !== emp.id) : [...prev, emp]
+    );
+  };
 
   const openSendModal = async (form: CustomForm) => {
     setSendModalForm(form);
@@ -400,8 +427,6 @@ export default function AdminPdfFormsPage() {
       setRequiresSignature(false);
       setTargetState('');
       setTargetUsers([]);
-      setTargetUserSearch('');
-      setTargetUserResults([]);
       setSelectedStatePreset(null);
       await loadForms(session.access_token);
     } catch (err: any) {
@@ -467,8 +492,6 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setTargetState('');
       setTargetUsers([]);
-      setTargetUserSearch('');
-      setTargetUserResults([]);
       setSelectedPreset(null);
       setSelectedStatePreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -736,47 +759,30 @@ export default function AdminPdfFormsPage() {
 
             {/* Restrict to specific users */}
             <div className="pt-2 border-t border-gray-100">
-              <label className="block text-sm font-medium text-gray-700 mb-1">
-                Restrict to Specific Users
-                <span className="ml-1 text-xs text-gray-400 font-normal">(optional — leave empty to show to all eligible employees)</span>
-              </label>
-              <input
-                type="text"
-                value={targetUserSearch}
-                onChange={e => setTargetUserSearch(e.target.value)}
-                placeholder="Search by name or email..."
-                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-              {targetUserSearchLoading && <p className="text-xs text-gray-400 mt-1">Searching...</p>}
-              {!targetUserSearchLoading && targetUserSearch && targetUserResults.length > 0 && (
-                <div className="mt-1 border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-40 overflow-y-auto">
-                  {targetUserResults
-                    .filter(r => !targetUsers.find(u => u.id === r.id))
-                    .map(emp => (
-                      <button
-                        key={emp.id}
-                        type="button"
-                        onClick={() => {
-                          setTargetUsers(prev => [...prev, emp]);
-                          setTargetUserSearch('');
-                          setTargetUserResults([]);
-                        }}
-                        className="w-full text-left flex items-center gap-2 px-3 py-2 hover:bg-blue-50 transition-colors"
-                      >
-                        <span className="text-sm font-medium text-gray-900">{emp.first_name} {emp.last_name}</span>
-                        <span className="text-xs text-gray-500">{emp.email}{emp.state ? ` · ${emp.state}` : ''}</span>
-                      </button>
-                    ))}
-                </div>
-              )}
-              {targetUsers.length > 0 && (
-                <div className="flex flex-wrap gap-1.5 mt-2">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-700">
+                  Restrict to Specific Users
+                  <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
+                </label>
+                <button
+                  type="button"
+                  onClick={openUserPicker}
+                  className="text-sm font-medium text-blue-600 hover:text-blue-800 px-3 py-1 rounded-lg border border-blue-200 hover:bg-blue-50 transition-colors"
+                >
+                  {targetUsers.length > 0 ? `${targetUsers.length} selected — edit` : '+ Select Users'}
+                </button>
+              </div>
+              {targetUsers.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
                   {targetUsers.map(u => (
                     <span
                       key={u.id}
                       className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-blue-200"
                     >
                       {u.first_name} {u.last_name}
+                      {u.role === 'worker' && (
+                        <span className="ml-0.5 text-blue-500 font-normal">· worker</span>
+                      )}
                       <button
                         type="button"
                         onClick={() => setTargetUsers(prev => prev.filter(x => x.id !== u.id))}
@@ -789,6 +795,8 @@ export default function AdminPdfFormsPage() {
                     </span>
                   ))}
                 </div>
+              ) : (
+                <p className="text-xs text-gray-400">Leave empty to show to all eligible employees.</p>
               )}
             </div>
 
@@ -1070,6 +1078,123 @@ export default function AdminPdfFormsPage() {
               className="flex-1 py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
             >
               {sending ? 'Sending...' : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {/* User Picker Modal */}
+    {showUserPickerModal && (
+      <div className="apple-modal-overlay">
+        <div className="apple-modal" style={{ maxWidth: '42rem' }}>
+          <div className="apple-modal-header">
+            <div>
+              <h2 className="text-2xl font-semibold text-gray-900">Select Users</h2>
+              <p className="text-gray-600 text-sm mt-1">Choose employees and vendors to restrict this form to</p>
+            </div>
+            <button onClick={() => setShowUserPickerModal(false)} className="apple-close-button">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          <div className="apple-modal-body">
+            <div className="mb-6">
+              <label className="block text-sm font-semibold text-gray-700 mb-2">Search Users</label>
+              <input
+                type="text"
+                autoFocus
+                value={pickerSearch}
+                onChange={e => setPickerSearch(e.target.value)}
+                placeholder="Search by name or email..."
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+              />
+              <p className="text-xs text-gray-500 mt-1.5">
+                {!pickerLoading && <>Showing {pickerResults.length} user{pickerResults.length !== 1 ? 's' : ''}</>}
+                {pickerSelected.length > 0 && <> · <span className="text-blue-600 font-medium">{pickerSelected.length} selected</span></>}
+              </p>
+            </div>
+
+            {pickerLoading ? (
+              <div className="apple-empty-state">
+                <div className="apple-spinner mb-4" />
+                <p className="text-gray-600">Loading users...</p>
+              </div>
+            ) : pickerResults.length === 0 ? (
+              <div className="apple-empty-state">
+                <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <p className="text-lg font-medium text-gray-600">No users found</p>
+                <p className="text-sm text-gray-500 mt-2">Try a different search term</p>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-3">
+                  {pickerResults.map(emp => {
+                    const isSelected = !!pickerSelected.find(u => u.id === emp.id);
+                    return (
+                      <div
+                        key={emp.id}
+                        className="apple-vendor-card"
+                        onClick={() => togglePickerUser(emp)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => togglePickerUser(emp)}
+                          className="apple-checkbox"
+                          onClick={e => e.stopPropagation()}
+                        />
+                        <div className="w-11 h-11 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold flex-shrink-0">
+                          {emp.first_name?.charAt(0)}{emp.last_name?.charAt(0)}
+                        </div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between mb-1">
+                            <div className="font-semibold text-gray-900">
+                              {emp.first_name} {emp.last_name}
+                            </div>
+                            <span className={`text-xs font-medium px-2 py-0.5 rounded-full border flex-shrink-0 ${
+                              emp.role === 'worker'
+                                ? 'text-orange-700 bg-orange-50 border-orange-200'
+                                : 'text-green-700 bg-green-50 border-green-200'
+                            }`}>
+                              {emp.role}
+                            </span>
+                          </div>
+                          <div className="text-gray-600 text-sm">
+                            {emp.email}
+                            {emp.city && emp.state && (
+                              <span className="ml-2 text-gray-400">· {emp.city}, {emp.state}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="px-8 py-5 border-t border-gray-100 flex gap-3">
+            <button
+              type="button"
+              onClick={() => setShowUserPickerModal(false)}
+              className="apple-button apple-button-secondary"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={confirmUserPicker}
+              className={`apple-button flex-1 ${pickerSelected.length === 0 ? 'apple-button-disabled' : 'apple-button-primary'}`}
+              disabled={pickerSelected.length === 0}
+            >
+              {pickerSelected.length > 0
+                ? `Confirm ${pickerSelected.length} User${pickerSelected.length !== 1 ? 's' : ''}`
+                : 'Select users to confirm'}
             </button>
           </div>
         </div>

@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { safeDecrypt } from '@/lib/encryption';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,30 +33,38 @@ export async function GET(request: NextRequest) {
     const q = (searchParams.get('q') || '').trim().toLowerCase();
     const limit = Math.min(parseInt(searchParams.get('limit') || '20', 10), 50);
 
+    const rolesParam = searchParams.get('roles') || 'employee';
+    const rolesList = rolesParam.split(',').map(r => r.trim()).filter(Boolean);
+
     const { data: users, error } = await supabase
       .from('users')
       .select(`
         id,
         email,
-        profiles!inner (
+        role,
+        profiles (
           first_name,
           last_name,
           city,
           state
         )
       `)
-      .eq('role', 'employee')
+      .in('role', rolesList)
       .eq('is_active', true)
       .limit(100); // fetch more, filter client-side for fuzzy name search
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      console.error('[employees/search] Supabase error:', error);
+      return NextResponse.json({ error: error.message, details: error }, { status: 500 });
+    }
 
     const results = (users || [])
       .map((u: any) => ({
         id: u.id,
         email: u.email,
-        first_name: u.profiles?.first_name || '',
-        last_name: u.profiles?.last_name || '',
+        role: u.role,
+        first_name: safeDecrypt(u.profiles?.first_name || ''),
+        last_name: safeDecrypt(u.profiles?.last_name || ''),
         city: u.profiles?.city || null,
         state: u.profiles?.state || null,
       }))
