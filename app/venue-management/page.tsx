@@ -414,6 +414,11 @@ export default function VenueManagementPage() {
             >
               + Create Venue
             </button>
+            <Link href="/vendor-venue-management">
+              <button className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium text-sm">
+                Vendor Assignments
+              </button>
+            </Link>
             <Link href="/global-calendar">
               <button className="apple-button apple-button-secondary">
                 ← Back to Calendar

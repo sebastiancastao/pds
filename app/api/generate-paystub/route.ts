@@ -129,7 +129,10 @@ export async function POST(req: NextRequest) {
       paystubState === "AZ" ||
       paystubState === "NY";
     const includeRestBreakColumn = paystubState === "CA";
-    const debugEnabled = debug === true && process.env.NODE_ENV !== 'production';
+    const debugEnabled =
+      debug === true ||
+      debug === "1" ||
+      debug === "true";
 
     const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
     const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
@@ -154,6 +157,15 @@ export async function POST(req: NextRequest) {
       return actualHours >= 10 ? 12 : 9;
     };
 
+    const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
+    const getTimesheetHoursForWorker = (event: any, worker: any): number => {
+      const eventId = (event?.id || "").toString();
+      const userId = (worker?.user_id || "").toString();
+      if (!eventId || !userId) return 0;
+      const hours = Number(timesheetHoursByEventUser[eventId]?.[userId] || 0);
+      return Number.isFinite(hours) && hours > 0 ? hours : 0;
+    };
+
     // Match /hr-dashboard Payroll tab behavior as closely as possible.
     // That tab uses event_payments (if present) and falls back to events table fields.
     const getPayrollInputsForEvent = (event: any) => {
@@ -164,14 +176,10 @@ export async function POST(req: NextRequest) {
       const baseRate = Number(eventPaymentSummary?.base_rate || stateBaseRate);
 
       const workers = Array.isArray(event?.workers) ? event.workers : [];
-      // Mirror event-dashboard payment tab: only count vendors with payment rows AND actual hours > 0
-      // (equivalent to hasTimesheetForMember: timesheetTotals[uid] > 0)
+      // Mirror event-dashboard payment tab vendor-hour eligibility.
       const workersWithHours = workers.filter((w: any) => {
-        const pd = w?.payment_data;
-        if (!pd) return false;
-        const effH = pd?.effective_hours != null ? Number(pd.effective_hours) : null;
-        const actH = pd?.actual_hours != null ? Number(pd.actual_hours) : null;
-        return (effH !== null && effH > 0) || (actH !== null && actH > 0);
+        const workerHours = getActualHoursForWorker(event, w);
+        return workerHours > 0;
       });
       const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
       const vendorCountEligible = workersWithHours.reduce((count: number, w: any) => {
@@ -199,8 +207,8 @@ export async function POST(req: NextRequest) {
         vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
-      // Pro-rate tips by the same effective-hours basis used in Event/HR payroll tabs.
-      const totalEventHours = workers.reduce((sum: number, w: any) => sum + getActualHoursForWorker(w), 0);
+      // Pro-rate tips by the same hours basis used by Event Dashboard timesheet/payment logic.
+      const totalEventHours = workers.reduce((sum: number, w: any) => sum + getActualHoursForWorker(event, w), 0);
 
       return {
         eventState,
@@ -254,27 +262,66 @@ export async function POST(req: NextRequest) {
 
     // Mirror HR dashboard getEffectiveHours: use effective_hours + 0.5h gate/phone lead when available.
     const GATE_PHONE_OFFSET_HOURS = 0.5;
+    const HOURS_MISMATCH_THRESHOLD = 0.01;
     const addGatePhoneLeadHours = (hours: number): number =>
       Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
-    const getEffectiveHoursFromPayment = (paymentData: any): number => {
-      if (!paymentData) return 0;
-      const effectiveRaw = paymentData?.effective_hours ?? paymentData?.effectiveHours;
-      if (effectiveRaw != null) {
-        const effective = Number(effectiveRaw);
-        if (Number.isFinite(effective) && effective >= 0) return addGatePhoneLeadHours(effective);
+    const roundHoursForDebug = (value: number): number =>
+      Number((Number.isFinite(value) ? value : 0).toFixed(6));
+    const getEffectiveHoursBreakdownFromPayment = (paymentData: any): {
+      hours: number;
+      source: string;
+      effectivePlusGatePhone: number;
+      actual: number;
+      worked: number;
+      summed: number;
+    } => {
+      if (!paymentData) {
+        return {
+          hours: 0,
+          source: "none",
+          effectivePlusGatePhone: 0,
+          actual: 0,
+          worked: 0,
+          summed: 0,
+        };
       }
+
+      const effectiveRaw = paymentData?.effective_hours ?? paymentData?.effectiveHours;
+      const hasEffective = effectiveRaw != null;
+      const effective = hasEffective ? Number(effectiveRaw) : 0;
+      const effectivePlusGatePhone =
+        hasEffective && Number.isFinite(effective) && effective >= 0
+          ? addGatePhoneLeadHours(effective)
+          : 0;
+
       const actual = Number(paymentData?.actual_hours ?? paymentData?.actualHours ?? 0);
-      if (actual > 0) return actual;
       const worked = Number(paymentData?.worked_hours ?? paymentData?.workedHours ?? 0);
-      if (worked > 0) return worked;
       const reg = Number(paymentData?.regular_hours ?? paymentData?.regularHours ?? 0);
       const ot = Number(paymentData?.overtime_hours ?? paymentData?.overtimeHours ?? 0);
       const dt = Number(paymentData?.doubletime_hours ?? paymentData?.doubletimeHours ?? 0);
       const summed = reg + ot + dt;
-      return summed > 0 ? summed : 0;
-    };
 
-    const getActualHoursForWorker = (worker: any): number => {
+      if (effectivePlusGatePhone > 0) {
+        return { hours: effectivePlusGatePhone, source: "effective_hours+gate_phone", effectivePlusGatePhone, actual, worked, summed };
+      }
+      if (actual > 0) {
+        return { hours: actual, source: "actual_hours", effectivePlusGatePhone, actual, worked, summed };
+      }
+      if (worked > 0) {
+        return { hours: worked, source: "worked_hours", effectivePlusGatePhone, actual, worked, summed };
+      }
+      if (summed > 0) {
+        return { hours: summed, source: "regular+ot+dt", effectivePlusGatePhone, actual, worked, summed };
+      }
+      return { hours: 0, source: "zero", effectivePlusGatePhone, actual, worked, summed };
+    };
+    const getEffectiveHoursFromPayment = (paymentData: any): number =>
+      getEffectiveHoursBreakdownFromPayment(paymentData).hours;
+
+    const getActualHoursForWorker = (event: any, worker: any): number => {
+      const timesheetHours = getTimesheetHoursForWorker(event, worker);
+      if (timesheetHours > 0) return timesheetHours;
+
       const paymentData = worker?.payment_data;
       const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
       const regHours = Number(paymentData?.regular_hours || 0);
@@ -288,7 +335,350 @@ export async function POST(req: NextRequest) {
           : regHours + otHours + dtHours;
     };
 
-    const getDisplayHoursForWorker = (worker: any): number => getActualHoursForWorker(worker);
+    const getDisplayHoursForWorker = (event: any, worker: any): number => getActualHoursForWorker(event, worker);
+
+    const getLegacyDisplayHoursForWorker = (worker: any): number => {
+      const paymentData = worker?.payment_data;
+      const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
+      if (workedHoursFromTimeEntries > 0) return workedHoursFromTimeEntries;
+      const actualHoursFromPayment = Number(paymentData?.actual_hours || 0);
+      if (actualHoursFromPayment > 0) return actualHoursFromPayment;
+      const regHours = Number(paymentData?.regular_hours || 0);
+      const otHours = Number(paymentData?.overtime_hours || 0);
+      const dtHours = Number(paymentData?.doubletime_hours || 0);
+      return regHours + otHours + dtHours;
+    };
+
+    const getHoursComparison = (event: any, worker: any, actualHours: number, displayHours: number) => {
+      const paymentData = worker?.payment_data;
+      const paymentBreakdown = getEffectiveHoursBreakdownFromPayment(paymentData);
+      const workerTimeEntriesHours = Number(worker?.worked_hours || 0);
+      const timesheetHours = getTimesheetHoursForWorker(event, worker);
+      const legacyDisplayHours = getLegacyDisplayHoursForWorker(worker);
+      const paystubSelectedHours = getActualHoursForWorker(event, worker);
+      const hrDashboardPayrollHours = paymentBreakdown.hours;
+      const eventDashboardPaymentApproxHours =
+        timesheetHours > 0
+          ? timesheetHours
+          : hrDashboardPayrollHours > 0
+            ? hrDashboardPayrollHours
+            : workerTimeEntriesHours;
+
+      const comparable = [
+        roundHoursForDebug(hrDashboardPayrollHours),
+        roundHoursForDebug(paystubSelectedHours),
+        roundHoursForDebug(legacyDisplayHours),
+        roundHoursForDebug(eventDashboardPaymentApproxHours),
+      ];
+      const spread = comparable.length > 0 ? Math.max(...comparable) - Math.min(...comparable) : 0;
+
+      return {
+        selected_source: timesheetHours > 0
+          ? "event_timesheet(time_entries)"
+          : paymentBreakdown.hours > 0
+            ? `payment_data.${paymentBreakdown.source}`
+            : workerTimeEntriesHours > 0
+              ? "worker.worked_hours(time_entries)"
+              : "sum(regular+ot+dt)",
+        payment_effective_plus_gate_phone: roundHoursForDebug(paymentBreakdown.effectivePlusGatePhone),
+        payment_actual_hours: roundHoursForDebug(paymentBreakdown.actual),
+        payment_worked_hours: roundHoursForDebug(paymentBreakdown.worked),
+        payment_regular_ot_dt_sum: roundHoursForDebug(paymentBreakdown.summed),
+        worker_time_entries_hours: roundHoursForDebug(workerTimeEntriesHours),
+        event_dashboard_timesheet_hours: roundHoursForDebug(timesheetHours),
+        hr_dashboard_payroll_hours: roundHoursForDebug(hrDashboardPayrollHours),
+        event_dashboard_payment_approx_hours: roundHoursForDebug(eventDashboardPaymentApproxHours),
+        paystub_selected_hours: roundHoursForDebug(paystubSelectedHours),
+        paystub_display_hours: roundHoursForDebug(displayHours),
+        computed_actual_hours: roundHoursForDebug(actualHours),
+        legacy_paystub_display_hours: roundHoursForDebug(legacyDisplayHours),
+        spread_hours: roundHoursForDebug(spread),
+        has_mismatch: spread > HOURS_MISMATCH_THRESHOLD,
+      };
+    };
+
+    const logHoursMismatchIfAny = (
+      context: { mode: "CA" | "NON_CA"; eventId: string; eventState: string; paystubState: string; userId: string },
+      comparison: ReturnType<typeof getHoursComparison>
+    ) => {
+      if (!debugEnabled) return;
+      if (!comparison.has_mismatch) return;
+      console.warn("[GENERATE-PAYSTUB][hours-mismatch]", {
+        ...context,
+        ...comparison,
+      });
+    };
+
+    const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_HOURS * 60 * 60 * 1000;
+    const parseEventTimeToSeconds = (value: unknown): number | null => {
+      const raw = (value || "").toString().trim();
+      if (!raw) return null;
+      const match = raw.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+      if (!match) return null;
+      const hh = Number(match[1]);
+      const mm = Number(match[2]);
+      const ss = Number(match[3] || 0);
+      if (!Number.isFinite(hh) || !Number.isFinite(mm) || !Number.isFinite(ss)) return null;
+      if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return null;
+      return hh * 3600 + mm * 60 + ss;
+    };
+    const getTimeEntryTs = (entry: any): string | null =>
+      (entry?.timestamp || entry?.started_at || null) as string | null;
+    const getDisplayedWorkedHoursFromEntries = (userEntriesRaw: any[]): number => {
+      const userEntries = [...(userEntriesRaw || [])].sort((a, b) => {
+        const tA = getTimeEntryTs(a) ? new Date(getTimeEntryTs(a) as string).getTime() : Number.NaN;
+        const tB = getTimeEntryTs(b) ? new Date(getTimeEntryTs(b) as string).getTime() : Number.NaN;
+        if (!Number.isFinite(tA) && !Number.isFinite(tB)) return 0;
+        if (!Number.isFinite(tA)) return 1;
+        if (!Number.isFinite(tB)) return -1;
+        return tA - tB;
+      });
+
+      let apiTotalMs = 0;
+      let currentClockIn: string | null = null;
+      const workIntervals: Array<{ start: Date; end: Date }> = [];
+      const clockIns: string[] = [];
+      const clockOuts: string[] = [];
+      const mealStarts: string[] = [];
+      const mealEnds: string[] = [];
+
+      for (const entry of userEntries) {
+        const action = (entry?.action || "").toString();
+        const ts = getTimeEntryTs(entry);
+        if (!ts) continue;
+
+        if (action === "clock_in") {
+          clockIns.push(ts);
+          if (!currentClockIn) currentClockIn = ts;
+          continue;
+        }
+        if (action === "clock_out") {
+          clockOuts.push(ts);
+          if (currentClockIn) {
+            const startMs = new Date(currentClockIn).getTime();
+            const endMs = new Date(ts).getTime();
+            const duration = endMs - startMs;
+            if (duration > 0) {
+              apiTotalMs += duration;
+              workIntervals.push({ start: new Date(currentClockIn), end: new Date(ts) });
+            }
+            currentClockIn = null;
+          }
+          continue;
+        }
+        if (action === "meal_start") {
+          mealStarts.push(ts);
+          continue;
+        }
+        if (action === "meal_end") {
+          mealEnds.push(ts);
+        }
+      }
+
+      let firstMealStart: string | null = mealStarts[0] || null;
+      let lastMealEnd: string | null = mealEnds[0] || null;
+      let secondMealStart: string | null = mealStarts[1] || null;
+      let secondMealEnd: string | null = mealEnds[1] || null;
+
+      const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
+      if (!hasExplicitMeals && workIntervals.length >= 2) {
+        workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+        const gaps: Array<{ start: Date; end: Date }> = [];
+        for (let i = 0; i < workIntervals.length - 1; i++) {
+          const gapStart = workIntervals[i].end;
+          const gapEnd = workIntervals[i + 1].start;
+          const gapMs = gapEnd.getTime() - gapStart.getTime();
+          if (gapMs > 0) gaps.push({ start: gapStart, end: gapEnd });
+          if (gaps.length >= 2) break;
+        }
+        if (gaps[0]) {
+          firstMealStart = gaps[0].start.toISOString();
+          lastMealEnd = gaps[0].end.toISOString();
+        }
+        if (gaps[1]) {
+          secondMealStart = gaps[1].start.toISOString();
+          secondMealEnd = gaps[1].end.toISOString();
+        }
+      }
+
+      const firstIn = clockIns.length > 0 ? clockIns[0] : null;
+      const lastOut = clockOuts.length > 0 ? clockOuts[clockOuts.length - 1] : null;
+
+      const firstInMs = firstIn ? new Date(firstIn).getTime() : Number.NaN;
+      const lastOutMs = lastOut ? new Date(lastOut).getTime() : Number.NaN;
+      const meal1Ms =
+        firstMealStart && lastMealEnd
+          ? Math.max(new Date(lastMealEnd).getTime() - new Date(firstMealStart).getTime(), 0)
+          : 0;
+      const meal2Ms =
+        secondMealStart && secondMealEnd
+          ? Math.max(new Date(secondMealEnd).getTime() - new Date(secondMealStart).getTime(), 0)
+          : 0;
+      const mealMs = meal1Ms + meal2Ms;
+
+      let spanNetMs = 0;
+      if (Number.isFinite(firstInMs) && Number.isFinite(lastOutMs) && lastOutMs > firstInMs) {
+        spanNetMs = Math.max(lastOutMs - firstInMs - mealMs, 0);
+      }
+
+      let totalMs = 0;
+      if (apiTotalMs > 0 && spanNetMs > 0) {
+        totalMs = Math.min(apiTotalMs, spanNetMs);
+      } else if (spanNetMs > 0) {
+        totalMs = spanNetMs;
+      } else if (apiTotalMs > 0) {
+        totalMs = Math.max(apiTotalMs - mealMs, 0);
+      }
+
+      if (totalMs > 0 && firstIn) {
+        totalMs += GATE_PHONE_OFFSET_MS;
+      }
+
+      return totalMs > 0 ? totalMs / (1000 * 60 * 60) : 0;
+    };
+    const buildTimesheetHoursByEventUser = async (): Promise<Record<string, Record<string, number>>> => {
+      const out: Record<string, Record<string, number>> = {};
+
+      for (const event of events || []) {
+        const eventId = (event?.id || "").toString();
+        const eventDate = (event?.event_date || "").toString().split("T")[0];
+        const workers = Array.isArray(event?.workers) ? event.workers : [];
+        const userIds: string[] = Array.from(
+          new Set(workers.map((w: any) => (w?.user_id || "").toString()).filter((v: string) => !!v))
+        ) as string[];
+
+        out[eventId] = {};
+        for (const uid of userIds) out[eventId][uid] = 0;
+
+        if (!eventId || !eventDate || userIds.length === 0) continue;
+
+        const startSec = parseEventTimeToSeconds(event?.start_time);
+        const endSec = parseEventTimeToSeconds(event?.end_time);
+        const endsNextDay =
+          Boolean(event?.ends_next_day) ||
+          (startSec !== null && endSec !== null && endSec <= startSec);
+
+        const startDate = new Date(`${eventDate}T00:00:00Z`);
+        const endDate = new Date(`${eventDate}T23:59:59.999Z`);
+        if (endsNextDay) {
+          endDate.setUTCDate(endDate.getUTCDate() + 1);
+        }
+        const startIso = startDate.toISOString();
+        const endIso = endDate.toISOString();
+
+        let source: "event_id" | "timestamp_window" | "started_at_window" = "event_id";
+        let entries: any[] = [];
+
+        const { data: byEventId, error: byEventIdError } = await supabaseAdmin
+          .from("time_entries")
+          .select("id, user_id, action, timestamp, started_at, event_id")
+          .in("user_id", userIds)
+          .eq("event_id", eventId)
+          .order("timestamp", { ascending: true });
+
+        if (byEventIdError && debugEnabled) {
+          console.warn("[GENERATE-PAYSTUB][debug] timesheet by event_id error", {
+            eventId,
+            error: byEventIdError.message,
+          });
+        }
+        entries = byEventId || [];
+
+        if (endsNextDay) {
+          const { data: byTimestampNextDay, error: byTimestampNextDayError } = await supabaseAdmin
+            .from("time_entries")
+            .select("id, user_id, action, timestamp, started_at, event_id")
+            .in("user_id", userIds)
+            .or(`event_id.eq.${eventId},event_id.is.null`)
+            .gte("timestamp", startIso)
+            .lte("timestamp", endIso)
+            .order("timestamp", { ascending: true });
+
+          if (byTimestampNextDayError && debugEnabled) {
+            console.warn("[GENERATE-PAYSTUB][debug] timesheet next-day merge error", {
+              eventId,
+              error: byTimestampNextDayError.message,
+            });
+          } else if (byTimestampNextDay && byTimestampNextDay.length > 0) {
+            const merged: any[] = [];
+            const seen = new Set<string>();
+            for (const row of [...entries, ...byTimestampNextDay]) {
+              if (row?.event_id && row.event_id !== eventId) continue;
+              const key = row?.id
+                ? `id:${row.id}`
+                : `k:${row?.user_id}|${row?.action}|${row?.timestamp || row?.started_at}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              merged.push(row);
+            }
+            entries = merged;
+          }
+        }
+
+        if (!entries || entries.length === 0) {
+          const { data: byTimestamp, error: byTimestampError } = await supabaseAdmin
+            .from("time_entries")
+            .select("id, user_id, action, timestamp, started_at, event_id")
+            .in("user_id", userIds)
+            .or(`event_id.eq.${eventId},event_id.is.null`)
+            .gte("timestamp", startIso)
+            .lte("timestamp", endIso)
+            .order("timestamp", { ascending: true });
+
+          if (!byTimestampError && byTimestamp && byTimestamp.length > 0) {
+            entries = byTimestamp;
+            source = "timestamp_window";
+          } else {
+            const { data: byStartedAt, error: byStartedAtError } = await supabaseAdmin
+              .from("time_entries")
+              .select("id, user_id, action, timestamp, started_at, event_id")
+              .in("user_id", userIds)
+              .or(`event_id.eq.${eventId},event_id.is.null`)
+              .gte("started_at", startIso)
+              .lte("started_at", endIso)
+              .order("started_at", { ascending: true });
+
+            if (!byStartedAtError && byStartedAt && byStartedAt.length > 0) {
+              entries = byStartedAt;
+              source = "started_at_window";
+            } else if (debugEnabled && (byTimestampError || byStartedAtError)) {
+              console.warn("[GENERATE-PAYSTUB][debug] timesheet fallback errors", {
+                eventId,
+                byTimestampError: byTimestampError?.message || null,
+                byStartedAtError: byStartedAtError?.message || null,
+              });
+            }
+          }
+        }
+
+        const entriesByUser: Record<string, any[]> = {};
+        for (const uid of userIds) entriesByUser[uid] = [];
+        for (const row of entries || []) {
+          const uid = (row?.user_id || "").toString();
+          if (!uid || !entriesByUser[uid]) continue;
+          entriesByUser[uid].push(row);
+        }
+
+        for (const uid of userIds) {
+          out[eventId][uid] = getDisplayedWorkedHoursFromEntries(entriesByUser[uid] || []);
+        }
+
+        if (debugEnabled) {
+          console.log("[GENERATE-PAYSTUB][debug] event timesheet hours source", {
+            eventId,
+            source,
+            users: userIds.length,
+            entries: (entries || []).length,
+            sample: userIds.slice(0, 5).map((uid) => ({
+              userId: uid,
+              hours: roundHoursForDebug(out[eventId][uid] || 0),
+            })),
+          });
+        }
+      }
+
+      return out;
+    };
 
     const getAdjustedGrossForEvent = (event: any): number => {
       const eventPaymentSummary = event?.event_payment || event?.eventPayment || event?.event_payment_summary || null;
@@ -600,6 +990,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const computedTimesheetHours = await buildTimesheetHoursByEventUser();
+    for (const [eventId, byUser] of Object.entries(computedTimesheetHours)) {
+      timesheetHoursByEventUser[eventId] = byUser;
+    }
+
     // Create a new PDF document
     const pdfDoc = await PDFDocument.create();
     const page = pdfDoc.addPage([612, 792]); // Letter size
@@ -835,6 +1230,7 @@ export async function POST(req: NextRequest) {
         if (!worker) continue;
 
         const {
+          eventState,
           baseRate,
           vendorCountForCommission,
           perVendorCommissionShare,
@@ -850,15 +1246,21 @@ export async function POST(req: NextRequest) {
         const otHours = Number(paymentData?.overtime_hours || 0);
         const dtHours = Number(paymentData?.doubletime_hours || 0);
         const hoursFromPayment = getEffectiveHoursFromPayment(paymentData);
-        const actualHours =
-          hoursFromPayment > 0
-            ? hoursFromPayment
-            : workedHoursFromTimeEntries > 0
-              ? workedHoursFromTimeEntries
-              : regHours + otHours + dtHours;
-        const displayHours = getDisplayHoursForWorker(worker);
+        const actualHours = getActualHoursForWorker(event, worker);
+        const displayHours = getDisplayHoursForWorker(event, worker);
+        const hoursComparison = getHoursComparison(event, worker, actualHours, displayHours);
 
         const eventId = (event?.id || "").toString();
+        logHoursMismatchIfAny(
+          {
+            mode: "CA",
+            eventId,
+            eventState,
+            paystubState,
+            userId: (worker?.user_id || "").toString(),
+          },
+          hoursComparison
+        );
         const priorWeeklyHours = azNyMode ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
 
@@ -873,7 +1275,7 @@ export async function POST(req: NextRequest) {
 
         if (azNyMode) {
           const items: AzNyCommissionCalcItem[] = (eventWorkers || []).map((w: any) => {
-            const wh = getActualHoursForWorker(w);
+            const wh = getActualHoursForWorker(event, w);
             const div = w?.division;
             const divNorm = normalizeDivision(div);
             const eligible = !isTrailersDivision(div) && (isVendorDivision(div) || divNorm === "") && wh > 0;
@@ -959,7 +1361,8 @@ export async function POST(req: NextRequest) {
         totalDtHours += dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        totalCommission += commission;
+        // Keep "This Period" commission aligned with the commission report's pay-period final pay total.
+        totalCommission += reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += computedTotalGrossPay;
@@ -1393,9 +1796,10 @@ export async function POST(req: NextRequest) {
       const paymentData = worker?.payment_data;
 
       const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
+      const actualHoursForRender = worker ? getActualHoursForWorker(event, worker) : 0;
 
       const shouldRenderRow = useVendorLayout
-        ? !!worker && (workedHoursFromTimeEntries > 0 || !!paymentData)
+        ? !!worker && (actualHoursForRender > 0 || workedHoursFromTimeEntries > 0 || !!paymentData)
         : !!paymentData;
 
       if (shouldRenderRow) {
@@ -1406,21 +1810,23 @@ export async function POST(req: NextRequest) {
         const otHours = Number(paymentData?.overtime_hours || 0);
         const dtHours = Number(paymentData?.doubletime_hours || 0);
         const hoursFromPaymentNonCa = getEffectiveHoursFromPayment(paymentData);
-        const actualHours =
-          hoursFromPaymentNonCa > 0
-            ? hoursFromPaymentNonCa
-            : workedHoursFromTimeEntries > 0
-              ? workedHoursFromTimeEntries
-              : regHours + otHours + dtHours;
-        const displayHours = getDisplayHoursForWorker(worker);
-        const hoursSource =
-          hoursFromPaymentNonCa > 0 ? 'payment_data.effective/actual_hours' :
-          workedHoursFromTimeEntries > 0 ? 'worker.worked_hours(time_entries)' :
-          'sum(regular+ot+dt)';
+        const actualHours = getActualHoursForWorker(event, worker);
+        const displayHours = getDisplayHoursForWorker(event, worker);
+        const hoursComparison = getHoursComparison(event, worker, actualHours, displayHours);
 
         const isAZorNY = azNyMode;
 
         const eventId = (event?.id || "").toString();
+        logHoursMismatchIfAny(
+          {
+            mode: "NON_CA",
+            eventId,
+            eventState,
+            paystubState,
+            userId: (worker?.user_id || "").toString(),
+          },
+          hoursComparison
+        );
         const priorWeeklyHours = isAZorNY ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
 
@@ -1437,7 +1843,7 @@ export async function POST(req: NextRequest) {
 
         if (isAZorNY) {
           const items: AzNyCommissionCalcItem[] = (eventWorkers || []).map((w: any) => {
-            const wh = getActualHoursForWorker(w);
+            const wh = getActualHoursForWorker(event, w);
             const div = w?.division;
             const divNorm = normalizeDivision(div);
             const eligible = !isTrailersDivision(div) && (isVendorDivision(div) || divNorm === "") && wh > 0;
@@ -1544,7 +1950,8 @@ export async function POST(req: NextRequest) {
         totalDtHours += dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        totalCommission += commission;
+        // Keep "This Period" commission aligned with the commission report's pay-period final pay total.
+        totalCommission += reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += total;
@@ -1569,7 +1976,8 @@ export async function POST(req: NextRequest) {
             otHours,
             dtHours,
             actualHours,
-            hoursSource,
+            hoursSource: hoursComparison.selected_source,
+            hoursComparison,
             eventState,
             paystubState,
             azNyMode,

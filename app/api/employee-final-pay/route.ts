@@ -12,9 +12,12 @@ const supabaseAnon = createClient(
 );
 
 const GATE_PHONE_OFFSET_HOURS = 0.5;
+const HOURS_MISMATCH_THRESHOLD = 0.01;
 
 const addGatePhoneLeadHours = (hours: number): number =>
   Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
+const roundHoursForDebug = (value: number): number =>
+  Number((Number.isFinite(value) ? value : 0).toFixed(6));
 
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
@@ -30,6 +33,52 @@ const getEffectiveHours = (payment: any): number => {
   const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
   const summed = reg + ot + dt;
   return summed > 0 ? summed : 0;
+};
+
+const getHoursDebugBreakdown = (payment: any) => {
+  const effectiveRaw = payment?.effective_hours ?? payment?.effectiveHours;
+  const hasEffective = effectiveRaw != null;
+  const effective = hasEffective ? Number(effectiveRaw) : 0;
+  const effectivePlusGatePhone =
+    hasEffective && Number.isFinite(effective) && effective >= 0
+      ? addGatePhoneLeadHours(effective)
+      : 0;
+  const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
+  const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
+  const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
+  const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
+  const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
+  const summed = reg + ot + dt;
+
+  const selected = getEffectiveHours(payment);
+  const legacyPaystubHours = actual > 0 ? actual : summed > 0 ? summed : 0;
+  const comparable = [
+    roundHoursForDebug(selected),
+    roundHoursForDebug(legacyPaystubHours),
+    roundHoursForDebug(actual),
+    roundHoursForDebug(summed),
+  ];
+  const spread = comparable.length > 0 ? Math.max(...comparable) - Math.min(...comparable) : 0;
+
+  return {
+    selected_hours: roundHoursForDebug(selected),
+    selected_source: effectivePlusGatePhone > 0
+      ? 'effective_hours+gate_phone'
+      : actual > 0
+        ? 'actual_hours'
+        : worked > 0
+          ? 'worked_hours'
+          : summed > 0
+            ? 'regular+ot+dt'
+            : 'zero',
+    effective_plus_gate_phone: roundHoursForDebug(effectivePlusGatePhone),
+    actual_hours: roundHoursForDebug(actual),
+    worked_hours: roundHoursForDebug(worked),
+    regular_ot_dt_sum: roundHoursForDebug(summed),
+    legacy_paystub_hours: roundHoursForDebug(legacyPaystubHours),
+    spread_hours: roundHoursForDebug(spread),
+    has_mismatch: spread > HOURS_MISMATCH_THRESHOLD,
+  };
 };
 
 async function getAuthedUser(req: NextRequest) {
@@ -59,6 +108,7 @@ export async function GET(req: NextRequest) {
     const userId = searchParams.get('userId');
     const startDate = searchParams.get('startDate');
     const endDate = searchParams.get('endDate');
+    const debugEnabled = searchParams.get('debug') === '1' || searchParams.get('debug') === 'true';
 
     if (!userId || !startDate || !endDate) {
       return NextResponse.json(
@@ -163,6 +213,16 @@ export async function GET(req: NextRequest) {
         const ep = epByEvent[ev.id] || {};
         const adj = adjByEvent[ev.id] || {};
         const actualHours = getEffectiveHours(vp);
+        const hoursDebug = getHoursDebugBreakdown(vp);
+
+        if (debugEnabled && hoursDebug.has_mismatch) {
+          console.warn('[employee-final-pay][hours-mismatch]', {
+            eventId: ev.id,
+            userId,
+            state: ev.state,
+            ...hoursDebug,
+          });
+        }
 
         const tips = Number(vp.tips || 0);
         const totalPay = Number(vp.total_pay || 0);
@@ -199,6 +259,7 @@ export async function GET(req: NextRequest) {
           finalPay,
           netSales,
           commissionPoolDollars,
+          ...(debugEnabled ? { hours_debug: hoursDebug } : {}),
         };
       });
 

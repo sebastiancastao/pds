@@ -313,9 +313,12 @@ export default function PaystubGenerator() {
       setFinalPayLoading(true);
       setFinalPayError(null);
       try {
+        const debugMode =
+          typeof window !== 'undefined' &&
+          new URLSearchParams(window.location.search).get('debug') === '1';
         const { data: { session } } = await supabase.auth.getSession();
         const res = await fetch(
-          `/api/employee-final-pay?userId=${encodeURIComponent(matchedUserId)}&startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}`,
+          `/api/employee-final-pay?userId=${encodeURIComponent(matchedUserId)}&startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}${debugMode ? '&debug=1' : ''}`,
           {
             headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
           }
@@ -326,6 +329,15 @@ export default function PaystubGenerator() {
         }
         const data = await res.json();
         if (isMounted) {
+          if (debugMode) {
+            console.log('[PAYSTUB-GEN][debug] employee-final-pay hours breakdown', (data.events || []).map((ev: any) => ({
+              eventId: ev.eventId,
+              eventName: ev.eventName,
+              eventDate: ev.eventDate,
+              actualHours: ev.actualHours,
+              hoursDebug: ev.hours_debug || null,
+            })));
+          }
           setFinalPayEvents(data.events || []);
           setFinalPayTotals(data.totals || null);
         }
