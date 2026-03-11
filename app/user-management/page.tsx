@@ -582,6 +582,19 @@ export default function UserManagementPage() {
             Employee ID Codes
           </Link>
           <Link
+            href="/timesheet-edits"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#334155',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Timesheet Edits
+          </Link>
+          <Link
             href="/global-calendar"
             style={{
               padding: '0.5rem 1rem',
