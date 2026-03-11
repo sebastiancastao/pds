@@ -11,6 +11,7 @@ type CustomForm = {
   title: string;
   requires_signature: boolean;
   target_state: string | null;
+  assignment_count?: number;
 };
 
 type Employee = {
@@ -38,6 +39,9 @@ type FilterStatus = 'all' | 'completed' | 'partial' | 'none';
 export default function SupplementOnboardingPage() {
   const router = useRouter();
   const [forms, setForms] = useState<CustomForm[]>([]);
+  // userFormAssignments: userId -> Set of form IDs specifically assigned to that user
+  const [userFormAssignments, setUserFormAssignments] = useState<Record<string, Set<string>>>({});
+  const [assignmentsLoaded, setAssignmentsLoaded] = useState(false);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [completions, setCompletions] = useState<Completion[]>([]);
   const [vendorStatuses, setVendorStatuses] = useState<Record<string, VendorStatus>>({});
@@ -59,9 +63,10 @@ export default function SupplementOnboardingPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/login'); return; }
 
-      const [formsRes, empRes] = await Promise.all([
+      const [formsRes, empRes, assignmentsRes] = await Promise.all([
         fetch('/api/custom-forms/list', { headers: { Authorization: `Bearer ${session.access_token}` } }),
         fetch('/api/employees', { headers: { Authorization: `Bearer ${session.access_token}` } }),
+        fetch('/api/custom-forms/all-assignments', { headers: { Authorization: `Bearer ${session.access_token}` } }),
       ]);
 
       if (!formsRes.ok) throw new Error('Failed to load forms');
@@ -72,6 +77,18 @@ export default function SupplementOnboardingPage() {
 
       const fetchedForms: CustomForm[] = formsData.forms || [];
       const fetchedEmployees: Employee[] = Array.isArray(empData) ? empData : (empData.employees || []);
+
+      // Build userId -> Set<formId> map from all assignments
+      if (assignmentsRes.ok) {
+        const assignData = await assignmentsRes.json();
+        const map: Record<string, Set<string>> = {};
+        for (const a of (assignData.assignments || [])) {
+          if (!map[a.user_id]) map[a.user_id] = new Set();
+          map[a.user_id].add(a.form_id);
+        }
+        setUserFormAssignments(map);
+        setAssignmentsLoaded(true);
+      }
 
       setForms(fetchedForms);
       setEmployees(fetchedEmployees);
@@ -194,8 +211,22 @@ export default function SupplementOnboardingPage() {
     }
   };
 
-  const getApplicableForms = (emp: Employee) =>
-    forms.filter(f => !f.target_state || f.target_state === emp.state);
+  const getApplicableForms = (emp: Employee) => {
+    const personalIds = userFormAssignments[emp.id];
+    return forms.filter(f => {
+      // Personally assigned forms always apply to this employee
+      if (personalIds?.has(f.id)) return true;
+      // If assignments haven't loaded yet, or form is unrestricted, apply by state
+      const isRestricted = assignmentsLoaded && (f.assignment_count ?? 0) > 0;
+      if (!isRestricted) {
+        return !f.target_state || f.target_state === emp.state;
+      }
+      return false;
+    });
+  };
+
+  const isPersonallyAssigned = (emp: Employee, form: CustomForm) =>
+    !!userFormAssignments[emp.id]?.has(form.id);
 
   const getCompleted = (emp: Employee) =>
     getApplicableForms(emp).filter(f => completions.some(c => c.employeeId === emp.id && c.formName === `${f.title} ${year}`));
@@ -463,10 +494,23 @@ export default function SupplementOnboardingPage() {
                             <td className="px-6 py-4">
                               <div className="min-w-[180px] space-y-2">
                                 {(() => {
-                                  const universal = applicable.filter(f => !f.target_state);
-                                  const stateSpecific = applicable.filter(f => f.target_state);
+                                  const personal = applicable.filter(f => isPersonallyAssigned(emp, f));
+                                  const universal = applicable.filter(f => !isPersonallyAssigned(emp, f) && !f.target_state);
+                                  const stateSpecific = applicable.filter(f => !isPersonallyAssigned(emp, f) && !!f.target_state);
                                   return (
                                     <>
+                                      {personal.length > 0 && (
+                                        <div>
+                                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-800 mb-1">
+                                            Personal
+                                          </span>
+                                          <ul className="text-xs text-gray-600 pl-1 space-y-0.5">
+                                            {personal.map(f => (
+                                              <li key={f.id} className="truncate" title={f.title}>• {f.title}</li>
+                                            ))}
+                                          </ul>
+                                        </div>
+                                      )}
                                       {universal.length > 0 && (
                                         <div>
                                           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 text-blue-800 mb-1">

@@ -427,8 +427,13 @@ export default function WorkerProfilePage() {
         if (formsRes.ok) {
           const data = await formsRes.json();
           const allForms = data.forms || [];
-          stateForms = allForms.filter((f: { target_state: string | null }) =>
-            !f.target_state || f.target_state === employee.state
+          stateForms = allForms.filter((f: { target_state: string | null; assignment_count?: number }) =>
+            // State filter
+            (!f.target_state || f.target_state === employee.state) &&
+            // Only include forms that are unrestricted (no specific user assignments).
+            // Forms with assignment_count > 0 are restricted to specific users —
+            // those will only appear via specificForms (user-assignments route).
+            (f.assignment_count === 0 || f.assignment_count == null)
           );
         }
 

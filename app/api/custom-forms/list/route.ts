@@ -65,7 +65,19 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (userRecord && ['exec', 'admin', 'hr'].includes(userRecord.role)) {
-      return NextResponse.json({ forms: allForms });
+      // Include per-form assignment counts so admins can see which forms are restricted
+      const { data: allAssignmentsForAdmin } = await adminClient
+        .from('custom_form_assignments')
+        .select('form_id');
+      const countMap: Record<string, number> = {};
+      for (const a of (allAssignmentsForAdmin ?? [])) {
+        countMap[a.form_id] = (countMap[a.form_id] ?? 0) + 1;
+      }
+      const formsWithCounts = allForms.map((f: any) => ({
+        ...f,
+        assignment_count: countMap[f.id] ?? 0,
+      }));
+      return NextResponse.json({ forms: formsWithCounts });
     }
 
     // For employees/workers: filter by user-specific assignments.

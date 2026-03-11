@@ -15,6 +15,7 @@ type CustomForm = {
   is_active: boolean;
   target_state: string | null;
   target_region: string | null;
+  assignment_count?: number;
 };
 
 type EmployeeResult = {
@@ -414,11 +415,18 @@ export default function AdminPdfFormsPage() {
 
       // Assign to specific users if selected
       if (targetUsers.length > 0 && json.form?.id) {
-        await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
           body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
         });
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
       }
 
       const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
@@ -477,11 +485,18 @@ export default function AdminPdfFormsPage() {
 
       // If specific users were selected, assign this form to them
       if (targetUsers.length > 0 && json.form?.id) {
-        await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
           body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
         });
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
       }
 
       const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
@@ -888,6 +903,15 @@ export default function AdminPdfFormsPage() {
                           {form.target_state}
                         </span>
                       )}
+                      {form.assignment_count != null && form.assignment_count > 0 ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">
+                          Restricted · {form.assignment_count} user{form.assignment_count !== 1 ? 's' : ''}
+                        </span>
+                      ) : form.assignment_count === 0 ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2 py-0.5">
+                          All employees
+                        </span>
+                      ) : null}
                       <span className="text-xs text-gray-400 font-mono">/employee/form/{form.id}</span>
                     </div>
                   </div>
