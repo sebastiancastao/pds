@@ -241,13 +241,31 @@ export async function GET(
 
     // Fall back to geocoding if venue_reference lookup failed or had no coordinates
     if (venueLat == null || venueLng == null) {
-      console.log('⚠️ Venue not in reference table or missing coords, attempting geocoding:', event.venue, event.city, event.state);
+      console.log('⚠️ Venue missing coords, attempting geocoding:', event.venue, event.city, event.state);
       try {
-        const geocoded = await geocodeAddress(event.venue || '', event.city || '', event.state || '');
+        // Try full venue name + city + state first
+        let geocoded = event.venue
+          ? await geocodeAddress(event.venue, event.city || '', event.state || '')
+          : null;
+
+        // Fall back to city + state only (works even for unknown venue names)
+        if (!geocoded && (event.city || event.state)) {
+          console.log('⚠️ Venue name geocoding failed, trying city+state only');
+          geocoded = await geocodeAddress('', event.city || '', event.state || '');
+        }
+
         if (geocoded) {
           venueLat = geocoded.latitude;
           venueLng = geocoded.longitude;
           console.log('✅ Geocoded venue coordinates:', { venueLat, venueLng });
+
+          // Persist coords back to venue_reference so future requests skip geocoding
+          if (event.venue) {
+            await supabaseAdmin
+              .from('venue_reference')
+              .update({ latitude: geocoded.latitude, longitude: geocoded.longitude })
+              .eq('venue_name', event.venue);
+          }
         } else {
           console.log('⚠️ Geocoding returned no results, distance will not be calculated');
         }

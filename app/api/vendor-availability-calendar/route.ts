@@ -127,23 +127,32 @@ export async function GET(req: NextRequest) {
 
     const onboardedIds = onboardedVendors.map((v: any) => v.id);
 
-    // Fetch latest availability per vendor from vendor_invitations
+    // Fetch ALL availability submissions per vendor (not just the latest one).
+    // A vendor may have been invited to multiple events and submitted separate
+    // availability for each — we need to merge all of them.
     const { data: invitations, error: invError } = await supabaseAdmin
       .from('vendor_invitations')
-      .select('vendor_id, availability, responded_at, updated_at')
+      .select('vendor_id, availability')
       .in('vendor_id', onboardedIds)
-      .not('availability', 'is', null)
-      .order('updated_at', { ascending: false });
+      .not('availability', 'is', null);
 
     if (invError) {
       return NextResponse.json({ error: invError.message }, { status: 500 });
     }
 
-    // Keep only the latest invitation per vendor
-    const latestByVendor = new Map<string, any>();
+    // Accumulate every available date across ALL invitations per vendor
+    const allDatesByVendor = new Map<string, Set<string>>();
     for (const inv of invitations || []) {
-      if (!latestByVendor.has(inv.vendor_id)) {
-        latestByVendor.set(inv.vendor_id, inv);
+      if (!inv.vendor_id) continue;
+      if (!allDatesByVendor.has(inv.vendor_id)) {
+        allDatesByVendor.set(inv.vendor_id, new Set());
+      }
+      const dateSet = allDatesByVendor.get(inv.vendor_id)!;
+      for (const day of normalizeAvailability(inv.availability)) {
+        if (day.available && day.date) {
+          const dateStr = day.date.slice(0, 10);
+          if (dateStr) dateSet.add(dateStr);
+        }
       }
     }
 
@@ -174,21 +183,16 @@ export async function GET(req: NextRequest) {
     }
 
     // Build date → vendor list map and vendor → available dates
-    const byDate: Record<string, typeof vendorInfoMap extends Map<any, infer V> ? V[] : never> = {};
+    const byDate: Record<string, { id: string; name: string; email: string; division: string | null; region_id: string | null }[]> = {};
     const vendorDatesMap = new Map<string, string[]>();
 
-    for (const [vendorId, inv] of latestByVendor.entries()) {
+    for (const [vendorId, dateSet] of allDatesByVendor.entries()) {
       const info = vendorInfoMap.get(vendorId);
       if (!info) continue;
 
-      const days = normalizeAvailability(inv.availability);
       const availableDates: string[] = [];
 
-      for (const day of days) {
-        if (!day.available) continue;
-        const dateStr = day.date?.slice(0, 10);
-        if (!dateStr) continue;
-
+      for (const dateStr of dateSet) {
         // Apply date range filter if provided
         if (rangeStart && dateStr < rangeStart) continue;
         if (rangeEnd && dateStr > rangeEnd) continue;

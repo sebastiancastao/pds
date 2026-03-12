@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
+import interactionPlugin from '@fullcalendar/interaction';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
@@ -575,7 +576,7 @@ export default function VendorAvailabilityPage() {
                   `}</style>
                   <div className="vendor-cal">
                     <FullCalendar
-                      plugins={[dayGridPlugin]}
+                      plugins={[dayGridPlugin, interactionPlugin]}
                       initialView="dayGridMonth"
                       height="auto"
                       events={calendarEvents}
