@@ -151,6 +151,8 @@ export default function DashboardPage() {
   const [selectedRegion, setSelectedRegion] = useState<string>("all");
   const [vendorSearchQuery, setVendorSearchQuery] = useState("");
   const [showOnlyPendingAvailability, setShowOnlyPendingAvailability] = useState(false);
+  const [selectedVendorState, setSelectedVendorState] = useState<string>("all");
+  const [selectedVendorCity, setSelectedVendorCity] = useState<string>("all");
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
 
   // Team creation for a given event
@@ -164,6 +166,8 @@ export default function DashboardPage() {
   const [teamMessage, setTeamMessage] = useState("");
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
   const [selectedTeamRegion, setSelectedTeamRegion] = useState<string>("all");
+  const [selectedTeamState, setSelectedTeamState] = useState<string>("all");
+  const [selectedTeamCity, setSelectedTeamCity] = useState<string>("all");
 
   // HR tab state
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -245,6 +249,19 @@ export default function DashboardPage() {
     return vendor.availability_scope_start <= today && vendor.availability_scope_end >= today;
   }, []);
 
+  const availableVendorStates = useMemo(() => {
+    const states = vendors.map((v) => v.profiles.state).filter((s): s is string => Boolean(s));
+    return [...new Set(states)].sort();
+  }, [vendors]);
+
+  const availableVendorCities = useMemo(() => {
+    const cities = vendors
+      .filter((v) => selectedVendorState === "all" || v.profiles.state === selectedVendorState)
+      .map((v) => v.profiles.city)
+      .filter((c): c is string => Boolean(c));
+    return [...new Set(cities)].sort();
+  }, [vendors, selectedVendorState]);
+
   const filteredAndSortedVendors = useMemo(() => {
     const query = vendorSearchQuery.trim().toLowerCase();
     return [...vendors]
@@ -256,15 +273,30 @@ export default function DashboardPage() {
       .filter((v) => {
         const hasSubmittedAvailability = hasActiveAvailability(v);
         if (showOnlyPendingAvailability && hasSubmittedAvailability) return false;
+        if (selectedVendorState !== "all" && v.profiles.state !== selectedVendorState) return false;
+        if (selectedVendorCity !== "all" && v.profiles.city !== selectedVendorCity) return false;
         if (!query) return true;
         const fullName = `${v.profiles.first_name || ""} ${v.profiles.last_name || ""}`.trim().toLowerCase();
         return fullName.includes(query) || v.email.toLowerCase().includes(query);
       });
-  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability, hasActiveAvailability]);
+  }, [vendors, vendorSearchQuery, showOnlyPendingAvailability, hasActiveAvailability, selectedVendorState, selectedVendorCity]);
 
   const selectedVisibleVendorCount = filteredAndSortedVendors.filter((v) => selectedVendors.has(v.id)).length;
   const allVisibleVendorsSelected =
     filteredAndSortedVendors.length > 0 && selectedVisibleVendorCount === filteredAndSortedVendors.length;
+  const availableTeamStates = useMemo(() => {
+    const states = availableVendors.map((v) => v.profiles.state).filter((s): s is string => Boolean(s));
+    return [...new Set(states)].sort();
+  }, [availableVendors]);
+
+  const availableTeamCities = useMemo(() => {
+    const cities = availableVendors
+      .filter((v) => selectedTeamState === "all" || v.profiles.state === selectedTeamState)
+      .map((v) => v.profiles.city)
+      .filter((c): c is string => Boolean(c));
+    return [...new Set(cities)].sort();
+  }, [availableVendors, selectedTeamState]);
+
   const filteredTeamVendors = useMemo(() => {
     const getFullName = (v: any) => {
       const fn = safeDecrypt(v.profiles.first_name || "");
@@ -272,22 +304,24 @@ export default function DashboardPage() {
       return `${fn} ${ln}`.trim().toLowerCase();
     };
     const query = teamSearchQuery.trim().toLowerCase();
-    const list = !query
-      ? [...availableVendors]
-      : availableVendors.filter((v) => {
-          const fullName = getFullName(v);
-          const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
-          return (
-            fullName.includes(query) ||
-            v.email.toLowerCase().includes(query) ||
-            phone.toLowerCase().includes(query) ||
-            (v.division || "").toLowerCase().includes(query) ||
-            (v.role || "").toLowerCase().includes(query)
-          );
-        });
+    const list = availableVendors
+      .filter((v) => {
+        if (selectedTeamState !== "all" && v.profiles.state !== selectedTeamState) return false;
+        if (selectedTeamCity !== "all" && v.profiles.city !== selectedTeamCity) return false;
+        if (!query) return true;
+        const fullName = getFullName(v);
+        const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : "";
+        return (
+          fullName.includes(query) ||
+          v.email.toLowerCase().includes(query) ||
+          phone.toLowerCase().includes(query) ||
+          (v.division || "").toLowerCase().includes(query) ||
+          (v.role || "").toLowerCase().includes(query)
+        );
+      });
     list.sort((a, b) => getFullName(a).localeCompare(getFullName(b)));
     return list;
-  }, [availableVendors, teamSearchQuery]);
+  }, [availableVendors, teamSearchQuery, selectedTeamState, selectedTeamCity]);
 
   // Helpers
   const toIsoDateTime = (dateStr: string, timeStr?: string | null) => {
@@ -1008,12 +1042,16 @@ export default function DashboardPage() {
     setVendors([]);
     setSelectedVendors(new Set());
     setVendorSearchQuery("");
+    setSelectedVendorState("all");
+    setSelectedVendorCity("all");
     setMessage("");
   };
   const handleRegionChange = async (newRegion: string) => {
     console.log('[GLOBAL-CALENDAR] ð Region changed:', { from: selectedRegion, to: newRegion });
     setSelectedRegion(newRegion);
     setSelectedVendors(new Set());
+    setSelectedVendorState("all");
+    setSelectedVendorCity("all");
     loadAllVendors(newRegion);
   };
   const toggleVendorSelection = (id: string) => {
@@ -1227,6 +1265,8 @@ export default function DashboardPage() {
   };
   const handleTeamRegionChange = async (regionId: string) => {
     setSelectedTeamRegion(regionId);
+    setSelectedTeamState("all");
+    setSelectedTeamCity("all");
 
     if (selectedEvent) {
       await loadTeamVendors(selectedEvent, regionId);
@@ -1299,6 +1339,8 @@ export default function DashboardPage() {
     setTeamMessage("");
     setTeamSearchQuery("");
     setSelectedTeamRegion("all");
+    setSelectedTeamState("all");
+    setSelectedTeamCity("all");
   };
   const toggleTeamMember = (id: string) => {
     const s = new Set(selectedTeamMembers);
@@ -2401,6 +2443,37 @@ export default function DashboardPage() {
                     </div>
                   </div>
 
+                  {(availableVendorStates.length > 0 || availableVendorCities.length > 0) && (
+                    <div className="mb-6 grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by State</label>
+                        <select
+                          value={selectedVendorState}
+                          onChange={(e) => { setSelectedVendorState(e.target.value); setSelectedVendorCity("all"); }}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm"
+                        >
+                          <option value="all">All States</option>
+                          {availableVendorStates.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by City</label>
+                        <select
+                          value={selectedVendorCity}
+                          onChange={(e) => setSelectedVendorCity(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm"
+                        >
+                          <option value="all">All Cities</option>
+                          {availableVendorCities.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="mb-6">
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Search Vendors</label>
                     <input
@@ -2874,6 +2947,37 @@ export default function DashboardPage() {
                       </div>
                     </div>
                   </div>
+
+                  {(availableTeamStates.length > 0 || availableTeamCities.length > 0) && (
+                    <div className="mb-4 grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by State</label>
+                        <select
+                          value={selectedTeamState}
+                          onChange={(e) => { setSelectedTeamState(e.target.value); setSelectedTeamCity("all"); }}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm"
+                        >
+                          <option value="all">All States</option>
+                          {availableTeamStates.map((s) => (
+                            <option key={s} value={s}>{s}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-semibold text-gray-700 mb-2">Filter by City</label>
+                        <select
+                          value={selectedTeamCity}
+                          onChange={(e) => setSelectedTeamCity(e.target.value)}
+                          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all text-sm"
+                        >
+                          <option value="all">All Cities</option>
+                          {availableTeamCities.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="mb-4">
                     <input
