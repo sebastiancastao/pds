@@ -93,6 +93,8 @@ type TeamVendorOption = {
     first_name?: string | null;
     last_name?: string | null;
     phone?: string | null;
+    state?: string | null;
+    city?: string | null;
   };
 };
 

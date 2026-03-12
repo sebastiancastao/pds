@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt } from "@/lib/encryption";
-import { FIXED_REGION_RADIUS_MILES } from "@/lib/geocoding";
+import { FIXED_REGION_RADIUS_MILES, geocodeAddress } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -222,38 +222,38 @@ export async function GET(
       venueError
     });
 
-    if (venueError || !venueMatches || venueMatches.length === 0) {
-      console.log('❌ Venue not found, returning empty vendors list');
-      return NextResponse.json({
-        error: 'Venue not found',
-        vendors: []
-      }, { status: 200 });
+    let venueLat: number | null = null;
+    let venueLng: number | null = null;
+
+    if (!venueError && venueMatches && venueMatches.length > 0) {
+      const eventCity = normalizeText(event.city);
+      const eventState = normalizeText(event.state);
+      const venueData =
+        venueMatches.find((candidate: any) => {
+          const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+          const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
+          return cityMatches && stateMatches;
+        }) || venueMatches[0];
+
+      venueLat = toFiniteNumber((venueData as any)?.latitude);
+      venueLng = toFiniteNumber((venueData as any)?.longitude);
     }
 
-    const eventCity = normalizeText(event.city);
-    const eventState = normalizeText(event.state);
-    const venueData =
-      venueMatches.find((candidate: any) => {
-        const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
-        const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
-        return cityMatches && stateMatches;
-      }) || venueMatches[0];
-
-    const venueLat = toFiniteNumber((venueData as any)?.latitude);
-    const venueLng = toFiniteNumber((venueData as any)?.longitude);
-
+    // Fall back to geocoding if venue_reference lookup failed or had no coordinates
     if (venueLat == null || venueLng == null) {
-      console.log('❌ Venue coordinates missing or invalid, returning empty vendors list', {
-        venueName: event.venue,
-        venueCity: (venueData as any)?.city,
-        venueState: (venueData as any)?.state,
-        latitude: (venueData as any)?.latitude,
-        longitude: (venueData as any)?.longitude
-      });
-      return NextResponse.json({
-        error: 'Venue coordinates unavailable',
-        vendors: []
-      }, { status: 200 });
+      console.log('⚠️ Venue not in reference table or missing coords, attempting geocoding:', event.venue, event.city, event.state);
+      try {
+        const geocoded = await geocodeAddress(event.venue || '', event.city || '', event.state || '');
+        if (geocoded) {
+          venueLat = geocoded.latitude;
+          venueLng = geocoded.longitude;
+          console.log('✅ Geocoded venue coordinates:', { venueLat, venueLng });
+        } else {
+          console.log('⚠️ Geocoding returned no results, distance will not be calculated');
+        }
+      } catch (geocodeErr) {
+        console.warn('⚠️ Geocoding failed, distance will not be calculated:', geocodeErr);
+      }
     }
 
     // Get all vendor invitations that include this event date
@@ -487,7 +487,7 @@ export async function GET(
         const vendorLat = toFiniteNumber(vendor.profiles?.latitude);
         const vendorLng = toFiniteNumber(vendor.profiles?.longitude);
         let distance: number | null = null;
-        if (vendorLat != null && vendorLng != null) {
+        if (venueLat != null && venueLng != null && vendorLat != null && vendorLng != null) {
           distance = calculateDistance(
             venueLat,
             venueLng,
