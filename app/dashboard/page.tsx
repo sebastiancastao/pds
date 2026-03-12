@@ -651,7 +651,7 @@ export default function DashboardPage() {
               }
               navigator.geolocation.getCurrentPosition(resolve, reject, {
                 timeout: 10000,
-                maximumAge: 300000, // 5 minutes cache
+                maximumAge: 0, // no cache - always get fresh location
                 enableHighAccuracy: false
               });
             });
