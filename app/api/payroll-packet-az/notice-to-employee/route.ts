@@ -16,13 +16,6 @@ export async function GET(request: NextRequest) {
       'Rates of Pay',
       'Overtime Rates of Pay',
       'Other provide specifics',
-      'Rate by check box',
-      'Hour',
-      'Shift',
-      'Day',
-      'Week',
-      'Salary',
-      'Piece rate',
     ];
 
     const removeFieldFromPdf = (fieldName: string) => {
@@ -135,14 +128,6 @@ export async function GET(request: NextRequest) {
       removeFieldFromPdf('Signature8');
     }
     removeFieldFromPdf('Signature9');
-
-    if (!isEmployee) {
-      try {
-        form.getCheckBox('Commission').check();
-      } catch (error) {
-        console.warn('[NOTICE_TO_EMPLOYEE_AZ] Failed to pre-check Commission checkbox', error);
-      }
-    }
 
     const updatedPdfBytes = await pdfDoc.save();
 

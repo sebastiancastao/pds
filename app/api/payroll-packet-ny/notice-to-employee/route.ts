@@ -16,13 +16,6 @@ export async function GET(request: NextRequest) {
       'Rates of Pay',
       'Overtime Rates of Pay',
       'Other provide specifics',
-      'Rate by check box',
-      'Hour',
-      'Shift',
-      'Day',
-      'Week',
-      'Salary',
-      'Piece rate',
     ];
 
     const removeFieldFromPdf = (fieldName: string) => {
@@ -136,26 +129,6 @@ export async function GET(request: NextRequest) {
     }
     removeFieldFromPdf('Signature9');
 
-    if (!isEmployee) {
-      try {
-        const commissionCheckbox = form.getCheckBox('Commission');
-        const acroField = (commissionCheckbox as any).acroField;
-        const widgets = acroField?.getWidgets?.() || [];
-
-        if (widgets.length > 0) {
-          const widget = widgets[0];
-          const onValue = widget.getOnValue?.();
-          if (onValue) {
-            acroField.setValue(onValue);
-          }
-        }
-
-        commissionCheckbox.check();
-        commissionCheckbox.enableReadOnly();
-      } catch (error) {
-        console.warn('[NOTICE_TO_EMPLOYEE_NY] Failed to pre-check Commission checkbox', error);
-      }
-    }
 
     // Update all field appearances to ensure they render properly
     form.updateFieldAppearances();

@@ -160,6 +160,13 @@ export default function RoleManagementPage() {
     }
   }, [isAuthorized]);
 
+  // Poll for fresh data every 30 seconds
+  useEffect(() => {
+    if (!isAuthorized) return;
+    const interval = setInterval(() => { loadUsers(); }, 30000);
+    return () => clearInterval(interval);
+  }, [isAuthorized]);
+
   // Derive supervisor3 users from users list
   useEffect(() => {
     setSupervisor3Users(users.filter(u => u.role === 'supervisor3'));
@@ -229,7 +236,7 @@ export default function RoleManagementPage() {
     setError("");
     try {
       const token = await getToken();
-      const res = await fetch('/api/users/role-management-list', {
+      const res = await fetch(`/api/users/role-management-list?t=${Date.now()}`, {
         cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -770,6 +777,14 @@ export default function RoleManagementPage() {
                 <option key={role} value={role}>{role}</option>
               ))}
             </select>
+            <button
+              onClick={loadUsers}
+              disabled={loading}
+              style={{ padding: '0.75rem 1rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '1rem', cursor: loading ? 'not-allowed' : 'pointer', backgroundColor: 'white', opacity: loading ? 0.6 : 1 }}
+              title="Refresh users"
+            >
+              ↻
+            </button>
           </div>
 
           {/* Messages */}
