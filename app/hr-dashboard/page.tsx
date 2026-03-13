@@ -1679,6 +1679,7 @@ function HRDashboardContent() {
     const colWidths = [
       { wch: 30 }, // User Name
       { wch: 32 }, // Email
+      { wch: 20 }, // City
       { wch: 10 }, // State
       { wch: 24 }, // Region
       { wch: 60 }, // Venues Worked
@@ -1694,6 +1695,7 @@ function HRDashboardContent() {
       return {
         "User Name": fullName,
         Email: employee.email || "",
+        City: employee.city || "",
         State: employee.state || "",
         Region: regionName,
         "Venues Worked": Array.isArray(employee.worked_venues) ? employee.worked_venues.join(", ") : "",

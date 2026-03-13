@@ -312,6 +312,7 @@ export default function RoleManagementPage() {
     try {
       const token = await getToken();
       const res = await fetch(`/api/manager-teams?manager_id=${managerId}`, {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -392,6 +393,7 @@ export default function RoleManagementPage() {
     try {
       const token = await getToken();
       const res = await fetch('/api/venues', {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -408,6 +410,7 @@ export default function RoleManagementPage() {
     try {
       const token = await getToken();
       const res = await fetch(`/api/venue-managers?manager_id=${sup3Id}`, {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -426,6 +429,7 @@ export default function RoleManagementPage() {
     try {
       const token = await getToken();
       const res = await fetch(`/api/manager-teams?manager_id=${sup3Id}`, {
+        cache: 'no-store',
         headers: { Authorization: `Bearer ${token}` },
       });
       const data = await res.json();
@@ -501,7 +505,7 @@ export default function RoleManagementPage() {
       const token = await getToken();
       const res = await fetch(
         `/api/supervisor3-team-venues?supervisor3_id=${supervisor3Id}&supervisor_id=${supervisorId}`,
-        { headers: { Authorization: `Bearer ${token}` } }
+        { cache: 'no-store', headers: { Authorization: `Bearer ${token}` } }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to load venues');
@@ -828,6 +832,7 @@ export default function RoleManagementPage() {
                             <select
                               value={user.role}
                               onChange={(e) => handleRoleChange(user.id, e.target.value, `${user.first_name} ${user.last_name}`, user.role)}
+                              onWheel={(e) => e.currentTarget.blur()}
                               disabled={isDisabled}
                               style={{
                                 padding: '0.375rem 0.5rem', border: '1px solid #d1d5db', borderRadius: '0.375rem', fontSize: '0.875rem',

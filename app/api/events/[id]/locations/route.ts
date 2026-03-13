@@ -106,7 +106,7 @@ async function getAvailableVendorIdsForEventDate(eventDateValue: unknown): Promi
   const { data: invitations, error: invitationsError } = await supabaseAdmin
     .from("vendor_invitations")
     .select("vendor_id, availability, invitation_type, status, responded_at")
-    .eq("invitation_type", "bulk")
+    .or("invitation_type.eq.bulk,invitation_type.is.null")
     .eq("status", "accepted")
     .not("responded_at", "is", null)
     .not("availability", "is", null);

@@ -285,7 +285,7 @@ export async function GET(
         status,
         responded_at
       `)
-      .eq('invitation_type', 'bulk')
+      .or('invitation_type.eq.bulk,invitation_type.is.null')
       .eq('status', 'accepted')
       .not('responded_at', 'is', null)
       .not('availability', 'is', null);

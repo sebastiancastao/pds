@@ -108,6 +108,64 @@ const STATE_FORM_PRESETS: StateFormPreset[] = [
   { code: 'wi-wt4',   label: 'WI WT-4',    description: 'WI Withholding Exemption Certificate (WT-4)',  state: 'WI', requiresSignature: true, allowDateInput: false, allowPrintName: false },
 ];
 
+type PacketFormPreset = {
+  code: string;
+  label: string;
+  description: string;
+  state: string;
+  formType: string;
+  requiresSignature: boolean;
+  allowDateInput: boolean;
+  allowPrintName: boolean;
+};
+
+// Preloaded forms from each payroll-packet state.
+// Each entry maps to /api/payroll-packet-{state}/{formType}.
+const PACKET_FORM_PRESETS: PacketFormPreset[] = [
+  // California
+  { code: 'ca-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'CA', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ca-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'CA', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ca-adp-deposit',          label: 'Direct Deposit',        description: 'ADP Direct Deposit Authorization',             state: 'CA', formType: 'adp-deposit',          requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ca-notice-to-employee',   label: 'Notice to Employee',    description: 'LC 2810.5 Notice to Employee',                 state: 'CA', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ca-health-insurance',     label: 'Health Insurance',      description: 'Marketplace Coverage Options Notice',          state: 'CA', formType: 'health-insurance',     requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ca-time-of-hire',         label: 'Time of Hire',          description: 'Time of Hire Notice',                         state: 'CA', formType: 'time-of-hire',         requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ca-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'CA', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'ca-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'CA', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ca-arbitration',          label: 'Arbitration',           description: 'Arbitration Agreement',                       state: 'CA', formType: 'arbitration-agreement', requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ca-sexual-harassment',    label: 'Sexual Harassment',     description: 'Prevention Policy Acknowledgment',             state: 'CA', formType: 'sexual-harassment',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  // Arizona
+  { code: 'az-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'AZ', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'az-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'AZ', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'az-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'AZ', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'az-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'AZ', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  // Nevada
+  { code: 'nv-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NV', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'nv-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NV', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'nv-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NV', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'nv-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'NV', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'nv-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NV', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  // New York
+  { code: 'ny-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NY', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ny-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NY', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'ny-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NY', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ny-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'NY', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'ny-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NY', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  // Wisconsin
+  { code: 'wi-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'WI', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'wi-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'WI', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+  { code: 'wi-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'WI', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'wi-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'WI', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
+  { code: 'wi-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'WI', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
+];
+
+const PACKET_STATE_LABELS: Record<string, string> = {
+  CA: 'California',
+  AZ: 'Arizona',
+  NV: 'Nevada',
+  NY: 'New York',
+  WI: 'Wisconsin',
+};
+
 export default function AdminPdfFormsPage() {
   const router = useRouter();
   const [forms, setForms] = useState<CustomForm[]>([]);
@@ -128,8 +186,9 @@ export default function AdminPdfFormsPage() {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerSelected, setPickerSelected] = useState<EmployeeResult[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
-  const [uploadTab, setUploadTab] = useState<'standard' | 'state'>('standard');
+  const [uploadTab, setUploadTab] = useState<'standard' | 'state' | 'packet'>('standard');
   const [selectedStatePreset, setSelectedStatePreset] = useState<string | null>(null);
+  const [selectedPacketPreset, setSelectedPacketPreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Send-to-users modal state
@@ -444,12 +503,96 @@ export default function AdminPdfFormsPage() {
     }
   };
 
+  const applyPacketPreset = (preset: PacketFormPreset) => {
+    const isAlreadySelected = selectedPacketPreset === preset.code;
+    if (isAlreadySelected) {
+      setSelectedPacketPreset(null);
+      setTitle('');
+      setRequiresSignature(false);
+      setAllowDateInput(false);
+      setAllowPrintName(false);
+      setTargetState('');
+      return;
+    }
+    setSelectedPacketPreset(preset.code);
+    setSelectedPreset(null);
+    setSelectedStatePreset(null);
+    setTitle(`${preset.code}-${currentYear}`);
+    setRequiresSignature(preset.requiresSignature);
+    setAllowDateInput(preset.allowDateInput);
+    setAllowPrintName(preset.allowPrintName);
+    setTargetState(preset.state);
+    setError('');
+    setSuccessMsg('');
+  };
+
+  const handleRegisterPacketForm = async () => {
+    setError('');
+    setSuccessMsg('');
+    if (!title.trim()) { setError('Please enter a form title.'); return; }
+    const preset = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
+    if (!preset) { setError('No packet form selected.'); return; }
+
+    setUploading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const res = await fetch('/api/custom-forms/register-state-form', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          title: title.trim(),
+          requiresSignature,
+          allowDateInput,
+          allowPrintName,
+          targetState,
+          formType: preset.formType,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
+
+      if (targetUsers.length > 0 && json.form?.id) {
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+        });
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
+      }
+
+      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
+      setSuccessMsg(`"${title}" registered successfully${userNote}.`);
+      setTitle('');
+      setRequiresSignature(false);
+      setAllowDateInput(false);
+      setAllowPrintName(false);
+      setTargetState('');
+      setTargetUsers([]);
+      setSelectedPacketPreset(null);
+      await loadForms(session.access_token);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleTitleChange = (val: string) => {
     setTitle(val);
     const match = FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
     setSelectedPreset(match?.code ?? null);
     const stateMatch = STATE_FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
     setSelectedStatePreset(stateMatch?.code ?? null);
+    const packetMatch = PACKET_FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
+    setSelectedPacketPreset(packetMatch?.code ?? null);
   };
 
   const handleUpload = async (e: React.FormEvent) => {
@@ -509,6 +652,7 @@ export default function AdminPdfFormsPage() {
       setTargetUsers([]);
       setSelectedPreset(null);
       setSelectedStatePreset(null);
+      setSelectedPacketPreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       await loadForms(session.access_token);
     } catch (err: any) {
@@ -568,7 +712,7 @@ export default function AdminPdfFormsPage() {
           <div className="flex gap-1 mb-5 bg-gray-100 rounded-lg p-1">
             <button
               type="button"
-              onClick={() => { setUploadTab('standard'); setSelectedStatePreset(null); }}
+              onClick={() => { setUploadTab('standard'); setSelectedStatePreset(null); setSelectedPacketPreset(null); }}
               className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
                 uploadTab === 'standard'
                   ? 'bg-white text-gray-900 shadow-sm'
@@ -579,7 +723,7 @@ export default function AdminPdfFormsPage() {
             </button>
             <button
               type="button"
-              onClick={() => { setUploadTab('state'); setSelectedPreset(null); }}
+              onClick={() => { setUploadTab('state'); setSelectedPreset(null); setSelectedPacketPreset(null); }}
               className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
                 uploadTab === 'state'
                   ? 'bg-white text-gray-900 shadow-sm'
@@ -587,6 +731,17 @@ export default function AdminPdfFormsPage() {
               }`}
             >
               State Forms
+            </button>
+            <button
+              type="button"
+              onClick={() => { setUploadTab('packet'); setSelectedPreset(null); setSelectedStatePreset(null); }}
+              className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                uploadTab === 'packet'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Payroll Packet Forms
             </button>
           </div>
 
@@ -651,6 +806,50 @@ export default function AdminPdfFormsPage() {
             </div>
           )}
 
+          {/* Payroll packet form grid */}
+          {uploadTab === 'packet' && (
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 mb-3">
+                Preloaded forms from each payroll-packet state. Select a form to register it — no file upload needed.
+              </p>
+              {(['CA', 'AZ', 'NV', 'NY', 'WI'] as const).map(state => {
+                const statePresets = PACKET_FORM_PRESETS.filter(p => p.state === state);
+                return (
+                  <div key={state} className="mb-4">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                      {state} — {PACKET_STATE_LABELS[state]}
+                    </p>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {statePresets.map(preset => {
+                        const isSelected = selectedPacketPreset === preset.code;
+                        return (
+                          <button
+                            key={preset.code}
+                            type="button"
+                            onClick={() => applyPacketPreset(preset)}
+                            className={`text-left p-3 rounded-lg border transition-all ${
+                              isSelected
+                                ? 'border-emerald-500 bg-emerald-50 ring-2 ring-emerald-300'
+                                : 'border-gray-200 hover:border-emerald-300 hover:bg-gray-50'
+                            }`}
+                          >
+                            <p className="text-sm font-semibold text-gray-900 leading-tight">{preset.label}</p>
+                            <p className="text-xs text-gray-500 mt-0.5 leading-tight">{preset.description}</p>
+                            {preset.requiresSignature && (
+                              <span className="inline-block mt-1.5 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5">
+                                Sig. required
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           <div className="flex items-center gap-3 mb-5">
             <div className="flex-1 h-px bg-gray-200" />
             <span className="text-xs text-gray-400 whitespace-nowrap">or enter a custom title</span>
@@ -683,9 +882,18 @@ export default function AdminPdfFormsPage() {
                   </p>
                 ) : null;
               })()}
+              {selectedPacketPreset && (() => {
+                const pp = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
+                return pp ? (
+                  <p className="text-xs text-emerald-600 mt-1">
+                    Packet preset: <span className="font-semibold">{pp.label}</span> ({pp.state}) — title set to{' '}
+                    <span className="font-mono">{title}</span>
+                  </p>
+                ) : null;
+              })()}
             </div>
 
-            {!selectedStatePreset && (
+            {!selectedStatePreset && !selectedPacketPreset && (
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   PDF File{selectedPreset && (
@@ -708,6 +916,14 @@ export default function AdminPdfFormsPage() {
                 PDF served directly from the <span className="font-semibold">/payroll-packet-{targetState.toLowerCase()}/form-viewer</span> route — no file upload needed.
               </div>
             )}
+            {selectedPacketPreset && (() => {
+              const pp = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
+              return pp ? (
+                <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-800">
+                  PDF served from <span className="font-semibold">/api/payroll-packet-{pp.state.toLowerCase()}/{pp.formType}</span> — no file upload needed.
+                </div>
+              ) : null;
+            })()}
 
             <div className="flex items-center gap-3">
               <input
@@ -751,12 +967,12 @@ export default function AdminPdfFormsPage() {
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Restrict to State
-                {!selectedStatePreset && <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>}
+                {!selectedStatePreset && !selectedPacketPreset && <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>}
               </label>
-              {selectedStatePreset ? (
+              {(selectedStatePreset || selectedPacketPreset) ? (
                 <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-700">
                   <span className="font-semibold">{targetState}</span>
-                  <span className="text-gray-400">— locked by state preset</span>
+                  <span className="text-gray-400">— locked by {selectedStatePreset ? 'state' : 'packet'} preset</span>
                 </div>
               ) : (
                 <select
@@ -834,6 +1050,15 @@ export default function AdminPdfFormsPage() {
                 className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
               >
                 {uploading ? 'Registering...' : 'Register State Form'}
+              </button>
+            ) : selectedPacketPreset ? (
+              <button
+                type="button"
+                onClick={handleRegisterPacketForm}
+                disabled={uploading}
+                className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
+              >
+                {uploading ? 'Registering...' : 'Register Packet Form'}
               </button>
             ) : (
               <button

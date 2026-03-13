@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, Suspense } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
 
@@ -35,8 +35,9 @@ function parseEmailList(value: string): string[] {
   );
 }
 
-export default function AdminEmailPage() {
+function AdminEmailPageContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   const [accessState, setAccessState] = useState<
     'checking' | 'allowed' | 'forbidden'
@@ -45,7 +46,16 @@ export default function AdminEmailPage() {
   const [myEmail, setMyEmail] = useState<string>('');
 
   const [audience, setAudience] = useState<Audience>('manual');
-  const [to, setTo] = useState('');
+  const [to, setTo] = useState(() => {
+    // Pre-populate from ?to= query param (set by upload-emails page)
+    if (typeof window !== 'undefined') {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return decodeURIComponent(params.get('to') || '');
+      } catch { return ''; }
+    }
+    return '';
+  });
   const [targetRole, setTargetRole] = useState('worker');
   const [regions, setRegions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedRegion, setSelectedRegion] = useState('all');
@@ -256,7 +266,7 @@ export default function AdminEmailPage() {
 
   return (
     <AuthGuard requireMFA={true}>
-      <div className="container mx-auto max-w-4xl py-10 px-4">
+      <div className="container mx-auto max-w-4xl py-10 px-4 ">
         <div className="flex items-center justify-between mb-6">
           <Link href="/dashboard">
             <button className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded-md">
@@ -621,5 +631,13 @@ export default function AdminEmailPage() {
         </div>
       </div>
     </AuthGuard>
+  );
+}
+
+export default function AdminEmailPage() {
+  return (
+    <Suspense>
+      <AdminEmailPageContent />
+    </Suspense>
   );
 }

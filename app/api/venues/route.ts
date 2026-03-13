@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
+export const dynamic = 'force-dynamic';
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' };
 
 // GET: Retrieve all venues
 export async function GET(request: NextRequest) {
@@ -21,7 +24,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch venues' }, { status: 500 });
     }
 
-    return NextResponse.json({ venues: venues || [] }, { status: 200 });
+    return NextResponse.json({ venues: venues || [] }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {
     console.error('[VENUES] Unexpected error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

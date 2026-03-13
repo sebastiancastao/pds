@@ -2,9 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { safeDecrypt } from '@/lib/encryption';
 
+export const dynamic = 'force-dynamic';
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const ASSIGNABLE_VENUE_MANAGER_ROLES = ['manager', 'supervisor3'];
+const NO_STORE_HEADERS = { 'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate' };
 
 // GET: Retrieve all venue manager assignments
 export async function GET(request: NextRequest) {
@@ -133,7 +136,7 @@ export async function GET(request: NextRequest) {
       } : null,
     }));
 
-    return NextResponse.json({ assignments: transformedAssignments }, { status: 200 });
+    return NextResponse.json({ assignments: transformedAssignments }, { status: 200, headers: NO_STORE_HEADERS });
   } catch (err: any) {
     console.error('[VENUE_MANAGERS] Unexpected error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

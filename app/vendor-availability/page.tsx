@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import * as XLSX from 'xlsx';
 import FullCalendar from '@fullcalendar/react';
 import dayGridPlugin from '@fullcalendar/daygrid';
 import interactionPlugin from '@fullcalendar/interaction';
@@ -48,6 +49,15 @@ type ByDate = Record<string, CalendarVendor[]>;
 type AvailabilityFilter = 'all' | 'submitted' | 'not_submitted' | 'recent';
 type ViewTab = 'list' | 'calendar';
 
+// ---------- Excel Export ----------
+
+function downloadExcel(rows: (string | number)[][], filename: string) {
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Invitations');
+  XLSX.writeFile(wb, filename);
+}
+
 // ---------- Helpers ----------
 
 const formatDate = (dateStr: string | null): string => {
@@ -90,6 +100,13 @@ export default function VendorAvailabilityPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedRegionId, setSelectedRegionId] = useState('all');
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>('all');
+
+  // Export state
+  const [showExport, setShowExport] = useState(false);
+  const [exportStart, setExportStart] = useState('');
+  const [exportEnd, setExportEnd] = useState('');
+  const [exportLoading, setExportLoading] = useState(false);
+  const [exportError, setExportError] = useState('');
 
   // Calendar view state
   const [calendarLoading, setCalendarLoading] = useState(false);
@@ -237,6 +254,76 @@ export default function VendorAvailabilityPage() {
     [byDate, selectedDate]
   );
 
+  // ---------- Export ----------
+
+  const handleExport = useCallback(async () => {
+    if (!exportStart || !exportEnd) {
+      setExportError('Please select both a start and end date.');
+      return;
+    }
+    if (exportStart > exportEnd) {
+      setExportError('Start date must be before end date.');
+      return;
+    }
+    setExportError('');
+    setExportLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { window.location.href = '/login'; return; }
+
+      const params = new URLSearchParams({ start: exportStart, end: exportEnd });
+      const res = await fetch(`/api/invitations/export?${params}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const payload = await res.json();
+      if (!res.ok) throw new Error(payload.error || 'Failed to fetch data');
+
+      const invitations: any[] = payload.invitations || [];
+
+      const header = [
+        'Vendor Name',
+        'Email',
+        'City',
+        'Status',
+        'Invitation Type',
+        'Invitation Date',
+        'Response Date',
+        'Expires',
+        'Availability Start',
+        'Availability End',
+        'Event Name',
+        'Event Date',
+        'Event Venue',
+      ];
+
+      const dataRows = invitations.map((inv) => [
+        inv.vendorName,
+        inv.email,
+        inv.city,
+        inv.status,
+        inv.invitationType,
+        inv.invitationDate,
+        inv.responseDate,
+        inv.expiresAt,
+        inv.availabilityStart,
+        inv.availabilityEnd,
+        inv.eventName,
+        inv.eventDate,
+        inv.eventVenue,
+      ]);
+
+      downloadExcel(
+        [header, ...dataRows],
+        `invitations_${exportStart}_to_${exportEnd}.xlsx`
+      );
+      setShowExport(false);
+    } catch (err: any) {
+      setExportError(err.message || 'Export failed');
+    } finally {
+      setExportLoading(false);
+    }
+  }, [exportStart, exportEnd]);
+
   // ---------- Loading / error screens ----------
 
   if (loading) {
@@ -268,6 +355,15 @@ export default function VendorAvailabilityPage() {
           </div>
           <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
             <button
+              onClick={() => { setShowExport((v) => !v); setExportError(''); }}
+              className="px-4 py-2.5 rounded-lg border border-blue-300 bg-blue-50 text-blue-700 text-sm font-medium hover:bg-blue-100 transition-colors flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              Export Excel
+            </button>
+            <button
               onClick={() => { loadListData(); if (activeTab === 'calendar') loadCalendarData(calendarRegionId); }}
               className="px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
             >
@@ -281,6 +377,58 @@ export default function VendorAvailabilityPage() {
             </Link>
           </div>
         </div>
+
+        {/* Export panel */}
+        {showExport && (
+          <div className="mb-6 bg-white border border-blue-200 rounded-2xl shadow-sm p-4 sm:p-5">
+            <h3 className="text-sm font-semibold text-gray-800 mb-3">Export Invitations (Excel)</h3>
+            <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">Start Date</label>
+                <input
+                  type="date"
+                  value={exportStart}
+                  onChange={(e) => setExportStart(e.target.value)}
+                  className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">End Date</label>
+                <input
+                  type="date"
+                  value={exportEnd}
+                  onChange={(e) => setExportEnd(e.target.value)}
+                  className="px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                />
+              </div>
+              <button
+                onClick={handleExport}
+                disabled={exportLoading}
+                className="px-4 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2 sm:mb-0"
+              >
+                {exportLoading ? (
+                  <>
+                    <div className="h-4 w-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Exporting...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Download CSV
+                  </>
+                )}
+              </button>
+            </div>
+            {exportError && (
+              <p className="mt-2 text-sm text-red-600">{exportError}</p>
+            )}
+            <p className="mt-2 text-xs text-gray-400">
+              Each row = one invitation. Includes vendor name, email, status, invitation date, response date, and event details.
+            </p>
+          </div>
+        )}
 
         {/* Tab switcher */}
         <div className="flex gap-1 p-1 bg-gray-200 rounded-xl w-fit mb-6">

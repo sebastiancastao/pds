@@ -42,7 +42,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, requiresSignature, targetState } = body;
+    const { title, requiresSignature, allowDateInput, allowPrintName, targetState, formType } = body;
 
     if (!title?.trim() || !targetState) {
       return NextResponse.json({ error: 'Missing title or state' }, { status: 400 });
@@ -54,8 +54,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Virtual storage path — no actual file in Supabase storage.
-    // The PDF route proxies this to /api/payroll-packet-{state}/fillable.
-    const storagePath = `payroll-packet:${routeSegment}:fillable`;
+    // The PDF route proxies this to /api/payroll-packet-{state}/{formType}.
+    const resolvedFormType = formType?.trim() || 'fillable';
+    const storagePath = `payroll-packet:${routeSegment}:${resolvedFormType}`;
 
     // Prevent duplicate registrations for the same state form
     const { data: existing } = await supabase
@@ -78,8 +79,8 @@ export async function POST(request: NextRequest) {
         title: title.trim(),
         storage_path: storagePath,
         requires_signature: requiresSignature ?? true,
-        allow_date_input: false,
-        allow_print_name: false,
+        allow_date_input: allowDateInput ?? false,
+        allow_print_name: allowPrintName ?? false,
         target_state: targetState,
         target_region: null,
         created_by: user.id,
