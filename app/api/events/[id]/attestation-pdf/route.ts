@@ -320,10 +320,10 @@ export async function GET(
     drawText(`Name: ${vendorName}`, { font: boldFont });
     drawText(`Check In: ${firstClockInAt ? formatTime(firstClockInAt) : "--"}`);
     drawText(`Check Out: ${lastClockOutAt ? formatTime(lastClockOutAt) : "--"}`);
-    drawText(`Worked Time (raw): ${formatDuration(workedMs)}`);
+    drawText(`Worked Time ${formatDuration(workedMs)}`);
     drawText(`Meal Time Deduction: ${mealMs > 0 ? formatDuration(mealMs) : "0h 00m"}`);
     drawText(`Admin Response / Entry Processing: ${formatDuration(entryProcessingMs)}`);
-    drawText(`Total Hours (Adjusted): ${formatDuration(totalHoursMs)}`, { font: boldFont });
+    drawText(`Total Hours: ${formatDuration(totalHoursMs)}`, { font: boldFont });
     y -= 10;
     drawLine();
 
