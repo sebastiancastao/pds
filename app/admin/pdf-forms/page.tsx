@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import '../../dashboard/dashboard-styles.css';
@@ -32,6 +32,35 @@ type Assignee = {
   user_id: string;
   assigned_at: string;
   profiles: { first_name: string; last_name: string; email: string } | null;
+};
+
+type VenueOption = {
+  id: string;
+  venue_name: string;
+  city: string | null;
+  state: string | null;
+};
+
+type VenueAssignmentVendor = {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+};
+
+type VendorVenueAssignment = {
+  id: string;
+  vendor_id: string;
+  venue_id: string;
+  venue: VenueOption | null;
+  vendor: VenueAssignmentVendor | null;
+};
+
+type VenueRecipient = {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
 };
 
 const US_STATES = [
@@ -199,6 +228,11 @@ export default function AdminPdfFormsPage() {
   const [selectedUsers, setSelectedUsers] = useState<EmployeeResult[]>([]);
   const [assignees, setAssignees] = useState<Assignee[]>([]);
   const [assigneesLoading, setAssigneesLoading] = useState(false);
+  const [sendTab, setSendTab] = useState<'users' | 'venue'>('users');
+  const [venues, setVenues] = useState<VenueOption[]>([]);
+  const [vendorVenueAssignments, setVendorVenueAssignments] = useState<VendorVenueAssignment[]>([]);
+  const [venuesLoading, setVenuesLoading] = useState(false);
+  const [selectedVenueId, setSelectedVenueId] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
   const [sendSuccess, setSendSuccess] = useState('');
@@ -234,6 +268,99 @@ export default function AdminPdfFormsPage() {
     }, 300);
     return () => clearTimeout(timer);
   }, [employeeSearch, sendModalForm, searchEmployees]);
+
+  const assignedUserIds = useMemo(
+    () => new Set(assignees.map((assignee) => assignee.user_id)),
+    [assignees]
+  );
+
+  const venuesWithVendors = useMemo(() => {
+    const vendorIdsByVenue = new Map<string, Set<string>>();
+
+    vendorVenueAssignments.forEach((assignment) => {
+      if (!assignment.vendor_id) return;
+      const current = vendorIdsByVenue.get(assignment.venue_id) || new Set<string>();
+      current.add(assignment.vendor_id);
+      vendorIdsByVenue.set(assignment.venue_id, current);
+    });
+
+    return venues
+      .map((venue) => ({
+        ...venue,
+        vendorCount: vendorIdsByVenue.get(venue.id)?.size || 0,
+      }))
+      .filter((venue) => venue.vendorCount > 0);
+  }, [venues, vendorVenueAssignments]);
+
+  const selectedVenue = useMemo(
+    () => venuesWithVendors.find((venue) => venue.id === selectedVenueId) || null,
+    [venuesWithVendors, selectedVenueId]
+  );
+
+  const selectedVenueRecipients = useMemo(() => {
+    if (!selectedVenueId) return [];
+
+    const recipientsById = new Map<string, VenueRecipient>();
+
+    vendorVenueAssignments.forEach((assignment) => {
+      if (assignment.venue_id !== selectedVenueId || !assignment.vendor) return;
+      if (!recipientsById.has(assignment.vendor.id)) {
+        recipientsById.set(assignment.vendor.id, {
+          id: assignment.vendor.id,
+          email: assignment.vendor.email,
+          first_name: assignment.vendor.first_name,
+          last_name: assignment.vendor.last_name,
+        });
+      }
+    });
+
+    return Array.from(recipientsById.values()).sort((a, b) => {
+      const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim() || a.email;
+      const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.email;
+      return aName.localeCompare(bName);
+    });
+  }, [selectedVenueId, vendorVenueAssignments]);
+
+  const pendingVenueRecipients = useMemo(
+    () => selectedVenueRecipients.filter((recipient) => !assignedUserIds.has(recipient.id)),
+    [selectedVenueRecipients, assignedUserIds]
+  );
+
+  const getDisplayName = (person: {
+    first_name?: string | null;
+    last_name?: string | null;
+    email?: string | null;
+  }) => {
+    const fullName = `${person.first_name || ''} ${person.last_name || ''}`.trim();
+    return fullName || person.email || 'Unknown user';
+  };
+
+  const fetchFormAssignees = useCallback(async (formId: string, accessToken: string) => {
+    const res = await fetch(`/api/custom-forms/${formId}/assign`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    if (!res.ok) {
+      throw new Error('Failed to load current assignees.');
+    }
+
+    const data = await res.json();
+    setAssignees(data.assignees || []);
+  }, []);
+
+  const fetchVenueAssignments = useCallback(async (accessToken: string) => {
+    const res = await fetch('/api/vendor-venue-assignments', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      throw new Error(data?.error || 'Failed to load venue assignments.');
+    }
+
+    setVenues(data?.venues || []);
+    setVendorVenueAssignments(data?.assignments || []);
+  }, []);
 
   const fetchPickerUsers = useCallback(async (q: string) => {
     setPickerLoading(true);
@@ -285,22 +412,27 @@ export default function AdminPdfFormsPage() {
     setEmployeeSearch('');
     setEmployeeResults([]);
     setSelectedUsers([]);
+    setSendTab('users');
+    setSelectedVenueId('');
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
+    setVenues([]);
+    setVendorVenueAssignments([]);
     setAssigneesLoading(true);
+    setVenuesLoading(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      const res = await fetch(`/api/custom-forms/${form.id}/assign`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAssignees(data.assignees || []);
-      }
-    } catch { /* ignore */ } finally {
+      await Promise.all([
+        fetchFormAssignees(form.id, session.access_token),
+        fetchVenueAssignments(session.access_token),
+      ]);
+    } catch (err: any) {
+      setSendError(err.message || 'Failed to load send options.');
+    } finally {
       setAssigneesLoading(false);
+      setVenuesLoading(false);
     }
     // Load initial employee list
     searchEmployees('');
@@ -311,8 +443,13 @@ export default function AdminPdfFormsPage() {
     setEmployeeSearch('');
     setEmployeeResults([]);
     setSelectedUsers([]);
+    setSendTab('users');
+    setSelectedVenueId('');
     setSendError('');
     setSendSuccess('');
+    setAssignees([]);
+    setVenues([]);
+    setVendorVenueAssignments([]);
   };
 
   const toggleUserSelection = (emp: EmployeeResult) => {
@@ -324,7 +461,15 @@ export default function AdminPdfFormsPage() {
   };
 
   const handleSendToUsers = async () => {
-    if (!sendModalForm || selectedUsers.length === 0) return;
+    if (!sendModalForm) return;
+
+    const userIds =
+      sendTab === 'venue'
+        ? pendingVenueRecipients.map((recipient) => recipient.id)
+        : selectedUsers.map((user) => user.id);
+
+    if (userIds.length === 0) return;
+
     setSending(true);
     setSendError('');
     setSendSuccess('');
@@ -337,20 +482,21 @@ export default function AdminPdfFormsPage() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${session.access_token}`,
         },
-        body: JSON.stringify({ userIds: selectedUsers.map(u => u.id) }),
+        body: JSON.stringify({ userIds }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to assign');
-      setSendSuccess(`Form assigned to ${selectedUsers.length} user${selectedUsers.length !== 1 ? 's' : ''}.`);
-      setSelectedUsers([]);
-      // Refresh assignee list
-      const res2 = await fetch(`/api/custom-forms/${sendModalForm.id}/assign`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      });
-      if (res2.ok) {
-        const data2 = await res2.json();
-        setAssignees(data2.assignees || []);
+      if (sendTab === 'venue') {
+        const venueLabel = selectedVenue?.venue_name || 'selected venue';
+        setSendSuccess(
+          `Form assigned to ${userIds.length} vendor${userIds.length !== 1 ? 's' : ''} from ${venueLabel}.`
+        );
+      } else {
+        setSendSuccess(`Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''}.`);
+        setSelectedUsers([]);
       }
+
+      await fetchFormAssignees(sendModalForm.id, session.access_token);
     } catch (err: any) {
       setSendError(err.message);
     } finally {
@@ -521,7 +667,7 @@ export default function AdminPdfFormsPage() {
     setRequiresSignature(preset.requiresSignature);
     setAllowDateInput(preset.allowDateInput);
     setAllowPrintName(preset.allowPrintName);
-    setTargetState(preset.state);
+    setTargetState('');
     setError('');
     setSuccessMsg('');
   };
@@ -546,7 +692,8 @@ export default function AdminPdfFormsPage() {
           requiresSignature,
           allowDateInput,
           allowPrintName,
-          targetState,
+          targetState: targetState || null,
+          packetState: preset.state,
           formType: preset.formType,
         }),
       });
@@ -967,12 +1114,12 @@ export default function AdminPdfFormsPage() {
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Restrict to State
-                {!selectedStatePreset && !selectedPacketPreset && <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>}
+                {!selectedStatePreset && <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>}
               </label>
-              {(selectedStatePreset || selectedPacketPreset) ? (
+              {selectedStatePreset ? (
                 <div className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg bg-gray-50 text-sm text-gray-700">
                   <span className="font-semibold">{targetState}</span>
-                  <span className="text-gray-400">— locked by {selectedStatePreset ? 'state' : 'packet'} preset</span>
+                  <span className="text-gray-400">— locked by state preset</span>
                 </div>
               ) : (
                 <select
@@ -1189,6 +1336,33 @@ export default function AdminPdfFormsPage() {
           </div>
 
           <div className="flex-1 overflow-y-auto px-6 py-4 space-y-5">
+            <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-1">
+              <button
+                type="button"
+                onClick={() => setSendTab('users')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  sendTab === 'users'
+                    ? 'bg-white text-purple-700 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                By User
+              </button>
+              <button
+                type="button"
+                onClick={() => setSendTab('venue')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  sendTab === 'venue'
+                    ? 'bg-white text-purple-700 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                By Venue
+              </button>
+            </div>
+
+            {sendTab === 'users' ? (
+              <>
             {/* Employee search */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">Search Employees</label>
@@ -1206,7 +1380,7 @@ export default function AdminPdfFormsPage() {
                 <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-48 overflow-y-auto">
                   {employeeResults.map(emp => {
                     const isSelected = !!selectedUsers.find(u => u.id === emp.id);
-                    const isAlreadyAssigned = assignees.some(a => a.user_id === emp.id);
+                    const isAlreadyAssigned = assignedUserIds.has(emp.id);
                     return (
                       <button
                         key={emp.id}
@@ -1275,6 +1449,92 @@ export default function AdminPdfFormsPage() {
               </div>
             )}
 
+              </>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Assigned Venue</label>
+                  <select
+                    value={selectedVenueId}
+                    onChange={(e) => setSelectedVenueId(e.target.value)}
+                    disabled={venuesLoading || venuesWithVendors.length === 0}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:bg-gray-50"
+                  >
+                    <option value="">
+                      {venuesLoading
+                        ? 'Loading venues...'
+                        : venuesWithVendors.length === 0
+                        ? 'No venues with assigned vendors'
+                        : 'Select a venue'}
+                    </option>
+                    {venuesWithVendors.map((venue) => (
+                      <option key={venue.id} value={venue.id}>
+                        {venue.venue_name}
+                        {venue.city || venue.state ? ` (${[venue.city, venue.state].filter(Boolean).join(', ')})` : ''}
+                        {` - ${venue.vendorCount} vendor${venue.vendorCount !== 1 ? 's' : ''}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedVenue && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                    <p className="font-medium text-gray-900">{selectedVenue.venue_name}</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      {[selectedVenue.city, selectedVenue.state].filter(Boolean).join(', ') || 'Location unavailable'}
+                    </p>
+                    <p className="text-xs text-gray-600 mt-2">
+                      {selectedVenueRecipients.length} vendor{selectedVenueRecipients.length !== 1 ? 's' : ''} assigned to this venue.
+                      {pendingVenueRecipients.length !== selectedVenueRecipients.length && (
+                        <span className="ml-1">{pendingVenueRecipients.length} still need this form.</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+
+                {selectedVenueId && !venuesLoading && selectedVenueRecipients.length === 0 && (
+                  <p className="text-xs text-gray-400">No vendors are currently assigned to this venue.</p>
+                )}
+
+                {selectedVenueRecipients.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-2">
+                      Venue Vendors ({selectedVenueRecipients.length})
+                    </p>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-56 overflow-y-auto">
+                      {selectedVenueRecipients.map((recipient) => {
+                        const isAlreadyAssigned = assignedUserIds.has(recipient.id);
+                        return (
+                          <div
+                            key={recipient.id}
+                            className={`flex items-center justify-between gap-3 px-3 py-2 ${
+                              isAlreadyAssigned ? 'bg-gray-50' : 'bg-white'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">
+                                {getDisplayName(recipient)}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">{recipient.email}</p>
+                            </div>
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                                isAlreadyAssigned
+                                  ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                                  : 'border border-green-200 bg-green-50 text-green-700'
+                              }`}
+                            >
+                              {isAlreadyAssigned ? 'Already assigned' : 'Will be assigned'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {sendError && (
               <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-700">{sendError}</div>
             )}
@@ -1323,10 +1583,17 @@ export default function AdminPdfFormsPage() {
             </button>
             <button
               onClick={handleSendToUsers}
-              disabled={selectedUsers.length === 0 || sending}
+              disabled={
+                sending ||
+                (sendTab === 'venue' ? pendingVenueRecipients.length === 0 : selectedUsers.length === 0)
+              }
               className="flex-1 py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
             >
-              {sending ? 'Sending...' : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
+              {sending
+                ? 'Sending...'
+                : sendTab === 'venue'
+                ? `Assign to ${pendingVenueRecipients.length} Vendor${pendingVenueRecipients.length !== 1 ? 's' : ''}`
+                : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
             </button>
           </div>
         </div>

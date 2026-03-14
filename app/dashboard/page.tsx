@@ -2,11 +2,10 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import FullCalendar from "@fullcalendar/react";
-import dayGridPlugin from "@fullcalendar/daygrid";
 import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import { safeDecrypt } from "@/lib/encryption";
 import "./dashboard-styles.css";
@@ -102,6 +101,21 @@ type Department = {
 };
 
 const BULK_AVAILABILITY_DURATION_WEEKS = 6;
+const EventCalendar = dynamic(
+  () => import("@/components/event-calendar").then((mod) => mod.EventCalendar),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center py-16">
+        <div className="apple-spinner" />
+        <span className="ml-3 text-gray-600">Loading calendar...</span>
+      </div>
+    ),
+  }
+);
+
+const isScopedManagerRole = (role?: string | null) =>
+  role === "manager" || role === "supervisor" || role === "supervisor2" || role === "supervisor3";
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -159,9 +173,6 @@ export default function DashboardPage() {
   const [selectedTeamState, setSelectedTeamState] = useState<string>("all");
   const [selectedTeamCity, setSelectedTeamCity] = useState<string>("all");
   const [teamSearchQuery, setTeamSearchQuery] = useState("");
-
-  // Staff predictions for events
-  const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
 
   // Check-in confusion warning
   const [checkInWarning, setCheckInWarning] = useState<{ event: EventItem; similarEvents: EventItem[] } | null>(null);
@@ -273,6 +284,7 @@ export default function DashboardPage() {
       const ln = safeDecrypt(v.profiles.last_name || "");
       return `${fn} ${ln}`.trim().toLowerCase();
     };
+
     const query = teamSearchQuery.trim().toLowerCase();
     const list = availableVendors
       .filter((v) => {
@@ -344,41 +356,6 @@ export default function DashboardPage() {
     return "\uD83D\uDCCD";
   };
 
-  // Load staff prediction for an event
-  const loadPrediction = useCallback(async (eventId: string) => {
-    setPredictions(prev => {
-      if (prev[eventId]?.loading) return prev; // Already loading
-      return { ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: true } };
-    });
-    
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${eventId}/predict-staff`, {
-        method: "GET",
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-      });
-      
-      if (res.ok) {
-        const data = await res.json();
-        setPredictions(prev => ({
-          ...prev,
-          [eventId]: {
-            predictedStaff: data.predictedStaff || 0,
-            confidence: data.confidence || 0,
-            loading: false,
-          },
-        }));
-      } else {
-        setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
-      }
-    } catch (err) {
-      console.error("[DASHBOARD] Error loading prediction:", err);
-      setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
-    }
-  }, []);
-
   // Load employees function - needs to be outside useEffect to be called by handlers
   const loadEmployees = useCallback(async (stateFilter: string = "all", regionFilter: string = "all") => {
     setLoadingEmployees(true);
@@ -413,6 +390,26 @@ export default function DashboardPage() {
     }
     setLoadingEmployees(false);
   }, []);
+
+  const loadHRMockData = useCallback(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const mockLeaves: LeaveRequest[] = [
+      { id: "1", employee_id: "4", employee_name: "Emily Davis", leave_type: "vacation", start_date: "2025-11-01", end_date: "2025-11-10", status: "pending", reason: "Family vacation", days: 10 },
+      { id: "2", employee_id: "2", employee_name: "Sarah Johnson", leave_type: "sick", start_date: "2025-10-28", end_date: "2025-10-29", status: "approved", reason: "Medical appointment", days: 2 },
+      { id: "3", employee_id: "1", employee_name: "John Smith", leave_type: "personal", start_date: "2025-11-15", end_date: "2025-11-15", status: "pending", reason: "Personal matter", days: 1 },
+    ];
+    const mockDepts: Department[] = [
+      { name: "Engineering", employee_count: 2, color: "blue" },
+      { name: "Marketing", employee_count: 1, color: "purple" },
+      { name: "Sales", employee_count: 1, color: "green" },
+      { name: "HR", employee_count: 1, color: "orange" },
+    ];
+
+    setLeaveRequests(mockLeaves);
+    setDepartments(mockDepts);
+  }, []);
+
+  const initialRegion = detectedRegion?.id || userRegionId || "all";
 
   // Auth check - MUST run first
   useEffect(() => {
@@ -469,14 +466,23 @@ export default function DashboardPage() {
 
         console.log('[DASHBOARD] ð User data from users table:', JSON.stringify(userData, null, 2));
 
+        const role = userData.role as string;
+        const regionId = userData.region_id as string | null;
+        if (!isScopedManagerRole(role) && role !== "exec") {
+          console.error("[DASHBOARD] Access denied - user role:", role);
+          router.replace("/login");
+          return;
+        }
+
+        setUserRole(role);
+        setUserRegionId(regionId);
+        setIsAuthorized(true);
+        setAuthChecking(false);
+
         // Fetch profile data - try both possible foreign key columns
+        const debugProfiles = { data: [], error: null as { message?: string } | null };
         console.log('[DASHBOARD] ð Fetching profile for user:', session.user.id);
 
-        // Debug: Check what's in profiles table
-        const debugProfiles = await supabase
-          .from('profiles')
-          .select('id, user_id, latitude, longitude')
-          .limit(3);
 
         console.log('[DASHBOARD] ð DEBUG - Sample profiles:', {
           count: debugProfiles.data?.length,
@@ -490,7 +496,7 @@ export default function DashboardPage() {
         // Try 1: user_id column
         const result1 = await supabase
           .from('profiles')
-          .select('*')
+          .select('city, state, latitude, longitude')
           .eq('user_id', session.user.id)
           .maybeSingle();
 
@@ -508,7 +514,7 @@ export default function DashboardPage() {
           console.log('[DASHBOARD] ð Trying with id column...');
           const result2 = await supabase
             .from('profiles')
-            .select('*')
+            .select('city, state, latitude, longitude')
             .eq('id', session.user.id)
             .maybeSingle();
 
@@ -533,10 +539,6 @@ export default function DashboardPage() {
         if (profileError) {
           console.warn('[DASHBOARD] â ï¸ Profile fetch error (non-fatal):', profileError);
         }
-
-        // Only allow manager and exec users
-        const role = userData.role as string;
-        const regionId = userData.region_id as string | null;
 
         // Get coordinates from profiles table (they only exist there)
         let userLat = profileData?.latitude;
@@ -777,46 +779,10 @@ export default function DashboardPage() {
       setLoading(false);
     };
 
-    const loadHRMockData = async () => {
-      // Replace with real sources as you wire APIs
-      await new Promise((r) => setTimeout(r, 200));
-      const mockLeaves: LeaveRequest[] = [
-        { id: "1", employee_id: "4", employee_name: "Emily Davis", leave_type: "vacation", start_date: "2025-11-01", end_date: "2025-11-10", status: "pending", reason: "Family vacation", days: 10 },
-        { id: "2", employee_id: "2", employee_name: "Sarah Johnson", leave_type: "sick", start_date: "2025-10-28", end_date: "2025-10-29", status: "approved", reason: "Medical appointment", days: 2 },
-        { id: "3", employee_id: "1", employee_name: "John Smith", leave_type: "personal", start_date: "2025-11-15", end_date: "2025-11-15", status: "pending", reason: "Personal matter", days: 1 },
-      ];
-      const mockDepts: Department[] = [
-        { name: "Engineering", employee_count: 2, color: "blue" },
-        { name: "Marketing", employee_count: 1, color: "purple" },
-        { name: "Sales", employee_count: 1, color: "green" },
-        { name: "HR", employee_count: 1, color: "orange" },
-      ];
-      setLeaveRequests(mockLeaves);
-      setDepartments(mockDepts);
-    };
-
-    // For managers, use the detected region from geocoding (if available)
-    // Otherwise, fall back to database region_id or 'all' for executives
-    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion
-      ? detectedRegion.id
-      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && userRegionId ? userRegionId : 'all');
-
     console.log('[DASHBOARD] ð Initial load with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name, userRegionId });
 
     loadEvents();
-    loadEmployees('all', initialRegion);
-    loadHRMockData();
-    loadRegions();
-  }, [isAuthorized, loadEmployees, userRole, userRegionId, detectedRegion]);
-
-  // Load predictions when events are loaded
-  useEffect(() => {
-    if (events.length > 0) {
-      events.forEach(ev => {
-        loadPrediction(ev.id);
-      });
-    }
-  }, [events, loadPrediction]);
+  }, [isAuthorized]);
 
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
@@ -845,6 +811,20 @@ export default function DashboardPage() {
       return true;
     });
   }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate]);
+  const managerScopedRegionId = useMemo(() => {
+    if (!isScopedManagerRole(userRole)) return "all";
+    return detectedRegion?.id || userRegionId || "all";
+  }, [detectedRegion?.id, userRegionId, userRole]);
+  const calendarEvents = useMemo(
+    () =>
+      filteredEvents.map((ev) => {
+        const startIso = toIsoDateTime(ev.event_date, ev.start_time);
+        let endIso = toIsoDateTime(ev.event_date, ev.end_time);
+        if (!endIso && startIso) endIso = addHours(startIso, 1);
+        return { id: ev.id, title: ev.event_name, start: startIso, end: endIso, allDay: false };
+      }),
+    [filteredEvents]
+  );
 
   useEffect(() => {
     if (selectedVenue === "all") return;
@@ -878,7 +858,8 @@ export default function DashboardPage() {
   };
 
   // Region + vendors helpers
-  const loadRegions = async () => {
+  const loadRegions = useCallback(async () => {
+    if (regions.length > 0) return regions;
     console.log('[DASHBOARD] ð Loading regions...');
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -889,14 +870,46 @@ export default function DashboardPage() {
       if (res.ok) {
         const data = await res.json();
         console.log('[DASHBOARD] â Regions loaded:', data.regions?.length || 0, data.regions);
-        setRegions(data.regions || []);
+        const nextRegions = Array.isArray(data.regions) ? data.regions : [];
+        setRegions(nextRegions);
+        return nextRegions;
       } else {
         console.error('[DASHBOARD] â Failed to load regions, status:', res.status);
       }
     } catch (err) {
       console.error("[DASHBOARD] â Failed to load regions:", err);
     }
-  };
+    return [];
+  }, [regions.length]);
+
+  useEffect(() => {
+    if (!isAuthorized || activeTab !== "hr") return;
+
+    if (!employees.length && !loadingEmployees && !employeesError) {
+      void loadEmployees("all", managerScopedRegionId);
+    }
+
+    if (!leaveRequests.length && !departments.length) {
+      void loadHRMockData();
+    }
+
+    if (!regions.length) {
+      void loadRegions();
+    }
+  }, [
+    activeTab,
+    departments.length,
+    employees.length,
+    employeesError,
+    isAuthorized,
+    leaveRequests.length,
+    loadEmployees,
+    loadHRMockData,
+    loadRegions,
+    loadingEmployees,
+    managerScopedRegionId,
+    regions.length,
+  ]);
 
   const buildVendorUrl = (venue: string, regionId: string) => {
     const params = new URLSearchParams({ venue });
@@ -972,15 +985,12 @@ export default function DashboardPage() {
     setShowVendorModal(true);
     setSelectedVendors(new Set());
     setVendorSearchQuery("");
-    // For managers, use their detected region from geocoding; for execs, show all
-    const initialRegion = (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion
-      ? detectedRegion.id
-      : ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && userRegionId ? userRegionId : "all");
+    const initialRegion = managerScopedRegionId;
     console.log('[DASHBOARD] ð Opening vendor modal with region:', initialRegion, { userRole, detectedRegion: detectedRegion?.name });
     setSelectedRegion(initialRegion);
     setMessage("");
-    loadRegions();
-    loadAllVendors(initialRegion);
+    void loadRegions();
+    void loadAllVendors(initialRegion);
   };
   const closeVendorModal = () => {
     setShowVendorModal(false);
@@ -1083,11 +1093,6 @@ export default function DashboardPage() {
       }
 
       setEvents((prev) => prev.filter((e) => e.id !== event.id));
-      setPredictions((prev) => {
-        const next = { ...prev };
-        delete next[event.id];
-        return next;
-      });
       setDeleteConfirmEvent(null);
       setAlertModal({
         title: "Event Deleted",
@@ -1318,7 +1323,7 @@ export default function DashboardPage() {
   };
   const handleSelectAllTeam = () => {
     const visibleNewVendorIds = filteredTeamVendors
-      .filter((v) => !(v as any).isExistingMember)
+      .filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere)
       .map((v) => v.id);
 
     if (visibleNewVendorIds.length === 0) return;
@@ -1628,23 +1633,13 @@ export default function DashboardPage() {
                   </div>
                 </div>
               )}
-              {error && <div className="apple-alert apple-alert-error">{error}</div>}
-              {!loading && !error && (
-                <div className="apple-card apple-calendar-wrapper">
-                  <FullCalendar
-                    plugins={[dayGridPlugin]}
-                    initialView="dayGridMonth"
-                    height="auto"
-                    events={filteredEvents.map((ev) => {
-                      const startIso = toIsoDateTime(ev.event_date, ev.start_time);
-                      let endIso = toIsoDateTime(ev.event_date, ev.end_time);
-                      if (!endIso && startIso) endIso = addHours(startIso, 1);
-                      return { id: ev.id, title: ev.event_name, start: startIso, end: endIso, allDay: false };
-                    })}
-                  />
-                </div>
-              )}
-            </section>
+                {error && <div className="apple-alert apple-alert-error">{error}</div>}
+                {!loading && !error && (
+                  <div className="apple-card apple-calendar-wrapper">
+                    <EventCalendar events={calendarEvents} />
+                  </div>
+                )}
+              </section>
 
             {/* All Events */}
             <section>
@@ -2767,14 +2762,14 @@ export default function DashboardPage() {
                       <input
                         type="checkbox"
                         checked={(() => {
-                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember);
+                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere);
                           return newVendors.length > 0 && newVendors.every(v => selectedTeamMembers.has(v.id));
                         })()}
                         onChange={handleSelectAllTeam}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember).length} new)
+                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere).length} new)
                       </span>
                     </label>
                     <div className="flex items-center gap-2">
@@ -2807,8 +2802,8 @@ export default function DashboardPage() {
                       const phone = v.profiles.phone ? safeDecrypt(v.profiles.phone) : null;
 
                       return (
-                        <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && toggleTeamMember(v.id)}>
-                          {!(v as any).isExistingMember ? (
+                        <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && !(v as any).confirmedElsewhere && toggleTeamMember(v.id)}>
+                          {!(v as any).isExistingMember && !(v as any).confirmedElsewhere ? (
                             <input
                               type="checkbox"
                               checked={selectedTeamMembers.has(v.id)}
@@ -2843,6 +2838,11 @@ export default function DashboardPage() {
                                 {firstName} {lastName}
                               </div>
                               <div className="flex items-center gap-2 flex-wrap justify-end">
+                                {(v as any).confirmedElsewhere && (
+                                  <div className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md font-medium">
+                                    Busy
+                                  </div>
+                                )}
                                 {(v as any).isExistingMember && (
                                   <div className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-md font-medium">
                                     {(v as any).status === 'confirmed' ? 'Confirmed' :

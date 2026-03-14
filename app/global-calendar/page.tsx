@@ -2,12 +2,11 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
-import FullCalendar from "@fullcalendar/react";
-import dayGridPlugin from "@fullcalendar/daygrid";
 import "./dashboard-styles.css";
 
 
@@ -114,6 +113,18 @@ type BackgroundCheck = {
 };
 
 const BULK_AVAILABILITY_DURATION_WEEKS = 6;
+const EventCalendar = dynamic(
+  () => import("@/components/event-calendar").then((mod) => mod.EventCalendar),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex items-center justify-center py-16">
+        <div className="apple-spinner" />
+        <span className="ml-3 text-gray-600">Loading calendar...</span>
+      </div>
+    ),
+  }
+);
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -189,9 +200,6 @@ export default function DashboardPage() {
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});  // {eventId: {userId: adjustmentAmount}}
   const [savingAdjustments, setSavingAdjustments] = useState(false);
   const [sendingPayments, setSendingPayments] = useState(false);
-
-  // Staff predictions for events
-  const [predictions, setPredictions] = useState<Record<string, { predictedStaff: number; confidence: number; loading: boolean }>>({});
 
   // Check-in confusion warning
   const [checkInWarning, setCheckInWarning] = useState<{ event: EventItem; similarEvents: EventItem[] } | null>(null);
@@ -363,41 +371,6 @@ export default function DashboardPage() {
     if (/\beast\b|\bwest\b|\bnorth\b|\bsouth\b/.test(name)) return "\uD83E\uDDED";
     return "\uD83D\uDCCD";
   };
-
-  // Load staff prediction for an event
-  const loadPrediction = useCallback(async (eventId: string) => {
-    setPredictions(prev => {
-      if (prev[eventId]?.loading) return prev; // Already loading
-      return { ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: true } };
-    });
-    
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${eventId}/predict-staff`, {
-        method: "GET",
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-      });
-      
-      if (res.ok) {
-        const data = await res.json();
-        setPredictions(prev => ({
-          ...prev,
-          [eventId]: {
-            predictedStaff: data.predictedStaff || 0,
-            confidence: data.confidence || 0,
-            loading: false,
-          },
-        }));
-      } else {
-        setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
-      }
-    } catch (err) {
-      console.error("[GLOBAL-CALENDAR] Error loading prediction:", err);
-      setPredictions(prev => ({ ...prev, [eventId]: { predictedStaff: 0, confidence: 0, loading: false } }));
-    }
-  }, []);
 
   // Load employees function - needs to be outside useEffect to be called by handlers
   const loadEmployees = useCallback(async (stateFilter: string = "all", regionFilter: string = "all") => {
@@ -845,32 +818,8 @@ export default function DashboardPage() {
       setLoading(false);
     };
 
-    const loadHRMockData = async () => {
-      // Leave requests mock data
-      await new Promise((r) => setTimeout(r, 200));
-      const mockLeaves: LeaveRequest[] = [
-        { id: "1", employee_id: "4", employee_name: "Emily Davis", leave_type: "vacation", start_date: "2025-11-01", end_date: "2025-11-10", status: "pending", reason: "Family vacation", days: 10 },
-        { id: "2", employee_id: "2", employee_name: "Sarah Johnson", leave_type: "sick", start_date: "2025-10-28", end_date: "2025-10-29", status: "approved", reason: "Medical appointment", days: 2 },
-        { id: "3", employee_id: "1", employee_name: "John Smith", leave_type: "personal", start_date: "2025-11-15", end_date: "2025-11-15", status: "pending", reason: "Personal matter", days: 1 },
-      ];
-      setLeaveRequests(mockLeaves);
-    };
-
     loadEvents();
-    loadEmployees();
-    loadBackgroundChecks();
-    loadHRMockData();
-    loadRegions();
-  }, [isAuthorized, loadEmployees, loadBackgroundChecks]);
-
-  // Load predictions when events are loaded
-  useEffect(() => {
-    if (events.length > 0) {
-      events.forEach(ev => {
-        loadPrediction(ev.id);
-      });
-    }
-  }, [events, loadPrediction]);
+  }, [isAuthorized]);
 
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
@@ -899,6 +848,16 @@ export default function DashboardPage() {
       return true;
     });
   }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate]);
+  const calendarEvents = useMemo(
+    () =>
+      filteredEvents.map((ev) => {
+        const startIso = toIsoDateTime(ev.event_date, ev.start_time);
+        let endIso = toIsoDateTime(ev.event_date, ev.end_time);
+        if (!endIso && startIso) endIso = addHours(startIso, 1);
+        return { id: ev.id, title: ev.event_name, start: startIso, end: endIso, allDay: false };
+      }),
+    [filteredEvents]
+  );
 
   useEffect(() => {
     if (selectedVenue === "all") return;
@@ -948,7 +907,9 @@ export default function DashboardPage() {
   };
 
   // Region + vendors helpers
-  const loadRegions = async () => {
+  const loadRegions = useCallback(async () => {
+    if (regions.length > 0) return regions;
+
     console.log('[GLOBAL-CALENDAR] Loading regions...');
     try {
       const res = await fetch("/api/regions", { method: "GET" });
@@ -961,12 +922,15 @@ export default function DashboardPage() {
       }
 
       console.log('[GLOBAL-CALENDAR] Regions loaded:', data.regions?.length || 0, data.regions);
-      setRegions(Array.isArray(data.regions) ? data.regions : []);
+      const nextRegions = Array.isArray(data.regions) ? data.regions : [];
+      setRegions(nextRegions);
+      return nextRegions;
     } catch (err) {
       console.error("[GLOBAL-CALENDAR] Failed to load regions:", err);
       setRegions([]);
     }
-  };
+    return [];
+  }, [regions.length]);
 
   const buildVendorUrl = (venue: string, regionId: string) => {
     const params = new URLSearchParams({ venue });
@@ -1034,8 +998,8 @@ export default function DashboardPage() {
     setSelectedRegion("all");
     setVendorSearchQuery("");
     setMessage("");
-    loadRegions();
-    loadAllVendors("all");
+    void loadRegions();
+    void loadAllVendors("all");
   };
   const closeVendorModal = () => {
     setShowVendorModal(false);
@@ -1130,11 +1094,6 @@ export default function DashboardPage() {
       }
 
       setEvents((prev) => prev.filter((e) => e.id !== event.id));
-      setPredictions((prev) => {
-        const next = { ...prev };
-        delete next[event.id];
-        return next;
-      });
       setDeleteConfirmEvent(null);
       setAlertModal({
         title: "Event Deleted",
@@ -1349,7 +1308,7 @@ export default function DashboardPage() {
   };
   const handleSelectAllTeam = () => {
     const visibleNewVendorIds = filteredTeamVendors
-      .filter((v) => !(v as any).isExistingMember)
+      .filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere)
       .map((v) => v.id);
 
     if (visibleNewVendorIds.length === 0) return;
@@ -1747,17 +1706,7 @@ export default function DashboardPage() {
               {error && <div className="apple-alert apple-alert-error">{error}</div>}
               {!loading && !error && (
                 <div className="apple-card apple-calendar-wrapper">
-                  <FullCalendar
-                    plugins={[dayGridPlugin]}
-                    initialView="dayGridMonth"
-                    height="auto"
-                    events={filteredEvents.map((ev) => {
-                      const startIso = toIsoDateTime(ev.event_date, ev.start_time);
-                      let endIso = toIsoDateTime(ev.event_date, ev.end_time);
-                      if (!endIso && startIso) endIso = addHours(startIso, 1);
-                      return { id: ev.id, title: ev.event_name, start: startIso, end: endIso, allDay: false };
-                    })}
-                  />
+                  <EventCalendar events={calendarEvents} />
                 </div>
               )}
             </section>
@@ -2994,14 +2943,14 @@ export default function DashboardPage() {
                       <input
                         type="checkbox"
                         checked={(() => {
-                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember);
+                          const newVendors = filteredTeamVendors.filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere);
                           return newVendors.length > 0 && newVendors.every(v => selectedTeamMembers.has(v.id));
                         })()}
                         onChange={handleSelectAllTeam}
                         className="apple-checkbox"
                       />
                       <span className="font-medium text-gray-700 group-hover:text-gray-900 transition-colors">
-                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember).length} new)
+                        Select All ({filteredTeamVendors.filter((v) => !(v as any).isExistingMember && !(v as any).confirmedElsewhere).length} new)
                       </span>
                     </label>
                     <div className="flex items-center gap-2">
@@ -3029,8 +2978,8 @@ export default function DashboardPage() {
                       </div>
                     )}
                     {filteredTeamVendors.map((v) => (
-                      <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && toggleTeamMember(v.id)}>
-                        {!(v as any).isExistingMember ? (
+                      <div key={v.id} className="apple-vendor-card" onClick={() => !(v as any).isExistingMember && !(v as any).confirmedElsewhere && toggleTeamMember(v.id)}>
+                        {!(v as any).isExistingMember && !(v as any).confirmedElsewhere ? (
                           <input
                             type="checkbox"
                             checked={selectedTeamMembers.has(v.id)}
@@ -3065,6 +3014,11 @@ export default function DashboardPage() {
                               {v.profiles.first_name} {v.profiles.last_name}
                             </div>
                             <div className="flex items-center gap-2 flex-wrap justify-end">
+                              {(v as any).confirmedElsewhere && (
+                                <div className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-md font-medium">
+                                  Busy
+                                </div>
+                              )}
                               {(v as any).isExistingMember && (
                                 <div className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-md font-medium">
                                   {(v as any).status === 'confirmed' ? 'Confirmed' :

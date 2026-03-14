@@ -370,6 +370,31 @@ export async function GET(
     const uniqueAvailableVendorIds = Array.from(vendorMetaMap.keys());
     console.log('🔍 DEBUG - Available Vendor IDs with meta:', uniqueAvailableVendorIds);
 
+    // Find vendors already confirmed in other events on the same date
+    const confirmedElsewhereIds = new Set<string>();
+    if (uniqueAvailableVendorIds.length > 0) {
+      const { data: sameDateEvents } = await supabaseAdmin
+        .from('events')
+        .select('id')
+        .eq('event_date', eventDateKey)
+        .neq('id', eventId);
+
+      if (sameDateEvents && sameDateEvents.length > 0) {
+        const sameEventIds = sameDateEvents.map((e: any) => e.id);
+        const { data: confirmedMembers } = await supabaseAdmin
+          .from('event_teams')
+          .select('vendor_id')
+          .in('event_id', sameEventIds)
+          .eq('status', 'confirmed')
+          .in('vendor_id', uniqueAvailableVendorIds);
+
+        if (confirmedMembers) {
+          for (const m of confirmedMembers) {
+            confirmedElsewhereIds.add(m.vendor_id);
+          }
+        }
+      }
+    }
 
     if (uniqueAvailableVendorIds.length === 0) {
       console.log('❌ No available vendors found for this date');
@@ -534,6 +559,7 @@ export async function GET(
           partialAvailability: vendorMetaMap.get(vendor.id)?.isPartial ?? false,
           availableFrom: vendorMetaMap.get(vendor.id)?.startTime ?? null,
           availableTo:   vendorMetaMap.get(vendor.id)?.endTime   ?? null,
+          confirmedElsewhere: confirmedElsewhereIds.has(vendor.id),
         };
       })
       .sort((a: any, b: any) => {

@@ -10,6 +10,7 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const STATE_ROUTE_MAP: Record<string, string> = {
   CA: 'ca',
   AZ: 'az',
+  NV: 'nv',
   NY: 'ny',
   WI: 'wi',
 };
@@ -42,15 +43,26 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { title, requiresSignature, allowDateInput, allowPrintName, targetState, formType } = body;
+    const {
+      title,
+      requiresSignature,
+      allowDateInput,
+      allowPrintName,
+      targetState,
+      packetState,
+      formType,
+    } = body;
 
-    if (!title?.trim() || !targetState) {
-      return NextResponse.json({ error: 'Missing title or state' }, { status: 400 });
+    const sourceState = String(packetState || targetState || '').trim().toUpperCase();
+    const visibilityState = String(targetState || '').trim().toUpperCase() || null;
+
+    if (!title?.trim() || !sourceState) {
+      return NextResponse.json({ error: 'Missing title or source state' }, { status: 400 });
     }
 
-    const routeSegment = STATE_ROUTE_MAP[targetState];
+    const routeSegment = STATE_ROUTE_MAP[sourceState];
     if (!routeSegment) {
-      return NextResponse.json({ error: `Unsupported state: ${targetState}` }, { status: 400 });
+      return NextResponse.json({ error: `Unsupported state: ${sourceState}` }, { status: 400 });
     }
 
     // Virtual storage path — no actual file in Supabase storage.
@@ -68,7 +80,7 @@ export async function POST(request: NextRequest) {
 
     if (existing) {
       return NextResponse.json(
-        { error: `A state form for ${targetState} is already registered as "${existing.title}". Remove it first to re-register.` },
+        { error: `A state form for ${sourceState} is already registered as "${existing.title}". Remove it first to re-register.` },
         { status: 409 },
       );
     }
@@ -81,7 +93,7 @@ export async function POST(request: NextRequest) {
         requires_signature: requiresSignature ?? true,
         allow_date_input: allowDateInput ?? false,
         allow_print_name: allowPrintName ?? false,
-        target_state: targetState,
+        target_state: visibilityState,
         target_region: null,
         created_by: user.id,
         is_active: true,
