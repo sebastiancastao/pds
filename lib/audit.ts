@@ -15,6 +15,8 @@ interface AuditLogEvent {
   errorMessage?: string;
 }
 
+
+
 /**
  * Log audit event to database
  * 
