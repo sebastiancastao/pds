@@ -126,8 +126,34 @@ const EventCalendar = dynamic(
   }
 );
 
+const padDatePart = (value: number) => String(value).padStart(2, "0");
+
+const formatDateKey = (date: Date) =>
+  `${date.getFullYear()}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+
+const getCurrentMonthStart = () => {
+  const now = new Date();
+  return `${now.getFullYear()}-${padDatePart(now.getMonth() + 1)}-01`;
+};
+
+const getPreviousDay = (dateStr: string) => {
+  const date = new Date(`${dateStr}T00:00:00`);
+  date.setDate(date.getDate() - 1);
+  return formatDateKey(date);
+};
+
+const mergeEventsById = (existing: EventItem[], incoming: EventItem[]) => {
+  const seen = new Set<string>();
+  return [...existing, ...incoming].filter((event) => {
+    if (seen.has(event.id)) return false;
+    seen.add(event.id);
+    return true;
+  });
+};
+
 export default function DashboardPage() {
   const router = useRouter();
+  const currentMonthStart = useMemo(() => getCurrentMonthStart(), []);
   const [activeTab, setActiveTab] = useState<"events" | "payments">("events");
   const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
 
@@ -140,6 +166,9 @@ export default function DashboardPage() {
   const [events, setEvents] = useState<EventItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>("");
+  const [pastEventsError, setPastEventsError] = useState<string>("");
+  const [hasLoadedPastEvents, setHasLoadedPastEvents] = useState(false);
+  const [loadingPastEvents, setLoadingPastEvents] = useState(false);
   const [deletingEventId, setDeletingEventId] = useState<string | null>(null);
   const [deleteConfirmEvent, setDeleteConfirmEvent] = useState<EventItem | null>(null);
   const [alertModal, setAlertModal] = useState<{
@@ -800,11 +829,16 @@ export default function DashboardPage() {
 
     const loadEvents = async () => {
       setError("");
+      setPastEventsError("");
       setLoading(true);
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        // Global calendar uses /api/all-events to see ALL events across the organization
-        const res = await fetch("/api/all-events?include_empty=true", {
+        const params = new URLSearchParams({
+          include_empty: "true",
+          start_date: currentMonthStart,
+        });
+        // Global calendar loads current/future events first and backfills history on demand.
+        const res = await fetch(`/api/all-events?${params.toString()}`, {
           method: "GET",
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
@@ -812,7 +846,8 @@ export default function DashboardPage() {
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || "Failed to load events");
-        setEvents(data.events || []);
+        setEvents(Array.isArray(data.events) ? data.events : []);
+        setHasLoadedPastEvents(false);
       } catch (e: any) {
         setError(e.message || "Failed to load events");
       }
@@ -820,7 +855,61 @@ export default function DashboardPage() {
     };
 
     loadEvents();
-  }, [isAuthorized]);
+  }, [currentMonthStart, isAuthorized]);
+
+  const loadPastEvents = useCallback(async () => {
+    if (!isAuthorized || hasLoadedPastEvents || loadingPastEvents) return;
+
+    setPastEventsError("");
+    setLoadingPastEvents(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const params = new URLSearchParams({
+        include_empty: "true",
+        end_date: getPreviousDay(currentMonthStart),
+      });
+      const res = await fetch(`/api/all-events?${params.toString()}`, {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load past events");
+      const olderEvents = Array.isArray(data.events) ? data.events : [];
+      setEvents((prev) => mergeEventsById(prev, olderEvents));
+      setHasLoadedPastEvents(true);
+    } catch (e: any) {
+      setPastEventsError(e.message || "Failed to load past events");
+    } finally {
+      setLoadingPastEvents(false);
+    }
+  }, [currentMonthStart, hasLoadedPastEvents, isAuthorized, loadingPastEvents]);
+
+  const handleCalendarRangeChange = useCallback((range: { start: string; end: string }) => {
+    if (range.start < currentMonthStart) {
+      void loadPastEvents();
+    }
+  }, [currentMonthStart, loadPastEvents]);
+
+  useEffect(() => {
+    if (!isAuthorized || hasLoadedPastEvents) return;
+
+    const needsPastEvents =
+      (eventStartDate && eventStartDate < currentMonthStart) ||
+      (eventEndDate && eventEndDate < currentMonthStart);
+
+    if (needsPastEvents) {
+      void loadPastEvents();
+    }
+  }, [
+    currentMonthStart,
+    eventEndDate,
+    eventStartDate,
+    hasLoadedPastEvents,
+    isAuthorized,
+    loadPastEvents,
+  ]);
 
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
@@ -1710,7 +1799,17 @@ export default function DashboardPage() {
               {error && <div className="apple-alert apple-alert-error">{error}</div>}
               {!loading && !error && (
                 <div className="apple-card apple-calendar-wrapper">
-                  <EventCalendar events={calendarEvents} onEventClick={(id) => { setSelectedCalendarEventId(id); setSelectedVenue("all"); setEventSearchQuery(""); setEventStartDate(""); setEventEndDate(""); }} />
+                  <EventCalendar
+                    events={calendarEvents}
+                    onVisibleRangeChange={handleCalendarRangeChange}
+                    onEventClick={(id) => {
+                      setSelectedCalendarEventId(id);
+                      setSelectedVenue("all");
+                      setEventSearchQuery("");
+                      setEventStartDate("");
+                      setEventEndDate("");
+                    }}
+                  />
                 </div>
               )}
             </section>
@@ -1784,23 +1883,39 @@ export default function DashboardPage() {
                       {" "}
                       {hasEventDateFilter
                         ? "Time period filter is active."
-                        : "Select a start or end date to enable the time period filter."}
+                        : `Loading ${currentMonthStart} onward first; older months load when needed.`}
                     </p>
-                    {hasActiveEventFilters && (
-                      <button
-                        onClick={() => {
-                          setSelectedVenue("all");
-                          setEventSearchQuery("");
-                          setEventStartDate("");
-                          setEventEndDate("");
-                          setSelectedCalendarEventId(null);
-                        }}
-                        className="text-xs text-blue-600 hover:text-blue-700 font-medium"
-                      >
-                        Clear filters
-                      </button>
-                    )}
+                    <div className="flex items-center gap-3">
+                      {!hasLoadedPastEvents && (
+                        <button
+                          onClick={() => void loadPastEvents()}
+                          disabled={loadingPastEvents}
+                          className="text-xs text-blue-600 hover:text-blue-700 font-medium disabled:text-gray-400 disabled:cursor-not-allowed"
+                        >
+                          {loadingPastEvents ? "Loading past months..." : "Load past months"}
+                        </button>
+                      )}
+                      {hasActiveEventFilters && (
+                        <button
+                          onClick={() => {
+                            setSelectedVenue("all");
+                            setEventSearchQuery("");
+                            setEventStartDate("");
+                            setEventEndDate("");
+                            setSelectedCalendarEventId(null);
+                          }}
+                          className="text-xs text-blue-600 hover:text-blue-700 font-medium"
+                        >
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
                   </div>
+                  {pastEventsError && (
+                    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                      {pastEventsError}
+                    </div>
+                  )}
                 </div>
               )}
               {loading && (

@@ -59,7 +59,18 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const isActiveParam = searchParams.get('is_active');
     const includeEmptyParam = searchParams.get('include_empty');
+    const startDateParam = searchParams.get('start_date');
+    const endDateParam = searchParams.get('end_date');
     const includeEmpty = includeEmptyParam === 'true';
+    const dateParamPattern = /^\d{4}-\d{2}-\d{2}$/;
+
+    if (startDateParam && !dateParamPattern.test(startDateParam)) {
+      return NextResponse.json({ error: 'Invalid start_date. Expected YYYY-MM-DD.' }, { status: 400 });
+    }
+
+    if (endDateParam && !dateParamPattern.test(endDateParam)) {
+      return NextResponse.json({ error: 'Invalid end_date. Expected YYYY-MM-DD.' }, { status: 400 });
+    }
 
     // Return ALL events (no user filter) for global calendar
     let query = supabaseAdmin
@@ -70,6 +81,14 @@ export async function GET(req: NextRequest) {
 
     if (isActiveParam !== null) {
       query = query.eq('is_active', isActiveParam === 'true');
+    }
+
+    if (startDateParam) {
+      query = query.gte('event_date', startDateParam);
+    }
+
+    if (endDateParam) {
+      query = query.lte('event_date', endDateParam);
     }
 
     const { data, error } = await query;
