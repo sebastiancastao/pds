@@ -187,7 +187,11 @@ export async function POST(
       overtime_pay: vp.overtimePay || 0,
       doubletime_pay: vp.doubletimePay || 0,
       commissions: vp.commissions || 0,
+      commission_override: vp.commissionOverride ?? null,
+      commission_deleted: vp.commissionDeleted === true,
       tips: vp.tips || 0,
+      tips_override: vp.tipsOverride ?? null,
+      tips_deleted: vp.tipsDeleted === true,
       total_pay: vp.totalPay || 0,
       updated_at: new Date().toISOString(),
     }));

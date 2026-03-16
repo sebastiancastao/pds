@@ -339,6 +339,8 @@ export default function EventDashboardPage() {
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [timesheetLoaded, setTimesheetLoaded] = useState(false);
   const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
+  const [tipsOverridesLoaded, setTipsOverridesLoaded] = useState(false);
+  const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
   const [newLocationName, setNewLocationName] = useState("");
@@ -388,6 +390,13 @@ export default function EventDashboardPage() {
   // HR/Payroll reimbursements (user_id -> reimbursement amount)
   const [reimbursements, setReimbursements] = useState<Record<string, number>>({});
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  // Tips overrides per user: null = deleted (excluded from pool), number = manual override
+  const [tipsOverrides, setTipsOverrides] = useState<Record<string, number | null>>({});
+  const [commissionsOverrides, setCommissionsOverrides] = useState<Record<string, number | null>>({});
+  const [editingCommissionsMemberId, setEditingCommissionsMemberId] = useState<string | null>(null);
+  const [editingCommissionsValue, setEditingCommissionsValue] = useState<string>("");
+  const [editingTipsMemberId, setEditingTipsMemberId] = useState<string | null>(null);
+  const [editingTipsValue, setEditingTipsValue] = useState<string>("");
   const [editingTimesheetUserId, setEditingTimesheetUserId] = useState<string | null>(null);
   const [timesheetDrafts, setTimesheetDrafts] = useState<Record<string, TimesheetEditDraft>>({});
   const [savingTimesheetUserId, setSavingTimesheetUserId] = useState<string | null>(null);
@@ -819,7 +828,9 @@ export default function EventDashboardPage() {
       const needsTeam = !teamLoaded;
       const needsTimesheet = !timesheetLoaded;
       const needsAdjustments = !adjustmentsLoaded;
-      if (!needsTeam && !needsTimesheet && !needsAdjustments) return;
+      const needsTipsOverrides = !tipsOverridesLoaded;
+      const needsCommissionsOverrides = !commissionsOverridesLoaded;
+      if (!needsTeam && !needsTimesheet && !needsAdjustments && !needsTipsOverrides && !needsCommissionsOverrides) return;
       (async () => {
         setLoadingPaymentTab(true);
         try {
@@ -827,6 +838,8 @@ export default function EventDashboardPage() {
           if (needsTeam) promises.push(loadTeam(true)); // Skip photos for HR tab
           if (needsTimesheet) promises.push(loadTimesheetTotals());
           if (needsAdjustments) promises.push(loadAdjustmentsFromPayments());
+          if (needsTipsOverrides) promises.push(loadTipsOverrides());
+          if (needsCommissionsOverrides) promises.push(loadCommissionOverrides());
           await Promise.all(promises);
         } finally {
           setLoadingPaymentTab(false);
@@ -2378,6 +2391,69 @@ export default function EventDashboardPage() {
     }
   };
 
+  const loadTipsOverrides = async () => {
+    try {
+      if (!eventId) return;
+      const token = await getSessionToken();
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+        method: 'GET',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const eventData = json.paymentsByEvent?.[eventId];
+      const vendorRows: any[] = eventData?.vendorPayments || [];
+      if (vendorRows.length === 0) return;
+      const overrides: Record<string, number | null> = {};
+      for (const row of vendorRows) {
+        const uid = (row.user_id || '').toString();
+        if (!uid) continue;
+        if (row.tips_deleted === true) {
+          overrides[uid] = null;
+        } else if (row.tips_override != null) {
+          overrides[uid] = Number(row.tips_override);
+        }
+      }
+      setTipsOverrides(overrides);
+      setTipsOverridesLoaded(true);
+    } catch (e) {
+      // ignore
+    }
+  };
+
+  const loadCommissionOverrides = async () => {
+    try {
+      if (!eventId) return;
+      const token = await getSessionToken();
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+        method: 'GET',
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const eventData = json.paymentsByEvent?.[eventId];
+      const vendorRows: any[] = eventData?.vendorPayments || [];
+      const overrides: Record<string, number | null> = {};
+      for (const row of vendorRows) {
+        const uid = (row.user_id || '').toString();
+        if (!uid) continue;
+        if (row.commission_deleted === true) {
+          overrides[uid] = null;
+        } else if (row.commission_override != null) {
+          overrides[uid] = Number(row.commission_override);
+        }
+      }
+      setCommissionsOverrides(overrides);
+      setCommissionsOverridesLoaded(true);
+    } catch (e) {
+      // ignore
+    }
+  };
+
   const saveAdjustmentForUser = async (uid: string) => {
     try {
       if (!eventId || !uid) return;
@@ -2990,11 +3066,12 @@ export default function EventDashboardPage() {
       const totalCommissionPool = netSales * poolPercent;
       const totalTips = Number(tips) || 0;
 
-      // Only include non-trailers in the hours pool for commissions/tips prorating
+      // Only include non-trailers and non-deleted-tips users in the hours pool for tips prorating
       const totalEligibleHours = teamMembers.reduce((sum: number, member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
         if (memberDivision === 'trailers') return sum;
+        if (tipsOverrides[uid] === null) return sum; // tips deleted for this user
         const ms = getDisplayedWorkedMs(uid);
         return sum + (ms / (1000 * 60 * 60));
       }, 0);
@@ -3023,12 +3100,23 @@ export default function EventDashboardPage() {
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
-        const commissionAmount =
+        const rawTotalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
+        const rawCommissionAmount =
           !isTrailersDivision && actualHours > 0 && vendorCount > 0
-            ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
+            ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
             : 0;
-        const proratedTips = !isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0;
+        const commissionOverride = commissionsOverrides[uid];
+        const commissionAmount = commissionOverride === null
+          ? 0
+          : commissionOverride !== undefined
+          ? commissionOverride
+          : rawCommissionAmount;
+        const tipsOverride = tipsOverrides[uid];
+        const proratedTips = tipsOverride === null
+          ? 0 // tips deleted for this user
+          : tipsOverride !== undefined
+          ? tipsOverride // manual override
+          : (!isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0);
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
 
@@ -3042,7 +3130,11 @@ export default function EventDashboardPage() {
           overtimePay,
           doubletimePay,
           commissions: commissionAmount,
+          commissionOverride: commissionOverride !== undefined && commissionOverride !== null ? commissionOverride : undefined,
+          commissionDeleted: commissionOverride === null,
           tips: proratedTips,
+          tipsOverride: tipsOverride !== undefined && tipsOverride !== null ? tipsOverride : undefined,
+          tipsDeleted: tipsOverride === null,
           restBreak,
           totalPay,
         };
@@ -3073,6 +3165,8 @@ export default function EventDashboardPage() {
 
       console.log('✅ Payment data saved:', result);
       setMessage('Payment data saved successfully!');
+      setTipsOverridesLoaded(false); // force re-fetch on next HR tab visit
+      setCommissionsOverridesLoaded(false);
 
       // Auto-clear message after 5 seconds
       setTimeout(() => setMessage(""), 5000);
@@ -5498,11 +5592,12 @@ export default function EventDashboardPage() {
                           const totalMs = getDisplayedWorkedMs(uid);
                           const actualHours = totalMs / (1000 * 60 * 60);
                           const hoursHHMM = formatHoursFromMs(totalMs);
-                          // Hours pool for prorating excludes 'trailers' division
+                          // Hours pool for prorating excludes 'trailers' division and users with deleted tips
                           const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
                             const mDivision = m.users?.division;
                             if (mDivision === 'trailers') return sum;
                             const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
+                            if (tipsOverrides[mUid] === null) return sum; // tips deleted
                             return sum + (getDisplayedWorkedMs(mUid) / (1000 * 60 * 60));
                           }, 0);
 
@@ -5531,21 +5626,33 @@ export default function EventDashboardPage() {
                             vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
 
                           const isTrailersDivision = member.users?.division === 'trailers';
-                          const totalFinalCommission = isTrailersDivision
+                          const rawTotalFinalCommission = isTrailersDivision
                             ? extAmtOnRegRate
                             : Math.max(extAmtOnRegRate, perVendorCommissionShare);
-                          const commissionAmount =
+                          const rawCommissionAmount =
                             !isTrailersDivision && actualHours > 0 && vendorCount > 0
-                              ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
+                              ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
                               : 0;
+                          const commissionOverrideVal = commissionsOverrides[uid];
+                          const commissionAmount = commissionOverrideVal === null
+                            ? 0
+                            : commissionOverrideVal !== undefined
+                            ? commissionOverrideVal
+                            : rawCommissionAmount;
+                          const totalFinalCommission = extAmtOnRegRate + commissionAmount;
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
                           const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
 
-                          // Tips prorated by hours (same method)
+                          // Tips prorated by hours (same method), respecting per-user overrides
                           const totalTips = Number(tips) || 0;
-                          const proratedTips = !isTrailersDivision && totalEligibleHours > 0
-                            ? (totalTips * actualHours) / totalEligibleHours
-                            : 0;
+                          const tipsOverride = tipsOverrides[uid];
+                          const proratedTips = tipsOverride === null
+                            ? 0 // tips deleted for this user
+                            : tipsOverride !== undefined
+                            ? tipsOverride // manual override
+                            : (!isTrailersDivision && totalEligibleHours > 0
+                              ? (totalTips * actualHours) / totalEligibleHours
+                              : 0);
 
                           // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
                           const totalBasePay = totalFinalCommission;
@@ -5608,12 +5715,92 @@ export default function EventDashboardPage() {
 
                               {/* Commission Amt */}
                               <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-green-600">
-                                  ${formatPayrollMoney(commissionAmount)}
-                                </div>
-                                <div className="hidden xl:block text-[10px] text-gray-500">
-                                  Pool {(poolPercent * 100).toFixed(2)}%
-                                </div>
+                                {commissionOverrideVal === null ? (
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-red-500 line-through">$0.00</span>
+                                    <span className="text-[10px] text-red-400">Excluded</span>
+                                    {canEditTimesheets && (
+                                      <button
+                                        onClick={() => setCommissionsOverrides(prev => {
+                                          const next = { ...prev };
+                                          delete next[uid];
+                                          return next;
+                                        })}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : editingCommissionsMemberId === uid ? (
+                                  <div className="flex flex-col gap-1">
+                                    <input
+                                      type="number"
+                                      value={editingCommissionsValue}
+                                      onChange={(e) => setEditingCommissionsValue(e.target.value)}
+                                      className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                      placeholder="0.00"
+                                      step="0.01"
+                                      min="0"
+                                      autoFocus
+                                    />
+                                    <div className="flex gap-1">
+                                      <button
+                                        onClick={() => {
+                                          const val = parseFloat(editingCommissionsValue);
+                                          if (!isNaN(val)) {
+                                            setCommissionsOverrides(prev => ({ ...prev, [uid]: val }));
+                                          }
+                                          setEditingCommissionsMemberId(null);
+                                          setEditingCommissionsValue("");
+                                        }}
+                                        className="text-[10px] text-green-600 hover:text-green-800 font-medium"
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setEditingCommissionsMemberId(null);
+                                          setEditingCommissionsValue("");
+                                        }}
+                                        className="text-[10px] text-gray-500 hover:text-gray-700"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col gap-1">
+                                    <div className={`text-sm font-medium ${commissionOverrideVal !== undefined ? 'text-orange-600' : 'text-green-600'}`}>
+                                      ${formatPayrollMoney(commissionAmount)}
+                                      {commissionOverrideVal !== undefined && (
+                                        <span className="text-[9px] ml-1 text-orange-400">edited</span>
+                                      )}
+                                    </div>
+                                    <div className="hidden xl:block text-[10px] text-gray-500">
+                                      Pool {(poolPercent * 100).toFixed(2)}%
+                                    </div>
+                                    {canEditTimesheets && (
+                                      <div className="flex gap-1">
+                                        <button
+                                          onClick={() => {
+                                            setEditingCommissionsMemberId(uid);
+                                            setEditingCommissionsValue(String(commissionAmount.toFixed(2)));
+                                          }}
+                                          className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          onClick={() => setCommissionsOverrides(prev => ({ ...prev, [uid]: null }))}
+                                          className="text-[10px] text-red-500 hover:text-red-700 underline"
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </td>
 
                               {/* Total Final Commission */}
@@ -5625,9 +5812,92 @@ export default function EventDashboardPage() {
 
                               {/* Tips */}
                               <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-green-600">
-                                  ${formatPayrollMoney(proratedTips)}
-                                </div>
+                                {tipsOverrides[uid] === null ? (
+                                  // Deleted state
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-red-500 line-through">$0.00</span>
+                                    <span className="text-[10px] text-red-400">Excluded</span>
+                                    {canEditTimesheets && (
+                                      <button
+                                        onClick={() => setTipsOverrides(prev => {
+                                          const next = { ...prev };
+                                          delete next[uid];
+                                          return next;
+                                        })}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : editingTipsMemberId === uid ? (
+                                  // Editing state
+                                  <div className="flex flex-col gap-1">
+                                    <input
+                                      type="number"
+                                      value={editingTipsValue}
+                                      onChange={(e) => setEditingTipsValue(e.target.value)}
+                                      className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
+                                      placeholder="0.00"
+                                      step="0.01"
+                                      min="0"
+                                      autoFocus
+                                    />
+                                    <div className="flex gap-1">
+                                      <button
+                                        onClick={() => {
+                                          const val = parseFloat(editingTipsValue);
+                                          if (!isNaN(val)) {
+                                            setTipsOverrides(prev => ({ ...prev, [uid]: val }));
+                                          }
+                                          setEditingTipsMemberId(null);
+                                          setEditingTipsValue("");
+                                        }}
+                                        className="text-[10px] text-green-600 hover:text-green-800 font-medium"
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setEditingTipsMemberId(null);
+                                          setEditingTipsValue("");
+                                        }}
+                                        className="text-[10px] text-gray-500 hover:text-gray-700"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  // Display state
+                                  <div className="flex flex-col gap-1">
+                                    <div className={`text-sm font-medium ${tipsOverrides[uid] !== undefined ? 'text-orange-600' : 'text-green-600'}`}>
+                                      ${formatPayrollMoney(proratedTips)}
+                                      {tipsOverrides[uid] !== undefined && (
+                                        <span className="text-[9px] ml-1 text-orange-400">edited</span>
+                                      )}
+                                    </div>
+                                    {canEditTimesheets && (
+                                      <div className="flex gap-1">
+                                        <button
+                                          onClick={() => {
+                                            setEditingTipsMemberId(uid);
+                                            setEditingTipsValue(String(proratedTips.toFixed(2)));
+                                          }}
+                                          className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                        >
+                                          Edit
+                                        </button>
+                                        <button
+                                          onClick={() => setTipsOverrides(prev => ({ ...prev, [uid]: null }))}
+                                          className="text-[10px] text-red-500 hover:text-red-700 underline"
+                                        >
+                                          Delete
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </td>
 
                               {!hideRestBreakColumn && (
@@ -5750,8 +6020,25 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
+              {/* Save Payment Button */}
+              {canEditTimesheets && (
+                <div className="flex items-center justify-end gap-3 mt-4 px-2">
+                  {message && (
+                    <span className={`text-sm font-medium ${message.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
+                      {message}
+                    </span>
+                  )}
+                  <button
+                    onClick={() => void handleSavePaymentData()}
+                    className="px-6 py-2 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 active:bg-blue-800 transition-colors shadow"
+                  >
+                    Save Payment Data
+                  </button>
+                </div>
+              )}
+
               {/* Performance Metrics */}
-              
+
             </div>
           )}
           {/* END tabs */}

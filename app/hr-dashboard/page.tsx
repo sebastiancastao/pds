@@ -763,8 +763,11 @@ function HRDashboardContent() {
 
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
-        // Pro-rate tips by hours worked instead of equal split
-        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => sum + getEffectiveHours(p), 0);
+        // Pro-rate tips by hours worked; exclude vendors with tips deleted
+        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => {
+          if (p.tips_deleted === true) return sum;
+          return sum + getEffectiveHours(p);
+        }, 0);
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
           commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventHours, memberCount, vendorCountForCommission,
@@ -804,9 +807,14 @@ function HRDashboardContent() {
             let loadedRate = 0;
 
             if (isAZorNY) {
-              commissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
+              const rawCommissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
                 ? commissionPerVendorAzNy
                 : 0;
+              commissionAmt = payment.commission_deleted === true
+                ? 0
+                : payment.commission_override != null
+                ? Number(payment.commission_override)
+                : rawCommissionAmt;
               const totalFinalCommissionBase = actualHours > 0
                 ? Math.max(150, extAmtRegular + commissionAmt)
                 : 0;
@@ -820,14 +828,19 @@ function HRDashboardContent() {
                 : 0;
               loadedRate = loadedRateBase;
             } else {
-              const totalFinalCommission = isTrailers
+              const rawTotalFinalCommission = isTrailers
                 ? extAmtOnRegRateNonAzNy
                 : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
-              commissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
-                ? Math.max(0, totalFinalCommission - extAmtOnRegRateNonAzNy)
+              const rawCommissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+                ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRateNonAzNy)
                 : 0;
+              commissionAmt = payment.commission_deleted === true
+                ? 0
+                : payment.commission_override != null
+                ? Number(payment.commission_override)
+                : rawCommissionAmt;
               extAmtOnRegRate = extAmtOnRegRateNonAzNy;
-              totalFinalCommissionAmt = actualHours > 0 ? totalFinalCommission : 0;
+              totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
             }
 
             const totalFinalCommissionForLoadedRate =
@@ -838,8 +851,12 @@ function HRDashboardContent() {
               ? Math.max(28.5, totalFinalCommissionForLoadedRate / actualHours)
               : 0;
 
-            // Tips: pro-rated by hours worked (fall back to stored per-vendor tips if summary missing)
-            const tips = (totalEventHours > 0 && totalTips > 0)
+            // Tips: respect per-vendor overrides/deletions, then pro-rate, then fall back to stored value
+            const tips = payment.tips_deleted === true
+              ? 0
+              : payment.tips_override != null
+              ? Number(payment.tips_override)
+              : (totalEventHours > 0 && totalTips > 0)
               ? totalTips * (actualHours / totalEventHours)
               : Number(payment.tips || 0);
 
