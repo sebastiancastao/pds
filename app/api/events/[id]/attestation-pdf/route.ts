@@ -68,6 +68,15 @@ function formatDuration(ms: number): string {
   return `${h}h ${String(m).padStart(2, "0")}m`;
 }
 
+function formatDurationExact(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "--";
+  const totalSec = Math.floor(ms / 1_000);
+  const h = Math.floor(totalSec / 3600);
+  const m = Math.floor((totalSec % 3600) / 60);
+  const s = totalSec % 60;
+  return `${h}h ${String(m).padStart(2, "0")}m ${String(s).padStart(2, "0")}s`;
+}
+
 function parseSignatureDataUrl(value: string): { format: "png" | "jpeg"; bytes: Buffer } | null {
   const match = value.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
   if (!match) return null;
@@ -169,6 +178,7 @@ export async function GET(
     let mealMs = 0;
     let openClockInMs: number | null = null;
     let openMealStartMs: number | null = null;
+    const meals: Array<{ start: string; end: string | null }> = [];
     const clockOutEntries: Array<{
       formId: string;
       timestampMs: number;
@@ -201,12 +211,15 @@ export async function GET(
         }
         if (openMealStartMs !== null) {
           mealMs += Math.max(0, tsMs - openMealStartMs);
+          if (meals.length > 0) meals[meals.length - 1].end = entry.timestamp;
           openMealStartMs = null;
         }
       } else if (entry.action === "meal_start" && openMealStartMs === null) {
         openMealStartMs = tsMs;
+        meals.push({ start: entry.timestamp, end: null });
       } else if (entry.action === "meal_end" && openMealStartMs !== null) {
         mealMs += Math.max(0, tsMs - openMealStartMs);
+        if (meals.length > 0) meals[meals.length - 1].end = entry.timestamp;
         openMealStartMs = null;
       }
     }
@@ -318,12 +331,17 @@ export async function GET(
     drawText("Vendor Shift Details", { font: boldFont, size: 13 });
     y -= 4;
     drawText(`Name: ${vendorName}`, { font: boldFont });
-    drawText(`Check In: ${firstClockInAt ? formatTime(firstClockInAt) : "--"}`);
-    drawText(`Check Out: ${lastClockOutAt ? formatTime(lastClockOutAt) : "--"}`);
+    drawText(`Clock In: ${firstClockInAt ? formatTime(firstClockInAt) : "--"}  |  Clock Out: ${lastClockOutAt ? formatTime(lastClockOutAt) : "--"}`);
+    if (meals.length >= 1) {
+      drawText(`Meal 1 Start: ${formatTime(meals[0].start)}  |  Meal 1 End: ${meals[0].end ? formatTime(meals[0].end) : "--"}`);
+    }
+    if (meals.length >= 2) {
+      drawText(`Meal 2 Start: ${formatTime(meals[1].start)}  |  Meal 2 End: ${meals[1].end ? formatTime(meals[1].end) : "--"}`);
+    }
     drawText(`Worked Time ${formatDuration(workedMs)}`);
-    drawText(`Meal Time Deduction: ${mealMs > 0 ? formatDuration(mealMs) : "0h 00m"}`);
+    drawText(`Meal Time Deduction: ${mealMs > 0 ? formatDurationExact(mealMs) : "0h 00m 00s"}`);
     drawText(`Admin Response / Entry Processing: ${formatDuration(entryProcessingMs)}`);
-    drawText(`Total Hours: ${formatDuration(totalHoursMs)}`, { font: boldFont });
+    drawText(`Total Hours: ${formatDurationExact(totalHoursMs)}`, { font: boldFont });
     y -= 10;
     drawLine();
 

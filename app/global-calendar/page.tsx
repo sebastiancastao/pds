@@ -151,6 +151,7 @@ export default function DashboardPage() {
   const [eventSearchQuery, setEventSearchQuery] = useState<string>("");
   const [eventStartDate, setEventStartDate] = useState<string>("");
   const [eventEndDate, setEventEndDate] = useState<string>("");
+  const [selectedCalendarEventId, setSelectedCalendarEventId] = useState<string | null>(null);
 
   // Vendors / Regions (Calendar Availability Request)
   const [showVendorModal, setShowVendorModal] = useState(false);
@@ -824,8 +825,11 @@ export default function DashboardPage() {
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
   const hasEventDateFilter = Boolean(eventStartDate || eventEndDate);
-  const hasActiveEventFilters = selectedVenue !== "all" || hasEventSearch || hasEventDateFilter;
+  const hasActiveEventFilters = selectedVenue !== "all" || hasEventSearch || hasEventDateFilter || selectedCalendarEventId !== null;
   const filteredEvents = useMemo(() => {
+    if (selectedCalendarEventId !== null) {
+      return events.filter((e) => e.id === selectedCalendarEventId);
+    }
     const query = eventSearchQuery.trim().toLowerCase();
     return events.filter((e) => {
       if (selectedVenue !== "all" && e.venue !== selectedVenue) return false;
@@ -847,7 +851,7 @@ export default function DashboardPage() {
       }
       return true;
     });
-  }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate]);
+  }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate, selectedCalendarEventId]);
   const calendarEvents = useMemo(
     () =>
       filteredEvents.map((ev) => {
@@ -1706,7 +1710,7 @@ export default function DashboardPage() {
               {error && <div className="apple-alert apple-alert-error">{error}</div>}
               {!loading && !error && (
                 <div className="apple-card apple-calendar-wrapper">
-                  <EventCalendar events={calendarEvents} />
+                  <EventCalendar events={calendarEvents} onEventClick={(id) => { setSelectedCalendarEventId(id); setSelectedVenue("all"); setEventSearchQuery(""); setEventStartDate(""); setEventEndDate(""); }} />
                 </div>
               )}
             </section>
@@ -1789,6 +1793,7 @@ export default function DashboardPage() {
                           setEventSearchQuery("");
                           setEventStartDate("");
                           setEventEndDate("");
+                          setSelectedCalendarEventId(null);
                         }}
                         className="text-xs text-blue-600 hover:text-blue-700 font-medium"
                       >

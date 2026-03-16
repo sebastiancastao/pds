@@ -447,7 +447,7 @@ export default function EventDashboardPage() {
       return !span?.firstIn || !span?.lastOut;
     });
   }, [timesheetLoaded, sortedTeamMembers, timesheetSpans]);
-  const salesReadOnly = salesLocked || submitting;
+  const salesReadOnly = (salesLocked && userRole !== "exec") || submitting;
 
   // Derived: filtered team members based on search and role filter
   const filteredTeamListMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
@@ -2517,7 +2517,7 @@ export default function EventDashboardPage() {
   };
 
   const handleSaveSales = async () => {
-    if (salesLocked) {
+    if (salesLocked && userRole !== "exec") {
       setMessage("Sales are locked while vendors are not fully clocked or marked in red.");
       return;
     }
@@ -3591,7 +3591,7 @@ export default function EventDashboardPage() {
                   Sales Information
                 </h2>
 
-                {salesLocked && (
+                {salesLocked && userRole !== "exec" && (
                   <div className="mb-6 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                     Sales is read-only until all vendors are clocked and none are marked red in Timesheet.
                   </div>
@@ -4568,9 +4568,9 @@ export default function EventDashboardPage() {
                                         onClick={() => {
                                           void handleUninviteTeamMember(member);
                                         }}
-                                        disabled={uninvitingMemberId === member.id || hasSubmittedAttestation}
+                                        disabled={uninvitingMemberId === member.id || (hasSubmittedAttestation && userRole !== "exec")}
                                         title={
-                                          hasSubmittedAttestation
+                                          hasSubmittedAttestation && userRole !== "exec"
                                             ? "Cannot uninvite: attestation already submitted"
                                             : "Uninvite this team member"
                                         }

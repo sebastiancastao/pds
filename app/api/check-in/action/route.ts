@@ -73,6 +73,8 @@ export async function POST(req: NextRequest) {
     const signature = body.signature; // base64 signature for clock_out
     const attestationAccepted =
       typeof body.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
+    const rejectionReason = typeof body.rejectionReason === "string" ? body.rejectionReason.trim() : undefined;
+    const rejectionNotes  = typeof body.rejectionNotes  === "string" ? body.rejectionNotes.trim()  : undefined;
     const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
 
     const isValidUuid = (id: unknown) =>
@@ -232,6 +234,22 @@ export async function POST(req: NextRequest) {
       await supabaseAdmin
         .from("checkin_logs")
         .insert({ code_id: codeRecord.id, user_id: workerId });
+    }
+
+    // Save rejection reason + signature to attestation_rejections on rejected clock_out
+    if (action === "clock_out" && attestationAccepted === false && rejectionReason) {
+      try {
+        await supabaseAdmin.from("attestation_rejections").insert({
+          time_entry_id: data.id,
+          user_id: workerId,
+          ...(isValidUuid(eventId) ? { event_id: eventId } : {}),
+          rejection_reason: rejectionReason,
+          ...(rejectionNotes  ? { rejection_notes:  rejectionNotes  } : {}),
+          ...(signature       ? { signature_data:   signature       } : {}),
+        });
+      } catch (rejErr) {
+        console.error("Failed to save attestation rejection:", rejErr);
+      }
     }
 
     // Save attestation signature to form_signatures on clock_out

@@ -13,15 +13,18 @@ export type EventCalendarItem = {
 
 type EventCalendarProps = {
   events: EventCalendarItem[];
+  onEventClick?: (id: string) => void;
 };
 
-export function EventCalendar({ events }: EventCalendarProps) {
+export function EventCalendar({ events, onEventClick }: EventCalendarProps) {
   return (
     <FullCalendar
       plugins={[dayGridPlugin]}
       initialView="dayGridMonth"
       height="auto"
       events={events}
+      eventClick={onEventClick ? (info) => onEventClick(info.event.id) : undefined}
+      eventCursor={onEventClick ? "pointer" : undefined}
     />
   );
 }

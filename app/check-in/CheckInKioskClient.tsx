@@ -161,6 +161,12 @@ export default function CheckInKioskPage() {
   } | null>(null);
   const [attestationSummaryLoading, setAttestationSummaryLoading] = useState(false);
   const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
+  const [showRejectionForm, setShowRejectionForm] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState("");
+  const [rejectionNotes, setRejectionNotes] = useState("");
+  const [rejectionSignature, setRejectionSignature] = useState("");
+  const [isRejectionDrawing, setIsRejectionDrawing] = useState(false);
+  const rejectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [mealNowMs, setMealNowMs] = useState<number>(() => Date.now());
 
   // Online / offline
@@ -542,6 +548,64 @@ export default function CheckInKioskPage() {
     setSignature("");
   };
 
+  // ─── Rejection canvas (signature) ──────────────────────────────
+  useEffect(() => {
+    if (showRejectionForm && rejectionCanvasRef.current) {
+      const canvas = rejectionCanvasRef.current;
+      const ctx = canvas.getContext("2d");
+      if (ctx) { ctx.fillStyle = "white"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+    }
+  }, [showRejectionForm]);
+
+  const getRejectionCanvasCoordinates = (e: MouseEvent<HTMLCanvasElement> | TouchEvent<HTMLCanvasElement>) => {
+    const canvas = rejectionCanvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+    const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
+    return { x: (clientX - rect.left) * (canvas.width / rect.width), y: (clientY - rect.top) * (canvas.height / rect.height) };
+  };
+
+  const startRejectionDrawing = (e: MouseEvent<HTMLCanvasElement> | TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    setIsRejectionDrawing(true);
+    const ctx = rejectionCanvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = getRejectionCanvasCoordinates(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+  };
+
+  const drawRejection = (e: MouseEvent<HTMLCanvasElement> | TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    if (!isRejectionDrawing) return;
+    const ctx = rejectionCanvasRef.current?.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = getRejectionCanvasCoordinates(e);
+    ctx.lineTo(x, y);
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.stroke();
+  };
+
+  const stopRejectionDrawing = () => {
+    if (!isRejectionDrawing) return;
+    setIsRejectionDrawing(false);
+    if (rejectionCanvasRef.current) setRejectionSignature(rejectionCanvasRef.current.toDataURL());
+  };
+
+  const clearRejectionSignature = () => {
+    const canvas = rejectionCanvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!ctx || !canvas) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "white";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    setRejectionSignature("");
+  };
+
   // ─── Helpers ───────────────────────────────────────────────────
   const toPacificHHMM = (input: string | number | Date | null | undefined): string => {
     if (!input) return "--";
@@ -711,12 +775,14 @@ export default function CheckInKioskPage() {
   const performAction = async (
     action: ActionType,
     sig?: string,
-    options?: { attestationAccepted?: boolean }
+    options?: { attestationAccepted?: boolean; rejectionReason?: string; rejectionNotes?: string }
   ) => {
     if (!worker) return;
     setIsActioning(true);
     setError("");
     const attestationAccepted = options?.attestationAccepted;
+    const rejectionReason = options?.rejectionReason;
+    const rejectionNotes = options?.rejectionNotes;
     const actionLabel =
       action === "clock_out" && attestationAccepted === false
         ? "Clocked Out (attestation rejected)"
@@ -771,6 +837,8 @@ export default function CheckInKioskPage() {
           action,
           signature: sig,
           attestationAccepted,
+          rejectionReason,
+          rejectionNotes,
           eventId: activeEvent?.id || (eventIdFromUrl || undefined),
         }),
       });
@@ -850,17 +918,40 @@ export default function CheckInKioskPage() {
     setSignature("");
   };
   const handleRejectAttestation = () => {
-    performAction("clock_out", undefined, { attestationAccepted: false });
+    setShowRejectionForm(true);
+  };
+  const handleConfirmRejection = () => {
+    if (!rejectionReason) {
+      setError("Please select a reason for rejection");
+      return;
+    }
+    if (!rejectionSignature) {
+      setError("Please sign before confirming");
+      return;
+    }
+    performAction("clock_out", rejectionSignature, {
+      attestationAccepted: false,
+      rejectionReason,
+      rejectionNotes: rejectionReason === "Other" ? rejectionNotes : undefined,
+    });
+    setShowRejectionForm(false);
     setShowAttestation(false);
     setAttestationSummary(null);
     setAttestationSummaryLoading(false);
     setSignature("");
+    setRejectionReason("");
+    setRejectionNotes("");
+    setRejectionSignature("");
   };
   const handleCancelAttestation = () => {
     setShowAttestation(false);
+    setShowRejectionForm(false);
     setAttestationSummary(null);
     setAttestationSummaryLoading(false);
     setSignature("");
+    setRejectionReason("");
+    setRejectionNotes("");
+    setRejectionSignature("");
     clearSignature();
   };
 
@@ -875,6 +966,109 @@ export default function CheckInKioskPage() {
   if (!isAuthed) return null;
 
   const codeComplete = isValidCheckinCode(digits.join(""));
+
+  // ─── Rejection reason screen ───────────────────────────────────
+  if (showAttestation && showRejectionForm && worker) {
+    const REJECTION_REASONS = [
+      "Hours recorded are not accurate",
+      "Meal periods were not provided or were interrupted",
+      "I was required to work off-the-clock",
+      "Other",
+    ];
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
+        <div className="w-full max-w-md">
+          <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </div>
+              <h2 className="text-2xl font-bold text-gray-900">Reason for Rejection</h2>
+              <p className="text-gray-600 mt-2">Please select the reason you are rejecting the attestation.</p>
+            </div>
+
+            {error && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 flex items-start gap-2 mb-4">
+                <svg className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                </svg>
+                <p className="text-sm text-red-800">{error}</p>
+              </div>
+            )}
+
+            <div className="space-y-2 mb-4">
+              {REJECTION_REASONS.map((reason) => (
+                <button
+                  key={reason}
+                  onClick={() => { setRejectionReason(reason); setError(""); }}
+                  className={`w-full text-left px-4 py-3 rounded-xl border text-sm font-medium transition-all ${
+                    rejectionReason === reason
+                      ? "border-red-400 bg-red-50 text-red-800"
+                      : "border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100"
+                  }`}
+                >
+                  {reason}
+                </button>
+              ))}
+            </div>
+
+            {rejectionReason === "Other" && (
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-1">Additional notes</label>
+                <textarea
+                  value={rejectionNotes}
+                  onChange={(e) => setRejectionNotes(e.target.value)}
+                  placeholder="Please describe your reason..."
+                  rows={3}
+                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none"
+                />
+              </div>
+            )}
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">Your Signature</label>
+              <div className="border-2 border-gray-300 rounded-xl overflow-hidden bg-white">
+                <canvas
+                  ref={rejectionCanvasRef}
+                  width={400}
+                  height={150}
+                  className="w-full h-32 touch-none cursor-crosshair"
+                  onMouseDown={startRejectionDrawing}
+                  onMouseMove={drawRejection}
+                  onMouseUp={stopRejectionDrawing}
+                  onMouseLeave={stopRejectionDrawing}
+                  onTouchStart={startRejectionDrawing}
+                  onTouchMove={drawRejection}
+                  onTouchEnd={stopRejectionDrawing}
+                />
+              </div>
+              <button onClick={clearRejectionSignature} className="text-sm text-ios-blue hover:text-blue-700 mt-2">
+                Clear Signature
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <button
+                onClick={handleConfirmRejection}
+                disabled={isActioning}
+                className="w-full py-3 px-4 bg-red-500 hover:bg-red-600 text-white rounded-xl font-medium transition-all shadow-lg disabled:opacity-50"
+              >
+                {isActioning ? "Processing..." : "Confirm Rejection & Clock Out"}
+              </button>
+              <button
+                onClick={() => { setShowRejectionForm(false); setError(""); }}
+                className="w-full py-3 px-4 border border-gray-300 text-gray-700 rounded-xl font-medium hover:bg-gray-50 transition-all"
+              >
+                Back
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ─── Attestation screen ────────────────────────────────────────
   if (showAttestation && worker) {

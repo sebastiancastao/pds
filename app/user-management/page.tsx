@@ -481,146 +481,85 @@ export default function UserManagementPage() {
   return (
     <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
       {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h1 style={{ fontSize: '2rem', fontWeight: 'bold' }}>User Management</h1>
-        <div style={{ display: 'flex', gap: '1rem' }}>
-          <button
-            onClick={exportToExcel}
-            disabled={loading || filteredUsers.length === 0}
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#10b981',
+      <div style={{ marginBottom: '1.5rem' }}>
+        {/* Title row */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.875rem' }}>
+          <h1 style={{ fontSize: '2rem', fontWeight: 'bold', margin: 0 }}>User Management</h1>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            <button
+              onClick={exportToExcel}
+              disabled={loading || filteredUsers.length === 0}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: '#10b981',
+                color: 'white',
+                border: 'none',
+                borderRadius: '0.375rem',
+                cursor: loading || filteredUsers.length === 0 ? 'not-allowed' : 'pointer',
+                fontWeight: '500',
+                opacity: loading || filteredUsers.length === 0 ? 0.5 : 1
+              }}
+            >
+              Export to Excel
+            </button>
+            <button
+              onClick={downloadVendorRosterWithVenues}
+              disabled={downloadingRoster}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: '#0369a1',
+                color: 'white',
+                border: 'none',
+                borderRadius: '0.375rem',
+                cursor: downloadingRoster ? 'not-allowed' : 'pointer',
+                fontWeight: '500',
+                opacity: downloadingRoster ? 0.5 : 1
+              }}
+            >
+              {downloadingRoster ? 'Downloading...' : 'Vendor Roster + Venues'}
+            </button>
+            <button
+              onClick={handleLogout}
+              style={{
+                padding: '0.5rem 1rem',
+                backgroundColor: '#ef4444',
+                color: 'white',
+                border: 'none',
+                borderRadius: '0.375rem',
+                cursor: 'pointer',
+                fontWeight: '500'
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+
+        {/* Navigation links row */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+          {[
+            { href: '/reset-user-password',    label: 'Reset Password',    bg: '#f59e0b' },
+            { href: '/role-management',         label: 'Role Management',   bg: '#8b5cf6' },
+            { href: '/admin/upload-emails',     label: 'Upload Emails',     bg: '#0891b2' },
+            { href: '/admin-email',             label: 'Email Sender',      bg: '#6366f1' },
+            { href: '/admin/check-in-monitor',  label: 'Check-In Monitor',  bg: '#0ea5e9' },
+            { href: '/employee-id-codes',       label: 'Employee ID Codes', bg: '#14b8a6' },
+            { href: '/timesheet-edits',         label: 'Timesheet Edits',   bg: '#334155' },
+            { href: '/global-calendar',         label: 'Calendar',          bg: '#3b82f6' },
+          ].map(({ href, label, bg }) => (
+            <Link key={href} href={href} style={{
+              padding: '0.375rem 0.75rem',
+              backgroundColor: bg,
               color: 'white',
-              border: 'none',
               borderRadius: '0.375rem',
-              cursor: loading || filteredUsers.length === 0 ? 'not-allowed' : 'pointer',
+              textDecoration: 'none',
               fontWeight: '500',
-              opacity: loading || filteredUsers.length === 0 ? 0.5 : 1
-            }}
-          >
-            Export to Excel
-          </button>
-          <button
-            onClick={downloadVendorRosterWithVenues}
-            disabled={downloadingRoster}
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#0369a1',
-              color: 'white',
-              border: 'none',
-              borderRadius: '0.375rem',
-              cursor: downloadingRoster ? 'not-allowed' : 'pointer',
-              fontWeight: '500',
-              opacity: downloadingRoster ? 0.5 : 1
-            }}
-          >
-            {downloadingRoster ? 'Downloading...' : 'Vendor Roster + Venues'}
-          </button>
-          <Link
-            href="/reset-user-password"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#f59e0b',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Reset User Password
-          </Link>
-          <Link
-            href="/role-management"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#8b5cf6',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Role Management
-          </Link>
-          <Link
-            href="/admin-email"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#6366f1',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Email Sender
-          </Link>
-          <Link
-            href="/admin/check-in-monitor"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#0ea5e9',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Check-In Monitor
-          </Link>
-          <Link
-            href="/employee-id-codes"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#14b8a6',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Employee ID Codes
-          </Link>
-          <Link
-            href="/timesheet-edits"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#334155',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Timesheet Edits
-          </Link>
-          <Link
-            href="/global-calendar"
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#3b82f6',
-              color: 'white',
-              borderRadius: '0.375rem',
-              textDecoration: 'none',
-              fontWeight: '500'
-            }}
-          >
-            Back to Calendar
-          </Link>
-          <button
-            onClick={handleLogout}
-            style={{
-              padding: '0.5rem 1rem',
-              backgroundColor: '#ef4444',
-              color: 'white',
-              border: 'none',
-              borderRadius: '0.375rem',
-              cursor: 'pointer',
-              fontWeight: '500'
-            }}
-          >
-            Logout
-          </button>
+              fontSize: '0.875rem',
+              whiteSpace: 'nowrap',
+            }}>
+              {label}
+            </Link>
+          ))}
         </div>
       </div>
 

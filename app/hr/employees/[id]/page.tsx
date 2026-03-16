@@ -257,6 +257,7 @@ export default function EmployeeProfilePage() {
   const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
+  const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
 
   useEffect(() => {
     const load = async () => {
@@ -319,6 +320,19 @@ export default function EmployeeProfilePage() {
       console.log("🔴 [DEBUG] No employeeId provided");
     }
   }, [employeeId]);
+
+  // Fetch uploaded email images for this employee
+  useEffect(() => {
+    if (!employee?.id) return;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const headers: Record<string, string> = session?.access_token
+        ? { Authorization: `Bearer ${session.access_token}` }
+        : {};
+      fetch(`/api/admin/upload-emails?images=${employee.id}`, { headers })
+        .then((r) => r.ok ? r.json() : { images: [] })
+        .then((d) => setUploadedEmails(d.images ?? []));
+    });
+  }, [employee?.id]);
 
   // Fetch I-9 documents after employee is loaded
   useEffect(() => {
@@ -1641,6 +1655,29 @@ export default function EmployeeProfilePage() {
                   )}
               </div>
             </section>
+
+          {/* Uploaded Emails */}
+          {uploadedEmails.length > 0 && (
+            <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="text-base font-semibold text-gray-900">Uploaded Emails</h2>
+              </div>
+              <div className="p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                {uploadedEmails.map((img) => (
+                  <a key={img.name} href={img.url} target="_blank" rel="noopener noreferrer"
+                    className="group block rounded-xl overflow-hidden border border-gray-100 hover:shadow-md transition-shadow">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={img.url} alt={img.name} className="w-full h-32 object-cover" />
+                    <div className="px-2 py-1.5 bg-gray-50">
+                      <p className="text-xs text-gray-500">
+                        {new Date(img.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </p>
+                    </div>
+                  </a>
+                ))}
+              </div>
+            </section>
+          )}
 
           </>
         )}

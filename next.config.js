@@ -3,6 +3,10 @@ const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
 
+  // Prevent Next.js from bundling tesseract.js — it relies on dynamic worker
+  // paths that break when the package is bundled by webpack.
+  serverExternalPackages: ['tesseract.js'],
+
   // Webpack optimization for PDF libraries
   webpack: (config, { isServer }) => {
     if (!isServer) {
@@ -24,11 +28,6 @@ const nextConfig = {
           pdf: {
             test: /[\\/]node_modules[\\/](pdf-lib|pdfjs-dist)[\\/]/,
             name: 'pdf-libraries',
-            priority: 10,
-          },
-          tesseract: {
-            test: /[\\/]node_modules[\\/](tesseract\.js)[\\/]/,
-            name: 'tesseract',
             priority: 10,
           },
         },

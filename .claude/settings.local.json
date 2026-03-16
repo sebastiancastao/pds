@@ -56,7 +56,8 @@
       "Bash(git status:*)",
       "Bash(wc -l app/global-calendar/page.tsx app/dashboard/page.tsx app/hr-dashboard/page.tsx app/event-dashboard/[id]/page.tsx)",
       "Bash(wc -l app/event-dashboard/[id]/page.tsx)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(find 'c:/Users/sebas/OneDrive/Escritorio/PDS - copia - copia' -type f \\\\\\(-name *.tsx -o -name *.ts \\\\\\))"
     ],
     "deny": [],
     "ask": []

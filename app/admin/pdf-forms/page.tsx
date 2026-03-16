@@ -220,6 +220,13 @@ export default function AdminPdfFormsPage() {
   const [selectedPacketPreset, setSelectedPacketPreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Page-level venue filter (for main page venue selector)
+  const [pageVenueId, setPageVenueId] = useState('');
+  const [pageVenues, setPageVenues] = useState<VenueOption[]>([]);
+  const [pageVenuesLoading, setPageVenuesLoading] = useState(false);
+  const [pageVenueUsers, setPageVenueUsers] = useState<VenueRecipient[]>([]);
+  const [pageVenueUsersLoading, setPageVenueUsersLoading] = useState(false);
+
   // Send-to-users modal state
   const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -242,6 +249,51 @@ export default function AdminPdfFormsPage() {
   useEffect(() => {
     checkAuthAndLoad();
   }, []);
+
+  // Fetch vendors for the selected page-level venue
+  useEffect(() => {
+    if (!pageVenueId) {
+      setPageVenueUsers([]);
+      return;
+    }
+    let cancelled = false;
+    const load = async () => {
+      setPageVenueUsersLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || cancelled) return;
+        const res = await fetch('/api/vendor-venue-assignments', {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        const data = await res.json().catch(() => null);
+        if (cancelled) return;
+        const seen = new Set<string>();
+        const users: VenueRecipient[] = [];
+        for (const a of (data?.assignments || [])) {
+          if (a.venue_id !== pageVenueId || !a.vendor || seen.has(a.vendor.id)) continue;
+          seen.add(a.vendor.id);
+          users.push({
+            id: a.vendor.id,
+            email: a.vendor.email,
+            first_name: a.vendor.first_name,
+            last_name: a.vendor.last_name,
+          });
+        }
+        users.sort((a, b) => {
+          const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim() || a.email;
+          const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.email;
+          return aName.localeCompare(bName);
+        });
+        setPageVenueUsers(users);
+      } catch {
+        if (!cancelled) setPageVenueUsers([]);
+      } finally {
+        if (!cancelled) setPageVenueUsersLoading(false);
+      }
+    };
+    load();
+    return () => { cancelled = true; };
+  }, [pageVenueId]);
 
   // Debounced employee search
   const searchEmployees = useCallback(async (q: string) => {
@@ -284,12 +336,10 @@ export default function AdminPdfFormsPage() {
       vendorIdsByVenue.set(assignment.venue_id, current);
     });
 
-    return venues
-      .map((venue) => ({
-        ...venue,
-        vendorCount: vendorIdsByVenue.get(venue.id)?.size || 0,
-      }))
-      .filter((venue) => venue.vendorCount > 0);
+    return venues.map((venue) => ({
+      ...venue,
+      vendorCount: vendorIdsByVenue.get(venue.id)?.size || 0,
+    }));
   }, [venues, vendorVenueAssignments]);
 
   const selectedVenue = useMemo(
@@ -354,12 +404,12 @@ export default function AdminPdfFormsPage() {
     });
 
     const data = await res.json().catch(() => null);
+    // Always set whatever data came back (venues may be present even on partial errors)
+    setVenues(data?.venues || []);
+    setVendorVenueAssignments(data?.assignments || []);
     if (!res.ok) {
       throw new Error(data?.error || 'Failed to load venue assignments.');
     }
-
-    setVenues(data?.venues || []);
-    setVendorVenueAssignments(data?.assignments || []);
   }, []);
 
   const fetchPickerUsers = useCallback(async (q: string) => {
@@ -412,8 +462,9 @@ export default function AdminPdfFormsPage() {
     setEmployeeSearch('');
     setEmployeeResults([]);
     setSelectedUsers([]);
-    setSendTab('users');
-    setSelectedVenueId('');
+    // Pre-select venue tab if a venue is selected on the main page
+    setSendTab(pageVenueId ? 'venue' : 'users');
+    setSelectedVenueId(pageVenueId);
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
@@ -489,7 +540,7 @@ export default function AdminPdfFormsPage() {
       if (sendTab === 'venue') {
         const venueLabel = selectedVenue?.venue_name || 'selected venue';
         setSendSuccess(
-          `Form assigned to ${userIds.length} vendor${userIds.length !== 1 ? 's' : ''} from ${venueLabel}.`
+          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} at ${venueLabel}.`
         );
       } else {
         setSendSuccess(`Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''}.`);
@@ -502,6 +553,24 @@ export default function AdminPdfFormsPage() {
     } finally {
       setSending(false);
     }
+  };
+
+  // Returns { userIds, note } — venue users take priority over manually picked users
+  const resolveAssignmentTargets = () => {
+    if (pageVenueId && pageVenueUsers.length > 0) {
+      const venueName = pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue';
+      return {
+        userIds: pageVenueUsers.map(u => u.id),
+        note: ` (assigned to ${pageVenueUsers.length} user${pageVenueUsers.length !== 1 ? 's' : ''} at ${venueName})`,
+      };
+    }
+    if (targetUsers.length > 0) {
+      return {
+        userIds: targetUsers.map(u => u.id),
+        note: ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})`,
+      };
+    }
+    return { userIds: [], note: '' };
   };
 
   const handleRemoveAssignee = async (userId: string) => {
@@ -521,6 +590,19 @@ export default function AdminPdfFormsPage() {
     } catch { /* ignore */ }
   };
 
+  const loadPageVenues = useCallback(async () => {
+    setPageVenuesLoading(true);
+    try {
+      const res = await fetch('/api/venues');
+      const data = await res.json().catch(() => null);
+      setPageVenues(data?.venues || []);
+    } catch {
+      // non-critical — venue filter is optional
+    } finally {
+      setPageVenuesLoading(false);
+    }
+  }, []);
+
   const checkAuthAndLoad = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { router.push('/login'); return; }
@@ -537,7 +619,7 @@ export default function AdminPdfFormsPage() {
       return;
     }
 
-    await loadForms(session.access_token);
+    await Promise.all([loadForms(session.access_token), loadPageVenues()]);
   };
 
   const loadForms = async (token: string) => {
@@ -618,12 +700,13 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
-      // Assign to specific users if selected
-      if (targetUsers.length > 0 && json.form?.id) {
+      // Assign to specific users (or venue users) if selected
+      const { userIds: stateUserIds, note: stateNote } = resolveAssignmentTargets();
+      if (stateUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+          body: JSON.stringify({ userIds: stateUserIds }),
         });
         if (!assignRes.ok) {
           const assignJson = await assignRes.json();
@@ -634,8 +717,7 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
-      setSuccessMsg(`"${title}" registered successfully${userNote}.`);
+      setSuccessMsg(`"${title}" registered successfully${stateNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
@@ -700,11 +782,12 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
-      if (targetUsers.length > 0 && json.form?.id) {
+      const { userIds: packetUserIds, note: packetNote } = resolveAssignmentTargets();
+      if (packetUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+          body: JSON.stringify({ userIds: packetUserIds }),
         });
         if (!assignRes.ok) {
           const assignJson = await assignRes.json();
@@ -715,8 +798,7 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
-      setSuccessMsg(`"${title}" registered successfully${userNote}.`);
+      setSuccessMsg(`"${title}" registered successfully${packetNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -773,12 +855,13 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
 
-      // If specific users were selected, assign this form to them
-      if (targetUsers.length > 0 && json.form?.id) {
+      // If specific users (or venue users) were selected, assign this form to them
+      const { userIds: uploadUserIds, note: uploadNote } = resolveAssignmentTargets();
+      if (uploadUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ userIds: targetUsers.map(u => u.id) }),
+          body: JSON.stringify({ userIds: uploadUserIds }),
         });
         if (!assignRes.ok) {
           const assignJson = await assignRes.json();
@@ -789,8 +872,7 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      const userNote = targetUsers.length > 0 ? ` (assigned to ${targetUsers.length} user${targetUsers.length !== 1 ? 's' : ''})` : '';
-      setSuccessMsg(`"${title}" uploaded successfully${userNote}.`);
+      setSuccessMsg(`"${title}" uploaded successfully${uploadNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -1135,7 +1217,72 @@ export default function AdminPdfFormsPage() {
               )}
             </div>
 
+            {/* Restrict to venue */}
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Restrict to Venue
+                <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
+              </label>
+              <div className="flex items-center gap-2">
+                <select
+                  value={pageVenueId}
+                  onChange={(e) => { setPageVenueId(e.target.value); setTargetUsers([]); }}
+                  disabled={pageVenuesLoading}
+                  className="flex-1 border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:bg-gray-50"
+                >
+                  <option value="">
+                    {pageVenuesLoading ? 'Loading venues...' : 'All employees (no venue filter)'}
+                  </option>
+                  {pageVenues.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.venue_name}{v.city || v.state ? ` (${[v.city, v.state].filter(Boolean).join(', ')})` : ''}
+                    </option>
+                  ))}
+                </select>
+                {pageVenueId && (
+                  <button
+                    type="button"
+                    onClick={() => setPageVenueId('')}
+                    className="text-xs text-gray-500 hover:text-gray-700 px-2 py-1 rounded hover:bg-gray-100"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {pageVenueId && (
+                <div className="mt-2">
+                  {pageVenueUsersLoading ? (
+                    <p className="text-xs text-gray-400">Loading assigned users...</p>
+                  ) : pageVenueUsers.length === 0 ? (
+                    <p className="text-xs text-gray-400">No users assigned to this venue.</p>
+                  ) : (
+                    <>
+                      <p className="text-xs font-medium text-purple-700 mb-1.5">
+                        Form will be restricted to {pageVenueUsers.length} user{pageVenueUsers.length !== 1 ? 's' : ''} at this venue.
+                      </p>
+                      <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-36 overflow-y-auto">
+                        {pageVenueUsers.map((u) => (
+                          <div key={u.id} className="flex items-center gap-3 px-3 py-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-gray-800 truncate">
+                                {`${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">{u.email}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+              {!pageVenueId && (
+                <p className="text-xs text-gray-400 mt-1">Leave empty to show to all eligible employees.</p>
+              )}
+            </div>
+
             {/* Restrict to specific users */}
+            {!pageVenueId && (
             <div className="pt-2 border-t border-gray-100">
               <div className="flex items-center justify-between mb-2">
                 <label className="block text-sm font-medium text-gray-700">
@@ -1174,9 +1321,10 @@ export default function AdminPdfFormsPage() {
                   ))}
                 </div>
               ) : (
-                <p className="text-xs text-gray-400">Leave empty to show to all eligible employees.</p>
+                <p className="text-xs text-gray-400">Or leave empty to show to all eligible employees.</p>
               )}
             </div>
+            )}
 
             {error && (
               <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-2 text-sm text-red-700">
@@ -1288,12 +1436,6 @@ export default function AdminPdfFormsPage() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => openSendModal(form)}
-                      className="text-sm text-purple-600 hover:text-purple-800 font-medium px-3 py-1 rounded-lg hover:bg-purple-50 transition-colors"
-                    >
-                      Send
-                    </button>
                     <button
                       onClick={() => router.push(`/employee/form/${form.id}`)}
                       className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors"
@@ -1464,14 +1606,14 @@ export default function AdminPdfFormsPage() {
                       {venuesLoading
                         ? 'Loading venues...'
                         : venuesWithVendors.length === 0
-                        ? 'No venues with assigned vendors'
+                        ? 'No venues available'
                         : 'Select a venue'}
                     </option>
                     {venuesWithVendors.map((venue) => (
                       <option key={venue.id} value={venue.id}>
                         {venue.venue_name}
                         {venue.city || venue.state ? ` (${[venue.city, venue.state].filter(Boolean).join(', ')})` : ''}
-                        {` - ${venue.vendorCount} vendor${venue.vendorCount !== 1 ? 's' : ''}`}
+                        {venue.vendorCount > 0 ? ` — ${venue.vendorCount} user${venue.vendorCount !== 1 ? 's' : ''} assigned` : ''}
                       </option>
                     ))}
                   </select>
@@ -1484,7 +1626,7 @@ export default function AdminPdfFormsPage() {
                       {[selectedVenue.city, selectedVenue.state].filter(Boolean).join(', ') || 'Location unavailable'}
                     </p>
                     <p className="text-xs text-gray-600 mt-2">
-                      {selectedVenueRecipients.length} vendor{selectedVenueRecipients.length !== 1 ? 's' : ''} assigned to this venue.
+                      {selectedVenueRecipients.length} user{selectedVenueRecipients.length !== 1 ? 's' : ''} assigned to this venue.
                       {pendingVenueRecipients.length !== selectedVenueRecipients.length && (
                         <span className="ml-1">{pendingVenueRecipients.length} still need this form.</span>
                       )}
@@ -1493,13 +1635,13 @@ export default function AdminPdfFormsPage() {
                 )}
 
                 {selectedVenueId && !venuesLoading && selectedVenueRecipients.length === 0 && (
-                  <p className="text-xs text-gray-400">No vendors are currently assigned to this venue.</p>
+                  <p className="text-xs text-gray-400">No users are currently assigned to this venue.</p>
                 )}
 
                 {selectedVenueRecipients.length > 0 && (
                   <div>
                     <p className="text-sm font-medium text-gray-700 mb-2">
-                      Venue Vendors ({selectedVenueRecipients.length})
+                      Assigned Users ({selectedVenueRecipients.length})
                     </p>
                     <div className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-56 overflow-y-auto">
                       {selectedVenueRecipients.map((recipient) => {
@@ -1592,7 +1734,7 @@ export default function AdminPdfFormsPage() {
               {sending
                 ? 'Sending...'
                 : sendTab === 'venue'
-                ? `Assign to ${pendingVenueRecipients.length} Vendor${pendingVenueRecipients.length !== 1 ? 's' : ''}`
+                ? `Assign to ${pendingVenueRecipients.length} User${pendingVenueRecipients.length !== 1 ? 's' : ''} at Venue`
                 : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
             </button>
           </div>
