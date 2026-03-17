@@ -88,17 +88,59 @@ export async function GET(
       }
     }
 
-    // Build query - admin/exec can see any event, supervisors see own + manager's, others only their own
-    let query = supabaseAdmin
-      .from("events")
-      .select("*")
-      .eq("id", eventId);
+    // For managers: check if the event is at one of their assigned venues
+    let managerAssignedVenueNames: string[] = [];
+    if (userRole === "manager") {
+      const { data: venueLinks } = await supabaseAdmin
+        .from("venue_managers")
+        .select("venue_id")
+        .eq("manager_id", user.id)
+        .eq("is_active", true);
 
-    if (!isAdminOrExec) {
-      query = query.in("created_by", allowedCreatorIds);
+      if (venueLinks && venueLinks.length > 0) {
+        const venueIds = venueLinks.map((v: any) => v.venue_id);
+        const { data: venueRefs } = await supabaseAdmin
+          .from("venue_reference")
+          .select("venue_name")
+          .in("id", venueIds);
+
+        if (venueRefs) {
+          managerAssignedVenueNames = venueRefs.map((v: any) => v.venue_name).filter(Boolean);
+        }
+      }
     }
 
-    const { data, error } = await query.single();
+    // Build query - admin/exec can see any event, supervisors see own + manager's, others only their own
+    let data: any = null;
+    let error: any = null;
+
+    if (isAdminOrExec) {
+      ({ data, error } = await supabaseAdmin
+        .from("events")
+        .select("*")
+        .eq("id", eventId)
+        .single());
+    } else if (managerAssignedVenueNames.length > 0) {
+      // Manager: access if they created it OR the event is at one of their assigned venues
+      // Use two queries to avoid PostgREST escaping issues with venue names
+      const [byCreator, byVenue] = await Promise.all([
+        supabaseAdmin.from("events").select("*").eq("id", eventId).in("created_by", allowedCreatorIds).maybeSingle(),
+        supabaseAdmin.from("events").select("*").eq("id", eventId).in("venue", managerAssignedVenueNames).maybeSingle(),
+      ]);
+      if (byCreator.error) { error = byCreator.error; }
+      else if (byVenue.error) { error = byVenue.error; }
+      else { data = byCreator.data ?? byVenue.data ?? null; }
+      if (!data && !error) {
+        return NextResponse.json({ error: "Event not found" }, { status: 404 });
+      }
+    } else {
+      ({ data, error } = await supabaseAdmin
+        .from("events")
+        .select("*")
+        .eq("id", eventId)
+        .in("created_by", allowedCreatorIds)
+        .single());
+    }
 
     if (error) {
       console.error("SUPABASE SELECT ERROR:", error);

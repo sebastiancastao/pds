@@ -93,6 +93,7 @@ type TeamVendorOption = {
   partialAvailability?: boolean;
   availableFrom?: string | null;
   availableTo?: string | null;
+  region_id?: string | null;
   profiles?: {
     first_name?: string | null;
     last_name?: string | null;
@@ -101,6 +102,11 @@ type TeamVendorOption = {
     city?: string | null;
     profile_photo_url?: string | null;
   };
+};
+
+type Region = {
+  id: string;
+  name: string;
 };
 
 type UninvitedTeamMemberRecord = {
@@ -326,6 +332,8 @@ export default function EventDashboardPage() {
   const [locationTeamSearchQuery, setLocationTeamSearchQuery] = useState("");
   const [locationTeamState, setLocationTeamState] = useState<string>("all");
   const [locationTeamCity, setLocationTeamCity] = useState<string>("all");
+  const [regions, setRegions] = useState<Region[]>([]);
+  const [locationRegionFilter, setLocationRegionFilter] = useState<string>("all");
   const [locationTeamVendors, setLocationTeamVendors] = useState<TeamVendorOption[]>([]);
   const [selectedLocationTeamMembers, setSelectedLocationTeamMembers] = useState<Set<string>>(new Set());
   const [savingLocationTeam, setSavingLocationTeam] = useState(false);
@@ -639,6 +647,11 @@ export default function EventDashboardPage() {
     [locationAssignableMembers]
   );
 
+  const regionFilteredAssignableMembers = useMemo(() => {
+    if (locationRegionFilter === "all") return locationAssignableMembers;
+    return locationAssignableMembers.filter((m) => m.region_id === locationRegionFilter);
+  }, [locationAssignableMembers, locationRegionFilter]);
+
   const savedAssignedUninvitedLocationVendorIds = useMemo(() => {
     const assignedUninvitedIds = new Set<string>();
 
@@ -792,7 +805,8 @@ export default function EventDashboardPage() {
       const needsTeam = !teamLoaded;
       const needsLocations = !locationsLoaded;
       const needsAssignableUsers = locationTeamVendors.length === 0;
-      if (!needsTeam && !needsLocations && !needsAssignableUsers) return;
+      const needsRegions = regions.length === 0;
+      if (!needsTeam && !needsLocations && !needsAssignableUsers && !needsRegions) return;
       (async () => {
         const promises: Promise<void>[] = [];
         if (needsAssignableUsers) {
@@ -802,6 +816,7 @@ export default function EventDashboardPage() {
           promises.push(loadTeam(true)); // Skip photos for locations tab
         }
         if (needsLocations) promises.push(loadLocations());
+        if (needsRegions) promises.push(loadRegions());
         await Promise.all(promises);
       })();
       return;
@@ -1481,6 +1496,21 @@ export default function EventDashboardPage() {
 
   const getTeamMemberId = (member: any): string => {
     return (member?.vendor_id || member?.user_id || member?.users?.id || "").toString();
+  };
+
+  const loadRegions = async () => {
+    try {
+      const token = await getSessionToken();
+      const res = await fetch("/api/regions", {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setRegions(Array.isArray(data?.regions) ? data.regions : []);
+      }
+    } catch {
+      // silent — region filter just won't populate
+    }
   };
 
   const loadLocations = async () => {
@@ -4831,6 +4861,20 @@ export default function EventDashboardPage() {
                 </div>
               )}
 
+              <div className="flex items-center gap-2">
+                <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Filter by Region:</label>
+                <select
+                  value={locationRegionFilter}
+                  onChange={(e) => setLocationRegionFilter(e.target.value)}
+                  className="px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="all">All Regions</option>
+                  {regions.map((r) => (
+                    <option key={r.id} value={r.id}>{r.name}</option>
+                  ))}
+                </select>
+              </div>
+
               {loadingLocations ? (
                 <div className="text-center py-12">
                   <div className="inline-block w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
@@ -5005,22 +5049,24 @@ export default function EventDashboardPage() {
                               Select vendors for this location, then save assignments.
                             </p>
 
-                            {locationAssignableMembers.length === 0 ? (
+                            {regionFilteredAssignableMembers.length === 0 ? (
                               <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4 space-y-3">
-                                <p>No available users found for this event date.</p>
-                                <button
-                                  onClick={() => {
-                                    void loadLocationCreateTeamModalData();
-                                  }}
-                                  disabled={loadingLocationTeamVendors}
-                                  className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                                >
-                                  {loadingLocationTeamVendors ? "Loading..." : "Load Available Users"}
-                                </button>
+                                <p>{locationAssignableMembers.length === 0 ? "No available users found for this event date." : "No vendors match the selected region."}</p>
+                                {locationAssignableMembers.length === 0 && (
+                                  <button
+                                    onClick={() => {
+                                      void loadLocationCreateTeamModalData();
+                                    }}
+                                    disabled={loadingLocationTeamVendors}
+                                    className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                                  >
+                                    {loadingLocationTeamVendors ? "Loading..." : "Load Available Users"}
+                                  </button>
+                                )}
                               </div>
                             ) : (
                               <div className="border rounded-lg overflow-hidden max-h-72 overflow-y-auto">
-                                {locationAssignableMembers.map((member) => {
+                                {regionFilteredAssignableMembers.map((member) => {
                                   const memberId = String(member?.id || "");
                                   if (!memberId) return null;
 

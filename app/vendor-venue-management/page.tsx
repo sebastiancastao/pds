@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import Papa from 'papaparse';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type Venue = {
@@ -55,6 +56,15 @@ type AssignmentsPayload = {
   assignments: VendorVenueAssignment[];
 };
 
+type BulkRow = {
+  rowIndex: number;
+  vendor_email: string;
+  venue_name: string;
+  vendor_id: string | null;
+  venue_id: string | null;
+  error: string | null;
+};
+
 export default function VendorVenueManagementPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -71,6 +81,12 @@ export default function VendorVenueManagementPage() {
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [selectedVenueId, setSelectedVenueId] = useState('');
+
+  const [showBulkModal, setShowBulkModal] = useState(false);
+  const [bulkRows, setBulkRows] = useState<BulkRow[]>([]);
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const [bulkResult, setBulkResult] = useState<{ succeeded: number; failed: number } | null>(null);
+  const bulkFileRef = useRef<HTMLInputElement>(null);
 
   const getVendorDisplayName = useCallback((vendor: Vendor | null | undefined) => {
     if (!vendor) return 'Unknown vendor';
@@ -301,6 +317,136 @@ export default function VendorVenueManagementPage() {
     }
   };
 
+  const downloadBulkTemplate = () => {
+    const csv = 'vendor_email,venue_name\nexample@vendor.com,Main Venue Name\n';
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'vendor_venue_bulk_template.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleBulkFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setBulkResult(null);
+
+    const vendorByEmail = new Map(vendors.map((v) => [v.email.toLowerCase(), v]));
+    const venueByName = new Map(venues.map((v) => [v.venue_name.toLowerCase(), v]));
+
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        const rows: BulkRow[] = (results.data as any[]).map((row, index) => {
+          const vendor_email = String(row['vendor_email'] || '').trim();
+          const venue_name = String(row['venue_name'] || '').trim();
+
+          const vendor = vendorByEmail.get(vendor_email.toLowerCase());
+          const venue = venueByName.get(venue_name.toLowerCase());
+
+          let error: string | null = null;
+          if (!vendor_email || !venue_name) {
+            error = 'vendor_email and venue_name are required';
+          } else if (!vendor) {
+            error = `Vendor not found: ${vendor_email}`;
+          } else if (!venue) {
+            error = `Venue not found: ${venue_name}`;
+          }
+
+          return {
+            rowIndex: index + 1,
+            vendor_email,
+            venue_name,
+            vendor_id: vendor?.id ?? null,
+            venue_id: venue?.id ?? null,
+            error,
+          };
+        });
+        setBulkRows(rows);
+      },
+      error: () => {
+        setError('Failed to parse CSV file');
+      },
+    });
+
+    event.target.value = '';
+  };
+
+  const handleBulkSubmit = async () => {
+    const validRows = bulkRows.filter((r) => !r.error);
+    if (validRows.length === 0) return;
+
+    setBulkUploading(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        window.location.href = '/login';
+        return;
+      }
+
+      const response = await fetch('/api/vendor-venue-assignments', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          assignments: validRows.map((r) => ({
+            vendor_id: r.vendor_id,
+            venue_id: r.venue_id,
+          })),
+        }),
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Bulk upload failed');
+      }
+
+      setBulkResult({ succeeded: payload.succeeded, failed: payload.failed });
+
+      if (payload.failed > 0) {
+        setBulkRows((prev) =>
+          prev.map((row) => {
+            if (row.error) return row;
+            const resultRow = payload.results?.find(
+              (r: any) => r.vendor_id === row.vendor_id && r.venue_id === row.venue_id
+            );
+            if (resultRow && !resultRow.success) {
+              return { ...row, error: resultRow.error || 'Failed' };
+            }
+            return row;
+          })
+        );
+      }
+
+      if (payload.succeeded > 0) {
+        await loadData();
+      }
+    } catch (err: any) {
+      console.error('[VENDOR_VENUE_MANAGEMENT] bulk upload error:', err);
+      setError(err.message || 'Bulk upload failed');
+    } finally {
+      setBulkUploading(false);
+    }
+  };
+
+  const closeBulkModal = () => {
+    setShowBulkModal(false);
+    setBulkRows([]);
+    setBulkResult(null);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100 flex items-center justify-center px-4">
@@ -340,6 +486,12 @@ export default function VendorVenueManagementPage() {
               className="px-4 py-2.5 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 transition-colors"
             >
               + Assign Venue
+            </button>
+            <button
+              onClick={() => { setBulkResult(null); setBulkRows([]); setShowBulkModal(true); }}
+              className="px-4 py-2.5 rounded-lg bg-violet-600 text-white text-sm font-medium hover:bg-violet-700 transition-colors"
+            >
+              Bulk Upload
             </button>
             <Link
               href="/venue-management"
@@ -478,6 +630,111 @@ export default function VendorVenueManagementPage() {
         {filteredVendors.length === 0 && (
           <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-10 text-center">
             <p className="text-base text-gray-500">No vendors match the current search.</p>
+          </div>
+        )}
+
+        {showBulkModal && (
+          <div
+            className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={closeBulkModal}
+          >
+            <div
+              className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-gray-200 p-6 max-h-[90vh] flex flex-col"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-xl font-semibold text-gray-900">Bulk Upload Assignments</h3>
+                  <p className="text-sm text-gray-600 mt-1">
+                    Upload a CSV to set vendor venue assignments. Each vendor will be assigned exactly the venue listed, replacing prior assignments.
+                  </p>
+                </div>
+                <button onClick={closeBulkModal} className="text-gray-400 hover:text-gray-600 text-xl leading-none ml-4">✕</button>
+              </div>
+
+              <div className="flex items-center gap-3 mb-4">
+                <button
+                  onClick={downloadBulkTemplate}
+                  className="px-3 py-2 text-sm rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  Download Template
+                </button>
+                <label className="px-3 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer">
+                  Choose CSV File
+                  <input
+                    ref={bulkFileRef}
+                    type="file"
+                    accept=".csv,text/csv"
+                    className="hidden"
+                    onChange={handleBulkFileChange}
+                  />
+                </label>
+                {bulkRows.length > 0 && (
+                  <span className="text-sm text-gray-500">
+                    {bulkRows.filter((r) => !r.error).length} valid / {bulkRows.filter((r) => !!r.error).length} invalid of {bulkRows.length} rows
+                  </span>
+                )}
+              </div>
+
+              {bulkResult && (
+                <div className={`mb-4 rounded-lg px-4 py-3 text-sm border ${bulkResult.failed === 0 ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
+                  {bulkResult.succeeded} assignment{bulkResult.succeeded !== 1 ? 's' : ''} applied successfully.
+                  {bulkResult.failed > 0 && ` ${bulkResult.failed} failed — see errors below.`}
+                </div>
+              )}
+
+              {bulkRows.length > 0 && (
+                <div className="flex-1 overflow-y-auto border border-gray-200 rounded-lg text-sm mb-4">
+                  <table className="w-full">
+                    <thead className="bg-gray-50 sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wide">#</th>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wide">Vendor Email</th>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wide">Venue</th>
+                        <th className="text-left px-3 py-2 text-xs font-semibold text-gray-600 uppercase tracking-wide">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {bulkRows.map((row) => (
+                        <tr key={row.rowIndex} className={row.error ? 'bg-red-50' : ''}>
+                          <td className="px-3 py-2 text-gray-500">{row.rowIndex}</td>
+                          <td className="px-3 py-2 text-gray-800 truncate max-w-[180px]">{row.vendor_email || <span className="text-gray-400 italic">empty</span>}</td>
+                          <td className="px-3 py-2 text-gray-800 truncate max-w-[180px]">{row.venue_name || <span className="text-gray-400 italic">empty</span>}</td>
+                          <td className="px-3 py-2">
+                            {row.error
+                              ? <span className="text-red-600 text-xs">{row.error}</span>
+                              : <span className="text-emerald-600 text-xs font-medium">OK</span>
+                            }
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <div className="flex gap-2.5 mt-auto">
+                <button
+                  onClick={closeBulkModal}
+                  className="flex-1 px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"
+                >
+                  {bulkResult?.succeeded ? 'Done' : 'Cancel'}
+                </button>
+                <button
+                  onClick={handleBulkSubmit}
+                  disabled={bulkUploading || bulkRows.filter((r) => !r.error).length === 0}
+                  className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    bulkUploading || bulkRows.filter((r) => !r.error).length === 0
+                      ? 'bg-gray-200 text-gray-500 cursor-not-allowed'
+                      : 'bg-violet-600 text-white hover:bg-violet-700'
+                  }`}
+                >
+                  {bulkUploading
+                    ? 'Uploading...'
+                    : `Apply ${bulkRows.filter((r) => !r.error).length} Assignment${bulkRows.filter((r) => !r.error).length !== 1 ? 's' : ''}`}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

@@ -494,6 +494,136 @@ export async function POST(request: NextRequest) {
   }
 }
 
+export async function PUT(request: NextRequest) {
+  try {
+    const auth = await authenticateExecAdmin(request);
+    if (auth.error) return auth.error;
+
+    const body = await request.json();
+    const { assignments } = body || {};
+
+    if (!Array.isArray(assignments) || assignments.length === 0) {
+      return NextResponse.json({ error: 'assignments array is required' }, { status: 400 });
+    }
+
+    if (assignments.length > 500) {
+      return NextResponse.json({ error: 'Maximum 500 assignments per bulk upload' }, { status: 400 });
+    }
+
+    for (const row of assignments) {
+      if (!isValidUuid(row?.vendor_id) || !isValidUuid(row?.venue_id)) {
+        return NextResponse.json(
+          { error: 'Each assignment must have valid vendor_id and venue_id UUIDs' },
+          { status: 400 }
+        );
+      }
+    }
+
+    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { persistSession: false },
+    });
+
+    const vendorIds = [...new Set(assignments.map((a: any) => a.vendor_id))];
+    const venueIds = [...new Set(assignments.map((a: any) => a.venue_id))];
+
+    const [vendorsResult, venuesResult] = await Promise.all([
+      supabaseAdmin
+        .from('users')
+        .select('id, division, is_active')
+        .in('id', vendorIds),
+      supabaseAdmin
+        .from('venue_reference')
+        .select('id')
+        .in('id', venueIds),
+    ]);
+
+    if (vendorsResult.error) {
+      return NextResponse.json({ error: 'Failed to validate vendors' }, { status: 500 });
+    }
+    if (venuesResult.error) {
+      return NextResponse.json({ error: 'Failed to validate venues' }, { status: 500 });
+    }
+
+    const validVendorMap = new Map(
+      (vendorsResult.data || []).map((v: any) => [v.id, v])
+    );
+    const validVenueIds = new Set((venuesResult.data || []).map((v: any) => v.id));
+
+    const results: Array<{ vendor_id: string; venue_id: string; success: boolean; error?: string }> = [];
+    let succeeded = 0;
+    let failed = 0;
+
+    for (const row of assignments) {
+      const vendor = validVendorMap.get(row.vendor_id);
+
+      if (!vendor) {
+        results.push({ ...row, success: false, error: 'Vendor not found' });
+        failed++;
+        continue;
+      }
+      if (!vendor.is_active) {
+        results.push({ ...row, success: false, error: 'Vendor is inactive' });
+        failed++;
+        continue;
+      }
+      const normalizedDivision = String(vendor.division || '').trim().toLowerCase();
+      if (!(ASSIGNABLE_VENDOR_DIVISIONS as readonly string[]).includes(normalizedDivision)) {
+        results.push({ ...row, success: false, error: 'User is not a vendor-division user' });
+        failed++;
+        continue;
+      }
+      if (!validVenueIds.has(row.venue_id)) {
+        results.push({ ...row, success: false, error: 'Venue not found' });
+        failed++;
+        continue;
+      }
+
+      const overrideError = await setManualOverride(supabaseAdmin, row.vendor_id, auth.user.id);
+      if (overrideError) {
+        if (isMissingTableError(overrideError, MANUAL_OVERRIDE_TABLE)) {
+          return NextResponse.json({ error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR }, { status: 500 });
+        }
+        results.push({ ...row, success: false, error: 'Failed to set manual override' });
+        failed++;
+        continue;
+      }
+
+      const { error: upsertError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .upsert(
+          { vendor_id: row.vendor_id, venue_id: row.venue_id, assigned_by: auth.user.id, assigned_at: new Date().toISOString() },
+          { onConflict: 'vendor_id,venue_id' }
+        );
+
+      if (upsertError) {
+        results.push({ ...row, success: false, error: 'Failed to assign venue' });
+        failed++;
+        continue;
+      }
+
+      const { error: cleanupError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .delete()
+        .eq('vendor_id', row.vendor_id)
+        .neq('venue_id', row.venue_id);
+
+      if (cleanupError) {
+        results.push({ ...row, success: false, error: 'Failed to clean up old assignments' });
+        failed++;
+        continue;
+      }
+
+      results.push({ ...row, success: true });
+      succeeded++;
+    }
+
+    return NextResponse.json({ results, succeeded, failed }, { status: 200 });
+  } catch (err: any) {
+    console.error('[VENDOR_VENUE_ASSIGNMENTS] Unexpected PUT error:', err);
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
 export async function DELETE(request: NextRequest) {
   try {
     const auth = await authenticateExecAdmin(request);
