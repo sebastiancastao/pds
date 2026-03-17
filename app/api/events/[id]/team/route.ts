@@ -159,7 +159,7 @@ export async function POST(
 
     // Allow event creator, exec, manager, or supervisor roles
     if (event.created_by !== user.id) {
-      if (requesterRole !== 'exec' && requesterRole !== 'manager' && requesterRole !== 'supervisor' && requesterRole !== 'supervisor2') {
+      if (requesterRole !== 'exec' && requesterRole !== 'manager' && requesterRole !== 'supervisor' && requesterRole !== 'supervisor2' && requesterRole !== 'supervisor3') {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
       }
     }

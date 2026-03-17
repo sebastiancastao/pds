@@ -180,8 +180,18 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
   }
 
   if (!event) return false;
-  if (auth.role === "exec" || auth.role === "admin") return true;
+  if (auth.role === "exec" || auth.role === "admin" || auth.role === "supervisor3") return true;
   if (event.created_by === auth.user.id) return true;
+
+  if (auth.role === "manager") {
+    const { data: teamEntry } = await supabaseAdmin
+      .from("event_teams")
+      .select("event_id")
+      .eq("event_id", eventId)
+      .eq("vendor_id", auth.user.id)
+      .maybeSingle();
+    if (teamEntry) return true;
+  }
 
   if (auth.role === "supervisor" || auth.role === "supervisor2" || auth.role === "supervisor3") {
     const { data: links, error: linksError } = await supabaseAdmin
@@ -195,6 +205,15 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
     }
 
     if ((links || []).some((row) => row.manager_id === event.created_by)) return true;
+
+    // Also allow if directly on the event team
+    const { data: teamEntry } = await supabaseAdmin
+      .from("event_teams")
+      .select("event_id")
+      .eq("event_id", eventId)
+      .eq("vendor_id", auth.user.id)
+      .maybeSingle();
+    if (teamEntry) return true;
   }
 
   return false;

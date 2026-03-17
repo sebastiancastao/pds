@@ -236,7 +236,7 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
   }
 
   if (!event) return false;
-  if (auth.role === "exec" || auth.role === "admin") return true;
+  if (auth.role === "exec" || auth.role === "admin" || auth.role === "supervisor3") return true;
   if (event.created_by === auth.user.id) return true;
 
   if (auth.role === "supervisor" || auth.role === "supervisor2" || auth.role === "supervisor3") {

@@ -254,7 +254,7 @@ export default function EventDashboardPage() {
   const [isAuthed, setIsAuthed] = useState(false);
   const [userRole, setUserRole] = useState<string | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const canEditTimesheets = userRole === "exec" || userRole === "manager";
+  const canEditTimesheets = userRole === "exec" || userRole === "manager" || userRole === "supervisor3";
   const canManageLocations =
     userRole === "exec" ||
     userRole === "admin" ||
