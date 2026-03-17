@@ -135,7 +135,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const isActiveParam = searchParams.get('is_active');
 
-    // Check if user is a supervisor — if so, also include their lead manager's events
+    // Check user role to determine event visibility scope
     const { data: userData } = await supabaseAdmin
       .from('users')
       .select('role')
@@ -146,6 +146,32 @@ export async function GET(req: NextRequest) {
 
     // Collect all user IDs whose events this user can see
     const creatorIds: string[] = [user.id];
+
+    // For managers: also include all events at their assigned venues
+    let assignedVenueNames: string[] = [];
+
+    if (userRole === 'manager') {
+      // Look up which venues this manager is assigned to
+      const { data: venueLinks } = await supabaseAdmin
+        .from('venue_managers')
+        .select('venue_id')
+        .eq('manager_id', user.id)
+        .eq('is_active', true);
+
+      if (venueLinks && venueLinks.length > 0) {
+        const venueIds = venueLinks.map((v: any) => v.venue_id);
+        const { data: venueRefs } = await supabaseAdmin
+          .from('venue_reference')
+          .select('venue_name')
+          .in('id', venueIds);
+
+        if (venueRefs) {
+          assignedVenueNames = venueRefs
+            .map((v: any) => v.venue_name)
+            .filter(Boolean);
+        }
+      }
+    }
 
     if (userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
       // Look up which managers this supervisor is assigned to
@@ -183,19 +209,52 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Filter events by the current user and their lead managers (for supervisors)
-    let query = supabaseAdmin
-      .from('events')
-      .select('*')
-      .in('created_by', creatorIds)
-      .order('event_date', { ascending: false })
-      .order('start_time', { ascending: false });
+    // Build query: filter by creator IDs, plus venue names for managers
+    let data: any[] | null = null;
+    let error: any = null;
 
-    if (isActiveParam !== null) {
-      query = query.eq('is_active', isActiveParam === 'true');
+    if (assignedVenueNames.length > 0) {
+      // Manager sees events they created OR events at their assigned venues
+      // Use two queries and merge to avoid PostgREST string escaping issues with venue names
+      const [byCreator, byVenue] = await Promise.all([
+        (() => {
+          let q = supabaseAdmin.from('events').select('*').in('created_by', creatorIds);
+          if (isActiveParam !== null) q = q.eq('is_active', isActiveParam === 'true');
+          return q;
+        })(),
+        (() => {
+          let q = supabaseAdmin.from('events').select('*').in('venue', assignedVenueNames);
+          if (isActiveParam !== null) q = q.eq('is_active', isActiveParam === 'true');
+          return q;
+        })(),
+      ]);
+
+      if (byCreator.error) { error = byCreator.error; }
+      else if (byVenue.error) { error = byVenue.error; }
+      else {
+        const merged = new Map<string, any>();
+        for (const e of [...(byCreator.data ?? []), ...(byVenue.data ?? [])]) {
+          merged.set(e.id, e);
+        }
+        data = Array.from(merged.values()).sort((a, b) => {
+          if (a.event_date !== b.event_date) return b.event_date.localeCompare(a.event_date);
+          return (b.start_time ?? '').localeCompare(a.start_time ?? '');
+        });
+      }
+    } else {
+      let query = supabaseAdmin
+        .from('events')
+        .select('*')
+        .in('created_by', creatorIds)
+        .order('event_date', { ascending: false })
+        .order('start_time', { ascending: false });
+
+      if (isActiveParam !== null) {
+        query = query.eq('is_active', isActiveParam === 'true');
+      }
+
+      ({ data, error } = await query);
     }
-
-    const { data, error } = await query;
     if (error) {
       console.error('SUPABASE SELECT ERROR:', error);
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
