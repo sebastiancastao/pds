@@ -242,6 +242,28 @@ export async function PUT(
       }
     }
 
+    // For managers: check if the event is at one of their assigned venues
+    let managerAssignedVenueNames: string[] = [];
+    if (userRole === "manager") {
+      const { data: venueLinks } = await supabaseAdmin
+        .from("venue_managers")
+        .select("venue_id")
+        .eq("manager_id", user.id)
+        .eq("is_active", true);
+
+      if (venueLinks && venueLinks.length > 0) {
+        const venueIds = venueLinks.map((v: any) => v.venue_id);
+        const { data: venueRefs } = await supabaseAdmin
+          .from("venue_reference")
+          .select("venue_name")
+          .in("id", venueIds);
+
+        if (venueRefs) {
+          managerAssignedVenueNames = venueRefs.map((v: any) => v.venue_name).filter(Boolean);
+        }
+      }
+    }
+
     const body = await req.json();
     const hasSalesFieldsInPayload =
       Object.prototype.hasOwnProperty.call(body, "ticket_sales") ||
@@ -359,16 +381,39 @@ export async function PUT(
     }
 
     // Build update query - admin/exec can edit any event, supervisors own + manager's, others only their own
-    let updateQuery = supabaseAdmin
-      .from("events")
-      .update(updatePayload)
-      .eq("id", eventId);
+    // For managers with venue assignments: pre-verify access then update
+    let data: any[] | null = null;
+    let error: any = null;
 
-    if (!isAdminOrExec) {
-      updateQuery = updateQuery.in("created_by", allowedCreatorIds);
+    if (isAdminOrExec) {
+      ({ data, error } = await supabaseAdmin
+        .from("events")
+        .update(updatePayload)
+        .eq("id", eventId)
+        .select());
+    } else if (managerAssignedVenueNames.length > 0) {
+      // Check access: manager created the event OR event is at one of their assigned venues
+      const [byCreator, byVenue] = await Promise.all([
+        supabaseAdmin.from("events").select("id").eq("id", eventId).in("created_by", allowedCreatorIds).maybeSingle(),
+        supabaseAdmin.from("events").select("id").eq("id", eventId).in("venue", managerAssignedVenueNames).maybeSingle(),
+      ]);
+      const hasAccess = !!(byCreator.data || byVenue.data);
+      if (!hasAccess) {
+        return NextResponse.json({ error: "Event not found or you do not have permission to update it" }, { status: 404 });
+      }
+      ({ data, error } = await supabaseAdmin
+        .from("events")
+        .update(updatePayload)
+        .eq("id", eventId)
+        .select());
+    } else {
+      ({ data, error } = await supabaseAdmin
+        .from("events")
+        .update(updatePayload)
+        .eq("id", eventId)
+        .in("created_by", allowedCreatorIds)
+        .select());
     }
-
-    const { data, error } = await updateQuery.select();
 
     if (error) {
       console.error("SUPABASE UPDATE ERROR:", error);
