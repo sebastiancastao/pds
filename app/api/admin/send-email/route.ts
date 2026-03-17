@@ -17,7 +17,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor"]);
+const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3"]);
 const DEFAULT_BATCH_SIZE = 50;
 const MIN_BATCH_SIZE = 1;
 const MAX_BATCH_SIZE = 100;
@@ -138,7 +138,7 @@ export async function POST(req: NextRequest) {
     if (!["manual", "role", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
     }
-    if ((requesterRole === "manager" || requesterRole === "supervisor") && audience !== "manual") {
+    if ((requesterRole === "manager" || requesterRole === "supervisor" || requesterRole === "supervisor3") && audience !== "manual") {
       return NextResponse.json(
         { error: "Managers can only send to manual recipient lists." },
         { status: 403 }

@@ -89,12 +89,17 @@ type TeamVendorOption = {
   distance?: number | null;
   status?: string | null;
   isExistingMember?: boolean;
+  confirmedElsewhere?: boolean;
+  partialAvailability?: boolean;
+  availableFrom?: string | null;
+  availableTo?: string | null;
   profiles?: {
     first_name?: string | null;
     last_name?: string | null;
     phone?: string | null;
     state?: string | null;
     city?: string | null;
+    profile_photo_url?: string | null;
   };
 };
 
@@ -1217,7 +1222,7 @@ export default function EventDashboardPage() {
 
   const handleSelectAllLocationTeam = () => {
     const visibleNewVendorIds = filteredLocationTeamVendors
-      .filter((vendor) => !vendor.isExistingMember)
+      .filter((vendor) => !vendor.isExistingMember && !vendor.confirmedElsewhere)
       .map((vendor) => vendor.id);
 
     if (visibleNewVendorIds.length === 0) return;
@@ -6171,14 +6176,14 @@ export default function EventDashboardPage() {
                       <input
                         type="checkbox"
                         checked={(() => {
-                          const newVendors = filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember);
+                          const newVendors = filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember && !vendor.confirmedElsewhere);
                           return newVendors.length > 0 && newVendors.every((vendor) => selectedLocationTeamMembers.has(vendor.id));
                         })()}
                         onChange={handleSelectAllLocationTeam}
                         className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
                       />
                       Select All (
-                      {filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember).length} new)
+                      {filteredLocationTeamVendors.filter((vendor) => !vendor.isExistingMember && !vendor.confirmedElsewhere).length} new)
                     </label>
 
                     <div className="flex items-center gap-2">
@@ -6226,31 +6231,57 @@ export default function EventDashboardPage() {
                       const fullName = `${firstName} ${lastName}`.trim() || vendor.email || "Vendor";
                       const phone = (vendor.profiles?.phone || "").toString();
                       const isExistingMember = Boolean(vendor.isExistingMember);
+                      const isBusy = Boolean(vendor.confirmedElsewhere);
+                      const isSelectable = !isExistingMember && !isBusy;
                       const vendorStatus = String(vendor.status || "").toLowerCase();
 
                       return (
                         <div
                           key={vendor.id}
-                          className={`px-4 py-3 flex items-start gap-3 ${isExistingMember ? "" : "cursor-pointer hover:bg-gray-50"}`}
+                          className={`px-4 py-3 flex items-center gap-3 ${isSelectable ? "cursor-pointer hover:bg-gray-50" : ""}`}
                           onClick={() => {
-                            if (!isExistingMember) toggleLocationTeamMember(vendor.id);
+                            if (isSelectable) toggleLocationTeamMember(vendor.id);
                           }}
                         >
-                          {!isExistingMember ? (
+                          {isSelectable ? (
                             <input
                               type="checkbox"
                               checked={selectedLocationTeamMembers.has(vendor.id)}
                               onChange={() => toggleLocationTeamMember(vendor.id)}
-                              className="mt-1 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 flex-shrink-0"
                             />
                           ) : (
-                            <div className="mt-1 h-4 w-4"></div>
+                            <div className="h-4 w-4 flex-shrink-0"></div>
                           )}
+
+                          {vendor.profiles?.profile_photo_url ? (
+                            <img
+                              src={vendor.profiles.profile_photo_url}
+                              alt={fullName}
+                              className="w-10 h-10 rounded-full object-cover flex-shrink-0"
+                              onError={(e) => {
+                                const t = e.target as HTMLImageElement;
+                                t.style.display = "none";
+                                if (t.nextSibling) (t.nextSibling as HTMLElement).style.display = "flex";
+                              }}
+                            />
+                          ) : null}
+                          <div
+                            className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-sm flex-shrink-0"
+                            style={{ display: vendor.profiles?.profile_photo_url ? "none" : "flex" }}
+                          >
+                            {firstName?.charAt(0)}{lastName?.charAt(0)}
+                          </div>
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-2">
                               <div className="text-sm font-semibold text-gray-900 truncate">{fullName}</div>
-                              <div className="flex items-center gap-2">
+                              <div className="flex items-center gap-2 flex-wrap justify-end">
+                                {isBusy && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-700">
+                                    Busy
+                                  </span>
+                                )}
                                 {isExistingMember && (
                                   <span className="px-2 py-0.5 rounded text-xs font-semibold bg-green-100 text-green-700">
                                     {vendorStatus === "confirmed"
@@ -6258,6 +6289,14 @@ export default function EventDashboardPage() {
                                       : vendorStatus === "declined"
                                         ? "Declined"
                                         : "Invited"}
+                                  </span>
+                                )}
+                                {vendor.partialAvailability && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 flex items-center gap-1">
+                                    <svg className="w-3 h-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {formatCallTimeLabel(vendor.availableFrom)}–{formatCallTimeLabel(vendor.availableTo)}
                                   </span>
                                 )}
                                 {vendor.distance !== null && vendor.distance !== undefined && (
