@@ -850,6 +850,7 @@ export default function AdminPdfFormsPage() {
       fd.append('requiresSignature', String(requiresSignature));
       fd.append('allowDateInput', String(allowDateInput));
       fd.append('allowPrintName', String(allowPrintName));
+      fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
 
       const res = await fetch('/api/custom-forms/upload', {
@@ -917,6 +918,7 @@ export default function AdminPdfFormsPage() {
       fd.append('requiresSignature', String(requiresSignature));
       fd.append('allowDateInput', String(allowDateInput));
       fd.append('allowPrintName', String(allowPrintName));
+      fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
 
       const res = await fetch('/api/custom-forms/upload', {
@@ -1286,6 +1288,10 @@ export default function AdminPdfFormsPage() {
                       <input type="checkbox" checked={allowPrintName} onChange={e => setAllowPrintName(e.target.checked)} className="rounded border-gray-300" />
                       Allow print name
                     </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={allowVenueDisplay} onChange={e => setAllowVenueDisplay(e.target.checked)} className="rounded border-gray-300" />
+                      Show venue
+                    </label>
                   </div>
 
                   <button
@@ -1412,6 +1418,19 @@ export default function AdminPdfFormsPage() {
               />
               <label htmlFor="allowPrintName" className="text-sm font-medium text-gray-700">
                 Allow employee to print their name on this form
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <input
+                id="allowVenueDisplay"
+                type="checkbox"
+                checked={allowVenueDisplay}
+                onChange={e => setAllowVenueDisplay(e.target.checked)}
+                className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="allowVenueDisplay" className="text-sm font-medium text-gray-700">
+                Display the employee&apos;s assigned venue on this form
               </label>
             </div>
 

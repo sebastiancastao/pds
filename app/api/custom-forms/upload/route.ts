@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
     const requiresSignature = formData.get('requiresSignature') === 'true';
     const allowDateInput = formData.get('allowDateInput') === 'true';
     const allowPrintName = formData.get('allowPrintName') === 'true';
+    const allowVenueDisplay = formData.get('allowVenueDisplay') === 'true';
     const targetState = (formData.get('targetState') as string | null)?.trim() || null;
     const targetRegion = (formData.get('targetRegion') as string | null)?.trim() || null;
 
@@ -88,6 +89,7 @@ export async function POST(request: NextRequest) {
         requires_signature: requiresSignature,
         allow_date_input: allowDateInput,
         allow_print_name: allowPrintName,
+        allow_venue_display: allowVenueDisplay,
         target_state: targetState,
         target_region: targetRegion,
         created_by: user.id,

@@ -660,7 +660,10 @@ export default function EventDashboardPage() {
 
   const regionFilteredAssignableMembers = useMemo(() => {
     if (locationRegionFilter === "all") return locationAssignableMembers;
-    return locationAssignableMembers.filter((m) => m.region_id === locationRegionFilter);
+    return locationAssignableMembers.filter((m) => {
+      const vendorRegionId = m.region_id || m.profiles?.region_id;
+      return vendorRegionId === locationRegionFilter;
+    });
   }, [locationAssignableMembers, locationRegionFilter]);
 
   const savedAssignedUninvitedLocationVendorIds = useMemo(() => {
@@ -1657,6 +1660,9 @@ export default function EventDashboardPage() {
     if (locationTeamVendors.length === 0 && !loadingLocationTeamVendors) {
       await loadLocationCreateTeamModalData();
     }
+    if (regions.length === 0) {
+      void loadRegions();
+    }
 
     setEditingLocationIds((prev) => ({ ...prev, [locationId]: true }));
     setLocationAssignmentDrafts((prev) => ({
@@ -1672,6 +1678,7 @@ export default function EventDashboardPage() {
       delete next[locationId];
       return next;
     });
+    setLocationRegionFilter("all");
   };
 
   const toggleLocationAssignmentDraft = (locationId: string, memberId: string) => {
@@ -1836,6 +1843,7 @@ export default function EventDashboardPage() {
         delete next[locationId];
         return next;
       });
+      setLocationRegionFilter("all");
       await loadLocations();
     } catch (err: any) {
       setMessage(err?.message || "Failed to save location assignments");
@@ -5046,9 +5054,23 @@ export default function EventDashboardPage() {
                           </div>
                         ) : (
                           <div className="space-y-4">
-                            <p className="text-xs text-gray-500">
-                              Select vendors for this location, then save assignments.
-                            </p>
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-xs text-gray-500">
+                                Select vendors for this location, then save assignments.
+                              </p>
+                              {regions.length > 0 && (
+                                <select
+                                  value={locationRegionFilter}
+                                  onChange={(e) => setLocationRegionFilter(e.target.value)}
+                                  className="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                >
+                                  <option value="all">All Regions</option>
+                                  {regions.map((r) => (
+                                    <option key={r.id} value={r.id}>{r.name}</option>
+                                  ))}
+                                </select>
+                              )}
+                            </div>
 
                             {regionFilteredAssignableMembers.length === 0 ? (
                               <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4 space-y-3">
