@@ -4875,19 +4875,6 @@ export default function EventDashboardPage() {
                 </div>
               )}
 
-              <div className="flex items-center gap-2">
-                <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Filter by Region:</label>
-                <select
-                  value={locationRegionFilter}
-                  onChange={(e) => setLocationRegionFilter(e.target.value)}
-                  className="px-3 py-1.5 border rounded-lg text-sm focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="all">All Regions</option>
-                  {regions.map((r) => (
-                    <option key={r.id} value={r.id}>{r.name}</option>
-                  ))}
-                </select>
-              </div>
 
               {loadingLocations ? (
                 <div className="text-center py-12">
