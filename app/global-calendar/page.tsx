@@ -1240,6 +1240,9 @@ export default function DashboardPage() {
     setSelectedTeamRegion("all");
     setTeamSearchQuery("");
 
+    // Ensure regions are loaded for the region filter
+    void loadRegions();
+
     // Load available vendors first
     await loadTeamVendors(event, "all");
 

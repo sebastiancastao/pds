@@ -5057,6 +5057,9 @@ export default function EventDashboardPage() {
                             <div className="flex items-center justify-between gap-3">
                               <p className="text-xs text-gray-500">
                                 Select vendors for this location, then save assignments.
+                                <span className="ml-1 font-medium text-gray-700">
+                                  ({regionFilteredAssignableMembers.length} vendor{regionFilteredAssignableMembers.length !== 1 ? "s" : ""})
+                                </span>
                               </p>
                               {regions.length > 0 && (
                                 <select
