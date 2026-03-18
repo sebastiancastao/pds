@@ -1239,7 +1239,7 @@ export default function EventDashboardPage() {
     setShowLocationCreateTeamModal(true);
     setLocationTeamMessage("");
     setLocationTeamSearchQuery("");
-    await loadLocationCreateTeamModalData();
+    await Promise.all([loadLocationCreateTeamModalData(), loadRegions()]);
   };
 
   const toggleLocationTeamMember = (id: string) => {
@@ -1420,7 +1420,7 @@ export default function EventDashboardPage() {
     setShowAddVendorModal(true);
     setAddVendorSearch("");
     setSelectedVendorToAdd("");
-    await loadVendorsForImmediateTeamAdd();
+    await Promise.all([loadVendorsForImmediateTeamAdd(), loadRegions()]);
   };
 
   const handleAddVendorToTeamImmediately = async () => {
@@ -1514,13 +1514,13 @@ export default function EventDashboardPage() {
 
   const loadRegions = async () => {
     try {
-      const token = await getSessionToken();
-      const res = await fetch("/api/regions", {
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      });
-      if (res.ok) {
-        const data = await res.json().catch(() => ({}));
-        setRegions(Array.isArray(data?.regions) ? data.regions : []);
+      const { data, error } = await supabase
+        .from("regions")
+        .select("id, name")
+        .eq("is_active", true)
+        .order("name", { ascending: true });
+      if (!error && Array.isArray(data)) {
+        setRegions(data);
       }
     } catch {
       // silent — region filter just won't populate
