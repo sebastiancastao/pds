@@ -101,6 +101,7 @@ type TeamVendorOption = {
     state?: string | null;
     city?: string | null;
     profile_photo_url?: string | null;
+    region_id?: string | null;
   };
 };
 
@@ -332,6 +333,7 @@ export default function EventDashboardPage() {
   const [locationTeamSearchQuery, setLocationTeamSearchQuery] = useState("");
   const [locationTeamState, setLocationTeamState] = useState<string>("all");
   const [locationTeamCity, setLocationTeamCity] = useState<string>("all");
+  const [locationTeamRegion, setLocationTeamRegion] = useState<string>("all");
   const [regions, setRegions] = useState<Region[]>([]);
   const [locationRegionFilter, setLocationRegionFilter] = useState<string>("all");
   const [locationTeamVendors, setLocationTeamVendors] = useState<TeamVendorOption[]>([]);
@@ -345,6 +347,7 @@ export default function EventDashboardPage() {
   const [addVendorSearch, setAddVendorSearch] = useState<string>("");
   const [addVendorState, setAddVendorState] = useState<string>("all");
   const [addVendorCity, setAddVendorCity] = useState<string>("all");
+  const [addVendorRegion, setAddVendorRegion] = useState<string>("all");
   const [addVendorOptions, setAddVendorOptions] = useState<TeamVendorOption[]>([]);
   const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<string>("");
   // Cache flags to avoid re-fetching data when switching tabs
@@ -512,6 +515,10 @@ export default function EventDashboardPage() {
     return addVendorOptions.filter((vendor) => {
       if (addVendorState !== "all" && vendor.profiles?.state !== addVendorState) return false;
       if (addVendorCity !== "all" && vendor.profiles?.city !== addVendorCity) return false;
+      if (addVendorRegion !== "all") {
+        const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
+        if (vendorRegionId !== addVendorRegion) return false;
+      }
       if (!query) return true;
       const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
       const lastName = (vendor.profiles?.last_name || "").toString().toLowerCase();
@@ -526,7 +533,7 @@ export default function EventDashboardPage() {
         division.includes(query)
       );
     });
-  }, [addVendorOptions, addVendorSearch, addVendorState, addVendorCity]);
+  }, [addVendorOptions, addVendorSearch, addVendorState, addVendorCity, addVendorRegion]);
 
   const availableLocationTeamStates = useMemo(() => {
     const states = locationTeamVendors.map((v) => v.profiles?.state).filter((s): s is string => Boolean(s));
@@ -547,6 +554,10 @@ export default function EventDashboardPage() {
       .filter((vendor) => {
         if (locationTeamState !== "all" && vendor.profiles?.state !== locationTeamState) return false;
         if (locationTeamCity !== "all" && vendor.profiles?.city !== locationTeamCity) return false;
+        if (locationTeamRegion !== "all") {
+          const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
+          if (vendorRegionId !== locationTeamRegion) return false;
+        }
         if (!query) return true;
         const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
         const lastName = (vendor.profiles?.last_name || "").toString().toLowerCase();
@@ -569,7 +580,7 @@ export default function EventDashboardPage() {
         return aName.localeCompare(bName);
       });
     return sorted;
-  }, [locationTeamVendors, locationTeamSearchQuery, locationTeamState, locationTeamCity]);
+  }, [locationTeamVendors, locationTeamSearchQuery, locationTeamState, locationTeamCity, locationTeamRegion]);
 
   const allLocationAvailableVendorsInvited = useMemo(
     () =>
@@ -1101,6 +1112,7 @@ export default function EventDashboardPage() {
     setAddVendorSearch("");
     setAddVendorState("all");
     setAddVendorCity("all");
+    setAddVendorRegion("all");
     setSelectedVendorToAdd("");
   };
 
@@ -1115,6 +1127,7 @@ export default function EventDashboardPage() {
     setLocationTeamSearchQuery("");
     setLocationTeamState("all");
     setLocationTeamCity("all");
+    setLocationTeamRegion("all");
     setLocationTeamVendors([]);
     setSelectedLocationTeamMembers(new Set());
   };
@@ -1222,6 +1235,7 @@ export default function EventDashboardPage() {
       setMessage("You do not have permission to send team invitations.");
       return;
     }
+    setMessage("");
     setShowLocationCreateTeamModal(true);
     setLocationTeamMessage("");
     setLocationTeamSearchQuery("");
@@ -6151,8 +6165,8 @@ export default function EventDashboardPage() {
                 </div>
               )}
 
-              {(availableLocationTeamStates.length > 0 || availableLocationTeamCities.length > 0) && (
-                <div className="grid grid-cols-2 gap-3">
+              {(availableLocationTeamStates.length > 0 || availableLocationTeamCities.length > 0 || regions.length > 0) && (
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by State</label>
                     <select
@@ -6178,6 +6192,20 @@ export default function EventDashboardPage() {
                       <option value="all">All Cities</option>
                       {availableLocationTeamCities.map((c) => (
                         <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by Region</label>
+                    <select
+                      value={locationTeamRegion}
+                      onChange={(e) => setLocationTeamRegion(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      disabled={loadingLocationTeamVendors}
+                    >
+                      <option value="all">All Regions</option>
+                      {regions.map((r) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
                   </div>
@@ -6678,8 +6706,8 @@ export default function EventDashboardPage() {
             </div>
 
             <div className="px-6 py-4 space-y-4">
-              {(availableAddVendorStates.length > 0 || availableAddVendorCities.length > 0) && (
-                <div className="grid grid-cols-2 gap-3">
+              {(availableAddVendorStates.length > 0 || availableAddVendorCities.length > 0 || regions.length > 0) && (
+                <div className="grid grid-cols-3 gap-3">
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by State</label>
                     <select
@@ -6705,6 +6733,20 @@ export default function EventDashboardPage() {
                       <option value="all">All Cities</option>
                       {availableAddVendorCities.map((c) => (
                         <option key={c} value={c}>{c}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by Region</label>
+                    <select
+                      value={addVendorRegion}
+                      onChange={(e) => setAddVendorRegion(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
+                      disabled={loadingAddVendors || addingVendorToTeam}
+                    >
+                      <option value="all">All Regions</option>
+                      {regions.map((r) => (
+                        <option key={r.id} value={r.id}>{r.name}</option>
                       ))}
                     </select>
                   </div>

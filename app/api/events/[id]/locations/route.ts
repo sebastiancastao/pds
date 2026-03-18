@@ -171,7 +171,7 @@ async function getAuthContext(req: NextRequest): Promise<AuthContext | null> {
 async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boolean> {
   const { data: event, error: eventError } = await supabaseAdmin
     .from("events")
-    .select("id, created_by")
+    .select("id, created_by, venue")
     .eq("id", eventId)
     .maybeSingle();
 
@@ -184,6 +184,7 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
   if (event.created_by === auth.user.id) return true;
 
   if (auth.role === "manager") {
+    // Allow if directly on the event team
     const { data: teamEntry } = await supabaseAdmin
       .from("event_teams")
       .select("event_id")
@@ -191,6 +192,26 @@ async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boole
       .eq("vendor_id", auth.user.id)
       .maybeSingle();
     if (teamEntry) return true;
+
+    // Allow if the event is at one of their assigned venues
+    if (event.venue) {
+      const { data: venueLinks } = await supabaseAdmin
+        .from("venue_managers")
+        .select("venue_id")
+        .eq("manager_id", auth.user.id)
+        .eq("is_active", true);
+
+      if (venueLinks && venueLinks.length > 0) {
+        const venueIds = venueLinks.map((v: any) => v.venue_id);
+        const { data: venueRefs } = await supabaseAdmin
+          .from("venue_reference")
+          .select("venue_name")
+          .in("id", venueIds);
+
+        const assignedVenueNames = (venueRefs || []).map((v: any) => v.venue_name).filter(Boolean);
+        if (assignedVenueNames.includes(event.venue)) return true;
+      }
+    }
   }
 
   if (auth.role === "supervisor" || auth.role === "supervisor2" || auth.role === "supervisor3") {
