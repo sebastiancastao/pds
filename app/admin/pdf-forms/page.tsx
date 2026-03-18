@@ -207,6 +207,7 @@ export default function AdminPdfFormsPage() {
   const [requiresSignature, setRequiresSignature] = useState(false);
   const [allowDateInput, setAllowDateInput] = useState(false);
   const [allowPrintName, setAllowPrintName] = useState(false);
+  const [allowVenueDisplay, setAllowVenueDisplay] = useState(false);
   const [targetState, setTargetState] = useState('');
   const [targetUsers, setTargetUsers] = useState<EmployeeResult[]>([]);
   const [showUserPickerModal, setShowUserPickerModal] = useState(false);
