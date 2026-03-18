@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -228,9 +228,41 @@ function formatDate(d?: string | null) {
   return dt.toLocaleDateString();
 }
 
+const I9_LIST_A = [
+  'U.S. Passport or U.S. Passport Card',
+  'Permanent Resident Card (Form I-551)',
+  'Employment Authorization Document with Photo (Form I-766)',
+  'Foreign Passport with Form I-94 indicating work authorization',
+  'Passport from Micronesia/Marshall Islands with Form I-94',
+];
+
+const I9_LIST_B = [
+  "Driver's license or State ID (with photo or info)",
+  'ID card issued by federal/state/local agency (with photo/info)',
+  'School ID card with photograph',
+  "Voter's registration card",
+  'U.S. military card or draft record',
+  "Military dependent's ID card",
+  'U.S. Coast Guard Merchant Mariner Card',
+  'Native American tribal document',
+  "Driver's license issued by Canadian authority",
+];
+
+const I9_LIST_C = [
+  'U.S. Social Security Card (unrestricted)',
+  'Certification of Birth Abroad (Form FS-545)',
+  'Certification of Report of Birth (Form DS-1350)',
+  'Original or certified Birth Certificate',
+  'Native American tribal document',
+  'U.S. Citizen ID Card (Form I-197)',
+  'ID Card for Resident Citizen in the U.S. (Form I-179)',
+  'Employment Authorization Document issued by DHS',
+];
+
 export default function EmployeeProfilePage() {
   const params = useParams<{ id: string }>();
   const employeeId = params?.id;
+  const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -258,6 +290,26 @@ export default function EmployeeProfilePage() {
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
+
+  // I-9 edit mode (Documentation section)
+  const [i9EditMode, setI9EditMode] = useState(false);
+  const [i9Uploading, setI9Uploading] = useState<string | null>(null);
+  const [i9EditorMode, setI9EditorMode] = useState<'A' | 'BC'>('BC');
+  const [i9ListADoc, setI9ListADoc] = useState('');
+  const [i9ListBDoc, setI9ListBDoc] = useState('');
+  const [i9ListCDoc, setI9ListCDoc] = useState('');
+  // State-to-payroll-packet route for HR editing I-9 on behalf of employee
+  const i9FormViewerUrl = useMemo(() => {
+    const stateRoutes: Record<string, string> = {
+      CA: '/payroll-packet-ca/form-viewer',
+      NY: '/payroll-packet-ny/form-viewer',
+      WI: '/payroll-packet-wi/form-viewer',
+      AZ: '/payroll-packet-az/form-viewer',
+      NV: '/payroll-packet-nv/form-viewer',
+    };
+    const base = (employee?.state && stateRoutes[employee.state.toUpperCase()]) || '/payroll-packet-ca/form-viewer';
+    return `${base}?form=i9&asUser=${employeeId}`;
+  }, [employee?.state, employeeId]);
 
   useEffect(() => {
     const load = async () => {
@@ -420,7 +472,7 @@ export default function EmployeeProfilePage() {
           const data = await res.json();
           const allForms = data.forms || [];
           const filtered = allForms.filter((f: { target_state: string | null }) =>
-            !f.target_state || f.target_state === employee.state
+            !f.target_state || !employee.state || f.target_state === employee.state
           );
           setCustomFormsList(filtered);
         }
@@ -634,6 +686,44 @@ export default function EmployeeProfilePage() {
     } catch (error) {
       console.error('Error downloading I-9 document:', error);
       alert('Failed to download document');
+    }
+  };
+
+  // Upload an I-9 document on behalf of this employee (HR edit mode)
+  const uploadI9Document = async (documentType: string, file: File) => {
+    if (!employeeId) return;
+    setI9Uploading(documentType);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const fd = new FormData();
+      fd.append('documentType', documentType);
+      fd.append('file', file);
+      fd.append('userId', employeeId);
+      const res = await fetch('/api/i9-documents/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: fd,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Upload failed');
+        return;
+      }
+      // Reload I-9 documents
+      const { data: { session: s2 } } = await supabase.auth.getSession();
+      const refresh = await fetch(`/api/i9-documents/${employeeId}`, {
+        headers: s2?.access_token ? { Authorization: `Bearer ${s2.access_token}` } : {},
+      });
+      if (refresh.ok) {
+        const result = await refresh.json();
+        setI9Documents(result.document || null);
+      }
+    } catch (e) {
+      console.error('Error uploading I-9 document:', e);
+      alert('Upload failed');
+    } finally {
+      setI9Uploading(null);
     }
   };
 
@@ -1203,12 +1293,195 @@ export default function EmployeeProfilePage() {
             <section className="mb-8">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">I-9 Documentation</h2>
+                <button
+                  onClick={() => {
+                    if (!i9EditMode) {
+                      // Initialize editor mode based on existing docs
+                      setI9EditorMode(i9Documents?.additional_doc_url ? 'A' : 'BC');
+                    }
+                    setI9EditMode(m => !m);
+                  }}
+                  className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    i9EditMode
+                      ? 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  }`}
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                  {i9EditMode ? 'Done Editing' : 'Edit I-9'}
+                </button>
               </div>
               <div className="apple-card p-6">
                 {i9Loading ? (
                   <div className="flex items-center justify-center py-8">
                     <div className="apple-spinner" />
                     <span className="ml-3 text-gray-600">Loading documents…</span>
+                  </div>
+                ) : i9EditMode ? (
+                  /* ── Full I-9 inline editor (payroll-packet style) ── */
+                  <div className="space-y-6">
+                    {/* Mode selector */}
+                    <div className="flex flex-col sm:flex-row gap-3">
+                      <label className={`flex-1 flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${i9EditorMode === 'A' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                        <input type="radio" name="i9mode" value="A" checked={i9EditorMode === 'A'} onChange={() => setI9EditorMode('A')} className="text-indigo-600 accent-indigo-600" />
+                        <div>
+                          <p className="font-semibold text-gray-900 text-sm">List A</p>
+                          <p className="text-xs text-gray-500">One document establishing both identity and employment authorization</p>
+                        </div>
+                      </label>
+                      <label className={`flex-1 flex items-center gap-3 p-4 rounded-xl border-2 cursor-pointer transition-all ${i9EditorMode === 'BC' ? 'border-indigo-500 bg-indigo-50' : 'border-gray-200 hover:border-gray-300'}`}>
+                        <input type="radio" name="i9mode" value="BC" checked={i9EditorMode === 'BC'} onChange={() => setI9EditorMode('BC')} className="text-indigo-600 accent-indigo-600" />
+                        <div>
+                          <p className="font-semibold text-gray-900 text-sm">List B + C</p>
+                          <p className="text-xs text-gray-500">One document from List B (identity) and one from List C (employment authorization)</p>
+                        </div>
+                      </label>
+                    </div>
+
+                    {i9EditorMode === 'A' ? (
+                      /* List A slot → additional_doc */
+                      <div className="space-y-3">
+                        <h3 className="font-semibold text-gray-800">List A Document</h3>
+                        <select value={i9ListADoc} onChange={e => setI9ListADoc(e.target.value)}
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+                          <option value="">Select document type…</option>
+                          {I9_LIST_A.map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                        {i9Documents?.additional_doc_url ? (
+                          <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-9 h-9 shrink-0 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-gray-700 truncate">{i9Documents.additional_doc_filename || 'Document'}</p>
+                                <p className="text-xs text-green-600">Uploaded {formatDate(i9Documents.additional_doc_uploaded_at)}</p>
+                              </div>
+                            </div>
+                            <div className="flex gap-2 shrink-0">
+                              <a href={i9Documents.additional_doc_url} target="_blank" rel="noopener noreferrer"
+                                className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium">View</a>
+                              <label className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer font-medium">
+                                {i9Uploading === 'i9_list_a' ? 'Uploading…' : 'Replace'}
+                                <input type="file" className="hidden" accept="image/*,application/pdf"
+                                  onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_a', f); e.target.value = ''; }}
+                                  disabled={!!i9Uploading} />
+                              </label>
+                            </div>
+                          </div>
+                        ) : (
+                          <label className="block border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-indigo-400 transition-colors cursor-pointer group">
+                            <svg className="w-10 h-10 mx-auto text-gray-300 group-hover:text-indigo-400 mb-2 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                            <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
+                              {i9Uploading === 'i9_list_a' ? 'Uploading…' : 'Click to upload List A document'}
+                            </p>
+                            <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                            <input type="file" className="hidden" accept="image/*,application/pdf"
+                              onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_a', f); e.target.value = ''; }}
+                              disabled={!!i9Uploading} />
+                          </label>
+                        )}
+                      </div>
+                    ) : (
+                      /* List B + C slots */
+                      <div className="space-y-6">
+                        {/* List B → drivers_license */}
+                        <div className="space-y-3">
+                          <h3 className="font-semibold text-gray-800">List B — Identity Document</h3>
+                          <select value={i9ListBDoc} onChange={e => setI9ListBDoc(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+                            <option value="">Select document type…</option>
+                            {I9_LIST_B.map(d => <option key={d} value={d}>{d}</option>)}
+                          </select>
+                          {i9Documents?.drivers_license_url ? (
+                            <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-9 h-9 shrink-0 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium text-gray-700 truncate">{i9Documents.drivers_license_filename || 'Document'}</p>
+                                  <p className="text-xs text-green-600">Uploaded {formatDate(i9Documents.drivers_license_uploaded_at)}</p>
+                                </div>
+                              </div>
+                              <div className="flex gap-2 shrink-0">
+                                <a href={i9Documents.drivers_license_url} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium">View</a>
+                                <label className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer font-medium">
+                                  {i9Uploading === 'i9_list_b' ? 'Uploading…' : 'Replace'}
+                                  <input type="file" className="hidden" accept="image/*,application/pdf"
+                                    onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_b', f); e.target.value = ''; }}
+                                    disabled={!!i9Uploading} />
+                                </label>
+                              </div>
+                            </div>
+                          ) : (
+                            <label className="block border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-indigo-400 transition-colors cursor-pointer group">
+                              <svg className="w-10 h-10 mx-auto text-gray-300 group-hover:text-indigo-400 mb-2 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                              </svg>
+                              <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
+                                {i9Uploading === 'i9_list_b' ? 'Uploading…' : 'Click to upload List B document'}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                              <input type="file" className="hidden" accept="image/*,application/pdf"
+                                onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_b', f); e.target.value = ''; }}
+                                disabled={!!i9Uploading} />
+                            </label>
+                          )}
+                        </div>
+
+                        {/* List C → ssn_document */}
+                        <div className="space-y-3">
+                          <h3 className="font-semibold text-gray-800">List C — Employment Authorization</h3>
+                          <select value={i9ListCDoc} onChange={e => setI9ListCDoc(e.target.value)}
+                            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400">
+                            <option value="">Select document type…</option>
+                            {I9_LIST_C.map(d => <option key={d} value={d}>{d}</option>)}
+                          </select>
+                          {i9Documents?.ssn_document_url ? (
+                            <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center justify-between gap-3">
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div className="w-9 h-9 shrink-0 bg-green-100 rounded-lg flex items-center justify-center text-green-600">
+                                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-sm font-medium text-gray-700 truncate">{i9Documents.ssn_document_filename || 'Document'}</p>
+                                  <p className="text-xs text-green-600">Uploaded {formatDate(i9Documents.ssn_document_uploaded_at)}</p>
+                                </div>
+                              </div>
+                              <div className="flex gap-2 shrink-0">
+                                <a href={i9Documents.ssn_document_url} target="_blank" rel="noopener noreferrer"
+                                  className="text-xs px-3 py-1.5 bg-blue-500 text-white rounded-lg hover:bg-blue-600 font-medium">View</a>
+                                <label className="text-xs px-3 py-1.5 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 cursor-pointer font-medium">
+                                  {i9Uploading === 'i9_list_c' ? 'Uploading…' : 'Replace'}
+                                  <input type="file" className="hidden" accept="image/*,application/pdf"
+                                    onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_c', f); e.target.value = ''; }}
+                                    disabled={!!i9Uploading} />
+                                </label>
+                              </div>
+                            </div>
+                          ) : (
+                            <label className="block border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-indigo-400 transition-colors cursor-pointer group">
+                              <svg className="w-10 h-10 mx-auto text-gray-300 group-hover:text-indigo-400 mb-2 transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                              </svg>
+                              <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
+                                {i9Uploading === 'i9_list_c' ? 'Uploading…' : 'Click to upload List C document'}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                              <input type="file" className="hidden" accept="image/*,application/pdf"
+                                onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_c', f); e.target.value = ''; }}
+                                disabled={!!i9Uploading} />
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : !i9Documents ? (
                   <div className="text-center py-8">
@@ -1219,30 +1492,25 @@ export default function EmployeeProfilePage() {
                     <p className="text-sm text-gray-400 mt-1">Employee has not completed I-9 verification</p>
                   </div>
                 ) : (
+                  /* View mode — document cards */
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    {/* Driver's License */}
+                    {/* List B / Driver's License */}
                     <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex items-center gap-3">
-                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                            i9Documents.drivers_license_url
-                              ? 'bg-green-100 text-green-600'
-                              : 'bg-gray-100 text-gray-400'
-                          }`}>
+                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${i9Documents.drivers_license_url ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
                             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2V8a2 2 0 00-2-2h-5m-4 0V5a2 2 0 114 0v1m-4 0a2 2 0 104 0m-5 8a2 2 0 100-4 2 2 0 000 4zm0 0c1.306 0 2.417.835 2.83 2M9 14a3.001 3.001 0 00-2.83 2M15 11h3m-3 4h2" />
                             </svg>
                           </div>
                           <div>
-                            <h3 className="font-semibold text-gray-900">Driver's License</h3>
-                            <p className="text-sm text-gray-500">Identity verification</p>
+                            <h3 className="font-semibold text-gray-900">List B — Identity</h3>
+                            <p className="text-sm text-gray-500">Driver's license / State ID</p>
                           </div>
                         </div>
                         {i9Documents.drivers_license_url && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
                             Uploaded
                           </span>
                         )}
@@ -1250,39 +1518,24 @@ export default function EmployeeProfilePage() {
                       {i9Documents.drivers_license_url ? (
                         <div className="space-y-2">
                           <div className="flex items-center text-sm text-gray-600">
-                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
+                            <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             <span className="truncate">{i9Documents.drivers_license_filename || 'document'}</span>
                           </div>
                           {i9Documents.drivers_license_uploaded_at && (
                             <div className="flex items-center text-sm text-gray-500">
-                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
+                              <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                               {formatDate(i9Documents.drivers_license_uploaded_at)}
                             </div>
                           )}
                           <div className="flex gap-2 mt-3">
-                            <a
-                              href={i9Documents.drivers_license_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
+                            <a href={i9Documents.drivers_license_url} target="_blank" rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               View
                             </a>
-                            <button
-                              onClick={() => downloadI9Document(i9Documents.drivers_license_url!, i9Documents.drivers_license_filename || 'drivers_license')}
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                              </svg>
+                            <button onClick={() => downloadI9Document(i9Documents.drivers_license_url!, i9Documents.drivers_license_filename || 'drivers_license')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                               Download
                             </button>
                           </div>
@@ -1292,29 +1545,21 @@ export default function EmployeeProfilePage() {
                       )}
                     </div>
 
-                    {/* SSN Document */}
+                    {/* List C / SSN */}
                     <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all">
                       <div className="flex items-start justify-between mb-3">
                         <div className="flex items-center gap-3">
-                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
-                            i9Documents.ssn_document_url
-                              ? 'bg-green-100 text-green-600'
-                              : 'bg-gray-100 text-gray-400'
-                          }`}>
-                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
+                          <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${i9Documents.ssn_document_url ? 'bg-green-100 text-green-600' : 'bg-gray-100 text-gray-400'}`}>
+                            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                           </div>
                           <div>
-                            <h3 className="font-semibold text-gray-900">Social Security Card</h3>
-                            <p className="text-sm text-gray-500">Employment eligibility</p>
+                            <h3 className="font-semibold text-gray-900">List C — Employment Auth.</h3>
+                            <p className="text-sm text-gray-500">Social Security Card / SSN doc</p>
                           </div>
                         </div>
                         {i9Documents.ssn_document_url && (
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
                             Uploaded
                           </span>
                         )}
@@ -1322,39 +1567,24 @@ export default function EmployeeProfilePage() {
                       {i9Documents.ssn_document_url ? (
                         <div className="space-y-2">
                           <div className="flex items-center text-sm text-gray-600">
-                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
+                            <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             <span className="truncate">{i9Documents.ssn_document_filename || 'document'}</span>
                           </div>
                           {i9Documents.ssn_document_uploaded_at && (
                             <div className="flex items-center text-sm text-gray-500">
-                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
+                              <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                               {formatDate(i9Documents.ssn_document_uploaded_at)}
                             </div>
                           )}
                           <div className="flex gap-2 mt-3">
-                            <a
-                              href={i9Documents.ssn_document_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
+                            <a href={i9Documents.ssn_document_url} target="_blank" rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               View
                             </a>
-                            <button
-                              onClick={() => downloadI9Document(i9Documents.ssn_document_url!, i9Documents.ssn_document_filename || 'ssn_card')}
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                              </svg>
+                            <button onClick={() => downloadI9Document(i9Documents.ssn_document_url!, i9Documents.ssn_document_filename || 'ssn_card')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                               Download
                             </button>
                           </div>
@@ -1364,63 +1594,44 @@ export default function EmployeeProfilePage() {
                       )}
                     </div>
 
-                    {/* Additional Document (if exists) */}
+                    {/* List A / Additional Document (if exists) */}
                     {i9Documents.additional_doc_url && (
                       <div className="border border-gray-200 rounded-xl p-5 hover:border-blue-300 hover:shadow-md transition-all md:col-span-2">
                         <div className="flex items-start justify-between mb-3">
                           <div className="flex items-center gap-3">
                             <div className="w-12 h-12 rounded-lg bg-blue-100 text-blue-600 flex items-center justify-center">
-                              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                              </svg>
+                              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" /></svg>
                             </div>
                             <div>
-                              <h3 className="font-semibold text-gray-900">Additional Document</h3>
-                              <p className="text-sm text-gray-500">Supplementary verification</p>
+                              <h3 className="font-semibold text-gray-900">List A Document</h3>
+                              <p className="text-sm text-gray-500">Identity + employment authorization</p>
                             </div>
                           </div>
                           <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20">
-                              <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                            </svg>
+                            <svg className="w-3 h-3 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" /></svg>
                             Uploaded
                           </span>
                         </div>
                         <div className="space-y-2">
                           <div className="flex items-center text-sm text-gray-600">
-                            <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                            </svg>
+                            <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
                             <span className="truncate">{i9Documents.additional_doc_filename || 'document'}</span>
                           </div>
                           {i9Documents.additional_doc_uploaded_at && (
                             <div className="flex items-center text-sm text-gray-500">
-                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
+                              <svg className="w-4 h-4 mr-2 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                               {formatDate(i9Documents.additional_doc_uploaded_at)}
                             </div>
                           )}
                           <div className="flex gap-2 mt-3">
-                            <a
-                              href={i9Documents.additional_doc_url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                              </svg>
+                            <a href={i9Documents.additional_doc_url} target="_blank" rel="noopener noreferrer"
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
                               View
                             </a>
-                            <button
-                              onClick={() => downloadI9Document(i9Documents.additional_doc_url!, i9Documents.additional_doc_filename || 'additional_document')}
-                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium"
-                            >
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                              </svg>
+                            <button onClick={() => downloadI9Document(i9Documents.additional_doc_url!, i9Documents.additional_doc_filename || 'additional_document')}
+                              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors text-sm font-medium">
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                               Download
                             </button>
                           </div>
@@ -1485,56 +1696,73 @@ export default function EmployeeProfilePage() {
                           Completed Forms
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          {pdfForms.map((form) => (
-                            <div
-                              key={form.form_name}
-                              className="border border-green-200 bg-green-50 rounded-xl p-4 hover:border-green-300 hover:shadow-md transition-all"
-                            >
-                              <div className="flex items-start justify-between mb-3">
-                                <div className="flex items-center gap-3">
-                                  <div className="w-10 h-10 rounded-lg bg-green-500 text-white flex items-center justify-center flex-shrink-0">
-                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                    </svg>
+                          {pdfForms.map((form) => {
+                            const isI9 = form.form_name === 'i9' || /^[a-z]+-i9$/.test(form.form_name);
+                            return (
+                              <div
+                                key={form.form_name}
+                                className="border border-green-200 bg-green-50 rounded-xl p-4 hover:border-green-300 hover:shadow-md transition-all"
+                              >
+                                <div className="flex items-start justify-between mb-3">
+                                  <div className="flex items-center gap-3">
+                                    <div className="w-10 h-10 rounded-lg bg-green-500 text-white flex items-center justify-center flex-shrink-0">
+                                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                      </svg>
+                                    </div>
+                                    <div>
+                                      <h3 className="font-semibold text-gray-900 text-sm">{form.display_name}</h3>
+                                      <p className="text-xs text-green-700">Filled & Submitted</p>
+                                    </div>
                                   </div>
-                                  <div>
-                                    <h3 className="font-semibold text-gray-900 text-sm">{form.display_name}</h3>
-                                    <p className="text-xs text-green-700">Filled & Submitted</p>
+                                </div>
+                                <div className="space-y-2">
+                                  <div className="flex items-center text-xs text-gray-500">
+                                    <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    {formatDate(form.updated_at)}
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => viewPDFForm(form)}
+                                      className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                                    >
+                                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                      </svg>
+                                      View
+                                    </button>
+                                    <button
+                                      onClick={() => downloadPDFForm(form)}
+                                      className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                                    >
+                                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                      </svg>
+                                      Download
+                                    </button>
+                                    {isI9 && (
+                                      <a
+                                        href={i9FormViewerUrl}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700"
+                                      >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                        </svg>
+                                        Edit
+                                      </a>
+                                    )}
                                   </div>
                                 </div>
                               </div>
-                              <div className="space-y-2">
-                                <div className="flex items-center text-xs text-gray-500">
-                                  <svg className="w-3 h-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                  </svg>
-                                  {formatDate(form.updated_at)}
-                                </div>
-                                <div className="flex gap-2">
-                                  <button
-                                    onClick={() => viewPDFForm(form)}
-                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                    </svg>
-                                    View
-                                  </button>
-                                  <button
-                                    onClick={() => downloadPDFForm(form)}
-                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                                  >
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                    Download
-                                  </button>
-                                </div>
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
+
                       </div>
                     )}
 
@@ -1604,29 +1832,40 @@ export default function EmployeeProfilePage() {
                                 </div>
                               </div>
                             </div>
-                            {submitted && (
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => viewPDFForm(submitted)}
-                                  className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                  </svg>
-                                  View
-                                </button>
-                                <button
-                                  onClick={() => downloadPDFForm(submitted)}
-                                  className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
-                                >
-                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                  </svg>
-                                  Download
-                                </button>
-                              </div>
-                            )}
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => router.push(`/employee/form/${form.id}?asUser=${employeeId}`)}
+                                className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-xs font-medium"
+                              >
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                                {submitted ? 'Edit Form' : 'Open Form'}
+                              </button>
+                              {submitted && (
+                                <>
+                                  <button
+                                    onClick={() => viewPDFForm(submitted)}
+                                    className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                    </svg>
+                                    View
+                                  </button>
+                                  <button
+                                    onClick={() => downloadPDFForm(submitted)}
+                                    className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
+                                  >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    Download
+                                  </button>
+                                </>
+                              )}
+                            </div>
                             {submitted && customFormDocs[form.id]?.length > 0 && (
                               <div className="mt-3 pt-3 border-t border-green-200">
                                 <p className="text-xs font-semibold text-gray-500 mb-1.5">Supporting Documents</p>

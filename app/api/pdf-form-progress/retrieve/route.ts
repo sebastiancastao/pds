@@ -64,16 +64,28 @@ export async function GET(request: NextRequest) {
     // Get form name from query parameters
     const { searchParams } = new URL(request.url);
     const formName = searchParams.get('formName');
+    const targetUserIdParam = searchParams.get('targetUserId');
 
     if (!formName) {
       return NextResponse.json({ error: 'Missing formName parameter' }, { status: 400 });
+    }
+
+    // If HR/admin is retrieving for another user, validate role
+    let retrieveUserId = userId;
+    if (targetUserIdParam && targetUserIdParam !== userId) {
+      const { data: caller } = await supabaseAdmin
+        .from('users').select('role').eq('id', userId).single();
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      retrieveUserId = targetUserIdParam;
     }
 
     // Use service-role client so RLS never blocks the read
     const { data, error } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('form_data, updated_at')
-      .eq('user_id', userId)
+      .eq('user_id', retrieveUserId)
       .eq('form_name', formName)
       .single();
 

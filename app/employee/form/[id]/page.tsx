@@ -13,6 +13,13 @@ type FormMeta = {
   allow_print_name: boolean;
 };
 
+type AssignedVenue = {
+  id: string;
+  venue_name: string;
+  city: string | null;
+  state: string | null;
+};
+
 type UploadedDoc = {
   filename: string;
   url: string;
@@ -67,6 +74,9 @@ export default function EmployeeFormPage() {
   // Print name (shown when admin enabled allow_print_name for this form)
   const [printName, setPrintName] = useState('');
 
+  // Assigned venue
+  const [assignedVenues, setAssignedVenues] = useState<AssignedVenue[]>([]);
+
   // Already-submitted state
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [submittedAt, setSubmittedAt] = useState<string | null>(null);
@@ -97,6 +107,20 @@ export default function EmployeeFormPage() {
     setSessionToken(session.access_token);
 
     try {
+      // Load assigned venue(s) for this user
+      const targetId = asUserId ?? session.user.id;
+      const { data: venueRows } = await supabase
+        .from('vendor_venue_assignments')
+        .select('venue:venue_reference(id, venue_name, city, state)')
+        .eq('vendor_id', targetId);
+      if (venueRows) {
+        setAssignedVenues(
+          venueRows
+            .map((r: any) => (Array.isArray(r.venue) ? r.venue[0] : r.venue))
+            .filter(Boolean) as AssignedVenue[]
+        );
+      }
+
       // Fetch form list first — we need the title to build the formName key
       const listRes = await fetch('/api/custom-forms/list', {
         headers: { Authorization: `Bearer ${session.access_token}` },
@@ -401,7 +425,8 @@ export default function EmployeeFormPage() {
     </div>
   );
 
-  if (alreadySubmitted) return (
+  // HR admins (asUserId present) can always edit even if already submitted
+  if (alreadySubmitted && !asUserId) return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
@@ -500,7 +525,7 @@ export default function EmployeeFormPage() {
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/employee')} className="text-gray-500 hover:text-gray-700 text-sm">
+          <button onClick={() => router.push(asUserId ? `/hr/employees/${asUserId}` : '/employee')} className="text-gray-500 hover:text-gray-700 text-sm">
             ← Back
           </button>
           <h1 className="font-semibold text-gray-900 text-lg">{meta?.title}</h1>
@@ -518,6 +543,13 @@ export default function EmployeeFormPage() {
 
       {error && (
         <div className="bg-red-50 border-b border-red-200 px-4 py-2 text-sm text-red-700">{error}</div>
+      )}
+
+      {/* HR admin re-edit banner */}
+      {asUserId && alreadySubmitted && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-sm text-amber-800">
+          Editing a previously submitted form on behalf of this employee. Saving will overwrite the existing submission.
+        </div>
       )}
 
       {/* PDF Editor */}
@@ -631,6 +663,33 @@ export default function EmployeeFormPage() {
           <p className="text-xs text-gray-400 mt-3">Accepted: JPG, PNG, WEBP, PDF — max 10 MB each</p>
         </div>
       </div>}
+
+      {/* ── Assigned Venue ───────────────────────────────────────────────────── */}
+      {assignedVenues.length > 0 && (
+        <div className="bg-white border-t border-gray-200 px-4 py-6">
+          <div className="max-w-2xl mx-auto">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Your Assigned Venue</h3>
+            <div className="flex flex-col gap-2">
+              {assignedVenues.map((v) => (
+                <div key={v.id} className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+                    <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-blue-900">{v.venue_name}</p>
+                    {(v.city || v.state) && (
+                      <p className="text-xs text-blue-600">{[v.city, v.state].filter(Boolean).join(', ')}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Signature Pad ─────────────────────────────────────────────────────── */}
       {meta?.requires_signature && (

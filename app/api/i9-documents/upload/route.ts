@@ -65,8 +65,9 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const documentType = String(formData.get('documentType') || '');
     const file = formData.get('file') as unknown as File | null;
+    const targetUserIdParam = formData.get('userId') ? String(formData.get('userId')) : null;
 
-    console.log('[I9_UPLOAD] Received:', { documentType, hasFile: !!file, fileType: file?.type, fileSize: file?.size });
+    console.log('[I9_UPLOAD] Received:', { documentType, hasFile: !!file, fileType: file?.type, fileSize: file?.size, targetUserIdParam });
 
     if (!documentType || !file) {
       console.error('[I9_UPLOAD] Missing data:', { documentType, hasFile: !!file });
@@ -101,6 +102,20 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // If a target userId is provided, verify the caller is HR/admin
+    let targetUserId = user.id;
+    if (targetUserIdParam && targetUserIdParam !== user.id) {
+      const { data: callerRole } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+      if (!callerRole || !['admin', 'hr', 'exec'].includes(callerRole.role)) {
+        return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+      }
+      targetUserId = targetUserIdParam;
+    }
+
     // Ensure the storage bucket exists (create if missing, ignore if already exists)
     const { data: buckets } = await supabase.storage.listBuckets();
     if (!buckets?.some((b) => b.name === BUCKET)) {
@@ -118,14 +133,14 @@ export async function POST(request: NextRequest) {
     const timestamp = Date.now();
     const safeName = sanitizeFilename(file.name || `upload.${file.type.split('/').pop() || 'bin'}`);
     // Group by mapped key for neatness (drivers_license/ssn_document/additional_doc)
-    const storageKey = `${user.id}/${mapped.key}/${timestamp}-${safeName}`;
+    const storageKey = `${targetUserId}/${mapped.key}/${timestamp}-${safeName}`;
 
     // Convert to Buffer (Node runtime)
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
     // Upload to Storage
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    const { error: uploadError } = await supabase.storage
       .from(BUCKET)
       .upload(storageKey, buffer, {
         contentType: file.type,
@@ -149,7 +164,7 @@ export async function POST(request: NextRequest) {
     const nowIso = new Date().toISOString();
 
     const updatePayload: Record<string, any> = {
-      user_id: user.id,
+      user_id: targetUserId,
       updated_at: nowIso,
       [`${colPrefix}_url`]: fileUrl,
       [`${colPrefix}_filename`]: file.name,
@@ -160,7 +175,7 @@ export async function POST(request: NextRequest) {
     const { data: existing } = await supabase
       .from('i9_documents')
       .select('id')
-      .eq('user_id', user.id)
+      .eq('user_id', targetUserId)
       .maybeSingle();
 
     let dbRes;
@@ -168,7 +183,7 @@ export async function POST(request: NextRequest) {
       dbRes = await supabase
         .from('i9_documents')
         .update(updatePayload)
-        .eq('user_id', user.id)
+        .eq('user_id', targetUserId)
         .select()
         .single();
     } else {

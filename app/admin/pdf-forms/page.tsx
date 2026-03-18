@@ -215,10 +215,12 @@ export default function AdminPdfFormsPage() {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerSelected, setPickerSelected] = useState<EmployeeResult[]>([]);
   const [selectedPreset, setSelectedPreset] = useState<string | null>(null);
-  const [uploadTab, setUploadTab] = useState<'standard' | 'state' | 'packet'>('standard');
+  const [uploadTab, setUploadTab] = useState<'standard' | 'state' | 'packet' | 'home-venue'>('standard');
   const [selectedStatePreset, setSelectedStatePreset] = useState<string | null>(null);
   const [selectedPacketPreset, setSelectedPacketPreset] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const homeVenueFileRef = useRef<HTMLInputElement>(null);
+  const [homeVenueFileName, setHomeVenueFileName] = useState('');
 
   // Page-level venue filter (for main page venue selector)
   const [pageVenueId, setPageVenueId] = useState('');
@@ -666,6 +668,7 @@ export default function AdminPdfFormsPage() {
       setRequiresSignature(false);
       setAllowDateInput(false);
       setAllowPrintName(false);
+      setAllowVenueDisplay(false);
       setTargetState('');
       return;
     }
@@ -739,6 +742,7 @@ export default function AdminPdfFormsPage() {
       setRequiresSignature(false);
       setAllowDateInput(false);
       setAllowPrintName(false);
+      setAllowVenueDisplay(false);
       setTargetState('');
       return;
     }
@@ -803,6 +807,7 @@ export default function AdminPdfFormsPage() {
       setRequiresSignature(false);
       setAllowDateInput(false);
       setAllowPrintName(false);
+      setAllowVenueDisplay(false);
       setTargetState('');
       setTargetUsers([]);
       setSelectedPacketPreset(null);
@@ -877,12 +882,72 @@ export default function AdminPdfFormsPage() {
       setRequiresSignature(false);
       setAllowDateInput(false);
       setAllowPrintName(false);
+      setAllowVenueDisplay(false);
       setTargetState('');
       setTargetUsers([]);
       setSelectedPreset(null);
       setSelectedStatePreset(null);
       setSelectedPacketPreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
+      await loadForms(session.access_token);
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleHomeVenueUpload = async () => {
+    setError('');
+    setSuccessMsg('');
+    const file = homeVenueFileRef.current?.files?.[0];
+    if (!file) { setError('Please select a PDF file.'); return; }
+    if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (!pageVenueId) { setError('Please select a venue.'); return; }
+
+    setUploading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('title', title.trim());
+      fd.append('requiresSignature', String(requiresSignature));
+      fd.append('allowDateInput', String(allowDateInput));
+      fd.append('allowPrintName', String(allowPrintName));
+      fd.append('targetState', targetState);
+
+      const res = await fetch('/api/custom-forms/upload', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: fd,
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
+
+      const { userIds, note } = resolveAssignmentTargets();
+      if (userIds.length > 0 && json.form?.id) {
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds }),
+        });
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
+      }
+
+      setSuccessMsg(`"${title}" uploaded successfully${note}.`);
+      setTitle('');
+      setRequiresSignature(false);
+      setAllowDateInput(false);
+      setAllowPrintName(false);
+      setAllowVenueDisplay(false);
+      setTargetState('');
+      setHomeVenueFileName('');
+      if (homeVenueFileRef.current) homeVenueFileRef.current.value = '';
       await loadForms(session.access_token);
     } catch (err: any) {
       setError(err.message);
@@ -971,6 +1036,17 @@ export default function AdminPdfFormsPage() {
               }`}
             >
               Payroll Packet Forms
+            </button>
+            <button
+              type="button"
+              onClick={() => { setUploadTab('home-venue'); setSelectedPreset(null); setSelectedStatePreset(null); setSelectedPacketPreset(null); }}
+              className={`flex-1 py-1.5 px-3 rounded-md text-sm font-medium transition-all ${
+                uploadTab === 'home-venue'
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-700'
+              }`}
+            >
+              Home Venue
             </button>
           </div>
 
@@ -1076,6 +1152,151 @@ export default function AdminPdfFormsPage() {
                   </div>
                 );
               })}
+            </div>
+          )}
+
+          {/* Home Venue preset */}
+          {uploadTab === 'home-venue' && (
+            <div className="mb-5">
+              <p className="text-xs text-gray-400 mb-3">
+                Select a venue to pre-fill the venue restriction. The form will be sent to all users assigned to that venue.
+              </p>
+              {pageVenuesLoading ? (
+                <p className="text-xs text-gray-400">Loading venues...</p>
+              ) : pageVenues.length === 0 ? (
+                <p className="text-xs text-gray-400 italic">No venues found.</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+                  {pageVenues.map((venue) => {
+                    const isSelected = pageVenueId === venue.id;
+                    return (
+                      <button
+                        key={venue.id}
+                        type="button"
+                        onClick={() => { setPageVenueId(isSelected ? '' : venue.id); setTargetUsers([]); }}
+                        className={`text-left p-3 rounded-lg border transition-all ${
+                          isSelected
+                            ? 'border-purple-500 bg-purple-50 ring-2 ring-purple-300'
+                            : 'border-gray-200 hover:border-purple-300 hover:bg-gray-50'
+                        }`}
+                      >
+                        <p className="text-sm font-semibold text-gray-900 leading-tight">{venue.venue_name}</p>
+                        {(venue.city || venue.state) && (
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            {[venue.city, venue.state].filter(Boolean).join(', ')}
+                          </p>
+                        )}
+                        {isSelected && (
+                          <span className="inline-block mt-1.5 text-xs font-medium text-purple-700 bg-purple-100 border border-purple-200 rounded-full px-1.5 py-0.5">
+                            Selected
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {pageVenueId && (
+                <div className="rounded-lg border border-purple-200 bg-purple-50 px-4 py-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-xs font-semibold text-purple-800 uppercase tracking-wide">
+                      Assigned Users — {pageVenues.find(v => v.id === pageVenueId)?.venue_name}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setPageVenueId('')}
+                      className="text-xs text-purple-500 hover:text-purple-700"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  {pageVenueUsersLoading ? (
+                    <p className="text-xs text-purple-600">Loading assigned users...</p>
+                  ) : pageVenueUsers.length === 0 ? (
+                    <p className="text-xs text-purple-600 italic">No users assigned to this venue.</p>
+                  ) : (
+                    <>
+                      <p className="text-xs text-purple-700 mb-2">
+                        {pageVenueUsers.length} user{pageVenueUsers.length !== 1 ? 's' : ''} will receive this form.
+                      </p>
+                      <div className="border border-purple-200 rounded-lg divide-y divide-purple-100 bg-white max-h-48 overflow-y-auto">
+                        {pageVenueUsers.map((u) => (
+                          <div key={u.id} className="flex items-center gap-3 px-3 py-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-gray-800 truncate">
+                                {`${u.first_name || ''} ${u.last_name || ''}`.trim() || u.email}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">{u.email}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* Upload form — shown when a venue is selected */}
+              {pageVenueId && pageVenueUsers.length > 0 && (
+                <div className="mt-4 pt-4 border-t border-gray-200 space-y-3">
+                  <p className="text-sm font-semibold text-gray-800">Upload a form for this venue</p>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">Form Title</label>
+                    <input
+                      type="text"
+                      value={title}
+                      onChange={e => handleTitleChange(e.target.value)}
+                      placeholder={`e.g. i9-${currentYear}`}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 mb-1">PDF File</label>
+                    <label className="flex items-center gap-3 cursor-pointer">
+                      <span className="px-3 py-2 text-sm rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium transition-colors border border-gray-300">
+                        Choose PDF
+                      </span>
+                      <span className="text-sm text-gray-500 truncate">
+                        {homeVenueFileName || 'No file chosen'}
+                      </span>
+                      <input
+                        ref={homeVenueFileRef}
+                        type="file"
+                        accept="application/pdf"
+                        className="hidden"
+                        onChange={e => setHomeVenueFileName(e.target.files?.[0]?.name || '')}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-sm text-gray-600">
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={requiresSignature} onChange={e => setRequiresSignature(e.target.checked)} className="rounded border-gray-300" />
+                      Requires signature
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={allowDateInput} onChange={e => setAllowDateInput(e.target.checked)} className="rounded border-gray-300" />
+                      Allow date
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={allowPrintName} onChange={e => setAllowPrintName(e.target.checked)} className="rounded border-gray-300" />
+                      Allow print name
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleHomeVenueUpload}
+                    disabled={uploading}
+                    className="w-full bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm transition-colors"
+                  >
+                    {uploading ? 'Uploading...' : `Upload Form to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name}`}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import Papa from 'papaparse';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 
 type Venue = {
@@ -337,41 +338,60 @@ export default function VendorVenueManagementPage() {
     const vendorByEmail = new Map(vendors.map((v) => [v.email.toLowerCase(), v]));
     const venueByName = new Map(venues.map((v) => [v.venue_name.toLowerCase(), v]));
 
-    Papa.parse(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (results) => {
-        const rows: BulkRow[] = (results.data as any[]).map((row, index) => {
-          const vendor_email = String(row['vendor_email'] || '').trim();
-          const venue_name = String(row['venue_name'] || '').trim();
+    const parseRows = (data: any[]) => {
+      const rows: BulkRow[] = data.map((row, index) => {
+        const vendor_email = String(row['vendor_email'] || row['Email'] || '').trim();
+        const venue_name = String(row['venue_name'] || row['Venues Assigned'] || '').trim();
 
-          const vendor = vendorByEmail.get(vendor_email.toLowerCase());
-          const venue = venueByName.get(venue_name.toLowerCase());
+        const vendor = vendorByEmail.get(vendor_email.toLowerCase());
+        const venue = venueByName.get(venue_name.toLowerCase());
 
-          let error: string | null = null;
-          if (!vendor_email || !venue_name) {
-            error = 'vendor_email and venue_name are required';
-          } else if (!vendor) {
-            error = `Vendor not found: ${vendor_email}`;
-          } else if (!venue) {
-            error = `Venue not found: ${venue_name}`;
-          }
+        let error: string | null = null;
+        if (!vendor_email || !venue_name) {
+          error = 'vendor_email and venue_name are required';
+        } else if (!vendor) {
+          error = `Vendor not found: ${vendor_email}`;
+        } else if (!venue) {
+          error = `Venue not found: ${venue_name}`;
+        }
 
-          return {
-            rowIndex: index + 1,
-            vendor_email,
-            venue_name,
-            vendor_id: vendor?.id ?? null,
-            venue_id: venue?.id ?? null,
-            error,
-          };
-        });
-        setBulkRows(rows);
-      },
-      error: () => {
-        setError('Failed to parse CSV file');
-      },
-    });
+        return {
+          rowIndex: index + 1,
+          vendor_email,
+          venue_name,
+          vendor_id: vendor?.id ?? null,
+          venue_id: venue?.id ?? null,
+          error,
+        };
+      });
+      setBulkRows(rows);
+    };
+
+    const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = new Uint8Array(e.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheet = workbook.Sheets[workbook.SheetNames[0]];
+          const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+          parseRows(jsonData);
+        } catch {
+          setError('Failed to parse Excel file');
+        }
+      };
+      reader.onerror = () => setError('Failed to read Excel file');
+      reader.readAsArrayBuffer(file);
+    } else {
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: (results) => parseRows(results.data as any[]),
+        error: () => setError('Failed to parse CSV file'),
+      });
+    }
 
     event.target.value = '';
   };
@@ -660,11 +680,11 @@ export default function VendorVenueManagementPage() {
                   Download Template
                 </button>
                 <label className="px-3 py-2 text-sm rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer">
-                  Choose CSV File
+                  Choose File
                   <input
                     ref={bulkFileRef}
                     type="file"
-                    accept=".csv,text/csv"
+                    accept=".csv,text/csv,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     className="hidden"
                     onChange={handleBulkFileChange}
                   />

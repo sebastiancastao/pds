@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
         .select('role')
         .eq('id', userId)
         .single();
-      if (!caller || !['exec', 'admin', 'hr_admin'].includes(caller.role)) {
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
         return NextResponse.json({ error: 'Forbidden: cannot save for another user' }, { status: 403 });
       }
       saveUserId = targetUserId;

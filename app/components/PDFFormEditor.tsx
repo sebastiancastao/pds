@@ -21,6 +21,7 @@ interface PDFFormEditorProps {
   requiredFieldNames?: string[];
   showRequiredFieldErrors?: boolean;
   continueUrl?: string;
+  userId?: string; // When set, load/retrieve progress for this user (HR acting on behalf of employee)
 }
 
 interface FormField {
@@ -269,7 +270,8 @@ export default function PDFFormEditor({
   skipButtonDetection,
   requiredFieldNames,
   showRequiredFieldErrors,
-  continueUrl
+  continueUrl,
+  userId,
 }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -385,7 +387,8 @@ export default function PDFFormEditor({
         }
       } else {
         try {
-          const savedResponse = await fetch(`/api/pdf-form-progress/retrieve?formName=${formId}`, {
+          const retrieveUrl = `/api/pdf-form-progress/retrieve?formName=${formId}${userId ? `&targetUserId=${encodeURIComponent(userId)}` : ''}`;
+          const savedResponse = await fetch(retrieveUrl, {
             credentials: 'same-origin', // Include cookies with request
             headers: {
               Authorization: `Bearer ${session.access_token}`

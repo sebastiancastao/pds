@@ -123,6 +123,7 @@ export default function StatePayrollFormViewer({
   const searchParams = useSearchParams();
   const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, forms);
   const selectedForm = searchParams.get('form') || startFormId || firstFormId;
+  const asUser = searchParams.get('asUser') || undefined;
   const currentFormBase = formConfig[selectedForm] || formConfig[firstFormId];
   const isAzStateTax = stateCode === 'az' && currentFormBase?.formId?.includes('state-tax');
   const isNyStateTax = stateCode === 'ny' && currentFormBase?.formId?.includes('state-tax');
@@ -388,6 +389,7 @@ export default function StatePayrollFormViewer({
       const payload: any = {
         formName: formId,
         formData: base64,
+        ...(asUser ? { targetUserId: asUser } : {}),
       };
       // Only include i9 data if saving the i9 form
       if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
@@ -467,6 +469,7 @@ export default function StatePayrollFormViewer({
       const formData = new FormData();
       formData.append('file', file);
       formData.append('documentType', documentType);
+      if (asUser) formData.append('userId', asUser);
 
       const response = await fetch('/api/i9-documents/upload', {
         method: 'POST',
@@ -585,8 +588,8 @@ export default function StatePayrollFormViewer({
       return true;
     };
 
-    // Check if signature is required but not provided
-    if (currentForm?.requiresSignature && !currentSignature) {
+    // Check if signature is required but not provided (skip when HR editing on behalf of employee)
+    if (!asUser && currentForm?.requiresSignature && !currentSignature) {
       console.log('[VALIDATION] Signature required but missing');
       setValidationError('Please provide your signature in the signature box below before continuing.');
       setEmptyFieldPage(null);
@@ -604,7 +607,7 @@ export default function StatePayrollFormViewer({
       return;
     }
 
-    if (selectedForm === 'health-insurance' && !healthInsuranceAcknowledged) {
+    if (!asUser && selectedForm === 'health-insurance' && !healthInsuranceAcknowledged) {
       alert('Please acknowledge that you have read the Health Insurance Marketplace notice before continuing.');
       return;
     }
@@ -2055,27 +2058,29 @@ export default function StatePayrollFormViewer({
         }
       }
 
-      if (i9Mode === 'A') {
-        if (!i9Selections.listA) {
-          alert('Please choose a List A document type.');
-          return;
-        }
-        if (!i9Documents.listA) {
-          alert('Please upload your List A document.');
-          return;
-        }
-      } else {
-        if (!i9Selections.listB) {
-          alert('Please choose a List B document type.');
-          return;
-        }
-        if (!i9Selections.listC) {
-          alert('Please choose a List C document type.');
-          return;
-        }
-        if (!i9Documents.listB || !i9Documents.listC) {
-          alert('Please upload your List B and List C documents.');
-          return;
+      if (!asUser) {
+        if (i9Mode === 'A') {
+          if (!i9Selections.listA) {
+            alert('Please choose a List A document type.');
+            return;
+          }
+          if (!i9Documents.listA) {
+            alert('Please upload your List A document.');
+            return;
+          }
+        } else {
+          if (!i9Selections.listB) {
+            alert('Please choose a List B document type.');
+            return;
+          }
+          if (!i9Selections.listC) {
+            alert('Please choose a List C document type.');
+            return;
+          }
+          if (!i9Documents.listB || !i9Documents.listC) {
+            alert('Please upload your List B and List C documents.');
+            return;
+          }
         }
       }
     }
@@ -2376,10 +2381,11 @@ export default function StatePayrollFormViewer({
             skipButtonDetection={!currentForm.requiresSignature}
             requiredFieldNames={missingRequiredFields}
             showRequiredFieldErrors={missingRequiredFields.length > 0}
+            userId={asUser}
           />
         </div>
 
-        {currentForm.requiresSignature && (
+        {!asUser && currentForm.requiresSignature && (
           <div style={{
             backgroundColor: 'white',
             borderRadius: '8px',
@@ -2468,7 +2474,7 @@ export default function StatePayrollFormViewer({
           </div>
         )}
 
-        {selectedForm === 'i9' && (
+        {!asUser && selectedForm === 'i9' && (
           <div
             style={{
               backgroundColor: 'white',
@@ -2672,25 +2678,44 @@ export default function StatePayrollFormViewer({
             order: selectedForm === 'i9' ? 3 : 0,
           }}
         >
-          <button
-            onClick={handleBack}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: '#f5f5f5',
-              color: '#333',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              fontSize: '16px',
-            }}
-          >
-            ← Back
-          </button>
+          {asUser ? (
+            <a
+              href={`/hr/employees/${asUser}`}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '16px',
+                textDecoration: 'none',
+              }}
+            >
+              ← Back to Employee
+            </a>
+          ) : (
+            <button
+              onClick={handleBack}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '16px',
+              }}
+            >
+              ← Back
+            </button>
+          )}
 
           <div style={{ display: 'flex', gap: '12px' }}>
             <button
-              onClick={() => handleManualSave()}
+              onClick={asUser ? async () => { await handleManualSave(); router.push(`/hr/employees/${asUser}`); } : () => handleManualSave()}
               disabled={saveStatus === 'saving'}
               style={{
                 padding: '12px 24px',
@@ -2716,32 +2741,34 @@ export default function StatePayrollFormViewer({
               {saveStatus === 'saving' ? '💾 Saving...' : '💾 Save'}
             </button>
 
-            <button
-              onClick={handleContinue}
-              disabled={saveStatus === 'saving'}
-              style={{
-                padding: '12px 24px',
-                backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 'bold',
-                cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
-                fontSize: '16px',
-              }}
-              onMouseOver={(e) => {
-                if (saveStatus !== 'saving') {
-                  e.currentTarget.style.backgroundColor = '#1565c0';
-                }
-              }}
-              onMouseOut={(e) => {
-                if (saveStatus !== 'saving') {
-                  e.currentTarget.style.backgroundColor = '#1976d2';
-                }
-              }}
-            >
-              {currentForm.next ? 'Save & Continue' : 'Save & Finish'}
-            </button>
+            {!asUser && (
+              <button
+                onClick={handleContinue}
+                disabled={saveStatus === 'saving'}
+                style={{
+                  padding: '12px 24px',
+                  backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 'bold',
+                  cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+                  fontSize: '16px',
+                }}
+                onMouseOver={(e) => {
+                  if (saveStatus !== 'saving') {
+                    e.currentTarget.style.backgroundColor = '#1565c0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (saveStatus !== 'saving') {
+                    e.currentTarget.style.backgroundColor = '#1976d2';
+                  }
+                }}
+              >
+                {currentForm.next ? 'Save & Continue' : 'Save & Finish'}
+              </button>
+            )}
           </div>
         </div>
       </div>

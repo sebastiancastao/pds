@@ -22,6 +22,7 @@ function FormViewerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
+  const asUser = searchParams.get('asUser') || undefined;
 
   const escapeFieldNameForSelector = (fieldName: string) => {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
@@ -360,6 +361,7 @@ function FormViewerContent() {
       const payload: any = {
         formName: formId,
         formData: base64,
+        ...(asUser ? { targetUserId: asUser } : {}),
       };
       if (formId === 'i9') {
         payload.i9Mode = i9Mode;
@@ -435,8 +437,8 @@ function FormViewerContent() {
     console.log('Continue clicked, pdfBytesRef:', currentPdfBytes ? 'has data' : 'null');
     setMissingRequiredFields([]);
 
-    // Check if signature is required but not provided
-    if (currentForm.requiresSignature && !currentSignature) {
+    // Check if signature is required but not provided (skip when HR editing on behalf of employee)
+    if (!asUser && currentForm.requiresSignature && !currentSignature) {
       setValidationError('Please provide your signature in the signature box below before continuing.');
       setEmptyFieldPage(null);
       void handleManualSave();
@@ -454,8 +456,8 @@ function FormViewerContent() {
       return;
     }
 
-    // Check if form doesn't require signature but user hasn't confirmed reading it
-    if (!currentForm.requiresSignature && !hasReadForm) {
+    // Check if form doesn't require signature but user hasn't confirmed reading it (skip when HR editing on behalf)
+    if (!asUser && !currentForm.requiresSignature && !hasReadForm) {
       alert('Please confirm that you have read and understood this document.');
       return;
     }
@@ -1171,8 +1173,8 @@ function FormViewerContent() {
       }
     }
 
-    // I-9 validations (mode + selections + files)
-    if (formName === 'i9') {
+    // I-9 validations (mode + selections + files) — skip when HR editing on behalf of employee
+    if (!asUser && formName === 'i9') {
       if (i9Mode === 'A') {
         if (!i9Selections.listA) {
           alert('Please choose a List A document type.');
@@ -1432,6 +1434,7 @@ function FormViewerContent() {
       const formData = new FormData();
       formData.append('file', file);
       formData.append('documentType', documentType);
+      if (asUser) formData.append('userId', asUser);
 
       const response = await fetch('/api/i9-documents/upload', {
         method: 'POST',
@@ -1755,6 +1758,7 @@ function FormViewerContent() {
             requiredFieldNames={missingRequiredFields}
             showRequiredFieldErrors={missingRequiredFields.length > 0}
             continueUrl={continueUrl}
+            userId={asUser}
           />
         </div>
 
@@ -1814,7 +1818,7 @@ function FormViewerContent() {
         )}
 
         {/* Signature Section - Only show if form requires signature */}
-        {currentForm.requiresSignature && (
+        {!asUser && currentForm.requiresSignature && (
           <div style={{
             backgroundColor: 'white',
             borderRadius: '8px',
@@ -1904,7 +1908,7 @@ function FormViewerContent() {
         )}
 
         {/* I-9 Document Uploads - Only show for I-9 form */}
-        {formName === 'i9' && (
+        {!asUser && formName === 'i9' && (
           <div style={{
             backgroundColor: 'white',
             borderRadius: '8px',
@@ -2207,27 +2211,46 @@ function FormViewerContent() {
           marginTop: 'auto',
           order: formName === 'i9' ? 3 : 0
         }}>
-          <button
-            onClick={handleBack}
-            style={{
-              padding: '12px 24px',
-              backgroundColor: '#f5f5f5',
-              color: '#333',
-              border: '1px solid #ddd',
-              borderRadius: '6px',
-              fontWeight: 'bold',
-              cursor: 'pointer',
-              fontSize: '16px'
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
-            onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
-          >
-            ← Back
-          </button>
+          {asUser ? (
+            <a
+              href={`/hr/employees/${asUser}`}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '16px',
+                textDecoration: 'none',
+              }}
+            >
+              ← Back to Employee
+            </a>
+          ) : (
+            <button
+              onClick={handleBack}
+              style={{
+                padding: '12px 24px',
+                backgroundColor: '#f5f5f5',
+                color: '#333',
+                border: '1px solid #ddd',
+                borderRadius: '6px',
+                fontWeight: 'bold',
+                cursor: 'pointer',
+                fontSize: '16px'
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.backgroundColor = '#e0e0e0')}
+              onMouseOut={(e) => (e.currentTarget.style.backgroundColor = '#f5f5f5')}
+            >
+              ← Back
+            </button>
+          )}
 
           <div style={{ display: 'flex', gap: '12px' }}>
             <button
-              onClick={handleManualSaveClick}
+              onClick={asUser ? async () => { await handleManualSave(); router.push(`/hr/employees/${asUser}`); } : handleManualSaveClick}
               disabled={saveStatus === 'saving'}
               style={{
                 padding: '12px 24px',
@@ -2253,32 +2276,34 @@ function FormViewerContent() {
               {saveStatus === 'saving' ? '💾 Saving...' : '💾 Save'}
             </button>
 
-            <button
-              onClick={handleContinue}
-              disabled={saveStatus === 'saving'}
-              style={{
-                padding: '12px 24px',
-                backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                fontWeight: 'bold',
-                cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
-                fontSize: '16px'
-              }}
-              onMouseOver={(e) => {
-                if (saveStatus !== 'saving') {
-                  e.currentTarget.style.backgroundColor = '#1565c0';
-                }
-              }}
-              onMouseOut={(e) => {
-                if (saveStatus !== 'saving') {
-                  e.currentTarget.style.backgroundColor = '#1976d2';
-                }
-              }}
-            >
-              {currentForm.next ? 'Save & Continue →' : 'Save & Finish'}
-            </button>
+            {!asUser && (
+              <button
+                onClick={handleContinue}
+                disabled={saveStatus === 'saving'}
+                style={{
+                  padding: '12px 24px',
+                  backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontWeight: 'bold',
+                  cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+                  fontSize: '16px'
+                }}
+                onMouseOver={(e) => {
+                  if (saveStatus !== 'saving') {
+                    e.currentTarget.style.backgroundColor = '#1565c0';
+                  }
+                }}
+                onMouseOut={(e) => {
+                  if (saveStatus !== 'saving') {
+                    e.currentTarget.style.backgroundColor = '#1976d2';
+                  }
+                }}
+              >
+                {currentForm.next ? 'Save & Continue →' : 'Save & Finish'}
+              </button>
+            )}
           </div>
         </div>
       </div>
