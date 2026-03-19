@@ -1847,11 +1847,6 @@ export default function WorkerProfilePage() {
                                     Date: {formatDate(submitted.form_date)}
                                   </span>
                                 )}
-                                {venueForForm && (
-                                  <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
-                                    Your assigned venue: {venueForForm}
-                                  </span>
-                                )}
                               </div>
                             </div>
                           </div>

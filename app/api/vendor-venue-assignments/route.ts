@@ -631,14 +631,64 @@ export async function DELETE(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const id = searchParams.get('id');
-
-    if (!isValidUuid(id)) {
-      return NextResponse.json({ error: 'Valid assignment id is required' }, { status: 400 });
-    }
+    const venueId = searchParams.get('venue_id');
 
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { persistSession: false },
     });
+
+    // Unassign all vendors from an entire venue
+    if (venueId) {
+      if (!isValidUuid(venueId)) {
+        return NextResponse.json({ error: 'Valid venue_id is required' }, { status: 400 });
+      }
+
+      const { data: venueAssignments, error: lookupError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .select('id, vendor_id')
+        .eq('venue_id', venueId);
+
+      if (lookupError) {
+        console.error('[VENDOR_VENUE_ASSIGNMENTS] DELETE venue lookup error:', lookupError);
+        return NextResponse.json({ error: 'Failed to load venue assignments' }, { status: 500 });
+      }
+
+      if (!venueAssignments || venueAssignments.length === 0) {
+        return NextResponse.json({ message: 'No assignments found for this venue', removed: 0 }, { status: 200 });
+      }
+
+      // Set manual override for all affected vendors
+      for (const row of venueAssignments) {
+        const overrideError = await setManualOverride(supabaseAdmin, row.vendor_id, auth.user.id);
+        if (overrideError) {
+          if (isMissingTableError(overrideError, MANUAL_OVERRIDE_TABLE)) {
+            return NextResponse.json({ error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR }, { status: 500 });
+          }
+          console.error('[VENDOR_VENUE_ASSIGNMENTS] DELETE venue override error:', overrideError);
+          return NextResponse.json({ error: 'Failed to lock manual override' }, { status: 500 });
+        }
+      }
+
+      const { error: deleteError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .delete()
+        .eq('venue_id', venueId);
+
+      if (deleteError) {
+        console.error('[VENDOR_VENUE_ASSIGNMENTS] DELETE venue error:', deleteError);
+        return NextResponse.json({ error: 'Failed to remove venue assignments' }, { status: 500 });
+      }
+
+      return NextResponse.json(
+        { message: `Removed ${venueAssignments.length} assignment(s) for venue.`, removed: venueAssignments.length },
+        { status: 200 }
+      );
+    }
+
+    // Unassign a single assignment by id
+    if (!isValidUuid(id)) {
+      return NextResponse.json({ error: 'Valid assignment id or venue_id is required' }, { status: 400 });
+    }
 
     const { data: assignmentRow, error: lookupError } = await supabaseAdmin
       .from('vendor_venue_assignments')

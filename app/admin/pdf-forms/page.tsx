@@ -242,6 +242,7 @@ export default function AdminPdfFormsPage() {
   const [sendTab, setSendTab] = useState<'users' | 'venue'>('users');
   const [venues, setVenues] = useState<VenueOption[]>([]);
   const [vendorVenueAssignments, setVendorVenueAssignments] = useState<VendorVenueAssignment[]>([]);
+  const [venueVendors, setVenueVendors] = useState<VenueAssignmentVendor[]>([]);
   const [venuesLoading, setVenuesLoading] = useState(false);
   const [selectedVenueId, setSelectedVenueId] = useState('');
   const [sending, setSending] = useState(false);
@@ -271,16 +272,21 @@ export default function AdminPdfFormsPage() {
         });
         const data = await res.json().catch(() => null);
         if (cancelled) return;
+        const vendorsByIdMap = new Map<string, VenueAssignmentVendor>(
+          (data?.vendors || []).map((v: VenueAssignmentVendor) => [v.id, v])
+        );
         const seen = new Set<string>();
         const users: VenueRecipient[] = [];
         for (const a of (data?.assignments || [])) {
-          if (a.venue_id !== pageVenueId || !a.vendor || seen.has(a.vendor.id)) continue;
-          seen.add(a.vendor.id);
+          if (a.venue_id !== pageVenueId) continue;
+          const vendor = a.vendor || vendorsByIdMap.get(a.vendor_id) || null;
+          if (!vendor || seen.has(vendor.id)) continue;
+          seen.add(vendor.id);
           users.push({
-            id: a.vendor.id,
-            email: a.vendor.email,
-            first_name: a.vendor.first_name,
-            last_name: a.vendor.last_name,
+            id: vendor.id,
+            email: vendor.email,
+            first_name: vendor.first_name,
+            last_name: vendor.last_name,
           });
         }
         users.sort((a, b) => {
@@ -351,19 +357,26 @@ export default function AdminPdfFormsPage() {
     [venuesWithVendors, selectedVenueId]
   );
 
+  const venueVendorsById = useMemo(
+    () => new Map(venueVendors.map((v) => [v.id, v])),
+    [venueVendors]
+  );
+
   const selectedVenueRecipients = useMemo(() => {
     if (!selectedVenueId) return [];
 
     const recipientsById = new Map<string, VenueRecipient>();
 
     vendorVenueAssignments.forEach((assignment) => {
-      if (assignment.venue_id !== selectedVenueId || !assignment.vendor) return;
-      if (!recipientsById.has(assignment.vendor.id)) {
-        recipientsById.set(assignment.vendor.id, {
-          id: assignment.vendor.id,
-          email: assignment.vendor.email,
-          first_name: assignment.vendor.first_name,
-          last_name: assignment.vendor.last_name,
+      if (assignment.venue_id !== selectedVenueId) return;
+      const vendor = assignment.vendor || venueVendorsById.get(assignment.vendor_id) || null;
+      if (!vendor) return;
+      if (!recipientsById.has(vendor.id)) {
+        recipientsById.set(vendor.id, {
+          id: vendor.id,
+          email: vendor.email,
+          first_name: vendor.first_name,
+          last_name: vendor.last_name,
         });
       }
     });
@@ -373,7 +386,7 @@ export default function AdminPdfFormsPage() {
       const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.email;
       return aName.localeCompare(bName);
     });
-  }, [selectedVenueId, vendorVenueAssignments]);
+  }, [selectedVenueId, vendorVenueAssignments, venueVendorsById]);
 
   const pendingVenueRecipients = useMemo(
     () => selectedVenueRecipients.filter((recipient) => !assignedUserIds.has(recipient.id)),
@@ -437,6 +450,7 @@ export default function AdminPdfFormsPage() {
     // Always set whatever data came back (venues may be present even on partial errors)
     setVenues(data?.venues || []);
     setVendorVenueAssignments(data?.assignments || []);
+    setVenueVendors(data?.vendors || []);
     if (!res.ok) {
       throw new Error(data?.error || 'Failed to load venue assignments.');
     }

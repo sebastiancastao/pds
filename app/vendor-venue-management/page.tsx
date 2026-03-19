@@ -328,6 +328,57 @@ export default function VendorVenueManagementPage() {
     }
   };
 
+  const handleUnassignEntireVenue = async (venueId: string) => {
+    const venue = venues.find((v) => v.id === venueId);
+    const venueName = venue?.venue_name || 'this venue';
+    const count = assignments.filter((a) => a.venue_id === venueId).length;
+
+    if (count === 0) {
+      setError('No assignments found for this venue.');
+      return;
+    }
+
+    if (!confirm(`Remove all ${count} vendor assignment(s) from "${venueName}"? This cannot be undone.`)) {
+      return;
+    }
+
+    setSaving(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        window.location.href = '/login';
+        return;
+      }
+
+      const response = await fetch(`/api/vendor-venue-assignments?venue_id=${venueId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+        },
+      });
+
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || 'Failed to unassign venue');
+      }
+
+      setAssignments((prev) => prev.filter((a) => a.venue_id !== venueId));
+      setVenueFilterId('');
+      setSuccessMessage(`Removed all assignments from "${venueName}".`);
+    } catch (err: any) {
+      console.error('[VENDOR_VENUE_MANAGEMENT] unassign venue error:', err);
+      setError(err.message || 'Failed to unassign venue');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const downloadBulkTemplate = () => {
     const csv = 'vendor_email,venue_name\nexample@vendor.com,Main Venue Name\n';
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -581,24 +632,36 @@ export default function VendorVenueManagementPage() {
               <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
                 Filter by Venue
               </label>
-              <select
-                value={venueFilterId}
-                onChange={(event) => setVenueFilterId(event.target.value)}
-                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-              >
-                <option value="">All venues</option>
-                {venues
-                  .slice()
-                  .sort((a, b) => a.venue_name.localeCompare(b.venue_name))
-                  .map((venue) => (
-                    <option key={venue.id} value={venue.id}>
-                      {venue.venue_name}
-                      {venue.city || venue.state
-                        ? ` (${venue.city || ''}${venue.city && venue.state ? ', ' : ''}${venue.state || ''})`
-                        : ''}
-                    </option>
-                  ))}
-              </select>
+              <div className="flex gap-2">
+                <select
+                  value={venueFilterId}
+                  onChange={(event) => setVenueFilterId(event.target.value)}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                >
+                  <option value="">All venues</option>
+                  {venues
+                    .slice()
+                    .sort((a, b) => a.venue_name.localeCompare(b.venue_name))
+                    .map((venue) => (
+                      <option key={venue.id} value={venue.id}>
+                        {venue.venue_name}
+                        {venue.city || venue.state
+                          ? ` (${venue.city || ''}${venue.city && venue.state ? ', ' : ''}${venue.state || ''})`
+                          : ''}
+                      </option>
+                    ))}
+                </select>
+                {venueFilterId && (
+                  <button
+                    onClick={() => handleUnassignEntireVenue(venueFilterId)}
+                    disabled={saving}
+                    title="Unassign all vendors from this venue"
+                    className="px-3 py-2.5 rounded-lg bg-red-600 text-white text-xs font-medium hover:bg-red-700 transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    Unassign All
+                  </button>
+                )}
+              </div>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5">
               <p className="text-xs text-gray-500 uppercase tracking-wide">Active Vendors</p>
