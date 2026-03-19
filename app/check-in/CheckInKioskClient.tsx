@@ -163,7 +163,6 @@ export default function CheckInKioskPage() {
   const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
   const [showRejectionForm, setShowRejectionForm] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
-  const [rejectionNotes, setRejectionNotes] = useState("");
   const [rejectionSignature, setRejectionSignature] = useState("");
   const [isRejectionDrawing, setIsRejectionDrawing] = useState(false);
   const rejectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -775,14 +774,13 @@ export default function CheckInKioskPage() {
   const performAction = async (
     action: ActionType,
     sig?: string,
-    options?: { attestationAccepted?: boolean; rejectionReason?: string; rejectionNotes?: string }
+    options?: { attestationAccepted?: boolean; rejectionReason?: string }
   ) => {
     if (!worker) return;
     setIsActioning(true);
     setError("");
     const attestationAccepted = options?.attestationAccepted;
     const rejectionReason = options?.rejectionReason;
-    const rejectionNotes = options?.rejectionNotes;
     const actionLabel =
       action === "clock_out" && attestationAccepted === false
         ? "Clocked Out (attestation rejected)"
@@ -838,7 +836,6 @@ export default function CheckInKioskPage() {
           signature: sig,
           attestationAccepted,
           rejectionReason,
-          rejectionNotes,
           eventId: activeEvent?.id || (eventIdFromUrl || undefined),
         }),
       });
@@ -932,7 +929,6 @@ export default function CheckInKioskPage() {
     performAction("clock_out", rejectionSignature, {
       attestationAccepted: false,
       rejectionReason,
-      rejectionNotes: rejectionReason === "Other" ? rejectionNotes : undefined,
     });
     setShowRejectionForm(false);
     setShowAttestation(false);
@@ -940,7 +936,6 @@ export default function CheckInKioskPage() {
     setAttestationSummaryLoading(false);
     setSignature("");
     setRejectionReason("");
-    setRejectionNotes("");
     setRejectionSignature("");
   };
   const handleCancelAttestation = () => {
@@ -950,7 +945,6 @@ export default function CheckInKioskPage() {
     setAttestationSummaryLoading(false);
     setSignature("");
     setRejectionReason("");
-    setRejectionNotes("");
     setRejectionSignature("");
     clearSignature();
   };
@@ -970,10 +964,10 @@ export default function CheckInKioskPage() {
   // ─── Rejection reason screen ───────────────────────────────────
   if (showAttestation && showRejectionForm && worker) {
     const REJECTION_REASONS = [
-      "Hours recorded are not accurate",
-      "Meal periods were not provided or were interrupted",
-      "I was required to work off-the-clock",
-      "Other",
+      "I was provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work but chose not to;",
+      "I was provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work but chose to take a shorter break;",
+      "I was provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work but chose to take a later break;",
+      "I was not provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work.",
     ];
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
@@ -1013,19 +1007,6 @@ export default function CheckInKioskPage() {
                 </button>
               ))}
             </div>
-
-            {rejectionReason === "Other" && (
-              <div className="mb-4">
-                <label className="block text-sm font-medium text-gray-700 mb-1">Additional notes</label>
-                <textarea
-                  value={rejectionNotes}
-                  onChange={(e) => setRejectionNotes(e.target.value)}
-                  placeholder="Please describe your reason..."
-                  rows={3}
-                  className="w-full border border-gray-300 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 resize-none"
-                />
-              </div>
-            )}
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 mb-2">Your Signature</label>

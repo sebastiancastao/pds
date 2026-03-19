@@ -299,8 +299,9 @@ export default function EventDashboardPage() {
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
   const [stateRatesData, setStateRatesData] = useState<StateRateData[]>([]); // Fetched rates from API
   const [tips, setTips] = useState<string>("");
-  // Manual tax amount shown in Sales tab; persisted as an equivalent tax_rate_percent.
+  // Tax amount displays the saved rate-derived value until the user edits it.
   const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
+  const [manualTaxEdited, setManualTaxEdited] = useState(false);
 
   const [merchandiseUnits, setMerchandiseUnits] = useState<string>("");
   const [merchandiseValue, setMerchandiseValue] = useState<string>("");
@@ -1035,13 +1036,8 @@ export default function EventDashboardPage() {
         console.debug('[SALES-DEBUG] Using event tax_rate_percent:', eventData.tax_rate_percent);
         setStateTaxRate(Number(eventData.tax_rate_percent ?? 0));
 
-        // Keep Tax Amount input aligned with persisted event tax rate so Sales and HR payroll match.
-        const initialTicketSales = Number(eventData.ticket_sales || 0);
-        const initialTips = Number((eventData as any).tips || 0);
-        const initialTotalSales = Math.max(initialTicketSales - initialTips, 0);
-        const initialTaxRate = Number(eventData.tax_rate_percent ?? 0);
-        const initialTaxAmount = Math.max(initialTotalSales * (initialTaxRate / 100), 0);
-        setManualTaxAmount(initialTaxAmount > 0 ? initialTaxAmount.toFixed(2) : "");
+        setManualTaxAmount("");
+        setManualTaxEdited(false);
 
         // Load merchandise breakdown if provided
         const m = data.merchandise || null;
@@ -2665,18 +2661,15 @@ export default function EventDashboardPage() {
       const grossCollected = Number(ticketSales) || 0;
       const tipsNum = Number(tips) || 0;
       const totalSales = Math.max(grossCollected - tipsNum, 0);
-      const manualTaxInput = manualTaxAmount.trim();
-      const taxFromRate = Math.max(totalSales * ((Number(stateTaxRate) || 0) / 100), 0);
-      const taxAmountForSave = manualTaxInput === ""
-        ? taxFromRate
-        : Math.max(Number(manualTaxInput) || 0, 0);
+      const taxAmountForSave = resolveTaxAmount(totalSales, Number(stateTaxRate) || 0, manualTaxAmount, manualTaxEdited);
       const taxRatePercentFromManual = totalSales > 0 ? (taxAmountForSave / totalSales) * 100 : 0;
+      const normalizedTaxRatePercent = Number(taxRatePercentFromManual.toFixed(6));
       const payload = {
         ...event,
         ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
         ticket_count: ticketCount !== "" ? Number(ticketCount) : null,
         commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
-        tax_rate_percent: Number(taxRatePercentFromManual.toFixed(6)),
+        tax_rate_percent: normalizedTaxRatePercent,
         tips: tips !== "" ? Number(tips) : null,
       };
       try { console.debug('[SALES-DEBUG] handleSaveSales payload:', payload); } catch {}
@@ -2695,8 +2688,10 @@ export default function EventDashboardPage() {
       if (res.ok) {
         setMessage("Sales data updated successfully");
         setEvent(data.event);
-        setStateTaxRate(taxRatePercentFromManual);
-        setTaxRate(taxRatePercentFromManual.toString());
+        setStateTaxRate(normalizedTaxRatePercent);
+        setTaxRate(normalizedTaxRatePercent.toString());
+        setManualTaxAmount("");
+        setManualTaxEdited(false);
       } else {
         try { console.warn('[SALES-DEBUG] handleSaveSales server error:', data); } catch {}
         setMessage(data.error || "Failed to update sales data");
@@ -2760,6 +2755,28 @@ export default function EventDashboardPage() {
 
   const clamp = (val: number, min: number, max: number) => Math.min(Math.max(val, min), max);
 
+  const getDerivedTaxAmount = (totalSales: number, taxRatePercent: number) =>
+    Math.max(totalSales * ((Number(taxRatePercent) || 0) / 100), 0);
+
+  const formatTaxAmountInput = (totalSales: number, taxAmount: number) => {
+    if (totalSales <= 0) return "";
+    return Math.max(Number(taxAmount) || 0, 0).toFixed(2);
+  };
+
+  const resolveTaxAmount = (
+    totalSales: number,
+    taxRatePercent: number,
+    taxAmountInput: string,
+    useManualTaxInput: boolean
+  ) => {
+    if (!useManualTaxInput) return getDerivedTaxAmount(totalSales, taxRatePercent);
+
+    const trimmedTaxAmount = taxAmountInput.trim();
+    if (trimmedTaxAmount === "") return 0;
+
+    return Math.max(Number(trimmedTaxAmount) || 0, 0);
+  };
+
   // Sales calc (vertical)
   const calculateShares = () => {
     if (!event) return null;
@@ -2769,11 +2786,7 @@ export default function EventDashboardPage() {
     const taxPct = Number(stateTaxRate) || 0;
 
     const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected - Tips
-    const manualTaxInput = manualTaxAmount.trim();
-    const taxFromRate = Math.max(totalSales * (taxPct / 100), 0);
-    const tax = manualTaxInput === ""
-      ? taxFromRate
-      : Math.max(Number(manualTaxInput) || 0, 0);
+    const tax = resolveTaxAmount(totalSales, taxPct, manualTaxAmount, manualTaxEdited);
     const netSales = Math.max(totalSales - tax, 0);
 
     const artistShare = netSales * (event.artist_share_percent / 100);
@@ -2793,17 +2806,26 @@ export default function EventDashboardPage() {
       const gross = Number(ticketSales) || 0;
       const t = Number(tips) || 0;
       const totalSales = Math.max(gross - t, 0);
-      const taxAmt = Math.max(Number(manualTaxAmount) || 0, 0);
+      const taxAmt = resolveTaxAmount(totalSales, Number(stateTaxRate) || 0, manualTaxAmount, manualTaxEdited);
       console.debug('[SALES-DEBUG] Inputs changed', {
         ticketSales: gross,
         tips: t,
         manualTaxAmount: taxAmt,
+        manualTaxEdited,
       });
     } catch {}
-  }, [ticketSales, tips, manualTaxAmount]);
+  }, [ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
   // Memoize shares calculation - used across sales tab, payment tab, and save logic
-  const sharesData = useMemo(() => calculateShares(), [event, ticketSales, tips, manualTaxAmount, stateTaxRate]);
+  const sharesData = useMemo(() => calculateShares(), [event, ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
+
+  const displayedTaxAmount = useMemo(() => {
+    const grossCollected = Number(ticketSales) || 0;
+    const tipsNum = Number(tips) || 0;
+    const totalSales = Math.max(grossCollected - tipsNum, 0);
+    if (manualTaxEdited) return manualTaxAmount;
+    return formatTaxAmountInput(totalSales, getDerivedTaxAmount(totalSales, Number(stateTaxRate) || 0));
+  }, [ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
   // Calculate commission amount - updates reactively when inputs change
   const calculatedCommission = useMemo(() => {
@@ -3789,12 +3811,15 @@ export default function EventDashboardPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Tax Amount ($)</label>
                     <div className="relative">
                       <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
-                      <input
-                        type="number"
-                        value={manualTaxAmount}
-                        onChange={(e) => setManualTaxAmount(e.target.value)}
-                        disabled={salesReadOnly}
-                        placeholder="0"
+                        <input
+                          type="number"
+                          value={displayedTaxAmount}
+                          onChange={(e) => {
+                            setManualTaxEdited(true);
+                            setManualTaxAmount(e.target.value);
+                          }}
+                          disabled={salesReadOnly}
+                          placeholder="0"
                         step="0.01"
                         min="0"
                         className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
