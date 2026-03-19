@@ -163,6 +163,7 @@ export default function CheckInKioskPage() {
   const [attestationNowMs, setAttestationNowMs] = useState<number>(() => Date.now());
   const [showRejectionForm, setShowRejectionForm] = useState(false);
   const [rejectionReason, setRejectionReason] = useState("");
+  const [rejectionNote, setRejectionNote] = useState("");
   const [rejectionSignature, setRejectionSignature] = useState("");
   const [isRejectionDrawing, setIsRejectionDrawing] = useState(false);
   const rejectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -922,13 +923,19 @@ export default function CheckInKioskPage() {
       setError("Please select a reason for rejection");
       return;
     }
+    if (rejectionReason === "Other" && !rejectionNote.trim()) {
+      setError("Please provide a note explaining the reason");
+      return;
+    }
     if (!rejectionSignature) {
       setError("Please sign before confirming");
       return;
     }
+    const finalReason =
+      rejectionReason === "Other" ? `Other: ${rejectionNote.trim()}` : rejectionReason;
     performAction("clock_out", rejectionSignature, {
       attestationAccepted: false,
-      rejectionReason,
+      rejectionReason: finalReason,
     });
     setShowRejectionForm(false);
     setShowAttestation(false);
@@ -936,6 +943,7 @@ export default function CheckInKioskPage() {
     setAttestationSummaryLoading(false);
     setSignature("");
     setRejectionReason("");
+    setRejectionNote("");
     setRejectionSignature("");
   };
   const handleCancelAttestation = () => {
@@ -945,6 +953,7 @@ export default function CheckInKioskPage() {
     setAttestationSummaryLoading(false);
     setSignature("");
     setRejectionReason("");
+    setRejectionNote("");
     setRejectionSignature("");
     clearSignature();
   };
@@ -968,6 +977,7 @@ export default function CheckInKioskPage() {
       "I was provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work but chose to take a shorter break;",
       "I was provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work but chose to take a later break;",
       "I was not provided an opportunity to take a 30-minute duty-free meal break before the end of my 5th hour of work.",
+      "Other",
     ];
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-blue-100 p-4">
@@ -1006,6 +1016,15 @@ export default function CheckInKioskPage() {
                   {reason}
                 </button>
               ))}
+              {rejectionReason === "Other" && (
+                <textarea
+                  value={rejectionNote}
+                  onChange={(e) => setRejectionNote(e.target.value)}
+                  placeholder="Please describe the reason..."
+                  rows={3}
+                  className="w-full px-4 py-3 rounded-xl border-2 border-red-300 bg-red-50 text-sm text-gray-800 placeholder-gray-400 outline-none focus:border-red-400 resize-none mt-1"
+                />
+              )}
             </div>
 
             <div className="mb-4">
@@ -1039,7 +1058,7 @@ export default function CheckInKioskPage() {
                 {isActioning ? "Processing..." : "Confirm Rejection & Clock Out"}
               </button>
               <button
-                onClick={() => { setShowRejectionForm(false); setError(""); }}
+                onClick={() => { setShowRejectionForm(false); setRejectionReason(""); setRejectionNote(""); setError(""); }}
                 className="w-full py-3 px-4 border border-gray-300 text-gray-700 rounded-xl font-medium hover:bg-gray-50 transition-all"
               >
                 Back

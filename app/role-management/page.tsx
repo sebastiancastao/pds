@@ -188,10 +188,15 @@ export default function RoleManagementPage() {
     }
   }, [selectedManagerId]);
 
-  // Load all venues when sup3venues tab is first opened
+  // Load all venues and refresh data whenever sup3venues tab is opened
   useEffect(() => {
-    if (activeTab === 'sup3venues' && isAuthorized && allVenues.length === 0) {
+    if (activeTab === 'sup3venues' && isAuthorized) {
       loadAllVenues();
+      loadUsers();
+      if (selectedSup3Id) {
+        loadSup3Venues(selectedSup3Id);
+        loadSup3TeamMembers(selectedSup3Id);
+      }
     }
   }, [activeTab, isAuthorized]);
 

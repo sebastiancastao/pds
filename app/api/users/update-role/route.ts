@@ -132,22 +132,9 @@ export async function PUT(request: NextRequest) {
     });
 
     if (authUpdateError) {
-      console.error('[UPDATE-ROLE] Error syncing auth metadata role:', authUpdateError);
-
-      // Roll back users.role so users and auth metadata do not diverge.
-      const { error: rollbackError } = await supabaseAdmin
-        .from('users')
-        .update({ role: oldRole, updated_at: new Date().toISOString() })
-        .eq('id', userId);
-
-      if (rollbackError) {
-        console.error('[UPDATE-ROLE] CRITICAL: Failed rollback after auth sync failure:', rollbackError);
-      }
-
-      return NextResponse.json(
-        { error: 'Failed to sync role metadata in auth; role change was rolled back.' },
-        { status: 500, headers: NO_STORE_HEADERS }
-      );
+      // Auth metadata sync is best-effort — log the failure but do NOT roll back
+      // the database change. public.users.role is the source of truth for access control.
+      console.error('[UPDATE-ROLE] Warning: auth metadata sync failed (non-fatal):', authUpdateError);
     }
 
     // Log audit event
