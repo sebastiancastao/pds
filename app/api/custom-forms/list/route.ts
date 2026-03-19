@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
 
     const { data: forms, error } = await adminClient
       .from('custom_pdf_forms')
-      .select('id, title, requires_signature, allow_date_input, allow_print_name, created_at, is_active, created_by, target_state, target_region')
+      .select('id, title, requires_signature, allow_date_input, allow_print_name, allow_venue_display, created_at, is_active, created_by, target_state, target_region')
       .eq('is_active', true)
       .order('created_at', { ascending: false });
 

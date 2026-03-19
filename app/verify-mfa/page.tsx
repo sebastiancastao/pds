@@ -276,9 +276,10 @@ function VerifyMFAContent() {
         return;
       }
 
-      // Success! Set MFA verification flag in session storage
+      // Success! Set MFA verification flag in session storage and local storage
       console.log('[DEBUG] MFA verified successfully, setting session flag');
       sessionStorage.setItem('mfa_verified', 'true');
+      localStorage.setItem('mfa_verified', 'true');
       sessionStorage.removeItem('mfa_checkpoint');
       sessionStorage.removeItem('email_mfa_only');
 

@@ -295,7 +295,7 @@ export default function CheckInKioskPage() {
       router.push("/login");
       return;
     }
-    const mfaVerified = sessionStorage.getItem("mfa_verified");
+    const mfaVerified = sessionStorage.getItem("mfa_verified") || localStorage.getItem("mfa_verified");
     if (!mfaVerified) {
       router.push("/verify-mfa");
       return;
@@ -1293,7 +1293,12 @@ export default function CheckInKioskPage() {
                     {worker.status === "clocked_in" && "You are currently clocked in"}
                     {worker.status === "on_meal" && "You are on a meal break"}
                   </p>
-                  {worker.clockedInAt && worker.status === "clocked_in" && (
+                  {worker.status === "on_meal" && worker.mealStartedAt && (
+                    <p className="text-blue-500 text-xs mt-1">
+                      Since {toPacificHHMM(worker.mealStartedAt)}
+                    </p>
+                  )}
+                  {worker.status === "clocked_in" && worker.clockedInAt && (
                     <p className="text-blue-500 text-xs mt-1">
                       Since {toPacificHHMM(worker.clockedInAt)}
                     </p>

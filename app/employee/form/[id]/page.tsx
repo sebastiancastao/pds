@@ -11,6 +11,7 @@ type FormMeta = {
   requires_signature: boolean;
   allow_date_input: boolean;
   allow_print_name: boolean;
+  allow_venue_display: boolean;
 };
 
 type AssignedVenue = {
@@ -107,18 +108,16 @@ export default function EmployeeFormPage() {
     setSessionToken(session.access_token);
 
     try {
-      // Load assigned venue(s) for this user
-      const targetId = asUserId ?? session.user.id;
-      const { data: venueRows } = await supabase
-        .from('vendor_venue_assignments')
-        .select('venue:venue_reference(id, venue_name, city, state)')
-        .eq('vendor_id', targetId);
-      if (venueRows) {
-        setAssignedVenues(
-          venueRows
-            .map((r: any) => (Array.isArray(r.venue) ? r.venue[0] : r.venue))
-            .filter(Boolean) as AssignedVenue[]
-        );
+      // Load assigned venue(s) for this user via service-role API (bypasses RLS on venue_reference)
+      const venueUrl = asUserId
+        ? `/api/my-assigned-venues?asUser=${asUserId}`
+        : '/api/my-assigned-venues';
+      const venueRes = await fetch(venueUrl, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      if (venueRes.ok) {
+        const venueData = await venueRes.json();
+        setAssignedVenues(venueData.venues ?? []);
       }
 
       // Fetch form list first — we need the title to build the formName key
@@ -564,6 +563,33 @@ export default function EmployeeFormPage() {
         )}
       </div>
 
+      {/* ── Assigned Venue ───────────────────────────────────────────────────── */}
+      {meta?.allow_venue_display && assignedVenues.length > 0 && (
+        <div className="bg-white border-t border-gray-200 px-4 py-6">
+          <div className="max-w-2xl mx-auto">
+            <h3 className="text-lg font-semibold text-gray-900 mb-3">Your Assigned Venue</h3>
+            <div className="flex flex-col gap-2">
+              {assignedVenues.map((v) => (
+                <div key={v.id} className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
+                    <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-blue-900">{v.venue_name}</p>
+                    {(v.city || v.state) && (
+                      <p className="text-xs text-blue-600">{[v.city, v.state].filter(Boolean).join(', ')}</p>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── Print Name ───────────────────────────────────────────────────────── */}
       {meta?.allow_print_name && (
         <div className="bg-white border-t border-gray-200 px-4 py-8">
@@ -663,33 +689,6 @@ export default function EmployeeFormPage() {
           <p className="text-xs text-gray-400 mt-3">Accepted: JPG, PNG, WEBP, PDF — max 10 MB each</p>
         </div>
       </div>}
-
-      {/* ── Assigned Venue ───────────────────────────────────────────────────── */}
-      {assignedVenues.length > 0 && (
-        <div className="bg-white border-t border-gray-200 px-4 py-6">
-          <div className="max-w-2xl mx-auto">
-            <h3 className="text-lg font-semibold text-gray-900 mb-3">Your Assigned Venue</h3>
-            <div className="flex flex-col gap-2">
-              {assignedVenues.map((v) => (
-                <div key={v.id} className="flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-                  <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center shrink-0">
-                    <svg className="w-4 h-4 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-blue-900">{v.venue_name}</p>
-                    {(v.city || v.state) && (
-                      <p className="text-xs text-blue-600">{[v.city, v.state].filter(Boolean).join(', ')}</p>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Signature Pad ─────────────────────────────────────────────────────── */}
       {meta?.requires_signature && (

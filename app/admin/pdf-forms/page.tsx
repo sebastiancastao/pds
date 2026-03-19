@@ -11,6 +11,7 @@ type CustomForm = {
   requires_signature: boolean;
   allow_date_input: boolean;
   allow_print_name: boolean;
+  allow_venue_display: boolean;
   created_at: string;
   is_active: boolean;
   target_state: string | null;
@@ -959,6 +960,28 @@ export default function AdminPdfFormsPage() {
     }
   };
 
+  const handleToggleVenueDisplay = async (formId: string, current: boolean) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const res = await fetch(`/api/custom-forms/${formId}`, {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ allow_venue_display: !current }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Update failed');
+
+      setForms(prev => prev.map(f => f.id === formId ? { ...f, allow_venue_display: !current } : f));
+    } catch (err: any) {
+      setError(err.message);
+    }
+  };
+
   const handleDelete = async (formId: string, formTitle: string) => {
     if (!confirm(`Remove "${formTitle}" from employee forms?`)) return;
     try {
@@ -1307,13 +1330,15 @@ export default function AdminPdfFormsPage() {
             </div>
           )}
 
+          {uploadTab !== 'home-venue' && (
           <div className="flex items-center gap-3 mb-5">
             <div className="flex-1 h-px bg-gray-200" />
             <span className="text-xs text-gray-400 whitespace-nowrap">or enter a custom title</span>
             <div className="flex-1 h-px bg-gray-200" />
           </div>
+          )}
 
-          <form onSubmit={handleUpload} className="space-y-4">
+          {uploadTab !== 'home-venue' && <form onSubmit={handleUpload} className="space-y-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Form Title</label>
               <input
@@ -1605,7 +1630,7 @@ export default function AdminPdfFormsPage() {
                 {uploading ? 'Uploading...' : 'Upload Form'}
               </button>
             )}
-          </form>
+          </form>}
         </div>
 
         {/* Employee view link */}
@@ -1659,6 +1684,17 @@ export default function AdminPdfFormsPage() {
                           Print name
                         </span>
                       )}
+                      <button
+                        onClick={() => handleToggleVenueDisplay(form.id, form.allow_venue_display)}
+                        className={`inline-flex items-center gap-1 text-xs font-medium rounded-full px-2 py-0.5 border transition-colors ${
+                          form.allow_venue_display
+                            ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100'
+                            : 'text-gray-400 bg-gray-50 border-gray-200 hover:bg-gray-100'
+                        }`}
+                        title={form.allow_venue_display ? 'Click to hide venue' : 'Click to show venue'}
+                      >
+                        Show venue: {form.allow_venue_display ? 'ON' : 'OFF'}
+                      </button>
                       {form.target_state && (
                         <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
                           {form.target_state}
