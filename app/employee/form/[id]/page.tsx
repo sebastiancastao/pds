@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import PDFFormEditor from '@/app/components/PDFFormEditor';
 
@@ -54,12 +54,11 @@ const LIST_C_EXAMPLES = [
 export default function EmployeeFormPage() {
   const router = useRouter();
   const params = useParams();
+  const searchParams = useSearchParams();
   const formId = params.id as string;
   // When opened from an admin's employee profile page, asUser holds the employee's ID.
   // The form is then saved under that employee's ID rather than the logged-in admin's ID.
-  const asUserId = typeof window !== 'undefined'
-    ? (new URLSearchParams(window.location.search).get('asUser') ?? undefined)
-    : undefined;
+  const asUserId = searchParams.get('asUser') ?? undefined;
 
   const [meta, setMeta] = useState<FormMeta | null>(null);
   const [pdfUrl, setPdfUrl] = useState('');
@@ -99,12 +98,22 @@ export default function EmployeeFormPage() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [hasSig, setHasSig] = useState(false);
   const lastPosRef = useRef<{ x: number; y: number } | null>(null);
+  const loadRequestIdRef = useRef(0);
 
-  useEffect(() => { loadForm(); }, [formId]);
+  const loadForm = useCallback(async () => {
+    const requestId = ++loadRequestIdRef.current;
+    setLoading(true);
+    setError('');
+    setMeta(null);
+    setPdfUrl('');
+    setAssignedVenues([]);
+    setAlreadySubmitted(false);
+    setSubmittedAt(null);
+    setSubmittedDocs([]);
 
-  const loadForm = async () => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { router.push('/login'); return; }
+    if (loadRequestIdRef.current !== requestId) return;
     setSessionToken(session.access_token);
 
     try {
@@ -115,8 +124,10 @@ export default function EmployeeFormPage() {
       const venueRes = await fetch(venueUrl, {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
+      if (loadRequestIdRef.current !== requestId) return;
       if (venueRes.ok) {
         const venueData = await venueRes.json();
+        if (loadRequestIdRef.current !== requestId) return;
         setAssignedVenues(venueData.venues ?? []);
       }
 
@@ -124,9 +135,11 @@ export default function EmployeeFormPage() {
       const listRes = await fetch('/api/custom-forms/list', {
         headers: { Authorization: `Bearer ${session.access_token}` },
       });
+      if (loadRequestIdRef.current !== requestId) return;
 
       if (!listRes.ok) throw new Error('Failed to load forms');
       const data = await listRes.json();
+      if (loadRequestIdRef.current !== requestId) return;
       const form = (data.forms as FormMeta[]).find(f => f.id === formId);
       if (!form) throw new Error('Form not found');
       setMeta(form);
@@ -140,7 +153,9 @@ export default function EmployeeFormPage() {
         `/api/pdf-form-progress/retrieve?formName=${encodeURIComponent(savedFormName)}`,
         { headers: { Authorization: `Bearer ${session.access_token}` } },
       );
+      if (loadRequestIdRef.current !== requestId) return;
       const progressData = await progressRes.json();
+      if (loadRequestIdRef.current !== requestId) return;
       if (progressData.found) {
         setAlreadySubmitted(true);
         setSubmittedAt(progressData.updatedAt ?? null);
@@ -149,17 +164,25 @@ export default function EmployeeFormPage() {
         const docsRes = await fetch(`/api/custom-forms/${formId}/docs`, {
           headers: { Authorization: `Bearer ${session.access_token}` },
         });
+        if (loadRequestIdRef.current !== requestId) return;
         if (docsRes.ok) {
           const docsData = await docsRes.json();
+          if (loadRequestIdRef.current !== requestId) return;
           setSubmittedDocs(docsData.docs ?? []);
         }
       }
     } catch (err: any) {
+      if (loadRequestIdRef.current !== requestId) return;
       setError(err.message);
     } finally {
+      if (loadRequestIdRef.current !== requestId) return;
       setLoading(false);
     }
-  };
+  }, [asUserId, formId, router]);
+
+  useEffect(() => {
+    loadForm();
+  }, [loadForm]);
 
   const handleSave = useCallback((bytes: Uint8Array) => {
     currentPdfBytesRef.current = bytes;
