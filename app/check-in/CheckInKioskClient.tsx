@@ -1293,7 +1293,7 @@ export default function CheckInKioskPage() {
                     {worker.status === "clocked_in" && "You are currently clocked in"}
                     {worker.status === "on_meal" && "You are on a meal break"}
                   </p>
-                  {worker.clockedInAt && worker.status !== "not_clocked_in" && (
+                  {worker.clockedInAt && worker.status === "clocked_in" && (
                     <p className="text-blue-500 text-xs mt-1">
                       Since {toPacificHHMM(worker.clockedInAt)}
                     </p>

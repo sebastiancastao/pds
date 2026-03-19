@@ -183,7 +183,8 @@ export async function GET(
       requesterRole === 'admin' ||
       requesterRole === 'manager' ||
       requesterRole === 'supervisor' ||
-      requesterRole === 'supervisor2';
+      requesterRole === 'supervisor2' ||
+      requesterRole === 'supervisor3';
 
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin

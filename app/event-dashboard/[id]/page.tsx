@@ -1517,13 +1517,15 @@ export default function EventDashboardPage() {
 
   const loadRegions = async () => {
     try {
-      const { data, error } = await supabase
-        .from("regions")
-        .select("id, name")
-        .eq("is_active", true)
-        .order("name", { ascending: true });
-      if (!error && Array.isArray(data)) {
-        setRegions(data);
+      const token = await getSessionToken();
+      const res = await fetch("/api/regions", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (res.ok) {
+        const json = await res.json().catch(() => ({}));
+        if (Array.isArray(json?.regions)) {
+          setRegions(json.regions.filter((r: any) => r.is_active !== false));
+        }
       }
     } catch {
       // silent — region filter just won't populate
