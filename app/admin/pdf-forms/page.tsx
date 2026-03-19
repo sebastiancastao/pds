@@ -380,6 +380,32 @@ export default function AdminPdfFormsPage() {
     [selectedVenueRecipients, assignedUserIds]
   );
 
+  const vendorIdToVenueNames = useMemo(() => {
+    const map = new Map<string, string[]>();
+
+    vendorVenueAssignments.forEach((assignment) => {
+      if (!assignment.vendor_id || !assignment.venue?.venue_name) return;
+
+      const names = map.get(assignment.vendor_id) || [];
+      if (!names.includes(assignment.venue.venue_name)) {
+        names.push(assignment.venue.venue_name);
+        map.set(assignment.vendor_id, names);
+      }
+    });
+
+    map.forEach((names, vendorId) => {
+      map.set(vendorId, [...names].sort((a, b) => a.localeCompare(b)));
+    });
+
+    return map;
+  }, [vendorVenueAssignments]);
+
+  const getAssignedVenueLabel = useCallback((userId: string) => {
+    const venueNames = vendorIdToVenueNames.get(userId);
+    if (!venueNames || venueNames.length === 0) return null;
+    return venueNames.join(', ');
+  }, [vendorIdToVenueNames]);
+
   const getDisplayName = (person: {
     first_name?: string | null;
     last_name?: string | null;
@@ -472,8 +498,6 @@ export default function AdminPdfFormsPage() {
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
-    setVenues([]);
-    setVendorVenueAssignments([]);
     setAssigneesLoading(true);
     setVenuesLoading(true);
     try {
@@ -503,8 +527,6 @@ export default function AdminPdfFormsPage() {
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
-    setVenues([]);
-    setVendorVenueAssignments([]);
   };
 
   const toggleUserSelection = (emp: EmployeeResult) => {
@@ -623,7 +645,7 @@ export default function AdminPdfFormsPage() {
       return;
     }
 
-    await Promise.all([loadForms(session.access_token), loadPageVenues()]);
+    await Promise.all([loadForms(session.access_token), loadPageVenues(), fetchVenueAssignments(session.access_token).catch(() => {})]);
   };
 
   const loadForms = async (token: string) => {
@@ -1524,7 +1546,7 @@ export default function AdminPdfFormsPage() {
                   ) : (
                     <>
                       <p className="text-xs font-medium text-purple-700 mb-1.5">
-                        Form will be restricted to {pageVenueUsers.length} user{pageVenueUsers.length !== 1 ? 's' : ''} at this venue.
+                        Form will be restricted to {pageVenueUsers.length} user{pageVenueUsers.length !== 1 ? 's' : ''} at {pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'this venue'}.
                       </p>
                       <div className="border border-gray-200 rounded-lg divide-y divide-gray-100 max-h-36 overflow-y-auto">
                         {pageVenueUsers.map((u) => (
@@ -1565,26 +1587,33 @@ export default function AdminPdfFormsPage() {
               </div>
               {targetUsers.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">
-                  {targetUsers.map(u => (
-                    <span
-                      key={u.id}
-                      className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-blue-200"
-                    >
-                      {u.first_name} {u.last_name}
-                      {u.role === 'worker' && (
-                        <span className="ml-0.5 text-blue-500 font-normal">· worker</span>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setTargetUsers(prev => prev.filter(x => x.id !== u.id))}
-                        className="text-blue-500 hover:text-blue-700 rounded-full p-0.5 hover:bg-blue-200 transition-colors"
+                  {targetUsers.map((u) => {
+                    const assignedVenueLabel = getAssignedVenueLabel(u.id);
+
+                    return (
+                      <span
+                        key={u.id}
+                        className="inline-flex items-center gap-1 bg-blue-100 text-blue-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-blue-200"
                       >
-                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </span>
-                  ))}
+                        {u.first_name} {u.last_name}
+                        {u.role === 'worker' && (
+                          <span className="ml-0.5 text-blue-500 font-normal">· worker</span>
+                        )}
+                        {assignedVenueLabel && (
+                          <span className="ml-0.5 text-blue-500 font-normal">· {assignedVenueLabel}</span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setTargetUsers(prev => prev.filter(x => x.id !== u.id))}
+                          className="text-blue-500 hover:text-blue-700 rounded-full p-0.5 hover:bg-blue-200 transition-colors"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </span>
+                    );
+                  })}
                 </div>
               ) : (
                 <p className="text-xs text-gray-400">Or leave empty to show to all eligible employees.</p>
@@ -1800,6 +1829,7 @@ export default function AdminPdfFormsPage() {
                   {employeeResults.map(emp => {
                     const isSelected = !!selectedUsers.find(u => u.id === emp.id);
                     const isAlreadyAssigned = assignedUserIds.has(emp.id);
+                    const assignedVenueLabel = getAssignedVenueLabel(emp.id);
                     return (
                       <button
                         key={emp.id}
@@ -1832,7 +1862,11 @@ export default function AdminPdfFormsPage() {
                             {emp.first_name} {emp.last_name}
                             {isAlreadyAssigned && <span className="ml-1.5 text-xs text-gray-400 font-normal">already assigned</span>}
                           </p>
-                          <p className="text-xs text-gray-500 truncate">{emp.email}{emp.state ? ` · ${emp.state}` : ''}</p>
+                          <p className="text-xs text-gray-500 truncate">
+                            {emp.email}
+                            {emp.state ? ` · ${emp.state}` : ''}
+                            {assignedVenueLabel ? ` · ${assignedVenueLabel}` : ''}
+                          </p>
                         </div>
                       </button>
                     );
@@ -1848,22 +1882,29 @@ export default function AdminPdfFormsPage() {
               <div>
                 <p className="text-sm font-medium text-gray-700 mb-2">Selected ({selectedUsers.length})</p>
                 <div className="flex flex-wrap gap-2">
-                  {selectedUsers.map(u => (
-                    <span
-                      key={u.id}
-                      className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-purple-200"
-                    >
-                      {u.first_name} {u.last_name}
-                      <button
-                        onClick={() => toggleUserSelection(u)}
-                        className="text-purple-500 hover:text-purple-700 rounded-full p-0.5 hover:bg-purple-200 transition-colors"
+                  {selectedUsers.map((u) => {
+                    const assignedVenueLabel = getAssignedVenueLabel(u.id);
+
+                    return (
+                      <span
+                        key={u.id}
+                        className="inline-flex items-center gap-1.5 bg-purple-100 text-purple-800 text-xs font-medium rounded-full pl-2.5 pr-1 py-1 border border-purple-200"
                       >
-                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </span>
-                  ))}
+                        {u.first_name} {u.last_name}
+                        {assignedVenueLabel && (
+                          <span className="text-purple-600 font-normal">· {assignedVenueLabel}</span>
+                        )}
+                        <button
+                          onClick={() => toggleUserSelection(u)}
+                          className="text-purple-500 hover:text-purple-700 rounded-full p-0.5 hover:bg-purple-200 transition-colors"
+                        >
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </span>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -2069,6 +2110,7 @@ export default function AdminPdfFormsPage() {
                 <div className="space-y-3">
                   {pickerResults.map(emp => {
                     const isSelected = !!pickerSelected.find(u => u.id === emp.id);
+                    const assignedVenueLabel = getAssignedVenueLabel(emp.id);
                     return (
                       <div
                         key={emp.id}
@@ -2102,6 +2144,9 @@ export default function AdminPdfFormsPage() {
                             {emp.email}
                             {emp.city && emp.state && (
                               <span className="ml-2 text-gray-400">· {emp.city}, {emp.state}</span>
+                            )}
+                            {assignedVenueLabel && (
+                              <span className="ml-2 text-purple-600 font-medium">· {assignedVenueLabel}</span>
                             )}
                           </div>
                         </div>
