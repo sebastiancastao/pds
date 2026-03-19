@@ -79,6 +79,7 @@ export default function VendorVenueManagementPage() {
   const [assignments, setAssignments] = useState<VendorVenueAssignment[]>([]);
 
   const [vendorSearchQuery, setVendorSearchQuery] = useState('');
+  const [venueFilterId, setVenueFilterId] = useState('');
   const [showAssignModal, setShowAssignModal] = useState(false);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [selectedVenueId, setSelectedVenueId] = useState('');
@@ -193,17 +194,26 @@ export default function VendorVenueManagementPage() {
 
   const filteredVendors = useMemo(() => {
     const query = vendorSearchQuery.trim().toLowerCase();
-    if (!query) return vendors;
 
     return vendors.filter((vendor) => {
-      const fullName = `${vendor.first_name || ''} ${vendor.last_name || ''}`.trim().toLowerCase();
-      return (
-        fullName.includes(query) ||
-        vendor.email.toLowerCase().includes(query) ||
-        (vendor.division || '').toLowerCase().includes(query)
-      );
+      if (query) {
+        const fullName = `${vendor.first_name || ''} ${vendor.last_name || ''}`.trim().toLowerCase();
+        const matchesQuery =
+          fullName.includes(query) ||
+          vendor.email.toLowerCase().includes(query) ||
+          (vendor.division || '').toLowerCase().includes(query);
+        if (!matchesQuery) return false;
+      }
+
+      if (venueFilterId) {
+        const vendorAssignments = assignmentsByVendor.get(vendor.id) || [];
+        const hasVenue = vendorAssignments.some((a) => a.venue_id === venueFilterId);
+        if (!hasVenue) return false;
+      }
+
+      return true;
     });
-  }, [vendors, vendorSearchQuery]);
+  }, [vendors, vendorSearchQuery, venueFilterId, assignmentsByVendor]);
 
   const availableVenuesForSelection = useMemo(() => {
     if (!selectedVendorId) return venues;
@@ -338,13 +348,33 @@ export default function VendorVenueManagementPage() {
     const vendorByEmail = new Map(vendors.map((v) => [v.email.toLowerCase(), v]));
     const venueByName = new Map(venues.map((v) => [v.venue_name.toLowerCase(), v]));
 
+    const normalize = (s: string) => s.toLowerCase().replace(/\s+/g, '');
+
+    const findVenueByName = (name: string) => {
+      const lower = name.toLowerCase().trim();
+      const normalized = normalize(name);
+      // exact match first
+      const exact = venueByName.get(lower);
+      if (exact) return exact;
+      // normalized exact match (ignores spaces, e.g. "save mart center" == "SaveMart Center")
+      for (const [dbName, venue] of venueByName) {
+        if (normalize(dbName) === normalized) return venue;
+      }
+      // partial match: one contains the other (normalized)
+      for (const [dbName, venue] of venueByName) {
+        const dbNorm = normalize(dbName);
+        if (normalized.includes(dbNorm) || dbNorm.includes(normalized)) return venue;
+      }
+      return undefined;
+    };
+
     const parseRows = (data: any[]) => {
       const rows: BulkRow[] = data.map((row, index) => {
         const vendor_email = String(row['vendor_email'] || row['Email'] || '').trim();
         const venue_name = String(row['venue_name'] || row['Venues Assigned'] || '').trim();
 
         const vendor = vendorByEmail.get(vendor_email.toLowerCase());
-        const venue = venueByName.get(venue_name.toLowerCase());
+        const venue = findVenueByName(venue_name);
 
         let error: string | null = null;
         if (!vendor_email || !venue_name) {
@@ -535,7 +565,7 @@ export default function VendorVenueManagementPage() {
 
         <div className="bg-white border border-gray-200 rounded-2xl shadow-sm p-4 sm:p-5 mb-6">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-            <div className="md:col-span-2">
+            <div className="md:col-span-1">
               <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
                 Search Vendors
               </label>
@@ -546,6 +576,29 @@ export default function VendorVenueManagementPage() {
                 placeholder="Search by name, email, or division..."
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
               />
+            </div>
+            <div className="md:col-span-1">
+              <label className="block text-xs font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
+                Filter by Venue
+              </label>
+              <select
+                value={venueFilterId}
+                onChange={(event) => setVenueFilterId(event.target.value)}
+                className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">All venues</option>
+                {venues
+                  .slice()
+                  .sort((a, b) => a.venue_name.localeCompare(b.venue_name))
+                  .map((venue) => (
+                    <option key={venue.id} value={venue.id}>
+                      {venue.venue_name}
+                      {venue.city || venue.state
+                        ? ` (${venue.city || ''}${venue.city && venue.state ? ', ' : ''}${venue.state || ''})`
+                        : ''}
+                    </option>
+                  ))}
+              </select>
             </div>
             <div className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5">
               <p className="text-xs text-gray-500 uppercase tracking-wide">Active Vendors</p>

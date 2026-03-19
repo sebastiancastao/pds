@@ -250,10 +250,11 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
   const [assignedFormIds, setAssignedFormIds] = useState<Set<string>>(new Set());
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
+  const [employeeHomeVenue, setEmployeeHomeVenue] = useState<{ id: string; venue_name: string; city: string | null; state: string | null } | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
   const [sickRequestDate, setSickRequestDate] = useState<string>(
@@ -432,10 +433,17 @@ export default function WorkerProfilePage() {
         const { data: { session } } = await supabase.auth.getSession();
         const headers = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} as Record<string, string>;
 
-        const [formsRes, assignmentsRes] = await Promise.all([
+        const [formsRes, assignmentsRes, venueRes] = await Promise.all([
           fetch('/api/custom-forms/list', { headers }),
           fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers }),
+          fetch(`/api/my-assigned-venues?asUser=${employee.id}`, { headers }),
         ]);
+
+        if (venueRes.ok) {
+          const venueData = await venueRes.json();
+          const venues = venueData.venues || [];
+          setEmployeeHomeVenue(venues[0] || null);
+        }
 
         let stateForms: typeof customFormsList = [];
         if (formsRes.ok) {
@@ -456,7 +464,7 @@ export default function WorkerProfilePage() {
         let specificForms: typeof customFormsList = [];
         if (assignmentsRes.ok) {
           const data = await assignmentsRes.json();
-          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
+          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
           specificIds = new Set(assigned.map(f => f.id));
           assignedAtMap = Object.fromEntries(assigned.map(f => [f.id, f.assigned_at ?? null]));
           // Add assigned forms not already in the state list
@@ -769,6 +777,22 @@ export default function WorkerProfilePage() {
     return btoa(b);
   };
 
+  // Embed the home venue name on the bottom-left of the last PDF page.
+  const withVenueEmbedded = async (base64Data: string, venueName: string): Promise<string> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    lastPage.drawText('Your assigned venue', { x: 260, y: 180, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 260, y: 155, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({ start: { x: 260, y: 140 }, end: { x: 470, y: 140 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
+  };
+
   const createPdfBlobUrl = (base64Data: string) => {
     const byteCharacters = atob(base64Data);
     const byteNumbers = new Array(byteCharacters.length);
@@ -792,11 +816,12 @@ export default function WorkerProfilePage() {
   };
 
   // Download a single PDF form
-  const downloadPDFForm = async (form: PDFForm) => {
+  const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      const data = form.form_date
+      let data = form.form_date
         ? await withDateEmbedded(form.form_data, form.form_date)
         : form.form_data;
+      if (venueName) data = await withVenueEmbedded(data, venueName);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -811,11 +836,12 @@ export default function WorkerProfilePage() {
     }
   };
 
-  const viewPDFForm = async (form: PDFForm) => {
+  const viewPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      const data = form.form_date
+      let data = form.form_date
         ? await withDateEmbedded(form.form_data, form.form_date)
         : form.form_data;
+      if (venueName) data = await withVenueEmbedded(data, venueName);
       openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
@@ -1766,9 +1792,10 @@ export default function WorkerProfilePage() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
-                      const progressKey = `${form.title} ${new Date().getFullYear()}`;
-                      const submitted = pdfForms.find(p => p.form_name === progressKey);
+                      const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+                      const submitted = pdfForms.find(p => titlePattern.test(p.form_name));
                       const isDirectlyAssigned = assignedFormIds.has(form.id);
+                      const venueForForm = employeeHomeVenue ? employeeHomeVenue.venue_name : undefined;
                       return (
                         <div
                           key={form.id}
@@ -1820,6 +1847,11 @@ export default function WorkerProfilePage() {
                                     Date: {formatDate(submitted.form_date)}
                                   </span>
                                 )}
+                                {venueForForm && (
+                                  <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
+                                    Your assigned venue: {venueForForm}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -1827,7 +1859,7 @@ export default function WorkerProfilePage() {
                             {submitted ? (
                               <>
                                 <button
-                                  onClick={() => viewPDFForm(submitted)}
+                                  onClick={() => viewPDFForm(submitted, venueForForm)}
                                   className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
                                 >
                                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1837,7 +1869,7 @@ export default function WorkerProfilePage() {
                                   View
                                 </button>
                                 <button
-                                  onClick={() => downloadPDFForm(submitted)}
+                                  onClick={() => downloadPDFForm(submitted, venueForForm)}
                                   className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
                                 >
                                   <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

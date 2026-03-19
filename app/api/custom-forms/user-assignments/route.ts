@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
 
     const { data: forms, error: formsError } = await supabase
       .from('custom_pdf_forms')
-      .select('id, title, requires_signature, allow_date_input, allow_print_name, target_state, target_region, is_active, created_at')
+      .select('id, title, requires_signature, allow_date_input, allow_print_name, allow_venue_display, target_state, target_region, is_active, created_at')
       .in('id', formIds)
       .eq('is_active', true);
 
