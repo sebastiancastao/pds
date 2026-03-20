@@ -4,6 +4,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { fetchAllCustomFormAssignments } from '@/lib/custom-form-assignments';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,10 +35,11 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const { data: assignments, error } = await supabase
-      .from('custom_form_assignments')
-      .select('form_id, assigned_at')
-      .eq('user_id', userId);
+    const { data: assignments, error } = await fetchAllCustomFormAssignments(
+      supabase,
+      'form_id, assigned_at',
+      (query) => query.eq('user_id', userId),
+    );
 
     if (error) {
       // Table doesn't exist yet → return empty gracefully

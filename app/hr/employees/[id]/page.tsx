@@ -286,7 +286,7 @@ export default function EmployeeProfilePage() {
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
 
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
@@ -458,24 +458,48 @@ export default function EmployeeProfilePage() {
     loadPDFForms();
   }, [employee?.id]);
 
-  // Fetch custom forms filtered by employee's state
+  // Fetch custom forms filtered by employee's state and direct assignments
   useEffect(() => {
     if (!employee) return;
     const loadCustomForms = async () => {
       setCustomFormsLoading(true);
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch('/api/custom-forms/list', {
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-        });
-        if (res.ok) {
-          const data = await res.json();
+        const headers = session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {} as Record<string, string>;
+
+        const [formsRes, assignmentsRes] = await Promise.all([
+          fetch('/api/custom-forms/list', { headers }),
+          fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers }),
+        ]);
+
+        let stateForms: typeof customFormsList = [];
+        if (formsRes.ok) {
+          const data = await formsRes.json();
           const allForms = data.forms || [];
-          const filtered = allForms.filter((f: { target_state: string | null }) =>
-            !f.target_state || !employee.state || f.target_state === employee.state
+          stateForms = allForms.filter((f: { target_state: string | null; assignment_count?: number }) =>
+            (!f.target_state || !employee.state || f.target_state === employee.state) &&
+            (f.assignment_count === 0 || f.assignment_count == null)
           );
-          setCustomFormsList(filtered);
         }
+
+        let specificIds = new Set<string>();
+        let assignedAtMap: Record<string, string | null> = {};
+        let specificForms: typeof customFormsList = [];
+        if (assignmentsRes.ok) {
+          const data = await assignmentsRes.json();
+          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
+          specificIds = new Set(assigned.map((f) => f.id));
+          assignedAtMap = Object.fromEntries(assigned.map((f) => [f.id, f.assigned_at ?? null]));
+          specificForms = assigned.filter((f) => !stateForms.find((sf) => sf.id === f.id));
+        }
+
+        const mergedStateForms = stateForms.map((f) =>
+          specificIds.has(f.id) ? { ...f, assigned_at: assignedAtMap[f.id] } : f
+        );
+
+        setCustomFormsList([...mergedStateForms, ...specificForms]);
       } catch (e) {
         console.error('Error loading custom forms list:', e);
       } finally {

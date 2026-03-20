@@ -230,6 +230,8 @@ export default function AdminPdfFormsPage() {
   const [pageVenuesLoading, setPageVenuesLoading] = useState(false);
   const [pageVenueUsers, setPageVenueUsers] = useState<VenueRecipient[]>([]);
   const [pageVenueUsersLoading, setPageVenueUsersLoading] = useState(false);
+  const [venueFormIds, setVenueFormIds] = useState<Set<string> | null>(null);
+  const [venueFormsRefreshKey, setVenueFormsRefreshKey] = useState(0);
 
   // Send-to-users modal state
   const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
@@ -304,6 +306,34 @@ export default function AdminPdfFormsPage() {
     load();
     return () => { cancelled = true; };
   }, [pageVenueId]);
+
+  // Fetch form IDs assigned to venue users so the forms list can be filtered
+  useEffect(() => {
+    if (!pageVenueId || pageVenueUsers.length === 0) {
+      setVenueFormIds(null);
+      return;
+    }
+    let cancelled = false;
+    const loadVenueForms = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || cancelled) return;
+      const results = await Promise.all(
+        pageVenueUsers.map(u =>
+          fetch(`/api/custom-forms/user-assignments?userId=${u.id}`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+          }).then(r => r.json()).catch(() => ({ assignedForms: [] }))
+        )
+      );
+      if (cancelled) return;
+      const ids = new Set<string>();
+      for (const r of results) {
+        for (const f of (r.assignedForms || [])) ids.add(f.id);
+      }
+      setVenueFormIds(ids);
+    };
+    loadVenueForms();
+    return () => { cancelled = true; };
+  }, [pageVenueId, pageVenueUsers, venueFormsRefreshKey]);
 
   // Debounced employee search
   const searchEmployees = useCallback(async (q: string) => {
@@ -412,6 +442,11 @@ export default function AdminPdfFormsPage() {
 
     return map;
   }, [vendorVenueAssignments]);
+
+  const filteredForms = useMemo(() => {
+    if (!pageVenueId || venueFormIds === null) return forms;
+    return forms.filter(f => venueFormIds.has(f.id));
+  }, [forms, pageVenueId, venueFormIds]);
 
   const getAssignedVenueLabel = useCallback((userId: string) => {
     const venueNames = vendorIdToVenueNames.get(userId);
@@ -588,6 +623,8 @@ export default function AdminPdfFormsPage() {
       }
 
       await fetchFormAssignees(sendModalForm.id, session.access_token);
+      await loadForms(session.access_token);
+      setVenueFormsRefreshKey(k => k + 1);
     } catch (err: any) {
       setSendError(err.message);
     } finally {
@@ -727,6 +764,7 @@ export default function AdminPdfFormsPage() {
     if (!title.trim()) { setError('Please enter a form title.'); return; }
     const preset = STATE_FORM_PRESETS.find(p => p.code === selectedStatePreset);
     if (!preset) { setError('No state form selected.'); return; }
+    if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
 
     setUploading(true);
     try {
@@ -736,14 +774,14 @@ export default function AdminPdfFormsPage() {
       const res = await fetch('/api/custom-forms/register-state-form', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ title: title.trim(), requiresSignature, targetState }),
+        body: JSON.stringify({ title: title.trim(), requiresSignature, targetState, venueId: pageVenueId || undefined }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
-      // Assign to specific users (or venue users) if selected
+      // Assign to individually selected users (non-venue) if any
       const { userIds: stateUserIds, note: stateNote } = resolveAssignmentTargets();
-      if (stateUserIds.length > 0 && json.form?.id) {
+      if (!pageVenueId && stateUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
@@ -758,13 +796,15 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      setSuccessMsg(`"${title}" registered successfully${stateNote}.`);
+      const venueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : stateNote;
+      setSuccessMsg(`"${title}" registered successfully${venueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
       setTargetUsers([]);
       setSelectedStatePreset(null);
       await loadForms(session.access_token);
+      setVenueFormsRefreshKey(k => k + 1);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -802,6 +842,7 @@ export default function AdminPdfFormsPage() {
     if (!title.trim()) { setError('Please enter a form title.'); return; }
     const preset = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
     if (!preset) { setError('No packet form selected.'); return; }
+    if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
 
     setUploading(true);
     try {
@@ -819,13 +860,14 @@ export default function AdminPdfFormsPage() {
           targetState: targetState || null,
           packetState: preset.state,
           formType: preset.formType,
+          venueId: pageVenueId || undefined,
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
       const { userIds: packetUserIds, note: packetNote } = resolveAssignmentTargets();
-      if (packetUserIds.length > 0 && json.form?.id) {
+      if (!pageVenueId && packetUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
@@ -840,7 +882,8 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      setSuccessMsg(`"${title}" registered successfully${packetNote}.`);
+      const packetVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : packetNote;
+      setSuccessMsg(`"${title}" registered successfully${packetVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -850,6 +893,7 @@ export default function AdminPdfFormsPage() {
       setTargetUsers([]);
       setSelectedPacketPreset(null);
       await loadForms(session.access_token);
+      setVenueFormsRefreshKey(k => k + 1);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -875,6 +919,7 @@ export default function AdminPdfFormsPage() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
 
     setUploading(true);
     try {
@@ -889,6 +934,7 @@ export default function AdminPdfFormsPage() {
       fd.append('allowPrintName', String(allowPrintName));
       fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
+      if (pageVenueId) fd.append('venueId', pageVenueId);
 
       const res = await fetch('/api/custom-forms/upload', {
         method: 'POST',
@@ -899,9 +945,9 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
 
-      // If specific users (or venue users) were selected, assign this form to them
+      // Assign to individually selected users (non-venue) if any
       const { userIds: uploadUserIds, note: uploadNote } = resolveAssignmentTargets();
-      if (uploadUserIds.length > 0 && json.form?.id) {
+      if (!pageVenueId && uploadUserIds.length > 0 && json.form?.id) {
         const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
@@ -916,7 +962,8 @@ export default function AdminPdfFormsPage() {
         }
       }
 
-      setSuccessMsg(`"${title}" uploaded successfully${uploadNote}.`);
+      const uploadVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : uploadNote;
+      setSuccessMsg(`"${title}" uploaded successfully${uploadVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -929,6 +976,7 @@ export default function AdminPdfFormsPage() {
       setSelectedPacketPreset(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
       await loadForms(session.access_token);
+      setVenueFormsRefreshKey(k => k + 1);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -943,6 +991,7 @@ export default function AdminPdfFormsPage() {
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
     if (!pageVenueId) { setError('Please select a venue.'); return; }
+    if (pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first.'); return; }
 
     setUploading(true);
     try {
@@ -957,6 +1006,7 @@ export default function AdminPdfFormsPage() {
       fd.append('allowPrintName', String(allowPrintName));
       fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
+      fd.append('venueId', pageVenueId);
 
       const res = await fetch('/api/custom-forms/upload', {
         method: 'POST',
@@ -966,20 +1016,8 @@ export default function AdminPdfFormsPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
 
-      const { userIds, note } = resolveAssignmentTargets();
-      if (userIds.length > 0 && json.form?.id) {
-        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-          body: JSON.stringify({ userIds }),
-        });
-        if (!assignRes.ok) {
-          const assignJson = await assignRes.json();
-          throw new Error(assignJson.error || 'Failed to save user assignments.');
-        }
-      }
-
-      setSuccessMsg(`"${title}" uploaded successfully${note}.`);
+      const venueName = pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue';
+      setSuccessMsg(`"${title}" uploaded successfully (restricted to ${venueName}).`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -989,6 +1027,7 @@ export default function AdminPdfFormsPage() {
       setHomeVenueFileName('');
       if (homeVenueFileRef.current) homeVenueFileRef.current.value = '';
       await loadForms(session.access_token);
+      setVenueFormsRefreshKey(k => k + 1);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -1646,7 +1685,11 @@ export default function AdminPdfFormsPage() {
               </div>
             )}
 
-            {selectedStatePreset ? (
+            {pageVenueId && pageVenueUsersLoading ? (
+              <button type="button" disabled className="w-full bg-gray-400 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg text-sm">
+                Loading venue users...
+              </button>
+            ) : selectedStatePreset ? (
               <button
                 type="button"
                 onClick={handleRegisterStateForm}
@@ -1692,16 +1735,16 @@ export default function AdminPdfFormsPage() {
         {/* Active Forms List */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
           <h2 className="text-lg font-semibold text-gray-800 mb-4">
-            Active Forms ({forms.length})
+            Active Forms ({filteredForms.length}{pageVenueId && forms.length !== filteredForms.length ? ` of ${forms.length}` : ''})
           </h2>
 
-          {forms.length === 0 ? (
+          {filteredForms.length === 0 ? (
             <p className="text-gray-500 text-sm text-center py-8">
-              No forms uploaded yet. Upload a PDF above to get started.
+              {pageVenueId ? 'No forms assigned to users at this venue.' : 'No forms uploaded yet. Upload a PDF above to get started.'}
             </p>
           ) : (
             <div className="space-y-3">
-              {forms.map(form => (
+              {filteredForms.map(form => (
                 <div
                   key={form.id}
                   className="flex items-center justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50"
@@ -1761,6 +1804,12 @@ export default function AdminPdfFormsPage() {
                       className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors"
                     >
                       Preview
+                    </button>
+                    <button
+                      onClick={() => openSendModal(form)}
+                      className="text-sm text-purple-600 hover:text-purple-800 font-medium px-3 py-1 rounded-lg hover:bg-purple-50 transition-colors"
+                    >
+                      Send
                     </button>
                     <button
                       onClick={() => handleDelete(form.id, form.title)}

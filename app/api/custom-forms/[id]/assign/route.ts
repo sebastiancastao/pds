@@ -5,6 +5,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { fetchAllCustomFormAssignments } from '@/lib/custom-form-assignments';
 
 export const dynamic = 'force-dynamic';
 
@@ -90,10 +91,11 @@ export async function GET(
     const exec = await getExecUser(request);
     if (!exec) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { data: assignments, error } = await supabase
-      .from('custom_form_assignments')
-      .select('user_id, assigned_at')
-      .eq('form_id', params.id);
+    const { data: assignments, error } = await fetchAllCustomFormAssignments(
+      supabase,
+      'user_id, assigned_at',
+      (query) => query.eq('form_id', params.id),
+    );
 
     if (error) {
       if (error.code === '42P01') return NextResponse.json({ assignees: [] });

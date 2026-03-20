@@ -51,6 +51,7 @@ export async function POST(request: NextRequest) {
       targetState,
       packetState,
       formType,
+      venueId,
     } = body;
 
     const sourceState = String(packetState || targetState || '').trim().toUpperCase();
@@ -104,6 +105,35 @@ export async function POST(request: NextRequest) {
     if (insertError) {
       console.error('[REGISTER-STATE-FORM] DB insert failed:', insertError);
       return NextResponse.json({ error: 'Failed to save form record', details: insertError.message }, { status: 500 });
+    }
+
+    // If a venue is specified, assign the form to all users at that venue atomically.
+    if (venueId) {
+      const { data: venueAssignments, error: venueErr } = await supabase
+        .from('vendor_venue_assignments')
+        .select('vendor_id')
+        .eq('venue_id', venueId);
+
+      if (venueErr) {
+        await supabase.from('custom_pdf_forms').delete().eq('id', record.id);
+        return NextResponse.json({ error: 'Failed to look up venue users', details: venueErr.message }, { status: 500 });
+      }
+
+      const userIds = [...new Set((venueAssignments || []).map((a: any) => a.vendor_id))];
+      if (userIds.length === 0) {
+        await supabase.from('custom_pdf_forms').delete().eq('id', record.id);
+        return NextResponse.json({ error: 'No users are assigned to this venue. Assign users to the venue first.' }, { status: 400 });
+      }
+
+      const rows = userIds.map((uid: string) => ({ form_id: record.id, user_id: uid, assigned_by: user.id }));
+      const { error: assignError } = await supabase
+        .from('custom_form_assignments')
+        .upsert(rows, { onConflict: 'form_id,user_id' });
+
+      if (assignError) {
+        await supabase.from('custom_pdf_forms').delete().eq('id', record.id);
+        return NextResponse.json({ error: 'Failed to restrict form to venue users', details: assignError.message }, { status: 500 });
+      }
     }
 
     return NextResponse.json({ success: true, form: record }, { status: 201 });

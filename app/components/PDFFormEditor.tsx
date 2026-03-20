@@ -22,6 +22,7 @@ interface PDFFormEditorProps {
   showRequiredFieldErrors?: boolean;
   continueUrl?: string;
   userId?: string; // When set, load/retrieve progress for this user (HR acting on behalf of employee)
+  assignedVenueName?: string;
 }
 
 interface FormField {
@@ -142,6 +143,44 @@ const shouldMaskField = (formId: string, fieldName: string) =>
 
 const isStateTaxForm = (formId: string) =>
   formId === 'state-tax' || formId.endsWith('-state-tax');
+
+const normalizeVenueFieldName = (fieldName: string) =>
+  fieldName.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const isVenueTextFieldName = (fieldName: string) => {
+  const normalized = normalizeVenueFieldName(fieldName);
+  return (
+    normalized.includes('venue') ||
+    normalized.includes('homevenue') ||
+    normalized.includes('assignedvenue')
+  );
+};
+
+const stampAssignedVenueOnLastPage = async (pdfDoc: any, venueName: string) => {
+  const { rgb, StandardFonts } = await import('pdf-lib');
+  const lastPage = pdfDoc.getPages().at(-1);
+  if (!lastPage) return false;
+
+  const trimmedVenueName = venueName.trim();
+  if (!trimmedVenueName) return false;
+
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  lastPage.drawText('Your assigned venue', {
+    x: 260,
+    y: 180,
+    size: 9,
+    font,
+    color: rgb(0.4, 0.4, 0.4),
+  });
+  lastPage.drawText(trimmedVenueName, {
+    x: 260,
+    y: 155,
+    size: 11,
+    font,
+    color: rgb(0, 0, 0),
+  });
+  return true;
+};
 
 const shouldHideField = (formId: string, fieldName: string) =>
   (isAdpDepositForm(formId) && HIDDEN_ADP_DEPOSIT_FIELDS.has(fieldName)) ||
@@ -272,6 +311,7 @@ export default function PDFFormEditor({
   showRequiredFieldErrors,
   continueUrl,
   userId,
+  assignedVenueName,
 }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -332,7 +372,7 @@ export default function PDFFormEditor({
         pdfDocRef.current = null;
       }
     };
-  }, [pdfUrl, formId]);
+  }, [pdfUrl, formId, assignedVenueName]);
 
   const loadPDF = async () => {
     // Prevent multiple simultaneous loads
@@ -662,6 +702,49 @@ export default function PDFFormEditor({
       const masked = fields.filter((field) => shouldMaskField(formId, field.baseName));
       fields = fields.filter((field) => !shouldHideField(formId, field.baseName));
       console.log('Extracted', fields.length, 'form fields');
+
+      let didApplyAssignedVenue = false;
+      if (assignedVenueName?.trim()) {
+        const form = pdfLibDoc.getForm();
+        const venueFields = fields.filter(
+          (field) => field.type === 'text' && isVenueTextFieldName(field.baseName)
+        );
+
+        if (venueFields.length > 0) {
+          console.log(`[VENUE] Applying assigned venue to ${venueFields.length} field(s)`);
+          const appliedNames = new Set<string>();
+          for (const venueField of venueFields) {
+            if (appliedNames.has(venueField.baseName)) continue;
+            try {
+              const pdfField = form.getField(venueField.baseName);
+              if ('setText' in pdfField) {
+                pdfField.setText(assignedVenueName.trim());
+                appliedNames.add(venueField.baseName);
+                didApplyAssignedVenue = true;
+              }
+            } catch (venueErr) {
+              console.warn(`[VENUE] Failed to set field "${venueField.baseName}"`, venueErr);
+            }
+          }
+
+          if (didApplyAssignedVenue) {
+            fields = fields.map((field) =>
+              field.type === 'text' && isVenueTextFieldName(field.baseName)
+                ? { ...field, value: assignedVenueName.trim() }
+                : field
+            );
+          }
+        } else {
+          didApplyAssignedVenue = await stampAssignedVenueOnLastPage(
+            pdfLibDoc,
+            assignedVenueName.trim(),
+          );
+          if (didApplyAssignedVenue) {
+            console.log('[VENUE] No venue fields found, stamped venue on last page');
+          }
+        }
+      }
+
       setFormFields(fields);
       setMaskedFields(masked);
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import { fetchAllCustomFormAssignments } from '@/lib/custom-form-assignments';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,9 +67,18 @@ export async function GET(request: NextRequest) {
 
     if (userRecord && ['exec', 'admin', 'hr'].includes(userRecord.role)) {
       // Include per-form assignment counts so admins can see which forms are restricted
-      const { data: allAssignmentsForAdmin } = await adminClient
-        .from('custom_form_assignments')
-        .select('form_id');
+      const { data: allAssignmentsForAdmin, error: adminAssignmentsError } =
+        await fetchAllCustomFormAssignments(adminClient, 'form_id');
+      if (adminAssignmentsError) {
+        if ((adminAssignmentsError as any).code === '42P01') {
+          return NextResponse.json({ forms: allForms });
+        }
+        console.error('[CUSTOM-FORMS LIST] Admin assignments error:', adminAssignmentsError);
+        return NextResponse.json(
+          { error: 'Failed to fetch form assignments', details: adminAssignmentsError.message },
+          { status: 500 },
+        );
+      }
       const countMap: Record<string, number> = {};
       for (const a of (allAssignmentsForAdmin ?? [])) {
         countMap[a.form_id] = (countMap[a.form_id] ?? 0) + 1;
@@ -83,9 +93,10 @@ export async function GET(request: NextRequest) {
     // For employees/workers: filter by user-specific assignments.
     // Forms with at least one assignment are restricted — only assigned users can see them.
     // Forms with no assignments are visible to everyone.
-    const { data: allAssignments, error: assignErr } = await adminClient
-      .from('custom_form_assignments')
-      .select('form_id, user_id');
+    const { data: allAssignments, error: assignErr } = await fetchAllCustomFormAssignments(
+      adminClient,
+      'form_id,user_id',
+    );
 
     if (assignErr) {
       if ((assignErr as any).code === '42P01') {
@@ -93,8 +104,10 @@ export async function GET(request: NextRequest) {
         return NextResponse.json({ forms: allForms });
       }
       console.error('[CUSTOM-FORMS LIST] Assignments error:', assignErr);
-      // On error, fail safe: show all forms
-      return NextResponse.json({ forms: allForms });
+      return NextResponse.json(
+        { error: 'Failed to fetch form assignments', details: assignErr.message },
+        { status: 500 },
+      );
     }
 
     const assignments = allAssignments ?? [];

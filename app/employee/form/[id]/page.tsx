@@ -540,6 +540,10 @@ export default function EmployeeFormPage() {
   const docCount = Object.keys(uploadedDocs).length;
   // Show I-9 supporting document upload only for forms whose title contains "I-9" or "I9"
   const isI9Form = /i-?9/i.test(meta?.title ?? '');
+  const assignedVenueName =
+    meta?.allow_venue_display && assignedVenues.length > 0
+      ? assignedVenues[0].venue_name
+      : undefined;
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -582,6 +586,7 @@ export default function EmployeeFormPage() {
             formId={meta ? `${meta.title} ${new Date().getFullYear()}` : `custom-form-${formId}`}
             onSave={handleSave}
             skipButtonDetection={true}
+            assignedVenueName={assignedVenueName}
           />
         )}
       </div>
