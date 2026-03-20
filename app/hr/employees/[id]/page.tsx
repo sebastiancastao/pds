@@ -110,6 +110,14 @@ type PDFForm = {
   form_data: string; // base64
   updated_at: string;
   created_at: string;
+  form_date: string | null;
+};
+
+type AssignedVenue = {
+  id: string;
+  venue_name: string;
+  city: string | null;
+  state: string | null;
 };
 
 type OnboardingTemplate = {
@@ -289,6 +297,7 @@ export default function EmployeeProfilePage() {
   const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
+  const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
 
   // I-9 edit mode (Documentation section)
@@ -463,16 +472,24 @@ export default function EmployeeProfilePage() {
     if (!employee) return;
     const loadCustomForms = async () => {
       setCustomFormsLoading(true);
+      setEmployeeHomeVenue(null);
       try {
         const { data: { session } } = await supabase.auth.getSession();
         const headers = session?.access_token
           ? { Authorization: `Bearer ${session.access_token}` }
           : {} as Record<string, string>;
 
-        const [formsRes, assignmentsRes] = await Promise.all([
+        const [formsRes, assignmentsRes, venueRes] = await Promise.all([
           fetch('/api/custom-forms/list', { headers }),
           fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers }),
+          fetch(`/api/my-assigned-venues?asUser=${employee.id}`, { headers }),
         ]);
+
+        if (venueRes.ok) {
+          const venueData = await venueRes.json();
+          const venues = venueData.venues || [];
+          setEmployeeHomeVenue(venues[0] || null);
+        }
 
         let stateForms: typeof customFormsList = [];
         if (formsRes.ok) {
@@ -513,7 +530,10 @@ export default function EmployeeProfilePage() {
   useEffect(() => {
     if (!customFormsList.length || !pdfForms.length || !employeeId) return;
     const submittedFormIds = customFormsList
-      .filter(f => pdfForms.some(p => p.form_name === `custom-form-${f.id}`))
+      .filter((f) => {
+        const titlePattern = new RegExp(`^${f.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+        return pdfForms.some((p) => titlePattern.test(p.form_name));
+      })
       .map(f => f.id);
     if (!submittedFormIds.length) return;
 
@@ -667,11 +687,87 @@ export default function EmployeeProfilePage() {
     setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
   };
 
+  const withDateEmbedded = async (base64Data: string, date: string): Promise<string> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const [y, m, d] = date.split('-').map(Number);
+    const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({
+      start: { x: 330, y: 38 },
+      end: { x: 510, y: 38 },
+      thickness: 0.5,
+      color: rgb(0.6, 0.6, 0.6),
+    });
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
+  };
+
+  const withVenueEmbedded = async (base64Data: string, venueName: string): Promise<string> => {
+    const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1)!;
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    lastPage.drawText('Your assigned venue', { x: 260, y: 180, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 260, y: 155, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({
+      start: { x: 260, y: 140 },
+      end: { x: 470, y: 140 },
+      thickness: 0.5,
+      color: rgb(0.6, 0.6, 0.6),
+    });
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
+  };
+
+  const getVenueForCompletedOnboardingForm = (form: PDFForm): string | undefined => {
+    const venueName = employeeHomeVenue?.venue_name;
+    if (!venueName) return undefined;
+
+    const matchingCustomForm = customFormsList.find((customForm) => {
+      const titlePattern = new RegExp(`^${customForm.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+      return titlePattern.test(form.form_name);
+    });
+
+    if (matchingCustomForm) {
+      return venueName;
+    }
+
+    const normalizedName = form.form_name
+      .toLowerCase()
+      .replace(/^[a-z]{2}-/, '');
+
+    if (
+      normalizedName.endsWith('employee-information') ||
+      normalizedName.endsWith('notice-to-employee')
+    ) {
+      return venueName;
+    }
+
+    return undefined;
+  };
+
   // Download a single PDF form
-  const downloadPDFForm = (form: PDFForm) => {
+  const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      // Create download link
-      const url = createPdfBlobUrl(form.form_data);
+      let data = form.form_date
+        ? await withDateEmbedded(form.form_data, form.form_date)
+        : form.form_data;
+      if (venueName) data = await withVenueEmbedded(data, venueName);
+      const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
       link.download = `${form.display_name}.pdf`;
@@ -685,9 +781,13 @@ export default function EmployeeProfilePage() {
     }
   };
 
-  const viewPDFForm = (form: PDFForm) => {
+  const viewPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      openPdfInNewTab(form.form_data);
+      let data = form.form_date
+        ? await withDateEmbedded(form.form_data, form.form_date)
+        : form.form_data;
+      if (venueName) data = await withVenueEmbedded(data, venueName);
+      openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
       alert('Failed to open PDF form');
@@ -756,7 +856,7 @@ export default function EmployeeProfilePage() {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
-        downloadPDFForm(form);
+        await downloadPDFForm(form, getVenueForCompletedOnboardingForm(form));
         // Small delay between downloads to avoid browser blocking
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -1722,6 +1822,7 @@ export default function EmployeeProfilePage() {
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {pdfForms.map((form) => {
                             const isI9 = form.form_name === 'i9' || /^[a-z]+-i9$/.test(form.form_name);
+                            const venueForForm = getVenueForCompletedOnboardingForm(form);
                             return (
                               <div
                                 key={form.form_name}
@@ -1747,21 +1848,21 @@ export default function EmployeeProfilePage() {
                                     </svg>
                                     {formatDate(form.updated_at)}
                                   </div>
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() => viewPDFForm(form)}
-                                      className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
-                                    >
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => viewPDFForm(form, venueForForm)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
+                                  >
                                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                                       </svg>
                                       View
-                                    </button>
-                                    <button
-                                      onClick={() => downloadPDFForm(form)}
-                                      className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                                    >
+                                  </button>
+                                  <button
+                                    onClick={() => downloadPDFForm(form, venueForForm)}
+                                    className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
+                                  >
                                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                                       </svg>
@@ -1814,107 +1915,87 @@ export default function EmployeeProfilePage() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
-                      const progressKey = `custom-form-${form.id}`;
-                        const submitted = pdfForms.find(p => p.form_name === progressKey);
-                        return (
-                          <div
-                            key={form.id}
-                            className={`border rounded-xl p-4 hover:shadow-md transition-all ${
-                              submitted ? 'border-green-200 bg-green-50' : 'border-amber-200 bg-amber-50'
-                            }`}
-                          >
-                            <div className="flex items-start gap-3 mb-3">
-                              <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                                submitted ? 'bg-green-500 text-white' : 'bg-amber-400 text-white'
-                              }`}>
-                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  {submitted ? (
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                  ) : (
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                  )}
-                                </svg>
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
-                                <div className="flex flex-wrap gap-1 mt-1">
-                                  <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
-                                    {form.target_state ? `State: ${form.target_state}` : "All States"}
+                      const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+                      const submitted = pdfForms.find((p) => titlePattern.test(p.form_name));
+                      const venueForForm = employeeHomeVenue ? employeeHomeVenue.venue_name : undefined;
+                      return (
+                        <div
+                          key={form.id}
+                          className={`border rounded-xl p-4 hover:shadow-md transition-all ${
+                            submitted ? 'border-green-200 bg-green-50' : 'border-amber-200 bg-amber-50'
+                          }`}
+                        >
+                          <div className="flex items-start gap-3 mb-3">
+                            <div className={`w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                              submitted ? 'bg-green-500 text-white' : 'bg-amber-400 text-white'
+                            }`}>
+                              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                {submitted ? (
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                ) : (
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                )}
+                              </svg>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
+                                  {form.target_state ? `State: ${form.target_state}` : "All States"}
+                                </span>
+                                {form.requires_signature && (
+                                  <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
+                                    Sig. required
                                   </span>
-                                  {form.requires_signature && (
-                                    <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
-                                      Sig. required
-                                    </span>
-                                  )}
-                                  <span className={`text-xs font-medium rounded-full px-2 py-0.5 border ${
-                                    submitted
-                                      ? 'text-green-700 bg-green-100 border-green-200'
-                                      : 'text-amber-700 bg-amber-100 border-amber-200'
-                                  }`}>
-                                    {submitted ? `Submitted ${formatDate(submitted.updated_at)}` : 'Pending'}
-                                  </span>
-                                </div>
+                                )}
+                                <span className={`text-xs font-medium rounded-full px-2 py-0.5 border ${
+                                  submitted
+                                    ? 'text-green-700 bg-green-100 border-green-200'
+                                    : 'text-amber-700 bg-amber-100 border-amber-200'
+                                }`}>
+                                  {submitted ? `Submitted ${formatDate(submitted.updated_at)}` : 'Pending'}
+                                </span>
                               </div>
                             </div>
-                            <div className="flex gap-2">
-                              <button
-                                onClick={() => router.push(`/employee/form/${form.id}?asUser=${employeeId}`)}
-                                className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-xs font-medium"
-                              >
-                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                </svg>
-                                {submitted ? 'Edit Form' : 'Open Form'}
-                              </button>
-                              {submitted && (
-                                <>
-                                  <button
-                                    onClick={() => viewPDFForm(submitted)}
-                                    className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
-                                  >
-                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                                    </svg>
-                                    View
-                                  </button>
-                                  <button
-                                    onClick={() => downloadPDFForm(submitted)}
-                                    className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
-                                  >
-                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                    Download
-                                  </button>
-                                </>
-                              )}
-                            </div>
-                            {submitted && customFormDocs[form.id]?.length > 0 && (
-                              <div className="mt-3 pt-3 border-t border-green-200">
-                                <p className="text-xs font-semibold text-gray-500 mb-1.5">Supporting Documents</p>
-                                <div className="space-y-1">
-                                  {customFormDocs[form.id].map(doc => (
-                                    <div key={doc.slot} className="flex items-center justify-between gap-2">
-                                      <div className="min-w-0">
-                                        <p className="text-xs text-gray-400 leading-none">{doc.label}</p>
-                                        <p className="text-xs text-gray-700 font-medium truncate">{doc.filename}</p>
-                                      </div>
-                                      {doc.url && (
-                                        <a href={doc.url} target="_blank" rel="noopener noreferrer"
-                                          className="shrink-0 text-xs font-medium text-blue-600 hover:text-blue-800 px-2 py-0.5 rounded hover:bg-blue-50 border border-blue-200 transition-colors">
-                                          View
-                                        </a>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => router.push(`/employee/form/${form.id}?asUser=${employeeId}`)}
+                              className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-xs font-medium"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                              {submitted ? 'Edit Form' : 'Open Form'}
+                            </button>
+                            {submitted && (
+                              <>
+                                <button
+                                  onClick={() => viewPDFForm(submitted, venueForForm)}
+                                  className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-xs font-medium"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                                  </svg>
+                                  View
+                                </button>
+                                <button
+                                  onClick={() => downloadPDFForm(submitted, venueForForm)}
+                                  className="inline-flex items-center justify-center gap-1 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-xs font-medium"
+                                >
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                  </svg>
+                                  Download
+                                </button>
+                              </>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                   )}
               </div>
             </section>
