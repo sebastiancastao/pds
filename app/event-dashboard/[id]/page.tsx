@@ -5745,7 +5745,8 @@ export default function EventDashboardPage() {
                             : rawCommissionAmount;
                           const totalFinalCommission = extAmtOnRegRate + commissionAmount;
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
-                          const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
+                          const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
+                          const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
 
                           // Tips prorated by hours (same method), respecting per-user overrides
                           const totalTips = Number(tips) || 0;

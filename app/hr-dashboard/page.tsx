@@ -847,8 +847,9 @@ function HRDashboardContent() {
               adjustmentAmount !== 0
                 ? (totalFinalCommissionAmt + adjustmentAmount)
                 : totalFinalCommissionAmt;
+            const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
             loadedRate = actualHours > 0
-              ? Math.max(28.5, totalFinalCommissionForLoadedRate / actualHours)
+              ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / actualHours)
               : 0;
 
             // Tips: respect per-vendor overrides/deletions, then pro-rate, then fall back to stored value
