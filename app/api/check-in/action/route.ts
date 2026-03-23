@@ -194,6 +194,20 @@ export async function POST(req: NextRequest) {
     }
     
 
+    // Block clock_in if the worker is not a confirmed team member of the event
+    if (action === "clock_in" && isValidUuid(eventId)) {
+      const { data: teamRecord } = await supabaseAdmin
+        .from("event_teams")
+        .select("status")
+        .eq("event_id", eventId)
+        .eq("vendor_id", workerId)
+        .maybeSingle();
+
+      if (!teamRecord || teamRecord.status !== "confirmed") {
+        return NextResponse.json({ error: "Rejected: you are not a confirmed team member for this event." }, { status: 403 });
+      }
+    }
+
     // Insert the time entry
     const division = await getUserDivision(workerId);
     const insertData: any = {

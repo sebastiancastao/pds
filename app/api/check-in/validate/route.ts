@@ -97,18 +97,17 @@ export async function POST(req: NextRequest) {
 
     const workerId = codeRecord.target_user_id;
 
-    // Block check-in if the worker has declined the event invitation
+    // Block check-in if the worker is not a confirmed team member of the event
     if (eventId) {
       const { data: teamRecord } = await supabaseAdmin
         .from("event_teams")
         .select("status")
         .eq("event_id", eventId)
         .eq("vendor_id", workerId)
-        .eq("status", "declined")
         .maybeSingle();
 
-      if (teamRecord) {
-        return jsonError("You have declined this event invitation and cannot check in.", 403);
+      if (!teamRecord || teamRecord.status !== "confirmed") {
+        return NextResponse.json({ error: "Rejected: you are not a confirmed team member for this event." }, { status: 403 });
       }
     }
 
