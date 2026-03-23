@@ -29,23 +29,45 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
-    const { data: users, error } = await supabase
-      .from('users')
-      .select('id, email, profiles(first_name, last_name)')
-      .eq('is_active', true)
-      .order('email', { ascending: true });
+    const pageSize = 1000;
+    const allUsers: any[] = [];
+    let offset = 0;
 
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    while (true) {
+      const { data: users, error } = await supabase
+        .from('users')
+        .select('id, email, role, profiles(first_name, last_name, city, state)')
+        .eq('is_active', true)
+        .order('email', { ascending: true })
+        .range(offset, offset + pageSize - 1);
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 });
+      }
+
+      if (!users || users.length === 0) {
+        break;
+      }
+
+      allUsers.push(...users);
+
+      if (users.length < pageSize) {
+        break;
+      }
+
+      offset += pageSize;
     }
 
-    const result = (users || []).map((u: any) => {
+    const result = allUsers.map((u: any) => {
       const profile = Array.isArray(u.profiles) ? u.profiles[0] : u.profiles;
       return {
         id: u.id,
         email: u.email || '',
+        role: u.role || '',
         first_name: safeDecrypt(profile?.first_name || ''),
         last_name: safeDecrypt(profile?.last_name || ''),
+        city: profile?.city || null,
+        state: profile?.state || null,
       };
     });
 

@@ -237,6 +237,8 @@ export default function AdminPdfFormsPage() {
   const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
   const [employeeSearch, setEmployeeSearch] = useState('');
   const [employeeResults, setEmployeeResults] = useState<EmployeeResult[]>([]);
+  const [allUsers, setAllUsers] = useState<EmployeeResult[]>([]);
+  const [allUsersLoading, setAllUsersLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<EmployeeResult[]>([]);
   const [assignees, setAssignees] = useState<Assignee[]>([]);
@@ -252,6 +254,34 @@ export default function AdminPdfFormsPage() {
   const [sendSuccess, setSendSuccess] = useState('');
 
   const currentYear = new Date().getFullYear();
+
+  const sortUsersByDisplayName = useCallback((a: EmployeeResult, b: EmployeeResult) => {
+    const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim() || a.email;
+    const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim() || b.email;
+    return aName.localeCompare(bName);
+  }, []);
+
+  const filterAssignableUsers = useCallback((query: string) => {
+    const normalizedQuery = query.trim().toLowerCase();
+
+    return [...allUsers]
+      .filter((user) => {
+        if (!normalizedQuery) return true;
+        const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim();
+        const haystack = [
+          fullName,
+          user.email || '',
+          user.city || '',
+          user.state || '',
+          user.role || '',
+        ]
+          .join(' ')
+          .toLowerCase();
+
+        return haystack.includes(normalizedQuery);
+      })
+      .sort(sortUsersByDisplayName);
+  }, [allUsers, sortUsersByDisplayName]);
 
   useEffect(() => {
     checkAuthAndLoad();
@@ -335,23 +365,40 @@ export default function AdminPdfFormsPage() {
     return () => { cancelled = true; };
   }, [pageVenueId, pageVenueUsers, venueFormsRefreshKey]);
 
-  // Debounced employee search
-  const searchEmployees = useCallback(async (q: string) => {
-    setSearchLoading(true);
+  const loadAssignableUsers = useCallback(async (accessToken: string) => {
+    setAllUsersLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await fetch(`/api/employees/search?q=${encodeURIComponent(q)}&limit=20`, {
-        headers: { Authorization: `Bearer ${session.access_token}` },
+      const res = await fetch('/api/custom-forms/all-users', {
+        headers: { Authorization: `Bearer ${accessToken}` },
       });
-      const data = await res.json();
-      setEmployeeResults(data.employees || []);
-    } catch {
-      setEmployeeResults([]);
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(data?.error || 'Failed to load users.');
+      }
+
+      const users = Array.isArray(data?.users) ? data.users : [];
+      setAllUsers(users.sort(sortUsersByDisplayName));
+    } catch (err: any) {
+      setAllUsers([]);
+      setError((prev) => prev || err.message || 'Failed to load users.');
     } finally {
-      setSearchLoading(false);
+      setAllUsersLoading(false);
     }
-  }, []);
+  }, [sortUsersByDisplayName]);
+
+  // Debounced employee search
+  const searchEmployees = useCallback((q: string) => {
+    const waitingForUsers = allUsersLoading && allUsers.length === 0;
+    setSearchLoading(waitingForUsers);
+
+    if (waitingForUsers) {
+      setEmployeeResults([]);
+      return;
+    }
+
+    setEmployeeResults(filterAssignableUsers(q));
+  }, [allUsersLoading, allUsers.length, filterAssignableUsers]);
 
   // Debounce for send-modal search
   useEffect(() => {
@@ -491,27 +538,21 @@ export default function AdminPdfFormsPage() {
     }
   }, []);
 
-  const fetchPickerUsers = useCallback(async (q: string) => {
-    setPickerLoading(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      const res = await fetch(
-        `/api/employees/search?q=${encodeURIComponent(q)}&roles=employee,worker&limit=50`,
-        { headers: { Authorization: `Bearer ${session.access_token}` } }
-      );
-      const data = await res.json();
-      setPickerResults(data.employees || []);
-    } catch {
+  const fetchPickerUsers = useCallback((q: string) => {
+    const waitingForUsers = allUsersLoading && allUsers.length === 0;
+    setPickerLoading(waitingForUsers);
+
+    if (waitingForUsers) {
       setPickerResults([]);
-    } finally {
-      setPickerLoading(false);
+      return;
     }
-  }, []);
+
+    setPickerResults(filterAssignableUsers(q));
+  }, [allUsersLoading, allUsers.length, filterAssignableUsers]);
 
   // Debounce typed searches inside the picker modal
   useEffect(() => {
-    if (!showUserPickerModal || pickerSearch === '') return;
+    if (!showUserPickerModal) return;
     const timer = setTimeout(() => fetchPickerUsers(pickerSearch), 200);
     return () => clearTimeout(timer);
   }, [pickerSearch, showUserPickerModal, fetchPickerUsers]);
@@ -696,7 +737,12 @@ export default function AdminPdfFormsPage() {
       return;
     }
 
-    await Promise.all([loadForms(session.access_token), loadPageVenues(), fetchVenueAssignments(session.access_token).catch(() => {})]);
+    await Promise.all([
+      loadForms(session.access_token),
+      loadPageVenues(),
+      loadAssignableUsers(session.access_token),
+      fetchVenueAssignments(session.access_token).catch(() => {}),
+    ]);
   };
 
   const loadForms = async (token: string) => {
@@ -1876,7 +1922,7 @@ export default function AdminPdfFormsPage() {
               <>
             {/* Employee search */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1.5">Search Employees</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">Search Users</label>
               <input
                 type="text"
                 value={employeeSearch}
@@ -1936,7 +1982,7 @@ export default function AdminPdfFormsPage() {
                   })}
                 </div>
               ) : (
-                <p className="text-xs text-gray-400 mt-2">No employees found.</p>
+                <p className="text-xs text-gray-400 mt-2">No users found.</p>
               )}
             </div>
 
