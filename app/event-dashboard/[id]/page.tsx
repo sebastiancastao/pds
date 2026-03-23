@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { getTimezoneForState } from "@/lib/timezones";
 
 type EventItem = {
   id: string;
@@ -122,65 +123,6 @@ type UninvitedTeamMemberRecord = {
   uninvited_by_email: string;
   uninvited_at: string | null;
   team_member_id: string | null;
-};
-
-const STATE_TIMEZONE_MAP: Record<string, string> = {
-  AL: "America/Chicago",
-  AK: "America/Anchorage",
-  AZ: "America/Phoenix",
-  AR: "America/Chicago",
-  CA: "America/Los_Angeles",
-  CO: "America/Denver",
-  CT: "America/New_York",
-  DE: "America/New_York",
-  FL: "America/New_York",
-  GA: "America/New_York",
-  HI: "Pacific/Honolulu",
-  ID: "America/Denver",
-  IL: "America/Chicago",
-  IN: "America/Indiana/Indianapolis",
-  IA: "America/Chicago",
-  KS: "America/Chicago",
-  KY: "America/New_York",
-  LA: "America/Chicago",
-  ME: "America/New_York",
-  MD: "America/New_York",
-  MA: "America/New_York",
-  MI: "America/Detroit",
-  MN: "America/Chicago",
-  MS: "America/Chicago",
-  MO: "America/Chicago",
-  MT: "America/Denver",
-  NE: "America/Chicago",
-  NV: "America/Los_Angeles",
-  NH: "America/New_York",
-  NJ: "America/New_York",
-  NM: "America/Denver",
-  NY: "America/New_York",
-  NC: "America/New_York",
-  ND: "America/Chicago",
-  OH: "America/New_York",
-  OK: "America/Chicago",
-  OR: "America/Los_Angeles",
-  PA: "America/New_York",
-  RI: "America/New_York",
-  SC: "America/New_York",
-  SD: "America/Chicago",
-  TN: "America/Chicago",
-  TX: "America/Chicago",
-  UT: "America/Denver",
-  VT: "America/New_York",
-  VA: "America/New_York",
-  WA: "America/Los_Angeles",
-  WV: "America/New_York",
-  WI: "America/Chicago",
-  WY: "America/Denver",
-  DC: "America/New_York",
-};
-
-const getTimezoneForState = (state: string | null | undefined): string => {
-  if (!state) return "America/Los_Angeles";
-  return STATE_TIMEZONE_MAP[state.toUpperCase().trim()] ?? "America/Los_Angeles";
 };
 
 const getTeamMemberSortFields = (member: any): {
@@ -387,6 +329,12 @@ export default function EventDashboardPage() {
         lastMealEnd: string | null;
         secondMealStart: string | null;
         secondMealEnd: string | null;
+        firstInDisplay?: string;
+        lastOutDisplay?: string;
+        firstMealStartDisplay?: string;
+        lastMealEndDisplay?: string;
+        secondMealStartDisplay?: string;
+        secondMealEndDisplay?: string;
         managerEdited?: boolean;
         managerEditNote?: string | null;
         managerEditedByRole?: string | null;
@@ -2542,10 +2490,12 @@ export default function EventDashboardPage() {
     if (!eventId) return;
     try {
       const token = await getSessionToken();
-      const url = `/api/events/${eventId}/timesheet`;
+      const url = `/api/events/${eventId}/timesheet?ts=${Date.now()}`;
       const res = await fetch(url, {
         method: "GET",
+        cache: "no-store",
         headers: {
+          "Cache-Control": "no-cache",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
@@ -2852,7 +2802,7 @@ export default function EventDashboardPage() {
     return `${hh}:${mm}`;
   };
 
-  const isoToPacificHHMM = (iso: string | null | undefined): string => {
+  const isoToEventHHMM = (iso: string | null | undefined): string => {
     if (!iso) return "";
     const d = new Date(iso);
     if (isNaN(d.getTime())) return "";
@@ -2878,8 +2828,12 @@ export default function EventDashboardPage() {
     return `${outHh}:${outMm}`;
   };
 
-  const getPacificTzAbbr = (iso?: string | null): string => {
-    const d = iso ? new Date(iso) : new Date();
+  const getEventTzAbbr = (iso?: string | null): string => {
+    const d = iso
+      ? new Date(iso)
+      : event?.event_date
+        ? new Date(`${String(event.event_date).split("T")[0]}T12:00:00Z`)
+        : new Date();
     if (isNaN(d.getTime())) return "";
     const formatted = new Intl.DateTimeFormat("en-US", {
       timeZoneName: "short",
@@ -2896,17 +2850,23 @@ export default function EventDashboardPage() {
     lastMealEnd: string | null;
     secondMealStart: string | null;
     secondMealEnd: string | null;
+    firstInDisplay?: string;
+    lastOutDisplay?: string;
+    firstMealStartDisplay?: string;
+    lastMealEndDisplay?: string;
+    secondMealStartDisplay?: string;
+    secondMealEndDisplay?: string;
   }) => {
     if (!canEditTimesheets) return;
     setTimesheetDrafts((prev) => ({
       ...prev,
       [uid]: {
-        firstIn: isoToPacificHHMM(span.firstIn),
-        lastOut: isoToPacificHHMM(span.lastOut),
-        firstMealStart: isoToPacificHHMM(span.firstMealStart),
-        lastMealEnd: isoToPacificHHMM(span.lastMealEnd),
-        secondMealStart: isoToPacificHHMM(span.secondMealStart),
-        secondMealEnd: isoToPacificHHMM(span.secondMealEnd),
+        firstIn: span.firstInDisplay || isoToEventHHMM(span.firstIn),
+        lastOut: span.lastOutDisplay || isoToEventHHMM(span.lastOut),
+        firstMealStart: span.firstMealStartDisplay || isoToEventHHMM(span.firstMealStart),
+        lastMealEnd: span.lastMealEndDisplay || isoToEventHHMM(span.lastMealEnd),
+        secondMealStart: span.secondMealStartDisplay || isoToEventHHMM(span.secondMealStart),
+        secondMealEnd: span.secondMealEndDisplay || isoToEventHHMM(span.secondMealEnd),
       },
     }));
     setEditingTimesheetUserId(uid);
@@ -3070,9 +3030,25 @@ export default function EventDashboardPage() {
         return;
       }
 
-      await loadTimesheetTotals();
+      if (data?.span) {
+        setTimesheetSpans((prev) => ({
+          ...prev,
+          [uid]: {
+            ...(prev[uid] || {}),
+            ...data.span,
+          },
+        }));
+      }
+      if (typeof data?.totalMs === "number" && Number.isFinite(data.totalMs)) {
+        setTimesheetTotals((prev) => ({
+          ...prev,
+          [uid]: data.totalMs,
+        }));
+      }
+
       setEditingTimesheetUserId(null);
       setPendingTimesheetEditUid(null);
+      await loadTimesheetTotals();
       setMessage("Timesheet updated successfully.");
       setTimeout(() => setMessage(""), 3000);
     } catch (err: any) {
@@ -5227,9 +5203,9 @@ export default function EventDashboardPage() {
         </div>
         <div>
           Event window ({event?.state || "CA"} time):{" "}
-          {isoToPacificHHMM(event?.start_time)}{" "}
-          – {isoToPacificHHMM(event?.end_time)}{" "}
-          {getPacificTzAbbr(event?.start_time || event?.end_time)}
+          {normalizeTimeForInput(event?.start_time) || "--:--"}{" "}
+          – {normalizeTimeForInput(event?.end_time) || "--:--"}{" "}
+          {getEventTzAbbr()}
         </div>
       </div>
     </div>
@@ -5308,13 +5284,13 @@ export default function EventDashboardPage() {
                 secondMealEnd: null,
               };
 
-              // ─── Use Pacific time conversion everywhere ───
-              const firstClockIn     = isoToPacificHHMM(span.firstIn);
-              const lastClockOut     = isoToPacificHHMM(span.lastOut);
-              const firstMealStart   = isoToPacificHHMM(span.firstMealStart);
-              const lastMealEnd      = isoToPacificHHMM(span.lastMealEnd);
-              const secondMealStart  = isoToPacificHHMM(span.secondMealStart);
-              const secondMealEnd    = isoToPacificHHMM(span.secondMealEnd);
+              // Display stored timestamps in the event's local timezone.
+              const firstClockIn     = span.firstInDisplay || isoToEventHHMM(span.firstIn);
+              const lastClockOut     = span.lastOutDisplay || isoToEventHHMM(span.lastOut);
+              const firstMealStart   = span.firstMealStartDisplay || isoToEventHHMM(span.firstMealStart);
+              const lastMealEnd      = span.lastMealEndDisplay || isoToEventHHMM(span.lastMealEnd);
+              const secondMealStart  = span.secondMealStartDisplay || isoToEventHHMM(span.secondMealStart);
+              const secondMealEnd    = span.secondMealEndDisplay || isoToEventHHMM(span.secondMealEnd);
 
               const isEditing = canEditTimesheets && editingTimesheetUserId === uid;
 

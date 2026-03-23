@@ -4,6 +4,12 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { safeDecrypt } from "@/lib/encryption";
+import {
+  formatIsoToHHMM,
+  getLocalDateRange,
+  getTimezoneForState,
+  toZonedIso,
+} from "@/lib/timezones";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -63,7 +69,7 @@ export async function GET(
     const [eventResult, teamResult] = await Promise.all([
       supabaseAdmin
         .from('events')
-        .select('id, event_date, start_time, end_time, ends_next_day, created_by')
+        .select('id, event_date, start_time, end_time, ends_next_day, created_by, state')
         .eq('id', eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -106,14 +112,14 @@ export async function GET(
     const endsNextDay =
       Boolean((event as any).ends_next_day) ||
       (startSec !== null && endSec !== null && endSec <= startSec);
-
-    const startDate = new Date(`${date}T00:00:00Z`);
-    const endDate = new Date(`${date}T23:59:59.999Z`);
-    if (endsNextDay) {
-      endDate.setUTCDate(endDate.getUTCDate() + 1);
+    const eventTimezone = getTimezoneForState((event as any).state);
+    // Always scan a 2-day local window so manual overnight edits remain visible
+    // while stale rows from older days for the same event_id are excluded.
+    const queryRange = getLocalDateRange(date, eventTimezone, 2);
+    if (!queryRange) {
+      return NextResponse.json({ error: 'Invalid event date/timezone' }, { status: 400 });
     }
-    const startIso = startDate.toISOString();
-    const endIso = endDate.toISOString();
+    const { startIso, endExclusiveIso } = queryRange;
 
     // Fetch time entries by event_id (primary strategy)
     let { data: entries, error: teErr } = await supabaseAdmin
@@ -121,6 +127,8 @@ export async function GET(
       .select('id, user_id, action, timestamp, started_at, event_id, notes')
       .in('user_id', userIds)
       .eq('event_id', eventId)
+      .gte('timestamp', startIso)
+      .lt('timestamp', endExclusiveIso)
       .order('timestamp', { ascending: true });
     if (teErr) return NextResponse.json({ error: teErr.message }, { status: 500 });
 
@@ -132,7 +140,7 @@ export async function GET(
         .in('user_id', userIds)
         .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
-        .lte('timestamp', endIso)
+        .lt('timestamp', endExclusiveIso)
         .order('timestamp', { ascending: true });
       if (tsErr) return NextResponse.json({ error: tsErr.message }, { status: 500 });
 
@@ -156,7 +164,7 @@ export async function GET(
         .in('user_id', userIds)
         .or(`event_id.eq.${eventId},event_id.is.null`)
         .gte('timestamp', startIso)
-        .lte('timestamp', endIso)
+        .lt('timestamp', endExclusiveIso)
         .order('timestamp', { ascending: true });
       if (tsErr2) return NextResponse.json({ error: tsErr2.message }, { status: 500 });
 
@@ -170,7 +178,7 @@ export async function GET(
           .in('user_id', userIds)
           .or(`event_id.eq.${eventId},event_id.is.null`)
           .gte('started_at', startIso)
-          .lte('started_at', endIso)
+          .lt('started_at', endExclusiveIso)
           .order('started_at', { ascending: true });
         if (byStarted && byStarted.length > 0) {
           entries = byStarted;
@@ -198,6 +206,12 @@ export async function GET(
       lastMealEnd: string | null;
       secondMealStart: string | null;
       secondMealEnd: string | null;
+      firstInDisplay: string;
+      lastOutDisplay: string;
+      firstMealStartDisplay: string;
+      lastMealEndDisplay: string;
+      secondMealStartDisplay: string;
+      secondMealEndDisplay: string;
       managerEdited: boolean;
       managerEditNote: string | null;
       managerEditSignatureId: string | null;
@@ -236,6 +250,12 @@ export async function GET(
         lastMealEnd: null,
         secondMealStart: null,
         secondMealEnd: null,
+        firstInDisplay: "",
+        lastOutDisplay: "",
+        firstMealStartDisplay: "",
+        lastMealEndDisplay: "",
+        secondMealStartDisplay: "",
+        secondMealEndDisplay: "",
         managerEdited: !!editedEntry,
         managerEditNote: parsed?.editNote ?? null,
         managerEditSignatureId: parsed?.sigId ?? null,
@@ -252,22 +272,28 @@ export async function GET(
 
       if (clockIns.length > 0) {
         spans[uid].firstIn = clockIns[0].timestamp;
+        spans[uid].firstInDisplay = formatIsoToHHMM(clockIns[0].timestamp, eventTimezone);
       }
       if (clockOuts.length > 0) {
         spans[uid].lastOut = clockOuts[clockOuts.length - 1].timestamp;
+        spans[uid].lastOutDisplay = formatIsoToHHMM(clockOuts[clockOuts.length - 1].timestamp, eventTimezone);
       }
 
       // Track first and second meal periods
       if (mealStarts.length > 0) {
         spans[uid].firstMealStart = mealStarts[0].timestamp;
+        spans[uid].firstMealStartDisplay = formatIsoToHHMM(mealStarts[0].timestamp, eventTimezone);
         if (mealStarts.length > 1) {
           spans[uid].secondMealStart = mealStarts[1].timestamp;
+          spans[uid].secondMealStartDisplay = formatIsoToHHMM(mealStarts[1].timestamp, eventTimezone);
         }
       }
       if (mealEnds.length > 0) {
         spans[uid].lastMealEnd = mealEnds[0].timestamp;
+        spans[uid].lastMealEndDisplay = formatIsoToHHMM(mealEnds[0].timestamp, eventTimezone);
         if (mealEnds.length > 1) {
           spans[uid].secondMealEnd = mealEnds[1].timestamp;
+          spans[uid].secondMealEndDisplay = formatIsoToHHMM(mealEnds[1].timestamp, eventTimezone);
         }
       }
 
@@ -314,10 +340,14 @@ export async function GET(
         if (gaps[0]) {
           spans[uid].firstMealStart = gaps[0].start.toISOString();
           spans[uid].lastMealEnd = gaps[0].end.toISOString();
+          spans[uid].firstMealStartDisplay = formatIsoToHHMM(gaps[0].start.toISOString(), eventTimezone);
+          spans[uid].lastMealEndDisplay = formatIsoToHHMM(gaps[0].end.toISOString(), eventTimezone);
         }
         if (gaps[1]) {
           spans[uid].secondMealStart = gaps[1].start.toISOString();
           spans[uid].secondMealEnd = gaps[1].end.toISOString();
+          spans[uid].secondMealStartDisplay = formatIsoToHHMM(gaps[1].start.toISOString(), eventTimezone);
+          spans[uid].secondMealEndDisplay = formatIsoToHHMM(gaps[1].end.toISOString(), eventTimezone);
         }
       }
     }
@@ -529,7 +559,7 @@ export async function PUT(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("event_date")
+      .select("event_date, state")
       .eq("id", eventId)
       .maybeSingle();
     if (eventError) {
@@ -539,6 +569,7 @@ export async function PUT(
     if (!eventDate) {
       return NextResponse.json({ error: "Event date is missing" }, { status: 400 });
     }
+    const eventTimezone = getTimezoneForState(event?.state);
 
     const { data: targetUser, error: targetUserError } = await supabaseAdmin
       .from("users")
@@ -559,20 +590,20 @@ export async function PUT(
     const useMeal2 = !!(meal2Start && meal2End);
 
     const timeline = [
-      { action: "clock_in", timestamp: toEventIso(eventDate, spans.firstIn) },
+      { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) },
       ...(useMeal1
         ? [
-            { action: "meal_start", timestamp: toEventIso(eventDate, meal1Start) },
-            { action: "meal_end", timestamp: toEventIso(eventDate, meal1End) },
+            { action: "meal_start", timestamp: toZonedIso(eventDate, meal1Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(eventDate, meal1End, eventTimezone) },
           ]
         : []),
       ...(useMeal2
         ? [
-            { action: "meal_start", timestamp: toEventIso(eventDate, meal2Start) },
-            { action: "meal_end", timestamp: toEventIso(eventDate, meal2End) },
+            { action: "meal_start", timestamp: toZonedIso(eventDate, meal2Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(eventDate, meal2End, eventTimezone) },
           ]
         : []),
-      { action: "clock_out", timestamp: toEventIso(eventDate, spans.lastOut) },
+      { action: "clock_out", timestamp: toZonedIso(eventDate, spans.lastOut, eventTimezone) },
     ].filter((entry) => !!entry.timestamp);
 
     // Handle overnight shifts: if a timestamp is earlier than the previous one,
@@ -603,33 +634,40 @@ export async function PUT(
       }
     }
 
-    // Use Pacific time day boundaries for deleting existing entries
-    // Extend to next day to cover overnight shifts
-    const testForDst = new Date(`${eventDate}T12:00:00Z`);
-    const dstFormatted = new Intl.DateTimeFormat("en-US", {
-      timeZone: "America/Los_Angeles",
-      timeZoneName: "short",
-    }).format(testForDst);
-    const ptOffset = dstFormatted.includes("PDT") ? 7 : 8;
-    const dayStartUTC = new Date(`${eventDate}T00:00:00Z`);
-    dayStartUTC.setUTCHours(ptOffset, 0, 0, 0); // midnight Pacific in UTC
-    const dayEndUTC = new Date(`${eventDate}T00:00:00Z`);
-    dayEndUTC.setUTCHours(23 + ptOffset + 24, 59, 59, 999); // end of NEXT day Pacific in UTC (covers overnight)
-    const dayStart = dayStartUTC.toISOString();
-    const dayEnd = dayEndUTC.toISOString();
-
-    // Fetch existing entries so we can update them in-place instead of delete+insert
-    const { data: existingRaw, error: fetchError } = await supabaseAdmin
-      .from("time_entries")
-      .select("id, action, timestamp")
-      .eq("user_id", targetUserId)
-      .or(`event_id.eq.${eventId},event_id.is.null`)
-      .gte("timestamp", dayStart)
-      .lte("timestamp", dayEnd)
-      .order("timestamp", { ascending: true });
-    if (fetchError) {
-      return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    const dayRange = getLocalDateRange(eventDate, eventTimezone, 2);
+    if (!dayRange) {
+      return NextResponse.json({ error: "Invalid event date/timezone" }, { status: 400 });
     }
+    const { startIso: dayStart, endExclusiveIso: dayEndExclusive } = dayRange;
+
+    // Replace all rows already bound to this event for this worker, plus any
+    // untagged rows inside the local 2-day window that the editor is taking over.
+    const [eventBoundResult, nullWindowResult] = await Promise.all([
+      supabaseAdmin
+        .from("time_entries")
+        .select("id, action, timestamp")
+        .eq("user_id", targetUserId)
+        .eq("event_id", eventId)
+        .order("timestamp", { ascending: true }),
+      supabaseAdmin
+        .from("time_entries")
+        .select("id, action, timestamp")
+        .eq("user_id", targetUserId)
+        .is("event_id", null)
+        .gte("timestamp", dayStart)
+        .lt("timestamp", dayEndExclusive)
+        .order("timestamp", { ascending: true }),
+    ]);
+    if (eventBoundResult.error) {
+      return NextResponse.json({ error: eventBoundResult.error.message }, { status: 500 });
+    }
+    if (nullWindowResult.error) {
+      return NextResponse.json({ error: nullWindowResult.error.message }, { status: 500 });
+    }
+    const existingRaw = [
+      ...(eventBoundResult.data || []),
+      ...(nullWindowResult.data || []),
+    ].filter((row, index, arr) => arr.findIndex((candidate) => candidate.id === row.id) === index);
 
     // Group both existing and new entries by action type
     const existingByAction: Record<string, Array<{ id: string; action: string; timestamp: string }>> = {};
@@ -699,7 +737,46 @@ export async function PUT(
       }
     }
 
-    return NextResponse.json({ ok: true });
+    const clockInTs = timeline.find((entry) => entry.action === "clock_in")?.timestamp ?? null;
+    const clockOutTs = [...timeline].reverse().find((entry) => entry.action === "clock_out")?.timestamp ?? null;
+    const mealStarts = timeline.filter((entry) => entry.action === "meal_start");
+    const mealEnds = timeline.filter((entry) => entry.action === "meal_end");
+
+    const totalMs = (() => {
+      if (!clockInTs || !clockOutTs) return 0;
+      const grossMs = Math.max(new Date(clockOutTs).getTime() - new Date(clockInTs).getTime(), 0);
+      const meal1Ms =
+        mealStarts[0]?.timestamp && mealEnds[0]?.timestamp
+          ? Math.max(new Date(mealEnds[0].timestamp).getTime() - new Date(mealStarts[0].timestamp).getTime(), 0)
+          : 0;
+      const meal2Ms =
+        mealStarts[1]?.timestamp && mealEnds[1]?.timestamp
+          ? Math.max(new Date(mealEnds[1].timestamp).getTime() - new Date(mealStarts[1].timestamp).getTime(), 0)
+          : 0;
+      return Math.max(grossMs - meal1Ms - meal2Ms, 0);
+    })();
+
+    return NextResponse.json({
+      ok: true,
+      totalMs,
+      span: {
+        firstIn: clockInTs,
+        lastOut: clockOutTs,
+        firstMealStart: mealStarts[0]?.timestamp ?? null,
+        lastMealEnd: mealEnds[0]?.timestamp ?? null,
+        secondMealStart: mealStarts[1]?.timestamp ?? null,
+        secondMealEnd: mealEnds[1]?.timestamp ?? null,
+        firstInDisplay: (spans.firstIn || "").trim(),
+        lastOutDisplay: (spans.lastOut || "").trim(),
+        firstMealStartDisplay: useMeal1 ? meal1Start : "",
+        lastMealEndDisplay: useMeal1 ? meal1End : "",
+        secondMealStartDisplay: useMeal2 ? meal2Start : "",
+        secondMealEndDisplay: useMeal2 ? meal2End : "",
+        managerEdited: true,
+        managerEditNote: editNote,
+        managerEditedByRole: requesterRole,
+      },
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unhandled error" }, { status: 500 });
   }
