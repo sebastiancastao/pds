@@ -266,8 +266,13 @@ export async function POST(req: NextRequest) {
           tz
         );
         const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
-        if (Date.now() < windowOpenMs) {
+        const windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+        const now = Date.now();
+        if (now < windowOpenMs) {
           return jsonError("Check-in is not open yet. Check-in opens 3 hours before the event starts.", 403);
+        }
+        if (now > windowCloseMs) {
+          return jsonError("Check-in is closed. This event has already passed.", 403);
         }
       }
     }
