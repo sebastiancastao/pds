@@ -2154,6 +2154,25 @@ export default function StatePayrollFormViewer({
     };
   };
 
+  const hasInkOnCanvas = (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+
+      if (a > 0 && (r < 245 || g < 245 || b < 245)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     setIsDrawing(true);
@@ -2186,9 +2205,19 @@ export default function StatePayrollFormViewer({
     setIsDrawing(false);
     const canvas = canvasRef.current;
     if (canvas) {
+      const signatureKey = currentForm?.formId || selectedForm;
+      if (!hasInkOnCanvas(canvas)) {
+        setCurrentSignature('');
+        setSignatures(prev => {
+          const newSigs = new Map(prev);
+          newSigs.delete(signatureKey);
+          return newSigs;
+        });
+        return;
+      }
+
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
-      const signatureKey = currentForm?.formId || selectedForm;
       // Save signature for current form
       setSignatures(prev => {
         const newSigs = new Map(prev);

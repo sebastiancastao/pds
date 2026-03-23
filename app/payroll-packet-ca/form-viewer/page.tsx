@@ -1287,6 +1287,25 @@ function FormViewerContent() {
     return { x, y };
   };
 
+  const hasInkOnCanvas = (canvas: HTMLCanvasElement) => {
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const a = data[i + 3];
+
+      if (a > 0 && (r < 245 || g < 245 || b < 245)) {
+        return true;
+      }
+    }
+
+    return false;
+  };
+
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     setIsDrawing(true);
@@ -1326,6 +1345,16 @@ function FormViewerContent() {
     setIsDrawing(false);
     const canvas = canvasRef.current;
     if (canvas) {
+      if (!hasInkOnCanvas(canvas)) {
+        setCurrentSignature('');
+        setSignatures(prev => {
+          const newSigs = new Map(prev);
+          newSigs.delete(currentForm.formId);
+          return newSigs;
+        });
+        return;
+      }
+
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
       // Save signature for current form using form_id (not formName)

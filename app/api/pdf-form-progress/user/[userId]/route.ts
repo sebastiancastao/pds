@@ -2246,9 +2246,9 @@ export async function GET(
                   : await formPdf.embedPng(imageBytes);
             }
 
-            const signatureWidth = 150;
-            const signatureHeight = 15;
             const isI9Form = normalizedFormName === 'i9';
+            const signatureWidth = 150;
+            const signatureHeight = isI9Form ? 30 : 15;
             const isFW4Form = normalizedFormName === 'fw4';
             const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
             const isCaDE4Form = normalizedFormName === 'ca-de4' || normalizedFormName === 'de4';
@@ -2294,7 +2294,7 @@ export async function GET(
                     baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
                   );
               const y = isI9Form
-                ? Math.max(0, i9DateFieldY - 200)
+                ? Math.max(0, i9DateFieldY - 185)
                 : Math.min(
                     height - signatureHeight,
                     baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY + tempEmploymentOffsetY
