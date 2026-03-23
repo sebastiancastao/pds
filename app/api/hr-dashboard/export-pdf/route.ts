@@ -114,7 +114,7 @@ function getRestBreakAmount(actualHours: number, stateCode: string) {
   const st = normalizeState(stateCode);
   if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
   if (actualHours <= 0) return 0;
-  return actualHours >= 10 ? 12 : 9;
+  return actualHours >= 10 ? 12.5 : 9;
 }
 
 function getEffectiveHours(payment: any): number {

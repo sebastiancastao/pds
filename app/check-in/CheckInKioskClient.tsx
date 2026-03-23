@@ -182,6 +182,8 @@ export default function CheckInKioskPage() {
   const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string; state: string | null } | null>(
     null
   );
+  // Persists the last seen event ID so time-window checks still fire after the event ends
+  const lastKnownEventIdRef = useRef<string | null>(null);
 
   // Briefly show the current user's event check-in after they clock in.
   const [eventCheckInFlash, setEventCheckInFlash] = useState<{
@@ -325,6 +327,7 @@ export default function CheckInKioskPage() {
 
       const event = data?.event;
       if (event?.id && event?.startIso && event?.endIso) {
+        lastKnownEventIdRef.current = String(event.id);
         setActiveEvent({
           id: String(event.id),
           name: typeof event.name === "string" ? event.name : null,
@@ -745,7 +748,7 @@ export default function CheckInKioskPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ code, eventId: activeEvent?.id || eventIdFromUrl || undefined }),
+        body: JSON.stringify({ code, eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined }),
       });
 
       const data = await res.json();
@@ -837,7 +840,7 @@ export default function CheckInKioskPage() {
           signature: sig,
           attestationAccepted,
           rejectionReason,
-          eventId: activeEvent?.id || (eventIdFromUrl || undefined),
+          eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
         }),
       });
 
@@ -853,7 +856,7 @@ export default function CheckInKioskPage() {
             userName: worker.name,
             signature: sig,
             attestationAccepted,
-            eventId: activeEvent?.id || (eventIdFromUrl || undefined),
+            eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
             };
             await addToQueue(queuedItem);
             await refreshQueueCount();

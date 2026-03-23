@@ -154,7 +154,7 @@ function HRDashboardContent() {
     const st = normalizeState(stateCode);
     if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
     if (actualHours <= 0) return 0;
-    return actualHours >= 10 ? 12 : 9;
+    return actualHours >= 10 ? 12.5 : 9;
   };
   const formatHoursHHMM = (decimalHours: number): string => {
     const totalMinutes = Math.floor(Math.abs(decimalHours) * 60);

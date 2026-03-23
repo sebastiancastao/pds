@@ -760,12 +760,30 @@ export default function EmployeeProfilePage() {
     return undefined;
   };
 
+  const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
+    const isI9 = form.form_name === 'i9' || /^[a-z]+-i9$/.test(form.form_name);
+    if (!isI9) return form.form_data;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}`,
+        { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        if (json.formData) return json.formData;
+      }
+    } catch (e) {
+      console.warn('Failed to fetch form with signature, falling back to raw data', e);
+    }
+    return form.form_data;
+  };
+
   // Download a single PDF form
   const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = form.form_date
-        ? await withDateEmbedded(form.form_data, form.form_date)
-        : form.form_data;
+      let data = await getFormDataWithSignature(form);
+      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
       if (venueName) data = await withVenueEmbedded(data, venueName);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
@@ -783,9 +801,8 @@ export default function EmployeeProfilePage() {
 
   const viewPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = form.form_date
-        ? await withDateEmbedded(form.form_data, form.form_date)
-        : form.form_data;
+      let data = await getFormDataWithSignature(form);
+      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
       if (venueName) data = await withVenueEmbedded(data, venueName);
       openPdfInNewTab(data);
     } catch (error) {

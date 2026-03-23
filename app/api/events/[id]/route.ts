@@ -312,6 +312,7 @@ export async function PUT(
       body.confirmed_staff === undefined || body.confirmed_staff === "" ? null : Number(body.confirmed_staff);
 
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
+    const ends_next_day = Boolean(body.ends_next_day);
 
     // Existing: tips
     const tips = body.tips === undefined || body.tips === "" ? null : Number(body.tips);
@@ -359,6 +360,7 @@ export async function PUT(
       event_date,
       start_time,
       end_time,
+      ends_next_day,
       ticket_sales,
       artist_share_percent,
       venue_share_percent,

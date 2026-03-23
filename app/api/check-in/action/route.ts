@@ -44,48 +44,14 @@ async function getUserDivision(userId: string) {
   return data?.division || "vendor";
 }
 
-const STATE_TIMEZONE_MAP: Record<string, string> = {
-  AL: "America/Chicago", AK: "America/Anchorage", AZ: "America/Phoenix",
-  AR: "America/Chicago", CA: "America/Los_Angeles", CO: "America/Denver",
-  CT: "America/New_York", DE: "America/New_York", FL: "America/New_York",
-  GA: "America/New_York", HI: "Pacific/Honolulu", ID: "America/Denver",
-  IL: "America/Chicago", IN: "America/Indiana/Indianapolis", IA: "America/Chicago",
-  KS: "America/Chicago", KY: "America/New_York", LA: "America/Chicago",
-  ME: "America/New_York", MD: "America/New_York", MA: "America/New_York",
-  MI: "America/Detroit", MN: "America/Chicago", MS: "America/Chicago",
-  MO: "America/Chicago", MT: "America/Denver", NE: "America/Chicago",
-  NV: "America/Los_Angeles", NH: "America/New_York", NJ: "America/New_York",
-  NM: "America/Denver", NY: "America/New_York", NC: "America/New_York",
-  ND: "America/Chicago", OH: "America/New_York", OK: "America/Chicago",
-  OR: "America/Los_Angeles", PA: "America/New_York", RI: "America/New_York",
-  SC: "America/New_York", SD: "America/Chicago", TN: "America/Chicago",
-  TX: "America/Chicago", UT: "America/Denver", VT: "America/New_York",
-  VA: "America/New_York", WA: "America/Los_Angeles", WV: "America/New_York",
-  WI: "America/Chicago", WY: "America/Denver", DC: "America/New_York",
-};
-
-function getStateTimezone(state: string | null | undefined): string {
-  if (!state) return "America/Los_Angeles";
-  return STATE_TIMEZONE_MAP[state.toUpperCase().trim()] ?? "America/Los_Angeles";
+function addOneDay(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().split("T")[0];
 }
 
-function parseEventStartUtcMs(dateStr: string, timeStr: string, ianaTimezone: string): number {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const timeParts = timeStr.split(":");
-  const h = Number(timeParts[0] ?? 0);
-  const min = Number(timeParts[1] ?? 0);
-  const s = Number(timeParts[2] ?? 0);
-  const guess = new Date(Date.UTC(y, m - 1, d, h, min, s));
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: ianaTimezone,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  }).formatToParts(guess);
-  const get = (t: string) => Number(parts.find(p => p.type === t)?.value ?? 0);
-  const tzHour = get("hour") === 24 ? 0 : get("hour");
-  const tzUtcMs = Date.UTC(get("year"), get("month") - 1, get("day"), tzHour, get("minute"), get("second"));
-  return guess.getTime() + (guess.getTime() - tzUtcMs);
+function parseEventMs(dateStr: string, timeStr: string): number {
+  return new Date(`${dateStr}T${timeStr}`).getTime();
 }
 
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
@@ -249,7 +215,7 @@ export async function POST(req: NextRequest) {
           .maybeSingle(),
         supabaseAdmin
           .from("events")
-          .select("event_date, start_time, state")
+          .select("event_date, start_time, end_time, ends_next_day, state")
           .eq("id", eventId)
           .maybeSingle(),
       ]);
@@ -258,15 +224,27 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "REJECTED: NOT ON TEAM'S LIST." }, { status: 403 });
       }
 
+      if (!eventData?.event_date || !eventData?.start_time) {
+        return jsonError("Check-in is closed. This event has already passed.", 403);
+      }
+
       if (eventData?.event_date && eventData?.start_time) {
-        const tz = getStateTimezone(eventData.state);
-        const eventStartMs = parseEventStartUtcMs(
-          String(eventData.event_date).split("T")[0],
-          String(eventData.start_time),
-          tz
-        );
+        const dateStr = String(eventData.event_date).split("T")[0];
+        const eventStartMs = parseEventMs(dateStr, String(eventData.start_time));
+
         const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
-        const windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+
+        let windowCloseMs: number;
+        if (eventData.end_time) {
+          let eventEndMs = parseEventMs(dateStr, String(eventData.end_time));
+          if (eventData.ends_next_day || eventEndMs <= eventStartMs) {
+            eventEndMs = parseEventMs(addOneDay(dateStr), String(eventData.end_time));
+          }
+          windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
+        } else {
+          windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+        }
+
         const now = Date.now();
         if (now < windowOpenMs) {
           return jsonError("Check-in is not open yet. Check-in opens 3 hours before the event starts.", 403);

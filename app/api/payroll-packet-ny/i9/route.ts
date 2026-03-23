@@ -116,7 +116,7 @@ export async function GET(request: NextRequest) {
         const drawWidth = signatureImage.width * scale;
         const drawHeight = signatureImage.height * scale;
         const x = rect.x + (rect.width - drawWidth) / 2;
-        const y = rect.y + (rect.height - drawHeight) / 2;
+        const y = rect.y + (rect.height - drawHeight) / 2 + 8;
 
         page.drawImage(signatureImage, { x, y, width: drawWidth, height: drawHeight });
         embeddedEmployerSignature = true;

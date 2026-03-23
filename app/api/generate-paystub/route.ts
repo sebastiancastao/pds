@@ -154,7 +154,7 @@ export async function POST(req: NextRequest) {
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
-      return actualHours >= 10 ? 12 : 9;
+      return actualHours >= 10 ? 12.5 : 9;
     };
 
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};

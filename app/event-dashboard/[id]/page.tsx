@@ -15,6 +15,7 @@ type EventItem = {
   event_date: string;
   start_time: string;
   end_time: string;
+  ends_next_day?: boolean;
   ticket_sales: number | null;
   ticket_count: number | null;
   artist_share_percent: number;
@@ -756,6 +757,7 @@ export default function EventDashboardPage() {
     event_date: "",
     start_time: "",
     end_time: "",
+    ends_next_day: false,
     ticket_sales: null,
     artist_share_percent: 0,
     venue_share_percent: 0,
@@ -1014,6 +1016,7 @@ export default function EventDashboardPage() {
           event_date: eventData.event_date || "",
           start_time: eventData.start_time || "",
           end_time: eventData.end_time || "",
+          ends_next_day: Boolean(eventData.ends_next_day),
           ticket_sales: eventData.ticket_sales || null,
           artist_share_percent: (eventData.artist_share_percent || 0) * 100,
           venue_share_percent: (eventData.venue_share_percent || 0) * 100,
@@ -3096,7 +3099,7 @@ export default function EventDashboardPage() {
     const normalizedState = (state || "").toUpperCase().trim();
     // Nevada & Wisconsin: no rest break amount/column in Payment tab
     if (normalizedState === "NV" || normalizedState === "WI") return 0;
-    return actualHours > 10 ? 12 : actualHours > 0 ? 9 : 0;
+    return actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
   };
   const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -3630,6 +3633,16 @@ export default function EventDashboardPage() {
                       type="time"
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
                     />
+                    <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
+                      <input
+                        name="ends_next_day"
+                        type="checkbox"
+                        checked={Boolean(form.ends_next_day)}
+                        onChange={handleChange}
+                        className="w-4 h-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <span className="text-sm text-gray-600">Ends next day</span>
+                    </label>
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Total Collected</label>
