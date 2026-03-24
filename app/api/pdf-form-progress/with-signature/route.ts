@@ -344,8 +344,8 @@ export async function GET(request: NextRequest) {
 
     if (isI9) {
       const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
-      x = Math.max(0, width - 570);
-      y = Math.max(0, i9DateFieldY - 185);
+      x = Math.max(0, width - 490);
+      y = Math.max(0, i9DateFieldY - 180);
     } else {
       x = Math.max(0, width - signatureWidth - 50);
       y = 50;
