@@ -547,6 +547,7 @@ export default function UserManagementPage() {
             { href: '/timesheet-edits',         label: 'Timesheet Edits',   bg: '#334155' },
             { href: '/global-calendar',         label: 'Calendar',          bg: '#3b82f6' },
             { href: '/vendor-venue-management', label: 'Venue & Vendor',    bg: '#f97316' },
+            { href: '/reports',                 label: 'Reports',           bg: '#be123c' },
           ].map(({ href, label, bg }) => (
             <Link key={href} href={href} style={{
               padding: '0.375rem 0.75rem',
