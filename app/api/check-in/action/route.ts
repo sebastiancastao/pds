@@ -17,6 +17,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const CLIENT_ACTION_ID_MARKER = "clientActionId:";
+
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -54,6 +56,26 @@ function parseEventMs(dateStr: string, timeStr: string): number {
   return new Date(`${dateStr}T${timeStr}`).getTime();
 }
 
+function appendClientActionId(note: string, clientActionId?: string) {
+  return clientActionId ? `${note} | ${CLIENT_ACTION_ID_MARKER}${clientActionId}` : note;
+}
+
+async function findExistingTimeEntry(workerId: string, clientActionId?: string) {
+  if (!clientActionId) return null;
+
+  const { data, error } = await supabaseAdmin
+    .from("time_entries")
+    .select("id, action, timestamp, attestation_accepted")
+    .eq("user_id", workerId)
+    .like("notes", `%${CLIENT_ACTION_ID_MARKER}${clientActionId}%`)
+    .order("timestamp", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 
 /**
@@ -86,6 +108,10 @@ export async function POST(req: NextRequest) {
     const rejectionReason = typeof body.rejectionReason === "string" ? body.rejectionReason.trim() : undefined;
     const rejectionNotes  = typeof body.rejectionNotes  === "string" ? body.rejectionNotes.trim()  : undefined;
     const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
+    const clientActionId =
+      typeof body.clientActionId === "string" && body.clientActionId.trim()
+        ? body.clientActionId.trim()
+        : undefined;
 
     const isValidUuid = (id: unknown) =>
       typeof id === "string" &&
@@ -122,6 +148,18 @@ export async function POST(req: NextRequest) {
     }
 
     const workerId = codeRecord.target_user_id;
+    const existingEntry = await findExistingTimeEntry(workerId, clientActionId);
+    if (existingEntry?.id) {
+      return NextResponse.json({
+        success: true,
+        action: existingEntry.action || action,
+        timestamp: existingEntry.timestamp,
+        entryId: existingEntry.id,
+        attestationAccepted:
+          typeof existingEntry.attestation_accepted === "boolean" ? existingEntry.attestation_accepted : null,
+        deduped: true,
+      }, { status: 200 });
+    }
 
     // Validate the action against the worker's current state
     const { data: lastEntry, error: lastErr } = await supabaseAdmin
@@ -261,7 +299,7 @@ export async function POST(req: NextRequest) {
       user_id: workerId,
       action,
       division,
-      notes:
+      notes: appendClientActionId(
         action === "clock_out"
           ? attestationAccepted === false
             ? "Clocked out via kiosk - attestation rejected"
@@ -269,6 +307,8 @@ export async function POST(req: NextRequest) {
               ? "Signed clock-out via kiosk"
               : "Clocked out via kiosk"
           : "Kiosk check-in",
+        clientActionId
+      ),
     };
     if (action === "clock_out" && typeof attestationAccepted === "boolean") {
       insertData.attestation_accepted = attestationAccepted;

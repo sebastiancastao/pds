@@ -17,8 +17,18 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+};
+
+function jsonResponse(data: unknown, status = 200) {
+  return NextResponse.json(data, { status, headers: NO_STORE_HEADERS });
+}
+
 function jsonError(message: string, status = 500) {
-  return NextResponse.json({ error: message }, { status });
+  return jsonResponse({ error: message }, status);
 }
 
 async function getAuthedUser(req: Request) {
@@ -140,17 +150,17 @@ export async function GET(req: NextRequest) {
     }
 
     if (!event) {
-      return NextResponse.json({ event: null, entries: [], checkedInUsers: [] }, { status: 200 });
+      return jsonResponse({ event: null, entries: [], checkedInUsers: [] }, 200);
     }
 
     const window = computeEventWindow(event);
     if (!window) {
-      return NextResponse.json({ event: null, entries: [], checkedInUsers: [] }, { status: 200 });
+      return jsonResponse({ event: null, entries: [], checkedInUsers: [] }, 200);
     }
 
     // If the event is over, clear the activity.
     if (new Date(window.endIso).getTime() < now.getTime()) {
-      return NextResponse.json({ event: null, entries: [], checkedInUsers: [] }, { status: 200 });
+      return jsonResponse({ event: null, entries: [], checkedInUsers: [] }, 200);
     }
 
     // Slight pre-start buffer so early clock-ins still appear during the event.
@@ -307,7 +317,7 @@ export async function GET(req: NextRequest) {
       })
       .sort((a, b) => new Date(String(a.firstClockInAt)).getTime() - new Date(String(b.firstClockInAt)).getTime());
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         event: {
           id: event.id,
@@ -319,7 +329,7 @@ export async function GET(req: NextRequest) {
         entries: mapped,
         checkedInUsers,
       },
-      { status: 200 }
+      200
     );
   } catch (err: any) {
     console.error("Error loading recent check-in activity:", err);

@@ -17,6 +17,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+const CLIENT_ACTION_ID_MARKER = "clientActionId:";
+
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -44,6 +46,26 @@ async function getUserDivision(userId: string) {
   return data?.division || "vendor";
 }
 
+function appendClientActionId(note: string, clientActionId?: string) {
+  return clientActionId ? `${note} | ${CLIENT_ACTION_ID_MARKER}${clientActionId}` : note;
+}
+
+async function findExistingTimeEntry(workerId: string, clientActionId?: string) {
+  if (!clientActionId) return null;
+
+  const { data, error } = await supabaseAdmin
+    .from("time_entries")
+    .select("id, timestamp")
+    .eq("user_id", workerId)
+    .like("notes", `%${CLIENT_ACTION_ID_MARKER}${clientActionId}%`)
+    .order("timestamp", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 type QueuedAction = {
   id: string;
   code: string;
@@ -53,6 +75,8 @@ type QueuedAction = {
   signature?: string;
   attestationAccepted?: boolean;
   eventId?: string;
+  clientActionId?: string;
+  rejectionReason?: string;
 };
 
 /**
@@ -117,6 +141,16 @@ export async function POST(req: NextRequest) {
 
         const workerId = codeRecord.target_user_id;
         const division = await getUserDivision(workerId);
+        const clientActionId =
+          typeof item.clientActionId === "string" && item.clientActionId.trim()
+            ? item.clientActionId.trim()
+            : item.id;
+        const existingEntry = await findExistingTimeEntry(workerId, clientActionId);
+
+        if (existingEntry?.id) {
+          results.push({ id: item.id, success: true });
+          continue;
+        }
 
         if (item.action === "clock_out" && item.attestationAccepted === true && !item.signature) {
           results.push({
@@ -147,7 +181,7 @@ export async function POST(req: NextRequest) {
             action: item.action,
             division,
             timestamp: item.timestamp,
-            notes: item.action === "clock_out" ? clockOutNote : baseNote,
+            notes: appendClientActionId(item.action === "clock_out" ? clockOutNote : baseNote, clientActionId),
             ...(item.action === "clock_out" && typeof item.attestationAccepted === "boolean"
               ? { attestation_accepted: item.attestationAccepted }
               : {}),
@@ -166,6 +200,20 @@ export async function POST(req: NextRequest) {
           await supabaseAdmin
             .from("checkin_logs")
             .insert({ code_id: codeRecord.id, user_id: workerId });
+        }
+
+        if (item.action === "clock_out" && item.attestationAccepted === false && item.rejectionReason && entryData?.id) {
+          try {
+            await supabaseAdmin.from("attestation_rejections").insert({
+              time_entry_id: entryData.id,
+              user_id: workerId,
+              ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
+              rejection_reason: item.rejectionReason,
+              ...(item.signature ? { signature_data: item.signature } : {}),
+            });
+          } catch (rejErr) {
+            console.error("Failed to save offline attestation rejection:", rejErr);
+          }
         }
 
         // Save attestation signature to form_signatures on clock_out

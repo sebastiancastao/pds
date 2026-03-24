@@ -71,7 +71,7 @@ export async function POST(request: NextRequest) {
     const resolvedFormType = formType?.trim() || 'fillable';
     const storagePath = `payroll-packet:${routeSegment}:${resolvedFormType}`;
 
-    // Prevent duplicate registrations for the same state form
+    // If the same state form is already registered, reuse it for assignment
     const { data: existing } = await supabase
       .from('custom_pdf_forms')
       .select('id, title')
@@ -80,10 +80,33 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     if (existing) {
-      return NextResponse.json(
-        { error: `A state form for ${sourceState} is already registered as "${existing.title}". Remove it first to re-register.` },
-        { status: 409 },
-      );
+      // If a venue is specified, assign the existing form to all users at that venue
+      if (venueId) {
+        const { data: venueAssignments, error: venueErr } = await supabase
+          .from('vendor_venue_assignments')
+          .select('vendor_id')
+          .eq('venue_id', venueId);
+
+        if (venueErr) {
+          return NextResponse.json({ error: 'Failed to look up venue users', details: venueErr.message }, { status: 500 });
+        }
+
+        const userIds = [...new Set((venueAssignments || []).map((a: any) => a.vendor_id))];
+        if (userIds.length === 0) {
+          return NextResponse.json({ error: 'No users are assigned to this venue. Assign users to the venue first.' }, { status: 400 });
+        }
+
+        const rows = userIds.map((uid: string) => ({ form_id: existing.id, user_id: uid, assigned_by: user.id }));
+        const { error: assignError } = await supabase
+          .from('custom_form_assignments')
+          .upsert(rows, { onConflict: 'form_id,user_id' });
+
+        if (assignError) {
+          return NextResponse.json({ error: 'Failed to restrict form to venue users', details: assignError.message }, { status: 500 });
+        }
+      }
+
+      return NextResponse.json({ success: true, form: existing }, { status: 200 });
     }
 
     const { data: record, error: insertError } = await supabase

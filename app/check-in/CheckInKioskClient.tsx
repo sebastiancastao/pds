@@ -34,6 +34,13 @@ function getTimezoneForState(state: string | null | undefined): string {
 type WorkerStatus = "not_clocked_in" | "clocked_in" | "on_meal";
 type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
+const KIOSK_EVENT_REFRESH_MS = 10_000;
+const KIOSK_SHIFT_SUMMARY_REFRESH_MS = 10_000;
+const BACKGROUND_REQUEST_TIMEOUT_MS = 8_000;
+const VALIDATION_REQUEST_TIMEOUT_MS = 10_000;
+const ACTION_REQUEST_TIMEOUT_MS = 12_000;
+const SYNC_REQUEST_TIMEOUT_MS = 15_000;
+const HEARTBEAT_REQUEST_TIMEOUT_MS = 5_000;
 
 type QueuedAction = {
   id: string;
@@ -44,6 +51,8 @@ type QueuedAction = {
   signature?: string;
   attestationAccepted?: boolean;
   eventId?: string;
+  clientActionId?: string;
+  rejectionReason?: string;
 };
 
 
@@ -83,7 +92,7 @@ async function addToQueue(item: QueuedAction): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, "readwrite");
-    tx.objectStore(STORE_NAME).add(item);
+    tx.objectStore(STORE_NAME).put(item);
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
@@ -121,6 +130,30 @@ async function clearQueue(): Promise<void> {
 
 function generateId(): string {
   return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (typeof error === "object" &&
+      error !== null &&
+      "name" in error &&
+      (error as { name?: string }).name === "AbortError")
+  );
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 // ─── Component ──────────────────────────────────────────────────────
@@ -225,17 +258,30 @@ export default function CheckInKioskPage() {
       return;
     }
 
-    const run = async () => {
+    let isCancelled = false;
+
+    const run = async (showLoading = false) => {
       try {
-        setAttestationSummaryLoading(true);
+        if (showLoading) {
+          setAttestationSummaryLoading(true);
+        }
+
         const token = accessTokenRef.current;
         if (!token) return;
-        const res = await fetch(`/api/check-in/shift-summary?workerId=${encodeURIComponent(worker.workerId)}`, {
-          method: "GET",
-          headers: { Authorization: `Bearer ${token}` },
+
+        const params = new URLSearchParams({
+          workerId: worker.workerId,
+          _ts: Date.now().toString(),
         });
+
+        const res = await fetchWithTimeout(`/api/check-in/shift-summary?${params.toString()}`, {
+          method: "GET",
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${token}` },
+        }, BACKGROUND_REQUEST_TIMEOUT_MS);
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) return;
+        if (isCancelled || !res.ok) return;
+
         if (data?.active && typeof data?.clockInAt === "string" && typeof data?.mealMs === "number") {
           const adminMs =
             typeof data?.adminResponseEntryProcessingMs === "number"
@@ -255,13 +301,25 @@ export default function CheckInKioskPage() {
           setAttestationSummary(null);
         }
       } catch (e) {
-        console.error("Failed to load shift summary:", e);
+        if (!isCancelled && !isAbortError(e)) {
+          console.error("Failed to load shift summary:", e);
+        }
       } finally {
-        setAttestationSummaryLoading(false);
+        if (!isCancelled && showLoading) {
+          setAttestationSummaryLoading(false);
+        }
       }
     };
 
-    run();
+    void run(true);
+    const interval = window.setInterval(() => {
+      void run(false);
+    }, KIOSK_SHIFT_SUMMARY_REFRESH_MS);
+
+    return () => {
+      isCancelled = true;
+      window.clearInterval(interval);
+    };
   }, [isOnline, showAttestation, worker]);
 
   // Refresh Supabase session every 20 minutes to keep it alive as long as possible
@@ -292,20 +350,46 @@ export default function CheckInKioskPage() {
   }, [isAuthed]);
 
   const checkAuth = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      router.push("/login");
-      return;
-    }
     const mfaVerified = sessionStorage.getItem("mfa_verified") || localStorage.getItem("mfa_verified");
     if (!mfaVerified) {
       router.push("/verify-mfa");
       return;
     }
-    const { data } = await supabase.auth.getSession();
-    accessTokenRef.current = data.session?.access_token || null;
-    setIsAuthed(true);
-    setLoading(false);
+
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const session = sessionData.session;
+      if (!session?.user) {
+        router.push("/login");
+        return;
+      }
+
+      accessTokenRef.current = session.access_token || null;
+      setIsAuthed(true);
+      setLoading(false);
+
+      if (!navigator.onLine) return;
+
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (!user) {
+          accessTokenRef.current = null;
+          setIsAuthed(false);
+          router.push("/login");
+          return;
+        }
+
+        const { data: latestSessionData } = await supabase.auth.getSession();
+        accessTokenRef.current = latestSessionData.session?.access_token || accessTokenRef.current;
+      } catch (error) {
+        console.warn("Unable to verify kiosk session against the server:", error);
+      }
+    } catch (error) {
+      console.error("Failed to restore kiosk session:", error);
+      router.push("/login");
+    }
   };
 
   const fetchRecentActivity = useCallback(async () => {
@@ -315,13 +399,18 @@ export default function CheckInKioskPage() {
       const token = accessTokenRef.current;
       if (!token) return;
 
-      const qs = eventIdFromUrl ? `?eventId=${encodeURIComponent(eventIdFromUrl)}` : "";
-      const res = await fetch(`/api/check-in/recent${qs}`, {
+      const params = new URLSearchParams({ _ts: Date.now().toString() });
+      if (eventIdFromUrl) {
+        params.set("eventId", eventIdFromUrl);
+      }
+
+      const res = await fetchWithTimeout(`/api/check-in/recent?${params.toString()}`, {
         method: "GET",
+        cache: "no-store",
         headers: {
           Authorization: `Bearer ${token}`,
         },
-      });
+      }, BACKGROUND_REQUEST_TIMEOUT_MS);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) return;
 
@@ -340,7 +429,9 @@ export default function CheckInKioskPage() {
       }
 
     } catch (err) {
-      console.error("Failed to fetch kiosk event status:", err);
+      if (!isAbortError(err)) {
+        console.error("Failed to fetch kiosk event status:", err);
+      }
     }
   }, [eventIdFromUrl, isAuthed, isOnline]);
 
@@ -371,7 +462,7 @@ export default function CheckInKioskPage() {
     if (!isAuthed) return;
     if (!isOnline) return;
     fetchRecentActivity();
-    const interval = setInterval(fetchRecentActivity, 30_000);
+    const interval = setInterval(fetchRecentActivity, KIOSK_EVENT_REFRESH_MS);
     return () => clearInterval(interval);
   }, [fetchRecentActivity, isAuthed, isOnline]);
 
@@ -382,11 +473,11 @@ export default function CheckInKioskPage() {
       try {
         const token = accessTokenRef.current;
         if (!token) return;
-        await fetch("/api/admin/check-in-monitor", {
+        await fetchWithTimeout("/api/admin/check-in-monitor", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
           body: JSON.stringify({ eventId: eventIdFromUrl || activeEvent?.id || null }),
-        });
+        }, HEARTBEAT_REQUEST_TIMEOUT_MS);
       } catch {}
     };
     sendHeartbeat();
@@ -420,14 +511,14 @@ export default function CheckInKioskPage() {
         return;
       }
 
-      const res = await fetch("/api/check-in/sync", {
+      const res = await fetchWithTimeout("/api/check-in/sync", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ actions: items }),
-      });
+      }, SYNC_REQUEST_TIMEOUT_MS);
 
       if (res.ok) {
         const data = await res.json();
@@ -444,7 +535,9 @@ export default function CheckInKioskPage() {
         }
       }
     } catch (err) {
-      console.error("Sync failed:", err);
+      if (!isAbortError(err)) {
+        console.error("Sync failed:", err);
+      }
     } finally {
       setIsSyncing(false);
       isSyncingRef.current = false;
@@ -653,6 +746,26 @@ export default function CheckInKioskPage() {
     eventCheckInFlashTimeoutRef.current = setTimeout(() => setEventCheckInFlash(null), 3500);
   };
 
+  const queueActionLocally = async (
+    queuedItem: QueuedAction,
+    actionLabel: string,
+    reason: "offline" | "slow"
+  ) => {
+    await addToQueue(queuedItem);
+    await refreshQueueCount();
+
+    if (queuedItem.action === "clock_in") {
+      showEventCheckInFlashMessage(queuedItem.userName, true);
+    }
+
+    showSuccessMessage(
+      reason === "slow"
+        ? `${actionLabel} (saved locally due to slow connection)`
+        : `${actionLabel} (queued offline)`
+    );
+    setTimeout(resetToCodeEntry, 1500);
+  };
+
   const resetToCodeEntry = () => {
     setWorker(null);
     setDigits(["", "", "", "", "", ""]);
@@ -742,14 +855,14 @@ export default function CheckInKioskPage() {
         return;
       }
 
-      const res = await fetch("/api/check-in/validate", {
+      const res = await fetchWithTimeout("/api/check-in/validate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ code, eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined }),
-      });
+      }, VALIDATION_REQUEST_TIMEOUT_MS);
 
       const data = await res.json();
       if (!res.ok) {
@@ -767,8 +880,14 @@ export default function CheckInKioskPage() {
         mealStartedAt: data.mealStartedAt ?? null,
         code,
       });
-    } catch {
-      setError("Connection error. Please try again.");
+    } catch (err) {
+      if (isAbortError(err)) {
+        setError(
+          "Connection is slow or unavailable. Code validation needs internet. If a worker is already verified on screen, actions can still be saved locally."
+        );
+      } else {
+        setError("Connection error. Please try again.");
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -785,6 +904,7 @@ export default function CheckInKioskPage() {
     setError("");
     const attestationAccepted = options?.attestationAccepted;
     const rejectionReason = options?.rejectionReason;
+    const clientActionId = generateId();
     const actionLabel =
       action === "clock_out" && attestationAccepted === false
         ? "Clocked Out (attestation rejected)"
@@ -795,28 +915,27 @@ export default function CheckInKioskPage() {
             meal_end: "Meal Ended",
           } as Record<ActionType, string>)[action];
 
-      if (!isOnline) {
-        // Queue in IndexedDB
-        const queuedItem: QueuedAction = {
-          id: generateId(),
-          code: worker.code,
-        action,
-        timestamp: new Date().toISOString(),
-        userName: worker.name,
-        signature: sig,
-        attestationAccepted,
-        eventId: activeEvent?.id || (eventIdFromUrl || undefined),
-      };
-        try {
-          await addToQueue(queuedItem);
-          await refreshQueueCount();
-          if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabel} (queued offline)`);
-          setTimeout(resetToCodeEntry, 1500);
-        } catch (err) {
-          setError("Failed to save offline. Please try again.");
-        }
-      setIsActioning(false);
+    const queuedItem: QueuedAction = {
+      id: clientActionId,
+      clientActionId,
+      code: worker.code,
+      action,
+      timestamp: new Date().toISOString(),
+      userName: worker.name,
+      signature: sig,
+      attestationAccepted,
+      rejectionReason,
+      eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
+    };
+
+    if (!isOnline) {
+      try {
+        await queueActionLocally(queuedItem, actionLabel, "offline");
+      } catch {
+        setError("Failed to save offline. Please try again.");
+      } finally {
+        setIsActioning(false);
+      }
       return;
     }
 
@@ -828,7 +947,7 @@ export default function CheckInKioskPage() {
         return;
       }
 
-      const res = await fetch("/api/check-in/action", {
+      const res = await fetchWithTimeout("/api/check-in/action", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -840,62 +959,41 @@ export default function CheckInKioskPage() {
           signature: sig,
           attestationAccepted,
           rejectionReason,
-          eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
+          eventId: queuedItem.eventId,
+          clientActionId,
         }),
-      });
+      }, ACTION_REQUEST_TIMEOUT_MS);
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         // If network went down mid-request, queue instead
         if (!navigator.onLine) {
-          const queuedItem: QueuedAction = {
-            id: generateId(),
-            code: worker.code,
-            action,
-            timestamp: new Date().toISOString(),
-            userName: worker.name,
-            signature: sig,
-            attestationAccepted,
-            eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
-            };
-            await addToQueue(queuedItem);
-            await refreshQueueCount();
-            if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-            showSuccessMessage(`${actionLabel} (queued offline)`);
-            setTimeout(resetToCodeEntry, 1500);
-            setIsActioning(false);
-            return;
-          }
-        setError(data.error || "Action failed");
-        setIsActioning(false);
+          await queueActionLocally(queuedItem, actionLabel, "offline");
           return;
         }
+        setError(data.error || "Action failed");
+        return;
+      }
 
-        if (action === "clock_in") showEventCheckInFlashMessage(worker.name);
-        showSuccessMessage(`${worker.name} - ${actionLabel}!`);
-        fetchRecentActivity();
-        setTimeout(resetToCodeEntry, 1500);
-      } catch {
-      // Network error - queue offline
-      const queuedItem: QueuedAction = {
-        id: generateId(),
-        code: worker.code,
-        action,
-        timestamp: new Date().toISOString(),
-        userName: worker.name,
-        signature: sig,
-        attestationAccepted,
-        eventId: activeEvent?.id || (eventIdFromUrl || undefined),
-      };
+      if (action === "clock_in") showEventCheckInFlashMessage(worker.name);
+      showSuccessMessage(`${worker.name} - ${actionLabel}!`);
+      fetchRecentActivity();
+      setTimeout(resetToCodeEntry, 1500);
+    } catch (err) {
+      // Slow or failed network requests fall back to the local queue.
+      if (isAbortError(err) || !navigator.onLine || err instanceof TypeError) {
         try {
-          await addToQueue(queuedItem);
-          await refreshQueueCount();
-          if (action === "clock_in") showEventCheckInFlashMessage(worker.name, true);
-          showSuccessMessage(`${actionLabel} (queued offline)`);
-          setTimeout(resetToCodeEntry, 1500);
+          await queueActionLocally(
+            queuedItem,
+            actionLabel,
+            isAbortError(err) && navigator.onLine ? "slow" : "offline"
+          );
         } catch {
-          setError("Failed to save. Please try again.");
+          setError("Failed to save locally. Please try again.");
         }
+      } else {
+        setError("Action failed. Please try again.");
+      }
     } finally {
       setIsActioning(false);
     }

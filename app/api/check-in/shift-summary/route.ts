@@ -17,8 +17,18 @@ const supabaseAnon = createClient(
 );
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 
+const NO_STORE_HEADERS = {
+  "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+  Pragma: "no-cache",
+  Expires: "0",
+};
+
+function jsonResponse(data: unknown, status = 200) {
+  return NextResponse.json(data, { status, headers: NO_STORE_HEADERS });
+}
+
 function jsonError(message: string, status = 500) {
-  return NextResponse.json({ error: message }, { status });
+  return jsonResponse({ error: message }, status);
 }
 
 async function getAuthedUser(req: Request) {
@@ -69,7 +79,7 @@ export async function GET(req: NextRequest) {
     if (lastClockErr) return jsonError(lastClockErr.message, 500);
 
     if (!lastClock || lastClock.action !== "clock_in" || !lastClock.timestamp) {
-      return NextResponse.json({ active: false }, { status: 200 });
+      return jsonResponse({ active: false }, 200);
     }
 
     const clockInAt = String(lastClock.timestamp);
@@ -119,7 +129,7 @@ export async function GET(req: NextRequest) {
     const netWorkedMs = Math.max(0, workedMs - mealMs);
     const totalMsWithAdminResponse = netWorkedMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS;
 
-    return NextResponse.json(
+    return jsonResponse(
       {
         active: true,
         clockInAt,
@@ -129,7 +139,7 @@ export async function GET(req: NextRequest) {
         serverNow: now.toISOString(),
         onMeal: openMealStartMs !== null,
       },
-      { status: 200 }
+      200
     );
   } catch (err: any) {
     console.error("Error loading shift summary:", err);
