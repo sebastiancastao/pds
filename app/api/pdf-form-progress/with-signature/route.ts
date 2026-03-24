@@ -261,6 +261,12 @@ export async function GET(request: NextRequest) {
       .eq('user_id', userId)
       .maybeSingle();
 
+    const { data: employeeInfo } = await supabaseAdmin
+      .from('employee_information')
+      .select('state')
+      .eq('user_id', userId)
+      .maybeSingle();
+
     const preferredState = normalizeStateCode(profileData?.state);
     const normalizedName = normalizeFormKey(formName);
     const formIdsToTry = buildFormIdCandidates(formName, preferredState);
@@ -332,6 +338,34 @@ export async function GET(request: NextRequest) {
     const pages = pdfDoc.getPages();
 
     const isI9 = normalizedName === 'i9';
+
+    // For I9: fill the State field if it's empty
+    if (isI9) {
+      const rawState = (employeeInfo?.state || profileData?.state || '').toString().trim().toUpperCase();
+      if (rawState) {
+        try {
+          const form = pdfDoc.getForm();
+          const field = form.getField('State') as any;
+          const fieldType = field?.constructor?.name || '';
+
+          if (fieldType === 'PDFDropdown') {
+            const dropdown = form.getDropdown('State');
+            const current = dropdown.getSelected()?.[0]?.trim() ?? '';
+            if (!current) {
+              dropdown.select(rawState);
+            }
+          } else {
+            const textField = form.getTextField('State');
+            const existing = textField.getText()?.trim() ?? '';
+            if (!existing) {
+              textField.setText(rawState);
+            }
+          }
+        } catch {
+          // field not found or value not in dropdown options — skip silently
+        }
+      }
+    }
     const pageIdx = isI9 ? 0 : Math.max(pages.length - 1, 0);
     const page = pages[pageIdx];
     const { width, height } = page.getSize();
