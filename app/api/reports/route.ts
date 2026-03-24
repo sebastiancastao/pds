@@ -374,7 +374,7 @@ export async function GET(req: NextRequest) {
         hours_by_user: Object.fromEntries(
           Array.from(hoursByUser.entries()).map(([uid, h]) => [uid, Math.round(h * 100) / 100])
         ),
-        shifts_by_user: Object.fromEntries(hoursByUser.keys().map ? Array.from(shiftsByUser.entries()) : []),
+        shifts_by_user: Object.fromEntries(Array.from(shiftsByUser.entries())),
         hours_by_event: Object.fromEntries(
           Array.from(hoursByEvent.entries()).map(([eid, h]) => [eid, Math.round(h * 100) / 100])
         ),
