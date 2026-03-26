@@ -405,6 +405,16 @@ export async function GET(request: NextRequest) {
       page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
     }
 
+    // Flatten form fields so all values (state, checkboxes, etc.) are baked into
+    // the page content and render correctly in every PDF viewer.
+    if (isI9) {
+      try {
+        pdfDoc.getForm().flatten();
+      } catch {
+        // ignore flatten errors — some fields may not support it
+      }
+    }
+
     const resultBytes = await pdfDoc.save();
     const resultBase64 = Buffer.from(resultBytes).toString('base64');
 
