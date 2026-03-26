@@ -341,7 +341,8 @@ export async function GET(request: NextRequest) {
 
     // For I9: fill the State field if it's empty
     if (isI9) {
-      const rawState = (employeeInfo?.state || profileData?.state || '').toString().trim().toUpperCase();
+      const rawStateRaw = (employeeInfo?.state || profileData?.state || '').toString().trim();
+      const rawState = (normalizeStateCode(rawStateRaw) || rawStateRaw).toUpperCase();
       if (rawState) {
         try {
           const form = pdfDoc.getForm();
