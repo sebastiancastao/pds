@@ -1867,7 +1867,7 @@ export async function sendVenueProposalAlertEmail(data: {
     reviewUrl,
   } = data;
 
-  const subject = `Venue Proposal: ${vendorName} invited to ${venueName} (out-of-venue)`;
+  const subject = `Venue Request: ${vendorName} invited to ${venueName} (out-of-venue)`;
 
   const html = `
 <!DOCTYPE html>
@@ -1880,23 +1880,23 @@ export async function sendVenueProposalAlertEmail(data: {
 
         <tr>
           <td style="background:linear-gradient(135deg,#f59e0b 0%,#d97706 100%);padding:36px 30px;text-align:center;">
-            <h1 style="color:#ffffff;margin:0;font-size:24px;">Out-of-Venue Proposal</h1>
-            <p style="color:rgba(255,255,255,0.9);margin:10px 0 0 0;font-size:15px;">Action required: review this staffing proposal</p>
+            <h1 style="color:#ffffff;margin:0;font-size:24px;">Out-of-Venue Request</h1>
+            <p style="color:rgba(255,255,255,0.9);margin:10px 0 0 0;font-size:15px;">Action required: review this staffing request</p>
           </td>
         </tr>
 
         <tr>
           <td style="padding:36px 30px;">
             <p style="color:#333;font-size:16px;line-height:1.6;margin:0 0 16px 0;">
-              <strong>${proposedByName}</strong> (<a href="mailto:${proposedByEmail}" style="color:#667eea;">${proposedByEmail}</a>) has submitted a proposal to invite a vendor who is <strong>not assigned to ${venueName}</strong>.
+              <strong>${proposedByName}</strong> (<a href="mailto:${proposedByEmail}" style="color:#667eea;">${proposedByEmail}</a>) has submitted a request to invite a vendor who is <strong>not assigned to ${venueName}</strong>.
             </p>
 
             <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f8f9fa;border-radius:8px;border:2px solid #f59e0b;margin:24px 0;">
               <tr><td style="padding:24px;">
-                <h2 style="color:#d97706;margin:0 0 16px 0;font-size:18px;">Proposal Details</h2>
+                <h2 style="color:#d97706;margin:0 0 16px 0;font-size:18px;">Request Details</h2>
                 <table cellpadding="0" cellspacing="0" border="0" width="100%">
                   <tr>
-                    <td style="padding:6px 0;color:#555;font-size:14px;width:40%;"><strong>Proposed Vendor:</strong></td>
+                    <td style="padding:6px 0;color:#555;font-size:14px;width:40%;"><strong>Requested Vendor:</strong></td>
                     <td style="padding:6px 0;color:#333;font-size:14px;">${vendorName} &lt;${vendorEmail}&gt;</td>
                   </tr>
                   <tr>
@@ -1916,7 +1916,7 @@ export async function sendVenueProposalAlertEmail(data: {
                     <td style="padding:6px 0;color:#333;font-size:14px;">${locationName}</td>
                   </tr>
                   <tr>
-                    <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Proposal ID:</strong></td>
+                    <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Request ID:</strong></td>
                     <td style="padding:6px 0;color:#333;font-size:14px;font-family:monospace;">${proposalId}</td>
                   </tr>
                 </table>
@@ -1924,13 +1924,13 @@ export async function sendVenueProposalAlertEmail(data: {
             </table>
 
             <p style="color:#333;font-size:15px;line-height:1.6;margin:0 0 24px 0;">
-              Please review this proposal and approve or decline it in the portal.
+              Please review this request and approve or decline it in the portal.
             </p>
 
             <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 24px 0;">
               <tr><td align="center">
                 <a href="${reviewUrl}" style="display:inline-block;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#ffffff;text-decoration:none;padding:14px 36px;border-radius:6px;font-size:15px;font-weight:bold;">
-                  Review Proposal
+                  Review Request
                 </a>
               </td></tr>
             </table>
@@ -1963,7 +1963,7 @@ export async function sendVenueProposalAlertEmail(data: {
 
     return { success: true, messageId: result?.id };
   } catch (error: any) {
-    return { success: false, error: error.message || 'Failed to send venue proposal alert' };
+    return { success: false, error: error.message || 'Failed to send venue request alert' };
   }
 }
 

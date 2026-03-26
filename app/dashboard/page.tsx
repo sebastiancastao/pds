@@ -1162,7 +1162,6 @@ export default function DashboardPage() {
     setTeamMessage("");
     setSelectedTeamRegion("all");
     setTeamSearchQuery("");
-
     // Ensure regions are loaded for the region filter
     void loadRegions();
 
@@ -1351,28 +1350,46 @@ export default function DashboardPage() {
   };
   const handleSaveTeam = async () => {
     if (!selectedEvent || selectedTeamMembers.size === 0) return;
+
+    const selectedIds = Array.from(selectedTeamMembers);
+    const outOfVenueIds = selectedIds.filter((id) => {
+      const v = availableVendors.find((v) => v.id === id);
+      return (v as any)?.isOutOfVenue && !(v as any)?.isExistingMember;
+    });
+    const inVenueIds = selectedIds.filter((id) => !outOfVenueIds.includes(id));
+
     setSavingTeam(true);
     setTeamMessage("");
+    const messages: string[] = [];
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch(`/api/events/${selectedEvent.id}/team`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-        body: JSON.stringify({ vendorIds: Array.from(selectedTeamMembers) }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        // Use the message from the API which includes details about new/existing members
-        setTeamMessage(data.message || `Team updated successfully!`);
-        setTimeout(() => closeTeamModal(), 1500);
-      } else {
-        setTeamMessage(data.error || "Failed to create team");
+
+      if (inVenueIds.length > 0) {
+        const res = await fetch(`/api/events/${selectedEvent.id}/team`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          body: JSON.stringify({ vendorIds: inVenueIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to create team");
+        messages.push(data.message || `${inVenueIds.length} invitation(s) sent.`);
       }
-    } catch {
-      setTeamMessage("Network error creating team");
+
+      if (outOfVenueIds.length > 0) {
+        const res = await fetch(`/api/events/${selectedEvent.id}/location-proposals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          body: JSON.stringify({ vendorIds: outOfVenueIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Failed to submit requests");
+        messages.push(data.message || `${outOfVenueIds.length} request(s) submitted for exec review.`);
+      }
+
+      setTeamMessage(messages.join(" ") || "Done.");
+      setTimeout(() => closeTeamModal(), 1500);
+    } catch (err: any) {
+      setTeamMessage(err.message || "Network error");
     } finally {
       setSavingTeam(false);
     }
@@ -2897,6 +2914,11 @@ export default function DashboardPage() {
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                     </svg>
                                     {fmt12h((v as any).availableFrom)}–{fmt12h((v as any).availableTo)}
+                                  </div>
+                                )}
+                                {(v as any).isOutOfVenue && !(v as any).isExistingMember && (
+                                  <div className="px-2 py-1 text-xs bg-orange-100 text-orange-700 rounded-md font-medium">
+                                    Out of Venue
                                   </div>
                                 )}
                                 {v.distance !== null ? (

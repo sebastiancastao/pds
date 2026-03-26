@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt } from "@/lib/encryption";
-import { sendProposalDeclinedEmail, sendVendorEventInvitationEmail } from "@/lib/email";
+import { sendProposalDeclinedEmail, sendTeamConfirmationEmail } from "@/lib/email";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -163,7 +163,7 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
         vendor_id,
         proposed_by,
         status,
-        events(id, event_name, event_date, start_time, venue),
+        events(id, event_name, event_date, start_time, venue, created_by),
         event_locations(id, name)
       `)
       .eq("id", proposalId)
@@ -214,65 +214,96 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
     if (updateError) return NextResponse.json({ error: updateError.message }, { status: 500 });
 
     if (action === "approved") {
-      const { error: assignError } = await supabaseAdmin
-        .from("event_location_assignments")
-        .upsert(
-          {
-            event_id: proposal.event_id,
-            location_id: proposal.location_id,
-            vendor_id: proposal.vendor_id,
-            assigned_by: auth.userId,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "event_id,vendor_id" }
-        );
+      // Only create a location assignment if the proposal was tied to a specific location
+      if (proposal.location_id) {
+        const { error: assignError } = await supabaseAdmin
+          .from("event_location_assignments")
+          .upsert(
+            {
+              event_id: proposal.event_id,
+              location_id: proposal.location_id,
+              vendor_id: proposal.vendor_id,
+              assigned_by: auth.userId,
+              updated_at: new Date().toISOString(),
+            },
+            { onConflict: "event_id,vendor_id" }
+          );
 
-      if (assignError) {
-        await supabaseAdmin
-          .from("vendor_location_proposals")
-          .update({ status: "pending", reviewed_by: null, reviewed_at: null, notes: null })
-          .eq("id", proposalId);
+        if (assignError) {
+          await supabaseAdmin
+            .from("vendor_location_proposals")
+            .update({ status: "pending", reviewed_by: null, reviewed_at: null, notes: null })
+            .eq("id", proposalId);
 
-        return NextResponse.json({ error: `Failed to assign vendor: ${assignError.message}` }, { status: 500 });
+          return NextResponse.json({ error: `Failed to assign vendor: ${assignError.message}` }, { status: 500 });
+        }
       }
 
-      await supabaseAdmin
+      // Update or insert into event_teams with a fresh confirmation_token
+      const confirmationToken = crypto.randomBytes(32).toString("hex");
+      const { data: existingTeamRow } = await supabaseAdmin
         .from("event_teams")
-        .upsert(
-          {
+        .select("id")
+        .eq("event_id", proposal.event_id)
+        .eq("vendor_id", proposal.vendor_id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (existingTeamRow?.id) {
+        await supabaseAdmin
+          .from("event_teams")
+          .update({
+            status: "pending_confirmation",
+            confirmation_token: confirmationToken,
+            assigned_by: auth.userId,
+          })
+          .eq("id", existingTeamRow.id);
+      } else {
+        await supabaseAdmin
+          .from("event_teams")
+          .insert({
             event_id: proposal.event_id,
             vendor_id: proposal.vendor_id,
             assigned_by: auth.userId,
-            status: "assigned",
-          },
-          { onConflict: "event_id,vendor_id" }
-        );
+            status: "pending_confirmation",
+            confirmation_token: confirmationToken,
+          });
+      }
 
       if (vendorEmail) {
         try {
-          const invitationToken = crypto.randomBytes(32).toString("hex");
+          // Look up the event creator's profile for manager name / phone
+          const eventCreatedBy = String((eventData as any)?.created_by || "");
+          let managerName = "Event Manager";
+          let managerPhone = "";
+          if (eventCreatedBy) {
+            const { data: managerProfile } = await supabaseAdmin
+              .from("profiles")
+              .select("first_name, last_name, phone")
+              .eq("user_id", eventCreatedBy)
+              .maybeSingle();
+            if (managerProfile) {
+              const mFirst = safeDecrypt(managerProfile.first_name);
+              const mLast = safeDecrypt(managerProfile.last_name);
+              managerName = `${mFirst} ${mLast}`.trim() || "Event Manager";
+              managerPhone = safeDecrypt(managerProfile.phone);
+            }
+          }
 
-          await supabaseAdmin.from("vendor_invitations").insert({
-            token: invitationToken,
-            event_id: proposal.event_id,
-            vendor_id: proposal.vendor_id,
-            invited_by: auth.userId,
-            status: "pending",
-            expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-          });
-
-          await sendVendorEventInvitationEmail({
+          await sendTeamConfirmationEmail({
             email: vendorEmail,
             firstName: vendorFirstName,
             lastName: vendorLastName,
             eventName,
             eventDate,
             eventStartTime,
-            venueName,
-            invitationToken,
+            managerName,
+            managerPhone,
+            confirmationToken,
           });
         } catch (emailErr) {
-          console.warn("[VENDOR-PROPOSALS] Invitation email failed:", emailErr);
+          console.warn("[VENDOR-PROPOSALS] Confirmation email failed:", emailErr);
         }
       }
 

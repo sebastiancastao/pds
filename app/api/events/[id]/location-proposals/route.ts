@@ -181,18 +181,25 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const body = await req.json().catch(() => ({}));
-    const locationId = String(body?.locationId || "").trim();
+    const locationId = body?.locationId ? String(body.locationId).trim() : null;
     const rawVendorIds: unknown[] = Array.isArray(body?.vendorIds) ? body.vendorIds : [];
     const vendorIds: string[] = Array.from(
       new Set(rawVendorIds.map((vendorId) => String(vendorId || "").trim()))
     ).filter((vendorId) => vendorId.length > 0);
 
-    if (!locationId) {
-      return NextResponse.json({ error: "locationId is required" }, { status: 400 });
-    }
-
     if (vendorIds.length === 0) {
       return NextResponse.json({ error: "vendorIds is required" }, { status: 400 });
+    }
+
+    let existingQuery = supabaseAdmin
+      .from("vendor_location_proposals")
+      .select("id, vendor_id, status")
+      .eq("event_id", eventId)
+      .in("vendor_id", vendorIds);
+    if (locationId) {
+      existingQuery = existingQuery.eq("location_id", locationId);
+    } else {
+      existingQuery = existingQuery.is("location_id", null);
     }
 
     const [eventResult, locationResult, existingResult, userMap] = await Promise.all([
@@ -201,18 +208,15 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         .select("id, event_name, event_date, venue")
         .eq("id", eventId)
         .maybeSingle(),
-      supabaseAdmin
-        .from("event_locations")
-        .select("id, name")
-        .eq("id", locationId)
-        .eq("event_id", eventId)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("vendor_location_proposals")
-        .select("id, vendor_id, status")
-        .eq("event_id", eventId)
-        .eq("location_id", locationId)
-        .in("vendor_id", vendorIds),
+      locationId
+        ? supabaseAdmin
+            .from("event_locations")
+            .select("id, name")
+            .eq("id", locationId)
+            .eq("event_id", eventId)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null }),
+      existingQuery,
       loadUsers([auth.userId, ...vendorIds]),
     ]);
 
@@ -232,7 +236,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
 
-    if (!locationResult.data) {
+    if (locationId && !locationResult.data) {
       return NextResponse.json({ error: "Location not found" }, { status: 404 });
     }
 
@@ -247,7 +251,6 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
     }
 
     const event = eventResult.data;
-    const location = locationResult.data;
     const eventDate = formatEventDate(event.event_date);
 
     const existingByVendorId = new Map<string, ProposalRow>();
@@ -290,15 +293,19 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
 
       if (insertError) {
         if (insertError.code === "23505") {
+          let fallbackQuery = supabaseAdmin
+            .from("vendor_location_proposals")
+            .select("id, vendor_id, status")
+            .eq("event_id", eventId)
+            .eq("vendor_id", vendor.id);
+          if (locationId) {
+            fallbackQuery = fallbackQuery.eq("location_id", locationId);
+          } else {
+            fallbackQuery = fallbackQuery.is("location_id", null);
+          }
           const fallbackExisting =
             existingByVendorId.get(vendor.id) ||
-            (await supabaseAdmin
-              .from("vendor_location_proposals")
-              .select("id, vendor_id, status")
-              .eq("event_id", eventId)
-              .eq("location_id", locationId)
-              .eq("vendor_id", vendor.id)
-              .maybeSingle()).data;
+            (await fallbackQuery.maybeSingle()).data;
 
           const fallbackStatus = String((fallbackExisting as any)?.status || "").trim();
 
@@ -355,7 +362,7 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
           eventName: event.event_name,
           eventDate,
           venueName: event.venue,
-          locationName: location.name,
+          locationName: locationResult.data?.name || "",
         });
       } catch (emailError: any) {
         console.warn("[LOCATION-PROPOSALS] Alert email failed:", emailError);

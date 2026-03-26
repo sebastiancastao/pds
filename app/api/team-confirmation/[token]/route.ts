@@ -49,12 +49,14 @@ export async function GET(
       return NextResponse.json({ error: 'Token is required' }, { status: 400 });
     }
 
-    // First, try a simple query to see if token exists
+    // Find the most recent row matching this token (guards against legacy duplicate rows)
     const { data: simpleCheck, error: simpleError } = await supabaseAdmin
       .from('event_teams')
       .select('id, event_id, vendor_id, status, confirmation_token')
       .eq('confirmation_token', token)
-      .single();
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     console.log('🔍 DEBUG GET - Simple check result:', simpleCheck);
     console.log('🔍 DEBUG GET - Simple check error:', simpleError);
@@ -194,12 +196,14 @@ export async function POST(
       }, { status: 400 });
     }
 
-    // Find the team invitation
+    // Find the most recent team invitation for this token
     const { data: teamInvitation, error: findError } = await supabaseAdmin
       .from('event_teams')
       .select('id, status, event_id, vendor_id, confirmation_token')
       .eq('confirmation_token', token)
-      .single();
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     console.log('🔍 DEBUG - Found invitation:', teamInvitation);
     console.log('🔍 DEBUG - Find error:', findError);

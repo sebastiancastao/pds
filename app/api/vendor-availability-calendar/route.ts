@@ -104,7 +104,11 @@ export async function GET(req: NextRequest) {
     const vendorIds = vendors.map((v: any) => v.id).filter(Boolean);
 
     if (vendorIds.length === 0) {
-      return NextResponse.json({ byDate: {}, vendors: [] });
+      return NextResponse.json({
+        byDate: {},
+        vendors: [],
+        dataRange: { minAvailableDate: null, maxAvailableDate: null },
+      });
     }
 
     // Filter by onboarding status (same logic as all-vendors)
@@ -142,6 +146,8 @@ export async function GET(req: NextRequest) {
 
     // Accumulate every available date across ALL invitations per vendor
     const allDatesByVendor = new Map<string, Set<string>>();
+    let minAvailableDate: string | null = null;
+    let maxAvailableDate: string | null = null;
     for (const inv of invitations || []) {
       if (!inv.vendor_id) continue;
       if (!allDatesByVendor.has(inv.vendor_id)) {
@@ -151,7 +157,10 @@ export async function GET(req: NextRequest) {
       for (const day of normalizeAvailability(inv.availability)) {
         if (day.available && day.date) {
           const dateStr = day.date.slice(0, 10);
-          if (dateStr) dateSet.add(dateStr);
+          if (!dateStr) continue;
+          dateSet.add(dateStr);
+          if (!minAvailableDate || dateStr < minAvailableDate) minAvailableDate = dateStr;
+          if (!maxAvailableDate || dateStr > maxAvailableDate) maxAvailableDate = dateStr;
         }
       }
     }
@@ -214,7 +223,14 @@ export async function GET(req: NextRequest) {
       .filter((v) => v.availableDates.length > 0)
       .sort((a, b) => a.name.localeCompare(b.name));
 
-    return NextResponse.json({ byDate, vendors: vendorList }, { status: 200 });
+    return NextResponse.json({
+      byDate,
+      vendors: vendorList,
+      dataRange: {
+        minAvailableDate,
+        maxAvailableDate,
+      },
+    }, { status: 200 });
   } catch (err: any) {
     console.error('[VENDOR-AVAILABILITY-CALENDAR] Error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

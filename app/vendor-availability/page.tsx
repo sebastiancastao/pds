@@ -363,6 +363,12 @@ export default function VendorAvailabilityPage() {
               </svg>
               Export Excel
             </button>
+            <Link
+              href="/reports/availability-by-region"
+              className="px-4 py-2.5 rounded-lg border border-violet-300 bg-violet-50 text-violet-700 text-sm font-medium hover:bg-violet-100 transition-colors text-center"
+            >
+              Region Reports
+            </Link>
             <button
               onClick={() => { loadListData(); if (activeTab === 'calendar') loadCalendarData(calendarRegionId); }}
               className="px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors"

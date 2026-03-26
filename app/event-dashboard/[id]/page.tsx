@@ -64,6 +64,18 @@ type EventLocationAssignment = {
   updated_at: string;
 };
 
+type LocationProposal = {
+  id: string;
+  location_id: string;
+  vendor_id: string;
+  vendor_name: string;
+  vendor_email: string;
+  proposer_name: string;
+  proposer_email: string;
+  status: "pending" | "approved" | "declined";
+  created_at: string;
+};
+
 type StateRateData = {
   state_code: string;
   state_name: string;
@@ -285,6 +297,8 @@ export default function EventDashboardPage() {
   const [selectedLocationTeamMembers, setSelectedLocationTeamMembers] = useState<Set<string>>(new Set());
   const [savingLocationTeam, setSavingLocationTeam] = useState(false);
   const [resendingLocationTeamConfirmations, setResendingLocationTeamConfirmations] = useState(false);
+  const [locationTeamProposalStep, setLocationTeamProposalStep] = useState(false);
+  const [locationTeamProposalLocationId, setLocationTeamProposalLocationId] = useState<string>("");
   const [showUninvitedHistoryModal, setShowUninvitedHistoryModal] = useState(false);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
@@ -319,6 +333,7 @@ export default function EventDashboardPage() {
   const [invitingLocationVendorIds, setInvitingLocationVendorIds] = useState<Set<string>>(new Set());
   const [invitingAllLocationVendors, setInvitingAllLocationVendors] = useState(false);
   const [sendingLocationInviteRequests, setSendingLocationInviteRequests] = useState(false);
+  const [locationProposals, setLocationProposals] = useState<Record<string, LocationProposal[]>>({});
   const [submittingProposalLocationId, setSubmittingProposalLocationId] = useState<string | null>(null);
   const [proposalConfirmState, setProposalConfirmState] = useState<{
     locationId: string;
@@ -1087,6 +1102,8 @@ export default function EventDashboardPage() {
     setLocationTeamRegion("all");
     setLocationTeamVendors([]);
     setSelectedLocationTeamMembers(new Set());
+    setLocationTeamProposalStep(false);
+    setLocationTeamProposalLocationId("");
   };
 
   const loadLocationCreateTeamModalData = async () => {
@@ -1204,6 +1221,7 @@ export default function EventDashboardPage() {
     if (next.has(id)) next.delete(id);
     else next.add(id);
     setSelectedLocationTeamMembers(next);
+    setLocationTeamProposalStep(false);
   };
 
   const handleSelectAllLocationTeam = () => {
@@ -1230,28 +1248,58 @@ export default function EventDashboardPage() {
   const handleCreateTeamFromLocations = async () => {
     if (!eventId || selectedLocationTeamMembers.size === 0) return;
 
+    const selectedIds = Array.from(selectedLocationTeamMembers);
+    const outOfVenueIds = selectedIds.filter((id) => {
+      const v = locationTeamVendors.find((v) => v.id === id);
+      return v?.isOutOfVenue && !v?.isExistingMember;
+    });
+    const inVenueIds = selectedIds.filter((id) => !outOfVenueIds.includes(id));
+
+    // If there are out-of-venue vendors and no location chosen yet, show the proposal step
+    if (outOfVenueIds.length > 0 && !locationTeamProposalStep) {
+      setLocationTeamProposalStep(true);
+      setLocationTeamProposalLocationId(eventLocations[0]?.id || "");
+      return;
+    }
+
     setSavingLocationTeam(true);
     setLocationTeamMessage("");
+    const messages: string[] = [];
+
     try {
       const token = await getSessionToken();
-      const res = await fetch(`/api/events/${eventId}/team`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({ vendorIds: Array.from(selectedLocationTeamMembers) }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to create team");
+
+      // 1. Direct team invitations for in-venue vendors
+      if (inVenueIds.length > 0) {
+        const res = await fetch(`/api/events/${eventId}/team`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ vendorIds: inVenueIds }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to send team invitations");
+        messages.push(data?.message || `${inVenueIds.length} invitation(s) sent.`);
       }
 
-      setLocationTeamMessage(data?.message || "Team invitations sent.");
+      // 2. Proposals for out-of-venue vendors
+      if (outOfVenueIds.length > 0 && locationTeamProposalLocationId) {
+        const res = await fetch(`/api/events/${eventId}/location-proposals`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ locationId: locationTeamProposalLocationId, vendorIds: outOfVenueIds }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to submit requests");
+        messages.push(data?.message || `${outOfVenueIds.length} request(s) submitted for exec review.`);
+      }
+
+      setLocationTeamProposalStep(false);
+      setLocationTeamProposalLocationId("");
+      setLocationTeamMessage(messages.join(" ") || "Done.");
       await loadLocationCreateTeamModalData();
       await loadTeam(true);
     } catch (err: any) {
-      setLocationTeamMessage(err?.message || "Failed to create team");
+      setLocationTeamMessage(err?.message || "Failed to process selections");
     } finally {
       setSavingLocationTeam(false);
     }
@@ -1526,6 +1574,27 @@ export default function EventDashboardPage() {
       setLocationAssignmentDrafts({});
       setLocationCallTimeDrafts(callTimeDraftMap);
       setLocationsLoaded(true);
+
+      // Also load pending proposals so we can show them in the location cards
+      try {
+        const proposalsRes = await fetch(`/api/events/${eventId}/location-proposals`, {
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        });
+        if (proposalsRes.ok) {
+          const proposalsData = await proposalsRes.json().catch(() => ({}));
+          const proposalList: LocationProposal[] = Array.isArray(proposalsData?.proposals)
+            ? proposalsData.proposals
+            : [];
+          const proposalMap: Record<string, LocationProposal[]> = {};
+          for (const p of proposalList) {
+            if (!proposalMap[p.location_id]) proposalMap[p.location_id] = [];
+            proposalMap[p.location_id].push(p);
+          }
+          setLocationProposals(proposalMap);
+        }
+      } catch (_) {
+        // Non-fatal — proposals just won't show
+      }
     } catch (err: any) {
       setMessage(err?.message || "Failed to load locations");
     } finally {
@@ -1859,7 +1928,7 @@ export default function EventDashboardPage() {
       if (!res.ok) throw new Error(data?.error || "Failed to submit proposals");
 
       setMessage(
-        `${inVenueIds.length > 0 ? "In-venue vendors saved. " : ""}${data.message || `${outOfVenueIds.length} proposal(s) submitted for exec review.`}`
+        `${inVenueIds.length > 0 ? "In-venue vendors saved. " : ""}${data.message || `${outOfVenueIds.length} request(s) submitted for exec review.`}`
       );
 
       // Close the editing state for out-of-venue vendors too
@@ -1870,9 +1939,10 @@ export default function EventDashboardPage() {
         return next;
       });
       setLocationRegionFilter("all");
-      if (inVenueIds.length === 0) await loadLocations();
+      // Always reload so the pending proposals appear in the location card
+      await loadLocations();
     } catch (err: any) {
-      setMessage(err?.message || "Failed to submit proposals");
+      setMessage(err?.message || "Failed to submit requests");
     } finally {
       setSubmittingProposalLocationId(null);
     }
@@ -5027,6 +5097,11 @@ export default function EventDashboardPage() {
                             <h3 className="text-lg font-semibold text-gray-900">{loc.name}</h3>
                             <p className="text-xs text-gray-500 mt-1">
                               {assignedIds.length} assigned {assignedIds.length === 1 ? "member" : "members"}
+                              {(locationProposals[loc.id] || []).filter(p => p.status === "pending").length > 0 && (
+                                <span className="ml-1.5 text-orange-600 font-medium">
+                                  · {(locationProposals[loc.id] || []).filter(p => p.status === "pending").length} pending approval
+                                </span>
+                              )}
                             </p>
                             {loc.notes && (
                               <p className="text-sm text-gray-600 mt-2">{loc.notes}</p>
@@ -5078,7 +5153,7 @@ export default function EventDashboardPage() {
 
                         {!isEditing ? (
                           <div className="space-y-4">
-                            {assignedMembers.length === 0 ? (
+                            {assignedMembers.length === 0 && !(locationProposals[loc.id]?.some(p => p.status === "pending")) ? (
                               <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4">
                                 No vendors assigned to this station yet.
                               </div>
@@ -5135,6 +5210,41 @@ export default function EventDashboardPage() {
                                     </div>
                                   );
                                 })}
+                              </div>
+                            )}
+
+                            {/* Pending approval proposals for this location */}
+                            {(locationProposals[loc.id] || []).filter(p => p.status === "pending").length > 0 && (
+                              <div>
+                                <p className="text-xs font-medium text-orange-700 mb-1 px-1">
+                                  Awaiting exec approval:
+                                </p>
+                                <div className="border border-orange-200 rounded-lg overflow-hidden bg-orange-50">
+                                  {(locationProposals[loc.id] || [])
+                                    .filter(p => p.status === "pending")
+                                    .map(proposal => (
+                                      <div
+                                        key={`proposal-${proposal.id}`}
+                                        className="flex items-center justify-between gap-3 px-4 py-3 border-b border-orange-100 last:border-b-0"
+                                      >
+                                        <div className="min-w-0">
+                                          <div className="flex items-center gap-2 flex-wrap">
+                                            <p className="text-sm font-medium text-gray-900 truncate">
+                                              {proposal.vendor_name || proposal.vendor_email}
+                                            </p>
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-200 text-orange-900 border border-orange-300">
+                                              Pending Approval
+                                            </span>
+                                          </div>
+                                          <p className="text-xs text-gray-500 truncate">{proposal.vendor_email}</p>
+                                          <p className="text-[10px] text-orange-600 mt-0.5">
+                                            Requested by {proposal.proposer_name || proposal.proposer_email}
+                                          </p>
+                                        </div>
+                                      </div>
+                                    ))
+                                  }
+                                </div>
                               </div>
                             )}
 
@@ -5234,7 +5344,7 @@ export default function EventDashboardPage() {
                                         <p className="text-xs text-gray-500 truncate">{email}</p>
                                         {member.isOutOfVenue && (
                                           <p className="text-[10px] text-orange-600 mt-0.5">
-                                            Selecting will submit an approval proposal to management
+                                            Selecting will submit an approval request to management
                                           </p>
                                         )}
                                       </div>
@@ -5306,7 +5416,7 @@ export default function EventDashboardPage() {
                 })}
               </ul>
               <p className="text-gray-600 text-xs mt-2">
-                Selecting these vendors will submit a proposal for exec approval. Management will be
+                Selecting these vendors will submit a request for exec approval. Management will be
                 notified. If approved, the vendor will receive their normal invitation email. If
                 declined, you will be notified.
               </p>
@@ -5327,7 +5437,7 @@ export default function EventDashboardPage() {
                 onClick={() => { void handleConfirmProposalAndSave(); }}
                 className="bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2 px-4 rounded transition"
               >
-                Submit Proposal
+                Submit Request
               </button>
             </div>
           </div>
@@ -6420,6 +6530,51 @@ export default function EventDashboardPage() {
                     vendor{locationTeamVendors.length !== 1 ? "s" : ""} available on this date.
                   </div>
 
+
+                  {locationTeamProposalStep && (() => {
+                    const oovIds = Array.from(selectedLocationTeamMembers).filter((id) => {
+                      const v = locationTeamVendors.find((v) => v.id === id);
+                      return v?.isOutOfVenue && !v?.isExistingMember;
+                    });
+                    const oovVendors = oovIds.map((id) => locationTeamVendors.find((v) => v.id === id)).filter(Boolean);
+                    return (
+                      <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 space-y-3">
+                        <div>
+                          <p className="text-sm font-semibold text-orange-900 mb-1">Out-of-Venue Vendors — Select a Location</p>
+                          <p className="text-xs text-orange-800">
+                            {oovVendors.map((v) => `${(v!.profiles?.first_name || "")} ${(v!.profiles?.last_name || "")}`.trim() || v!.email).join(", ")}{" "}
+                            will be submitted as approval requests. Select which location to assign them to:
+                          </p>
+                        </div>
+                        <select
+                          value={locationTeamProposalLocationId}
+                          onChange={(e) => setLocationTeamProposalLocationId(e.target.value)}
+                          className="w-full px-3 py-2 border border-orange-300 rounded-lg text-sm focus:ring-2 focus:ring-orange-400 focus:outline-none bg-white"
+                        >
+                          {eventLocations.length === 0 && <option value="">No locations defined</option>}
+                          {eventLocations.map((loc) => (
+                            <option key={loc.id} value={loc.id}>{loc.name}</option>
+                          ))}
+                        </select>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => void handleCreateTeamFromLocations()}
+                            disabled={savingLocationTeam || !locationTeamProposalLocationId}
+                            className="px-3 py-1.5 rounded bg-orange-600 text-white text-xs font-semibold hover:bg-orange-700 disabled:bg-gray-400"
+                          >
+                            {savingLocationTeam ? "Submitting..." : "Confirm & Submit Requests"}
+                          </button>
+                          <button
+                            onClick={() => { setLocationTeamProposalStep(false); setLocationTeamProposalLocationId(""); }}
+                            className="px-3 py-1.5 rounded border border-orange-300 text-orange-800 text-xs font-medium hover:bg-orange-100"
+                          >
+                            Back
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   <div className="flex items-center justify-between border-b border-gray-200 pb-3">
                     <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
                       <input
@@ -6450,12 +6605,13 @@ export default function EventDashboardPage() {
                           : `Resend Confirmation (${pendingLocationTeamInvitesCount})`}
                       </button>
                       <button
-                        onClick={handleCreateTeamFromLocations}
+                        onClick={() => void handleCreateTeamFromLocations()}
                         disabled={
                           selectedLocationTeamMembers.size === 0 ||
                           savingLocationTeam ||
                           allLocationAvailableVendorsInvited ||
-                          resendingLocationTeamConfirmations
+                          resendingLocationTeamConfirmations ||
+                          locationTeamProposalStep
                         }
                         className="px-4 py-2 rounded-lg bg-indigo-600 text-white font-semibold hover:bg-indigo-700 disabled:bg-gray-400"
                       >
@@ -6481,6 +6637,7 @@ export default function EventDashboardPage() {
                       const phone = (vendor.profiles?.phone || "").toString();
                       const isExistingMember = Boolean(vendor.isExistingMember);
                       const isBusy = Boolean(vendor.confirmedElsewhere);
+                      const isOutOfVenueNew = Boolean(vendor.isOutOfVenue) && !isExistingMember;
                       const isSelectable = !isExistingMember && !isBusy;
                       const vendorStatus = String(vendor.status || "").toLowerCase();
 
@@ -6548,6 +6705,11 @@ export default function EventDashboardPage() {
                                     {formatCallTimeLabel(vendor.availableFrom)}–{formatCallTimeLabel(vendor.availableTo)}
                                   </span>
                                 )}
+                                {isOutOfVenueNew && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700">
+                                    Out of Venue
+                                  </span>
+                                )}
                                 {vendor.distance !== null && vendor.distance !== undefined && (
                                   <span className={`px-2 py-0.5 rounded text-xs font-medium ${vendor.distance <= 50 ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-700"}`}>
                                     {vendor.distance} mi
@@ -6559,6 +6721,9 @@ export default function EventDashboardPage() {
                               {vendor.email || "N/A"}
                               {phone ? ` | ${phone}` : ""}
                               {vendor.division ? ` | ${vendor.division}` : ""}
+                              {isOutOfVenueNew && (
+                                <span className="ml-1 text-orange-600">· Selecting will submit an approval request to management</span>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -6955,40 +7120,59 @@ export default function EventDashboardPage() {
                   <p className="text-sm text-gray-600">No available vendors to add.</p>
                 </div>
               ) : (
-                <div className="max-h-80 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
-                  {filteredAddVendorOptions.map((vendor) => {
-                    const firstName = (vendor.profiles?.first_name || "").toString();
-                    const lastName = (vendor.profiles?.last_name || "").toString();
-                    const phone = (vendor.profiles?.phone || "").toString();
-                    const fullName = `${firstName} ${lastName}`.trim() || vendor.email;
-                    const isSelected = selectedVendorToAdd === vendor.id;
+                <>
+                  <div className="max-h-80 overflow-y-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+                    {filteredAddVendorOptions.map((vendor) => {
+                      const firstName = (vendor.profiles?.first_name || "").toString();
+                      const lastName = (vendor.profiles?.last_name || "").toString();
+                      const phone = (vendor.profiles?.phone || "").toString();
+                      const fullName = `${firstName} ${lastName}`.trim() || vendor.email;
+                      const isSelected = selectedVendorToAdd === vendor.id;
 
-                    return (
-                      <button
-                        key={vendor.id}
-                        type="button"
-                        onClick={() => setSelectedVendorToAdd(vendor.id)}
-                        className={`w-full text-left px-4 py-3 transition ${isSelected ? "bg-blue-50" : "hover:bg-gray-50"}`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <div className="text-sm font-semibold text-gray-900">{fullName}</div>
-                            <div className="text-xs text-gray-600 mt-1">
-                              {vendor.email}
-                              {phone ? ` • ${phone}` : ""}
-                              {vendor.division ? ` • ${vendor.division}` : ""}
+                      return (
+                        <button
+                          key={vendor.id}
+                          type="button"
+                          onClick={() => setSelectedVendorToAdd(vendor.id)}
+                          className={`w-full text-left px-4 py-3 transition ${isSelected ? "bg-blue-50" : "hover:bg-gray-50"}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-sm font-semibold text-gray-900">{fullName}</span>
+                                {vendor.isOutOfVenue && (
+                                  <span className="px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700">
+                                    Out of Venue
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs text-gray-600 mt-1">
+                                {vendor.email}
+                                {phone ? ` • ${phone}` : ""}
+                                {vendor.division ? ` • ${vendor.division}` : ""}
+                                {vendor.distance !== null && vendor.distance !== undefined ? ` • ${vendor.distance} mi` : ""}
+                              </div>
                             </div>
+                            {isSelected && (
+                              <span className="inline-flex items-center px-2 py-1 rounded text-xs font-semibold bg-blue-100 text-blue-700 flex-shrink-0">
+                                Selected
+                              </span>
+                            )}
                           </div>
-                          {isSelected && (
-                            <span className="inline-flex items-center px-2 py-1 rounded text-xs font-semibold bg-blue-100 text-blue-700">
-                              Selected
-                            </span>
-                          )}
-                        </div>
-                      </button>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {(() => {
+                    const selected = addVendorOptions.find((v) => v.id === selectedVendorToAdd);
+                    if (!selected?.isOutOfVenue) return null;
+                    return (
+                      <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-xs text-orange-800">
+                        <span className="font-semibold">Out of Venue:</span> This vendor will be invited (pending confirmation) rather than auto-confirmed. Location assignment will still require exec approval via the location card.
+                      </div>
                     );
-                  })}
-                </div>
+                  })()}
+                </>
               )}
             </div>
 
@@ -7003,9 +7187,17 @@ export default function EventDashboardPage() {
               <button
                 onClick={handleAddVendorToTeamImmediately}
                 disabled={!selectedVendorToAdd || loadingAddVendors || addingVendorToTeam}
-                className="px-4 py-2 rounded-lg bg-green-600 text-white font-semibold hover:bg-green-700 disabled:bg-gray-400"
+                className={`px-4 py-2 rounded-lg text-white font-semibold disabled:bg-gray-400 ${
+                  addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
+                    ? "bg-orange-600 hover:bg-orange-700"
+                    : "bg-green-600 hover:bg-green-700"
+                }`}
               >
-                {addingVendorToTeam ? "Adding..." : "Add + Confirm"}
+                {addingVendorToTeam
+                  ? "Adding..."
+                  : addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
+                    ? "Add + Invite (Out of Venue)"
+                    : "Add + Confirm"}
               </button>
             </div>
           </div>
