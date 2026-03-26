@@ -52,6 +52,7 @@ export async function POST(req: NextRequest) {
     const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
     const ends_next_day = body.ends_next_day === undefined ? false : Boolean(body.ends_next_day);
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
+    const event_type = body.event_type === "special" ? "special" : "normal";
 
     // Debug output for all incoming data
     console.log('EVENT CREATE PAYLOAD:', {
@@ -93,7 +94,8 @@ export async function POST(req: NextRequest) {
       venue_share_percent,
       pds_share_percent,
       commission_pool,
-      is_active
+      is_active,
+      event_type
     };
     const { data, error } = await supabaseAdmin.from("events").insert([event]).select();
     // Debug output for DB response/error

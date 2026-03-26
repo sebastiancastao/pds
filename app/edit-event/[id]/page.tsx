@@ -23,6 +23,7 @@ type EventItem = {
   required_staff: number | null;
   confirmed_staff: number | null;
   is_active: boolean;
+  event_type: "normal" | "special";
   created_at: string;
   updated_at: string;
 };
@@ -57,7 +58,8 @@ export default function EditEventPage() {
     commission_pool: null,
     required_staff: null,
     confirmed_staff: null,
-    is_active: true
+    is_active: true,
+    event_type: "normal"
   });
 
   const [venues, setVenues] = useState<Venue[]>([]);
@@ -135,7 +137,8 @@ export default function EditEventPage() {
           commission_pool: event.commission_pool || null,
           required_staff: event.required_staff || null,
           confirmed_staff: event.confirmed_staff || null,
-          is_active: event.is_active !== undefined ? event.is_active : true
+          is_active: event.is_active !== undefined ? event.is_active : true,
+          event_type: event.event_type || "normal"
         });
       } else {
         setMessage("Failed to load event details");
@@ -145,6 +148,11 @@ export default function EditEventPage() {
       console.log('[DEBUG] EditEvent - Error loading event:', err);
     }
     setLoading(false);
+  };
+
+  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setForm(prev => ({ ...prev, [name]: value }));
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -271,6 +279,19 @@ export default function EditEventPage() {
                 onChange={handleChange} 
                 className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" 
               />
+            </div>
+            <div>
+              <label className="font-semibold block mb-1">Event Type *</label>
+              <select
+                name="event_type"
+                value={form.event_type || "normal"}
+                onChange={handleSelectChange}
+                required
+                className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="normal">Normal</option>
+                <option value="special">Special</option>
+              </select>
             </div>
             <div>
               <label className="font-semibold block mb-1">Venue *</label>

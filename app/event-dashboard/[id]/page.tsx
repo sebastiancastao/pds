@@ -96,6 +96,7 @@ type TeamVendorOption = {
   availableFrom?: string | null;
   availableTo?: string | null;
   region_id?: string | null;
+  isOutOfVenue?: boolean;
   profiles?: {
     first_name?: string | null;
     last_name?: string | null;
@@ -318,6 +319,12 @@ export default function EventDashboardPage() {
   const [invitingLocationVendorIds, setInvitingLocationVendorIds] = useState<Set<string>>(new Set());
   const [invitingAllLocationVendors, setInvitingAllLocationVendors] = useState(false);
   const [sendingLocationInviteRequests, setSendingLocationInviteRequests] = useState(false);
+  const [submittingProposalLocationId, setSubmittingProposalLocationId] = useState<string | null>(null);
+  const [proposalConfirmState, setProposalConfirmState] = useState<{
+    locationId: string;
+    outOfVenueIds: string[];
+    inVenueIds: string[];
+  } | null>(null);
   const [timesheetTotals, setTimesheetTotals] = useState<Record<string, number>>({});
   const [timesheetSpans, setTimesheetSpans] = useState<
     Record<
@@ -1764,6 +1771,28 @@ export default function EventDashboardPage() {
   const saveLocationAssignments = async (locationId: string) => {
     if (!eventId || !locationId) return;
 
+    const selectedIds = locationAssignmentDrafts[locationId] || [];
+
+    // Separate out-of-venue vendors from in-venue vendors
+    const outOfVenueIds = selectedIds.filter((id) => {
+      const member = locationAssignableMemberById.get(id);
+      return member?.isOutOfVenue === true;
+    });
+    const inVenueIds = selectedIds.filter((id) => !outOfVenueIds.includes(id));
+
+    // If there are out-of-venue vendors selected, show confirmation dialog
+    if (outOfVenueIds.length > 0) {
+      setProposalConfirmState({ locationId, outOfVenueIds, inVenueIds });
+      return;
+    }
+
+    // No out-of-venue vendors — save normally
+    await _saveLocationAssignmentsDirect(locationId, selectedIds);
+  };
+
+  const _saveLocationAssignmentsDirect = async (locationId: string, memberIds: string[]) => {
+    if (!eventId || !locationId) return;
+
     setSavingLocationId(locationId);
     setMessage("");
     try {
@@ -1776,7 +1805,7 @@ export default function EventDashboardPage() {
         },
         body: JSON.stringify({
           locationId,
-          teamMemberIds: locationAssignmentDrafts[locationId] || [],
+          teamMemberIds: memberIds,
         }),
       });
 
@@ -1798,6 +1827,54 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to save location assignments");
     } finally {
       setSavingLocationId(null);
+    }
+  };
+
+  const handleConfirmProposalAndSave = async () => {
+    if (!proposalConfirmState || !eventId) return;
+    const { locationId, outOfVenueIds, inVenueIds } = proposalConfirmState;
+
+    setProposalConfirmState(null);
+    setSubmittingProposalLocationId(locationId);
+    setMessage("");
+
+    try {
+      // 1. Save in-venue vendors normally (if any)
+      if (inVenueIds.length > 0) {
+        await _saveLocationAssignmentsDirect(locationId, inVenueIds);
+      }
+
+      // 2. Submit proposals for out-of-venue vendors
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/location-proposals`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId, vendorIds: outOfVenueIds }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || "Failed to submit proposals");
+
+      setMessage(
+        `${inVenueIds.length > 0 ? "In-venue vendors saved. " : ""}${data.message || `${outOfVenueIds.length} proposal(s) submitted for exec review.`}`
+      );
+
+      // Close the editing state for out-of-venue vendors too
+      setEditingLocationIds((prev) => ({ ...prev, [locationId]: false }));
+      setLocationAssignmentDrafts((prev) => {
+        const next = { ...prev };
+        delete next[locationId];
+        return next;
+      });
+      setLocationRegionFilter("all");
+      if (inVenueIds.length === 0) await loadLocations();
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to submit proposals");
+    } finally {
+      setSubmittingProposalLocationId(null);
     }
   };
 
@@ -5022,11 +5099,16 @@ export default function EventDashboardPage() {
                                       className="flex items-center justify-between gap-3 px-4 py-3 border-b last:border-b-0"
                                     >
                                       <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
                                           {isUninvited && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
+                                            </span>
+                                          )}
+                                          {member?.isOutOfVenue && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
+                                              Out of Venue
                                             </span>
                                           )}
                                         </div>
@@ -5136,15 +5218,25 @@ export default function EventDashboardPage() {
                                       }}
                                     >
                                       <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
+                                        <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
                                           {!member.isExistingMember && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
                                             </span>
                                           )}
+                                          {member.isOutOfVenue && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
+                                              Out of Venue
+                                            </span>
+                                          )}
                                         </div>
                                         <p className="text-xs text-gray-500 truncate">{email}</p>
+                                        {member.isOutOfVenue && (
+                                          <p className="text-[10px] text-orange-600 mt-0.5">
+                                            Selecting will submit an approval proposal to management
+                                          </p>
+                                        )}
                                       </div>
                                       <div className="flex items-center gap-2">
                                         <input
@@ -5171,11 +5263,13 @@ export default function EventDashboardPage() {
                                 Cancel
                               </button>
                               <button
-                                onClick={() => saveLocationAssignments(loc.id)}
-                                disabled={!canManageLocations || savingLocationId === loc.id}
+                                onClick={() => { void saveLocationAssignments(loc.id); }}
+                                disabled={!canManageLocations || savingLocationId === loc.id || submittingProposalLocationId === loc.id}
                                 className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                               >
-                                {savingLocationId === loc.id ? "Saving..." : "Save Assignments"}
+                                {savingLocationId === loc.id || submittingProposalLocationId === loc.id
+                                  ? "Saving..."
+                                  : "Save Assignments"}
                               </button>
                             </div>
                           </div>
@@ -5187,6 +5281,58 @@ export default function EventDashboardPage() {
               )}
             </div>
           )}
+
+      {/* OUT-OF-VENUE PROPOSAL CONFIRMATION MODAL */}
+      {proposalConfirmState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
+            <h2 className="text-lg font-bold text-gray-900">Out-of-Venue Vendors Selected</h2>
+            <div className="text-sm text-gray-700 space-y-2">
+              <p>
+                {proposalConfirmState.outOfVenueIds.length === 1
+                  ? "1 vendor you selected is"
+                  : `${proposalConfirmState.outOfVenueIds.length} vendors you selected are`}{" "}
+                not assigned to this venue.
+              </p>
+              <ul className="space-y-1 pl-4 list-disc">
+                {proposalConfirmState.outOfVenueIds.map((id) => {
+                  const m = locationAssignableMemberById.get(id);
+                  const name = `${m?.profiles?.first_name || ""} ${m?.profiles?.last_name || ""}`.trim() || m?.email || id;
+                  return (
+                    <li key={id} className="text-orange-700 font-medium text-xs">
+                      {name}
+                    </li>
+                  );
+                })}
+              </ul>
+              <p className="text-gray-600 text-xs mt-2">
+                Selecting these vendors will submit a proposal for exec approval. Management will be
+                notified. If approved, the vendor will receive their normal invitation email. If
+                declined, you will be notified.
+              </p>
+              {proposalConfirmState.inVenueIds.length > 0 && (
+                <p className="text-gray-600 text-xs">
+                  The {proposalConfirmState.inVenueIds.length} in-venue vendor(s) will be saved immediately.
+                </p>
+              )}
+            </div>
+            <div className="flex gap-2 justify-end pt-2">
+              <button
+                onClick={() => setProposalConfirmState(null)}
+                className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-semibold py-2 px-4 rounded transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => { void handleConfirmProposalAndSave(); }}
+                className="bg-orange-600 hover:bg-orange-700 text-white font-semibold py-2 px-4 rounded transition"
+              >
+                Submit Proposal
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
 {/* TIMESHEET TAB */}
 {activeTab === "timesheet" && (

@@ -32,7 +32,8 @@ function CreateEventPageInner() {
     venue_share_percent: "",
     pds_share_percent: "",
     commission_pool: "",
-    is_active: true
+    is_active: true,
+    event_type: "normal"
   });
   const [venues, setVenues] = useState<Venue[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -73,6 +74,11 @@ function CreateEventPageInner() {
     } catch (err: any) {
       console.log('[DEBUG] CreateEvent - Error loading venues:', err);
     }
+  };
+
+  const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setForm(prev => ({ ...prev, [name]: value }));
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -149,7 +155,8 @@ function CreateEventPageInner() {
           venue_share_percent: "",
           pds_share_percent: "",
           commission_pool: "",
-          is_active: true
+          is_active: true,
+          event_type: "normal"
         });
         setTimeout(() => {
           router.replace(`/${returnTo}`);
@@ -232,6 +239,20 @@ function CreateEventPageInner() {
                   className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
                   placeholder="Enter artist name (optional)"
                 />
+              </div>
+
+              <div>
+                <label className="text-sm font-semibold text-slate-700 block mb-2">Event Type <span className="text-red-500">*</span></label>
+                <select
+                  name="event_type"
+                  value={form.event_type}
+                  onChange={handleSelectChange}
+                  required
+                  className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white"
+                >
+                  <option value="normal">Normal</option>
+                  <option value="special">Special</option>
+                </select>
               </div>
             </div>
 

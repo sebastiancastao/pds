@@ -165,6 +165,21 @@ export async function POST(req: NextRequest) {
           typeof id === "string" &&
           /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
+        // Block clock_in for workers not confirmed on the event team
+        if (item.action === "clock_in" && isValidUuid(item.eventId)) {
+          const { data: teamRecord } = await supabaseAdmin
+            .from("event_teams")
+            .select("status")
+            .eq("event_id", item.eventId)
+            .eq("vendor_id", workerId)
+            .maybeSingle();
+
+          if (!teamRecord || teamRecord.status !== "confirmed") {
+            results.push({ id: item.id, success: false, error: "REJECTED: NOT ON TEAM'S LIST." });
+            continue;
+          }
+        }
+
         const baseNote = `Offline kiosk sync (original: ${item.timestamp})`;
         const clockOutNote =
           item.attestationAccepted === false

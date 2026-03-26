@@ -574,8 +574,44 @@ export async function GET(
       vendorNames: vendorsWithDistance.map((v: any) => `${v.profiles.first_name} ${v.profiles.last_name} (${v.distance}mi)`)
     });
 
+    // Determine which vendors are NOT assigned to this event's venue
+    // Uses vendor_venue_assignments + venue_reference to check by venue name
+    const outOfVenueIds = new Set<string>();
+    if (event.venue && vendorsWithDistance.length > 0) {
+      try {
+        const { data: venueRef } = await supabaseAdmin
+          .from('venue_reference')
+          .select('id')
+          .eq('venue_name', event.venue)
+          .maybeSingle();
+
+        if (venueRef?.id) {
+          const vendorIds = vendorsWithDistance.map((v: any) => v.id);
+          const { data: venueAssignments } = await supabaseAdmin
+            .from('vendor_venue_assignments')
+            .select('vendor_id')
+            .eq('venue_id', venueRef.id)
+            .in('vendor_id', vendorIds);
+
+          const assignedToVenue = new Set((venueAssignments || []).map((a: any) => a.vendor_id));
+          for (const v of vendorsWithDistance) {
+            if (!assignedToVenue.has(v.id)) {
+              outOfVenueIds.add(v.id);
+            }
+          }
+        }
+      } catch (venueCheckErr) {
+        console.warn('[AVAILABLE-VENDORS] Could not check venue assignments:', venueCheckErr);
+      }
+    }
+
+    const vendorsWithVenueFlag = vendorsWithDistance.map((v: any) => ({
+      ...v,
+      isOutOfVenue: outOfVenueIds.has(v.id),
+    }));
+
     return NextResponse.json({
-      vendors: vendorsWithDistance
+      vendors: vendorsWithVenueFlag
     }, { status: 200 });
 
   } catch (error: any) {

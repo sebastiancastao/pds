@@ -210,7 +210,7 @@ export default function CheckInKioskPage() {
 
   // Inactivity reset (back to code entry after 30s of no interaction)
   const inactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const INACTIVITY_TIMEOUT = 30_000;
+  const INACTIVITY_TIMEOUT = 10_000;
 
   const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string; state: string | null } | null>(
     null
@@ -966,11 +966,8 @@ export default function CheckInKioskPage() {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        // If network went down mid-request, queue instead
-        if (!navigator.onLine) {
-          await queueActionLocally(queuedItem, actionLabel, "offline");
-          return;
-        }
+        // Server explicitly rejected this action — never queue it offline,
+        // as the sync route does not re-check team membership / rejection status.
         setError(data.error || "Action failed");
         return;
       }

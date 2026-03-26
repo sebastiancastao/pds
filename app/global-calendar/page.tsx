@@ -36,6 +36,7 @@ type EventItem = {
   tax_rate_percent?: number | null;
   tips_total?: number | null;
   is_empty?: boolean;
+  event_type?: "normal" | "special";
 };
 
 type Vendor = {
@@ -177,6 +178,7 @@ export default function DashboardPage() {
     type: "success" | "error";
   } | null>(null);
   const [selectedVenue, setSelectedVenue] = useState<string>("all");
+  const [selectedEventType, setSelectedEventType] = useState<string>("all");
   const [eventSearchQuery, setEventSearchQuery] = useState<string>("");
   const [eventStartDate, setEventStartDate] = useState<string>("");
   const [eventEndDate, setEventEndDate] = useState<string>("");
@@ -914,7 +916,7 @@ export default function DashboardPage() {
   const venueOptions = Array.from(new Set(events.map((e) => e.venue))).sort();
   const hasEventSearch = eventSearchQuery.trim().length > 0;
   const hasEventDateFilter = Boolean(eventStartDate || eventEndDate);
-  const hasActiveEventFilters = selectedVenue !== "all" || hasEventSearch || hasEventDateFilter || selectedCalendarEventId !== null;
+  const hasActiveEventFilters = selectedVenue !== "all" || selectedEventType !== "all" || hasEventSearch || hasEventDateFilter || selectedCalendarEventId !== null;
   const filteredEvents = useMemo(() => {
     if (selectedCalendarEventId !== null) {
       return events.filter((e) => e.id === selectedCalendarEventId);
@@ -922,6 +924,7 @@ export default function DashboardPage() {
     const query = eventSearchQuery.trim().toLowerCase();
     return events.filter((e) => {
       if (selectedVenue !== "all" && e.venue !== selectedVenue) return false;
+      if (selectedEventType !== "all" && (e.event_type || "normal") !== selectedEventType) return false;
       if (query) {
         const searchableText = [
           e.event_name,
@@ -940,7 +943,7 @@ export default function DashboardPage() {
       }
       return true;
     });
-  }, [events, selectedVenue, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate, selectedCalendarEventId]);
+  }, [events, selectedVenue, selectedEventType, eventSearchQuery, hasEventDateFilter, eventStartDate, eventEndDate, selectedCalendarEventId]);
   const calendarEvents = useMemo(
     () =>
       filteredEvents.map((ev) => {
@@ -1857,6 +1860,19 @@ export default function DashboardPage() {
                         ))}
                       </select>
                     </div>
+                    <div>
+                      <label htmlFor="event-type-filter" className="block text-sm font-semibold text-gray-700 mb-2">Filter by Type</label>
+                      <select
+                        id="event-type-filter"
+                        value={selectedEventType}
+                        onChange={(e) => setSelectedEventType(e.target.value)}
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      >
+                        <option value="all">All Types</option>
+                        <option value="normal">Normal</option>
+                        <option value="special">Special</option>
+                      </select>
+                    </div>
                     <div className="grid grid-cols-2 gap-2">
                       <div>
                         <label htmlFor="event-start-date" className="block text-sm font-semibold text-gray-700 mb-2">Start</label>
@@ -1902,6 +1918,7 @@ export default function DashboardPage() {
                         <button
                           onClick={() => {
                             setSelectedVenue("all");
+                            setSelectedEventType("all");
                             setEventSearchQuery("");
                             setEventStartDate("");
                             setEventEndDate("");
@@ -1959,6 +1976,11 @@ export default function DashboardPage() {
                             <span className={`apple-badge ${ev.is_active ? "apple-badge-success" : "apple-badge-neutral"}`}>
                               {ev.is_active ? "Active" : "Inactive"}
                             </span>
+                            {ev.event_type === "special" && (
+                              <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-100 text-purple-800 border border-purple-200">
+                                Special
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center text-gray-600 mb-2">
                             <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1992,12 +2014,23 @@ export default function DashboardPage() {
                         </div>
                         {userRole === "exec" && (
                           <div className="flex items-center gap-2">
-                            <button onClick={() => handleCheckInClick(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
-                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                              </svg>
-                              Check In
-                            </button>
+                            {ev.event_type === "special" ? (
+                              <Link href={`/time-sheets/${ev.id}`}>
+                                <button className="apple-button apple-button-secondary text-sm py-2 px-4">
+                                  <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
+                                  </svg>
+                                  Time Sheets
+                                </button>
+                              </Link>
+                            ) : (
+                              <button onClick={() => handleCheckInClick(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
+                                <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Check In
+                              </button>
+                            )}
                             <button onClick={() => openTeamModal(ev)} className="apple-button apple-button-secondary text-sm py-2 px-4">
                               <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />

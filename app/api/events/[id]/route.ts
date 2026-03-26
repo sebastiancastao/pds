@@ -313,6 +313,7 @@ export async function PUT(
 
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
     const ends_next_day = Boolean(body.ends_next_day);
+    const event_type = body.event_type === "special" ? "special" : "normal";
 
     // Existing: tips
     const tips = body.tips === undefined || body.tips === "" ? null : Number(body.tips);
@@ -369,6 +370,7 @@ export async function PUT(
       required_staff,
       confirmed_staff,
       is_active,
+      event_type,
       updated_at: new Date().toISOString(),
     };
 
