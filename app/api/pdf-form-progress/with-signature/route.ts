@@ -339,31 +339,56 @@ export async function GET(request: NextRequest) {
 
     const isI9 = normalizedName === 'i9';
 
-    // For I9: fill the State field if it's empty
+    // For I9: draw the state directly on the page and remove the form field,
+    // so it renders correctly in every viewer without depending on appearance streams.
     if (isI9) {
       const rawStateRaw = (employeeInfo?.state || profileData?.state || '').toString().trim();
       const rawState = (normalizeStateCode(rawStateRaw) || rawStateRaw).toUpperCase();
       if (rawState) {
-        try {
-          const form = pdfDoc.getForm();
-          const field = form.getField('State') as any;
-          const fieldType = field?.constructor?.name || '';
+        const { StandardFonts, rgb } = await import('pdf-lib');
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const stateFieldNames = ['State', 'State1', 'Employee State', 'Apt State'];
+        const i9Pages = pdfDoc.getPages();
+        const i9Form = pdfDoc.getForm();
 
-          if (fieldType === 'PDFDropdown') {
-            const dropdown = form.getDropdown('State');
-            const current = dropdown.getSelected()?.[0]?.trim() ?? '';
-            if (!current) {
-              dropdown.select(rawState);
+        for (const fieldName of stateFieldNames) {
+          try {
+            const field = i9Form.getField(fieldName) as any;
+            const acroField = field?.acroField;
+            const widgets = acroField?.getWidgets?.() || [];
+            if (widgets.length === 0) continue;
+
+            const widget = widgets[0];
+            const rect = widget.getRectangle();
+            const pageRef = widget.P?.();
+            let targetPage = pageRef
+              ? i9Pages.find((p: any) => p.ref === pageRef)
+              : undefined;
+            if (!targetPage) targetPage = i9Pages[0];
+
+            // Draw the state text at the field location
+            targetPage.drawText(rawState, {
+              x: rect.x + 2,
+              y: rect.y + 2,
+              size: 9,
+              font,
+              color: rgb(0, 0, 0),
+            });
+
+            // Remove the form field annotation so the drawn text shows through
+            const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+            if (widgetRef) {
+              targetPage.node.removeAnnot(widgetRef);
+              (pdfDoc as any).context.delete(widgetRef);
             }
-          } else {
-            const textField = form.getTextField('State');
-            const existing = textField.getText()?.trim() ?? '';
-            if (!existing) {
-              textField.setText(rawState);
+            const acroForm = (i9Form as any).acroForm;
+            if (acroForm?.removeField && acroField) {
+              acroForm.removeField(acroField);
             }
+            break; // found and handled
+          } catch {
+            // try next field name
           }
-        } catch {
-          // field not found or value not in dropdown options — skip silently
         }
       }
     }
@@ -403,16 +428,6 @@ export async function GET(request: NextRequest) {
           : await pdfDoc.embedPng(imageBytes);
 
       page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
-    }
-
-    // Flatten form fields so all values (state, checkboxes, etc.) are baked into
-    // the page content and render correctly in every PDF viewer.
-    if (isI9) {
-      try {
-        pdfDoc.getForm().flatten();
-      } catch {
-        // ignore flatten errors — some fields may not support it
-      }
     }
 
     const resultBytes = await pdfDoc.save();
