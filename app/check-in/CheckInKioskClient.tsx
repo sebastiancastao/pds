@@ -234,18 +234,41 @@ export default function CheckInKioskPage() {
     checkAuth();
   }, []);
 
-  // Block the browser back button in capture phase before Next.js can handle it
+  // Block the browser back button across all navigation mechanisms
   useEffect(() => {
     const url = window.location.href;
+
+    // Fill history stack so there are many "back" entries to exhaust
     for (let i = 0; i < 20; i++) {
       window.history.pushState(null, "", url);
     }
+
+    // 1) Capture-phase popstate — intercepts before Next.js bubble-phase listener
     const handlePopState = (e: PopStateEvent) => {
       e.stopImmediatePropagation();
       window.history.pushState(null, "", url);
+      // Nuclear fallback: if URL already changed, force it back
+      if (window.location.href !== url) {
+        window.location.replace(url);
+      }
     };
     window.addEventListener("popstate", handlePopState, true);
-    return () => window.removeEventListener("popstate", handlePopState, true);
+
+    // 2) Navigation API (Chrome 102+) — used by Next.js in production builds
+    const nav = (window as any).navigation;
+    const handleNavigate = (e: any) => {
+      if (e.navigationType === "traverse" && e.destination?.url !== url) {
+        e.preventDefault();
+      }
+    };
+    if (nav) {
+      nav.addEventListener("navigate", handleNavigate);
+    }
+
+    return () => {
+      window.removeEventListener("popstate", handlePopState, true);
+      if (nav) nav.removeEventListener("navigate", handleNavigate);
+    };
   }, []);
 
   // Attestation clock (for the displayed "Clock out time")
