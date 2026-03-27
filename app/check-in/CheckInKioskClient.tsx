@@ -1165,12 +1165,6 @@ export default function CheckInKioskPage() {
               >
                 {isActioning ? "Processing..." : "Confirm Rejection & Clock Out"}
               </button>
-              <button
-                onClick={() => { setShowRejectionForm(false); setRejectionReason(""); setRejectionNote(""); setError(""); }}
-                className="w-full py-3 px-4 border border-gray-300 text-gray-700 rounded-xl font-medium hover:bg-gray-50 transition-all"
-              >
-                Back
-              </button>
             </div>
           </div>
         </div>
