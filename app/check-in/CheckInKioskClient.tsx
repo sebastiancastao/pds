@@ -227,6 +227,7 @@ export default function CheckInKioskPage() {
     eventEndIso?: string;
   } | null>(null);
   const eventCheckInFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const currentEventId = eventIdFromUrl || activeEvent?.id || lastKnownEventIdRef.current || undefined;
 
   // ─── Auth & session keep-alive ──────────────────────────────────
   useEffect(() => {
@@ -837,6 +838,11 @@ export default function CheckInKioskPage() {
       return;
     }
 
+    if (!currentEventId) {
+      setError("This kiosk is not attached to an event. Open check-in from a specific event link.");
+      return;
+    }
+
     setIsSubmitting(true);
     setError("");
 
@@ -861,7 +867,7 @@ export default function CheckInKioskPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ code, eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined }),
+        body: JSON.stringify({ code, eventId: currentEventId }),
       }, VALIDATION_REQUEST_TIMEOUT_MS);
 
       const data = await res.json();
@@ -900,6 +906,10 @@ export default function CheckInKioskPage() {
     options?: { attestationAccepted?: boolean; rejectionReason?: string }
   ) => {
     if (!worker) return;
+    if (!currentEventId) {
+      setError("This kiosk is not attached to an event. Open check-in from a specific event link.");
+      return;
+    }
     setIsActioning(true);
     setError("");
     const attestationAccepted = options?.attestationAccepted;
@@ -925,7 +935,7 @@ export default function CheckInKioskPage() {
       signature: sig,
       attestationAccepted,
       rejectionReason,
-      eventId: activeEvent?.id || eventIdFromUrl || lastKnownEventIdRef.current || undefined,
+      eventId: currentEventId,
     };
 
     if (!isOnline) {

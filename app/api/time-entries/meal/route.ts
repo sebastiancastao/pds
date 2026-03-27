@@ -42,6 +42,20 @@ async function getUserDivision(userId: string) {
   return data?.division || 'vendor';
 }
 
+async function getUserRole(userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select('role')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data?.role || '').toString().trim().toLowerCase();
+}
+
+function requiresEventScopedTimekeeping(role: string) {
+  return role === 'worker' || role === 'vendor';
+}
+
 /**
  * GET /api/time-entries/meal?open=1
  */
@@ -91,6 +105,14 @@ export async function POST(req: Request) {
   try {
     const user = await getAuthedUserFromRequest(req);
     if (!user?.id) return jsonError('Unauthorized', 401);
+
+    const role = await getUserRole(user.id);
+    if (requiresEventScopedTimekeeping(role)) {
+      return jsonError(
+        'Workers and vendors must start meals from the event check-in flow so the time entry stays attached to an event.',
+        403
+      );
+    }
 
     let notes = '';
     try {
@@ -142,6 +164,14 @@ export async function PATCH(req: Request) {
   try {
     const user = await getAuthedUserFromRequest(req);
     if (!user?.id) return jsonError('Unauthorized', 401);
+
+    const role = await getUserRole(user.id);
+    if (requiresEventScopedTimekeeping(role)) {
+      return jsonError(
+        'Workers and vendors must end meals from the event check-in flow so the time entry stays attached to an event.',
+        403
+      );
+    }
 
     let notes: string | undefined;
     try {

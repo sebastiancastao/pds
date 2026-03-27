@@ -164,13 +164,12 @@ export default function TimekeepingPage() {
     return true;
   }, [userRole]);
 
-  // Auto clock-in when worker lands on the page; auto clock-out when they leave
+  // Auto clock-in for manager/admin users when the page opens.
   const autoClockedRef = useRef(false);
   useEffect(() => {
     if (!isAuthed || loading) return;
-    if (!isWorker) return;
+    if (isWorker) return;
     if (autoClockedRef.current) return;
-    // After initial refreshOpen finished (loading === false), clock in if not already clocked in
     if (!openEntry) {
       handleClockIn().finally(() => {
         autoClockedRef.current = true;
@@ -179,7 +178,7 @@ export default function TimekeepingPage() {
       autoClockedRef.current = true;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthed, isWorker, loading]);
+  }, [isAuthed, isWorker, loading, openEntry]);
 
   // Check for cross-day entries and handle them
   useEffect(() => {
@@ -266,6 +265,11 @@ export default function TimekeepingPage() {
   async function handleClockIn() {
     setMessage("");
 
+    if (isWorker) {
+      setMessage("Workers and vendors must use the event check-in flow. This page no longer starts shifts.");
+      return;
+    }
+
     if (!isOnline) {
       setMessage("Cannot clock in while offline. Please check your connection.");
       return;
@@ -298,6 +302,11 @@ export default function TimekeepingPage() {
   async function handleClockOut() {
     setMessage("");
 
+    if (isWorker) {
+      setMessage("Workers and vendors must clock out from the event check-in flow.");
+      return;
+    }
+
     if (!isOnline) {
       setMessage("Cannot clock out while offline. Your time is still being tracked locally.");
       return;
@@ -328,6 +337,10 @@ export default function TimekeepingPage() {
 
   async function handleMealStart() {
     setMessage("");
+    if (isWorker) {
+      setMessage("Workers and vendors must start meals from the event check-in flow.");
+      return;
+    }
     try {
       const res = await fetch("/api/time-entries/meal", {
         method: "POST",
@@ -347,6 +360,10 @@ export default function TimekeepingPage() {
 
   async function handleMealEnd() {
     setMessage("");
+    if (isWorker) {
+      setMessage("Workers and vendors must end meals from the event check-in flow.");
+      return;
+    }
     try {
       const res = await fetch("/api/time-entries/meal", {
         method: "PATCH",
@@ -368,6 +385,11 @@ export default function TimekeepingPage() {
   async function handleLogout() {
     setPendingClockOut(true);
     try {
+      if (isWorker) {
+        await supabase.auth.signOut();
+        return;
+      }
+
       // If user has an open time entry, clock them out first
       if (openEntry) {
         await fetch("/api/time-entries", {
@@ -462,56 +484,57 @@ export default function TimekeepingPage() {
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
           </svg>
-          {pendingClockOut ? 'Clocking out...' : 'Logout'}
+          {pendingClockOut ? 'Signing out...' : 'Logout'}
         </button>
-        <div className="relative w-80 h-80 z-10">
-          {/* Outermost expanding ring */}
-          <div
-            className="absolute inset-0 rounded-full bg-green-500/20 animate-ping"
-            style={{ animationDuration: '2s' }}
-          ></div>
+        <div className="relative z-10 w-full max-w-xl px-6">
+          <div className="rounded-3xl border border-white/70 bg-white/90 p-8 shadow-2xl backdrop-blur-sm">
+            <div className="mb-6 text-center">
+              <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-blue-100 text-blue-700">
+                <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M4.93 19h14.14c1.54 0 2.5-1.67 1.73-3L13.73 3c-.77-1.33-2.69-1.33-3.46 0L3.2 16c-.77 1.33.19 3 1.73 3z" />
+                </svg>
+              </div>
+              <h1 className="text-2xl font-bold text-slate-900">Use Event Check-In</h1>
+              <p className="mt-2 text-sm text-slate-600">
+                Workers and vendors must manage time from the event check-in flow so every entry keeps its event assignment.
+              </p>
+            </div>
 
-          {/* Middle pulsing ring */}
-          <div
-            className="absolute inset-8 rounded-full bg-green-500/30 animate-pulse"
-            style={{ animationDuration: '2s' }}
-          ></div>
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+              <p className="font-semibold">This page is now read-only for workers and vendors.</p>
+              <p className="mt-1">
+                Open your assigned event from the dashboard or use the kiosk link tied to that event before checking in.
+              </p>
+            </div>
 
-          {/* Inner solid circle with pulse */}
-          <div
-            className="absolute inset-16 rounded-full bg-green-500/70 shadow-2xl animate-pulse"
-            style={{
-              animationDuration: '2s',
-              boxShadow: '0 0 40px rgba(34, 197, 94, 0.6), 0 0 80px rgba(34, 197, 94, 0.3)'
-            }}
-          ></div>
+            {message && (
+              <div className="mt-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                {message}
+              </div>
+            )}
 
-          {/* Center badge */}
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="px-6 py-3 rounded-full bg-white/95 backdrop-blur-sm shadow-xl text-green-700 text-lg font-semibold border-2 border-green-200">
-              Time Keeping  Active
+            {openEntry && (
+              <div className="mt-4 rounded-2xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
+                <p className="font-semibold">Open shift detected</p>
+                <p className="mt-1">
+                  Finish this shift from the event check-in flow that started it. This page will not create additional entries for you.
+                </p>
+              </div>
+            )}
+
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
+              <button
+                onClick={() => router.push('/dashboard')}
+                className="inline-flex flex-1 items-center justify-center gap-2 rounded-full bg-gradient-to-r from-blue-500 to-indigo-600 px-4 py-3 text-sm font-semibold text-white shadow-lg transition-transform hover:-translate-y-0.5 hover:shadow-xl"
+              >
+                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 7l9-4 9 4M4 10h16M5 10v10h14V10M9 14h6" />
+                </svg>
+                Open Dashboard
+              </button>
             </div>
           </div>
         </div>
-
-        {/* Cross-day notification for worker view */}
-        {openEntry && new Date(openEntry.started_at).toISOString().slice(0, 10) !== new Date().toISOString().slice(0, 10) && (
-          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-20 max-w-md">
-            <div className="bg-amber-100 border-2 border-amber-300 rounded-lg p-4 shadow-lg">
-              <div className="flex items-start gap-3">
-                <svg className="w-6 h-6 text-amber-600 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                <div>
-                  <p className="text-sm font-semibold text-amber-900">Multi-day shift</p>
-                  <p className="text-xs text-amber-800 mt-1">
-                    Started: {new Date(openEntry.started_at).toISOString().slice(0, 10)}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     );
   }

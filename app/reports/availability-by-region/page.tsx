@@ -20,6 +20,13 @@ type Vendor = {
   availability_scope_start: string | null;
   availability_scope_end: string | null;
   region_id: string | null;
+  team_events: {
+    event_id: string;
+    event_name: string;
+    event_date: string | null;
+    status: string;
+    assigned_at: string | null;
+  }[];
   daily_availability: Record<string, boolean>;
   profiles: {
     first_name: string;
@@ -91,6 +98,13 @@ type VendorReportRow = {
   lastResponse: string | null;
   scopeStart: string | null;
   scopeEnd: string | null;
+  teamEvents: {
+    event_id: string;
+    event_name: string;
+    event_date: string | null;
+    status: string;
+    assigned_at: string | null;
+  }[];
   dailyAvailability: Record<string, boolean>;
 };
 
@@ -530,6 +544,7 @@ export default function AvailabilityByRegionReportPage() {
           lastResponse: vendor.availability_responded_at,
           scopeStart: vendor.availability_scope_start,
           scopeEnd: vendor.availability_scope_end,
+          teamEvents: vendor.team_events || [],
           dailyAvailability: vendor.daily_availability || {},
         } satisfies VendorReportRow;
       })
@@ -630,6 +645,7 @@ export default function AvailabilityByRegionReportPage() {
       'Last Response': vendor.lastResponse ? formatDateTime(vendor.lastResponse) : 'No data',
       'Availability Scope Start': vendor.scopeStart ? formatDate(vendor.scopeStart) : 'No data',
       'Availability Scope End': vendor.scopeEnd ? formatDate(vendor.scopeEnd) : 'No data',
+      'Team Events': vendor.teamEvents.map((event) => `${event.event_name}${event.event_date ? ` (${formatDate(event.event_date)})` : ''}`).join(' | '),
     }));
 
     const vendorDailyRows = exportVendorRows.map((vendor) => {
@@ -1050,6 +1066,28 @@ export default function AvailabilityByRegionReportPage() {
                         Availability scope: {vendor.scopeStart ? formatDate(vendor.scopeStart) : 'No data'} to{' '}
                         {vendor.scopeEnd ? formatDate(vendor.scopeEnd) : 'No data'}
                       </div>
+                    </div>
+
+                    <div className="mt-3">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-500">
+                        Team Event Invites
+                      </p>
+                      {vendor.teamEvents.length === 0 ? (
+                        <p className="mt-1 text-xs text-gray-400">No team-member invites in this report window.</p>
+                      ) : (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {vendor.teamEvents.map((event) => (
+                            <span
+                              key={`${vendor.id}-${event.event_id}`}
+                              className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700 ring-1 ring-blue-200"
+                              title={`${event.event_name}${event.event_date ? ` on ${formatDate(event.event_date)}` : ''}`}
+                            >
+                              <span>{event.event_name}</span>
+                              {event.event_date && <span className="text-blue-500">{formatDate(event.event_date)}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}

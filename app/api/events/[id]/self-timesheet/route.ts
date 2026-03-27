@@ -392,6 +392,11 @@ export async function GET(
       return jsonError("Event ID is required.", 400);
     }
 
+    // Support ?userId=xxx to load a specific team member's timesheet
+    const url = new URL(req.url);
+    const targetUserId = url.searchParams.get("userId") || user.id;
+    const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
+
     const event = await loadEvent(eventId);
     const eventDate = normalizeEventDate(event.event_date);
     if (!eventDate) {
@@ -399,8 +404,42 @@ export async function GET(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { entries } = await loadCurrentEntries(user.id, eventId, eventDate, eventTimezone);
-    const attestationState = await loadAttestationState(user.id, entries);
+
+    // Load team members on the initial request (no ?userId param) so the page can populate the selector
+    let teamMembers: Array<{ id: string; name: string; role: string }> = [];
+    if (!url.searchParams.get("userId")) {
+      const { data: teamRows } = await supabaseAdmin
+        .from("event_teams")
+        .select("vendor_id")
+        .eq("event_id", eventId);
+
+      const vendorIds = (teamRows || []).map((t: any) => t.vendor_id).filter(Boolean);
+
+      if (vendorIds.length > 0) {
+        const [usersResult, profilesResult] = await Promise.all([
+          supabaseAdmin.from("users").select("id, email, role").in("id", vendorIds),
+          supabaseAdmin.from("profiles").select("user_id, first_name, last_name").in("user_id", vendorIds),
+        ]);
+
+        const usersMap = new Map((usersResult.data || []).map((u: any) => [u.id, u]));
+        const profilesMap = new Map((profilesResult.data || []).map((p: any) => [p.user_id, p]));
+
+        teamMembers = vendorIds.map((id: string) => {
+          const u = (usersMap.get(id) || {}) as any;
+          const p = (profilesMap.get(id) || {}) as any;
+          const first = p.first_name ? safeDecrypt(String(p.first_name)) : "";
+          const last = p.last_name ? safeDecrypt(String(p.last_name)) : "";
+          return {
+            id,
+            name: [first, last].filter(Boolean).join(" ").trim() || u.email || id,
+            role: u.role || "vendor",
+          };
+        });
+      }
+    }
+
+    const { entries } = await loadCurrentEntries(targetUserId, eventId, eventDate, eventTimezone);
+    const attestationState = await loadAttestationState(targetUserId, entries);
     const timesheet = buildSnapshot(
       entries,
       eventTimezone,
@@ -423,11 +462,17 @@ export async function GET(
         timezone: eventTimezone,
       },
       user: {
+        id: targetUserId,
+        name: targetRequester.name,
+        role: targetRequester.role,
+      },
+      requester: {
         id: user.id,
         name: requester.name,
         role: requester.role,
       },
       timesheet,
+      teamMembers,
     });
   } catch (err: any) {
     return jsonError(err?.message || "Unhandled error.", 500);
@@ -461,6 +506,10 @@ export async function PUT(
       typeof body?.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const rejectionReason = String(body?.rejectionReason || "").trim();
 
+    // Support submitting for another team member
+    const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
+    const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
+
     if (!signature.startsWith("data:image/png;base64,")) {
       return jsonError("A drawn signature is required.", 400);
     }
@@ -487,7 +536,7 @@ export async function PUT(
     }
 
     const { entries: existingEntries, range } = await loadCurrentEntries(
-      user.id,
+      targetUserId,
       eventId,
       eventDate,
       eventTimezone
@@ -505,7 +554,9 @@ export async function PUT(
       newByAction[entry.action].push(entry);
     }
 
-    const baseNote = "Self-submitted event timesheet";
+    const baseNote = targetUserId !== user.id
+      ? `Manager-submitted timesheet (entered by ${requester.name})`
+      : "Self-submitted event timesheet";
     const toUpdate: Array<{ id: string; action: string; timestamp: string }> = [];
     const toInsert: Array<{ action: string; timestamp: string }> = [];
     const toDelete: string[] = [];
@@ -573,8 +624,8 @@ export async function PUT(
 
     for (const insert of toInsert) {
       const payload: Record<string, unknown> = {
-        user_id: user.id,
-        division: requester.division || "vendor",
+        user_id: targetUserId,
+        division: targetRequester.division || "vendor",
         action: insert.action,
         timestamp: insert.timestamp,
         event_id: eventId,
@@ -599,7 +650,7 @@ export async function PUT(
     const { data: currentEntries, error: currentEntriesError } = await supabaseAdmin
       .from("time_entries")
       .select("id, action, timestamp, event_id, attestation_accepted")
-      .eq("user_id", user.id)
+      .eq("user_id", targetUserId)
       .eq("event_id", eventId)
       .gte("timestamp", range.startIso)
       .lt("timestamp", range.endExclusiveIso)
@@ -640,7 +691,7 @@ export async function PUT(
         .from("form_signatures")
         .delete()
         .eq("form_type", "clock_out_attestation")
-        .eq("user_id", user.id)
+        .eq("user_id", targetUserId)
         .in("form_id", formIdsToClear);
       if (clearSignaturesError) {
         return jsonError(clearSignaturesError.message, 500);
@@ -655,17 +706,17 @@ export async function PUT(
       const formId = `clock-out-${currentClockOut.id}`;
       const formDataString = JSON.stringify({
         entryId: currentClockOut.id,
-        workerId: user.id,
+        workerId: targetUserId,
         action: "clock_out",
         timestamp: signedAt,
         eventId,
       });
       const formDataHash = createHash("sha256").update(formDataString).digest("hex");
       const signatureHash = createHash("sha256")
-        .update(`${signature}${signedAt}${user.id}${ipAddress}`)
+        .update(`${signature}${signedAt}${targetUserId}${ipAddress}`)
         .digest("hex");
       const bindingHash = createHash("sha256")
-        .update(`${formDataHash}${signatureHash}${user.id}`)
+        .update(`${formDataHash}${signatureHash}${targetUserId}`)
         .digest("hex");
 
       const { error: signatureInsertError } = await supabaseAdmin
@@ -673,8 +724,8 @@ export async function PUT(
         .insert({
           form_id: formId,
           form_type: "clock_out_attestation",
-          user_id: user.id,
-          signature_role: "employee",
+          user_id: targetUserId,
+          signature_role: targetUserId !== user.id ? "manager_proxy" : "employee",
           signature_data: signature,
           signature_type: "drawn",
           form_data_hash: formDataHash,
@@ -694,7 +745,7 @@ export async function PUT(
         .from("attestation_rejections")
         .insert({
           time_entry_id: currentClockOut.id,
-          user_id: user.id,
+          user_id: targetUserId,
           event_id: eventId,
           rejection_reason: rejectionReason,
           signature_data: signature,
@@ -705,7 +756,7 @@ export async function PUT(
       }
     }
 
-    const attestationState = await loadAttestationState(user.id, normalizedCurrentEntries);
+    const attestationState = await loadAttestationState(targetUserId, normalizedCurrentEntries);
     const timesheet = buildSnapshot(
       normalizedCurrentEntries,
       eventTimezone,

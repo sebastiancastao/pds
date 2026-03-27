@@ -44,6 +44,20 @@ async function getUserDivision(userId: string) {
   return data?.division || 'vendor';
 }
 
+async function getUserRole(userId: string) {
+  const { data, error } = await supabaseAdmin
+    .from('users')
+    .select('role')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return (data?.role || '').toString().trim().toLowerCase();
+}
+
+function requiresEventScopedTimekeeping(role: string) {
+  return role === 'worker' || role === 'vendor';
+}
+
 /**
  * GET /api/time-entries?open=1
  * GET /api/time-entries?since=YYYY-MM-DD
@@ -167,6 +181,14 @@ export async function POST(req: Request) {
       return jsonError("You already have an open time entry.", 409);
     }
 
+    const role = await getUserRole(user.id);
+    if (requiresEventScopedTimekeeping(role)) {
+      return jsonError(
+        "Workers and vendors must start shifts from an event check-in link so the time entry is attached to an event.",
+        403
+      );
+    }
+
     const division = await getUserDivision(user.id);
     const { data, error } = await supabaseAdmin
       .from("time_entries")
@@ -196,6 +218,14 @@ export async function PATCH(req: Request) {
   try {
     const user = await getAuthedUserFromRequest(req);
     if (!user?.id) return jsonError("Unauthorized", 401);
+
+    const role = await getUserRole(user.id);
+    if (requiresEventScopedTimekeeping(role)) {
+      return jsonError(
+        "Workers and vendors must clock out from the event check-in flow so the time entry stays attached to an event.",
+        403
+      );
+    }
 
     let notes: string | undefined;
     try {

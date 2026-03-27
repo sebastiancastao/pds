@@ -21,6 +21,13 @@ function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
 
+function isValidUuid(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
 async function getAuthedUser(req: Request) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -80,10 +87,17 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const code = normalizeCheckinCode(body.code);
-    const eventId: string | undefined = body.eventId || undefined;
+    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : "";
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
+    }
+
+    if (!isValidUuid(eventId)) {
+      return jsonError(
+        "This kiosk session is missing an event. Open check-in from a specific event and try again.",
+        400
+      );
     }
 
     // Find active code
@@ -111,7 +125,7 @@ export async function POST(req: NextRequest) {
 
     // Block check-in if the worker is not a confirmed team member, or if it's too early
     console.log("[validate] eventId from request:", eventId);
-    if (eventId) {
+    if (isValidUuid(eventId)) {
       const [{ data: teamRecord }, { data: eventData }] = await Promise.all([
         supabaseAdmin
           .from("event_teams")

@@ -113,12 +113,19 @@ export async function POST(req: NextRequest) {
         ? body.clientActionId.trim()
         : undefined;
 
-    const isValidUuid = (id: unknown) =>
+    const isValidUuid = (id: unknown): id is string =>
       typeof id === "string" &&
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
+    }
+
+    if (!isValidUuid(eventId)) {
+      return jsonError(
+        "This kiosk session is missing an event. Open check-in from a specific event and try again.",
+        400
+      );
     }
 
     const validActions: ActionType[] = ["clock_in", "clock_out", "meal_start", "meal_end"];
@@ -217,7 +224,7 @@ export async function POST(req: NextRequest) {
             action: "meal_end",
             division,
             notes: "Auto-ended on clock out",
-            ...(isValidUuid(eventId) ? { event_id: eventId } : {}),
+            event_id: eventId,
           });
       }
     } else if (action === "meal_start") {
@@ -318,9 +325,7 @@ export async function POST(req: NextRequest) {
     if (offlineTimestamp) {
       insertData.timestamp = offlineTimestamp;
     }
-    if (isValidUuid(eventId)) {
-      insertData.event_id = eventId;
-    }
+    insertData.event_id = eventId;
 
     const { data, error } = await supabaseAdmin
       .from("time_entries")
@@ -343,7 +348,7 @@ export async function POST(req: NextRequest) {
         await supabaseAdmin.from("attestation_rejections").insert({
           time_entry_id: data.id,
           user_id: workerId,
-          ...(isValidUuid(eventId) ? { event_id: eventId } : {}),
+          event_id: eventId,
           rejection_reason: rejectionReason,
           ...(rejectionNotes  ? { rejection_notes:  rejectionNotes  } : {}),
           ...(signature       ? { signature_data:   signature       } : {}),

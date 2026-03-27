@@ -23,6 +23,13 @@ function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
 
+function isValidUuid(id: unknown): id is string {
+  return (
+    typeof id === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
+  );
+}
+
 async function getAuthedUser(req: Request) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -48,6 +55,16 @@ async function getUserDivision(userId: string) {
 
 function appendClientActionId(note: string, clientActionId?: string) {
   return clientActionId ? `${note} | ${CLIENT_ACTION_ID_MARKER}${clientActionId}` : note;
+}
+
+function addOneDay(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().split("T")[0];
+}
+
+function parseEventMs(dateStr: string, timeStr: string): number {
+  return new Date(`${dateStr}T${timeStr}`).getTime();
 }
 
 async function findExistingTimeEntry(workerId: string, clientActionId?: string) {
@@ -147,6 +164,15 @@ export async function POST(req: NextRequest) {
             : item.id;
         const existingEntry = await findExistingTimeEntry(workerId, clientActionId);
 
+        if (!isValidUuid(item.eventId)) {
+          results.push({
+            id: item.id,
+            success: false,
+            error: "This kiosk session is missing an event. Open check-in from a specific event and try again.",
+          });
+          continue;
+        }
+
         if (existingEntry?.id) {
           results.push({ id: item.id, success: true });
           continue;
@@ -161,21 +187,72 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        const isValidUuid = (id: unknown) =>
-          typeof id === "string" &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-
-        // Block clock_in for workers not confirmed on the event team
-        if (item.action === "clock_in" && isValidUuid(item.eventId)) {
-          const { data: teamRecord } = await supabaseAdmin
-            .from("event_teams")
-            .select("status")
-            .eq("event_id", item.eventId)
-            .eq("vendor_id", workerId)
-            .maybeSingle();
+        // Block clock_in for workers not confirmed on the event team, or outside the event window.
+        if (item.action === "clock_in") {
+          const [{ data: teamRecord }, { data: eventData }] = await Promise.all([
+            supabaseAdmin
+              .from("event_teams")
+              .select("status")
+              .eq("event_id", item.eventId)
+              .eq("vendor_id", workerId)
+              .maybeSingle(),
+            supabaseAdmin
+              .from("events")
+              .select("event_date, start_time, end_time, ends_next_day, state")
+              .eq("id", item.eventId)
+              .maybeSingle(),
+          ]);
 
           if (!teamRecord || teamRecord.status !== "confirmed") {
             results.push({ id: item.id, success: false, error: "REJECTED: NOT ON TEAM'S LIST." });
+            continue;
+          }
+
+          if (!eventData?.event_date || !eventData?.start_time) {
+            results.push({
+              id: item.id,
+              success: false,
+              error: "Check-in is closed. This event has already passed.",
+            });
+            continue;
+          }
+
+          const timestampMs = new Date(item.timestamp).getTime();
+          if (Number.isNaN(timestampMs)) {
+            results.push({ id: item.id, success: false, error: "Invalid offline timestamp" });
+            continue;
+          }
+
+          const dateStr = String(eventData.event_date).split("T")[0];
+          const eventStartMs = parseEventMs(dateStr, String(eventData.start_time));
+          const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
+
+          let windowCloseMs: number;
+          if (eventData.end_time) {
+            let eventEndMs = parseEventMs(dateStr, String(eventData.end_time));
+            if (eventData.ends_next_day || eventEndMs <= eventStartMs) {
+              eventEndMs = parseEventMs(addOneDay(dateStr), String(eventData.end_time));
+            }
+            windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
+          } else {
+            windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+          }
+
+          if (timestampMs < windowOpenMs) {
+            results.push({
+              id: item.id,
+              success: false,
+              error: "Check-in is not open yet. Check-in opens 3 hours before the event starts.",
+            });
+            continue;
+          }
+
+          if (timestampMs > windowCloseMs) {
+            results.push({
+              id: item.id,
+              success: false,
+              error: "Check-in is closed. This event has already passed.",
+            });
             continue;
           }
         }
@@ -200,7 +277,7 @@ export async function POST(req: NextRequest) {
             ...(item.action === "clock_out" && typeof item.attestationAccepted === "boolean"
               ? { attestation_accepted: item.attestationAccepted }
               : {}),
-            ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
+            event_id: item.eventId,
           })
           .select("id, timestamp")
           .single();
@@ -222,7 +299,7 @@ export async function POST(req: NextRequest) {
             await supabaseAdmin.from("attestation_rejections").insert({
               time_entry_id: entryData.id,
               user_id: workerId,
-              ...(isValidUuid(item.eventId) ? { event_id: item.eventId } : {}),
+              event_id: item.eventId,
               rejection_reason: item.rejectionReason,
               ...(item.signature ? { signature_data: item.signature } : {}),
             });

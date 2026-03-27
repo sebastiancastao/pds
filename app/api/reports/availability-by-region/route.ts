@@ -24,6 +24,14 @@ type DailyAvailabilityValue = {
   submittedAt: string | null;
 };
 
+type TeamEventRow = {
+  event_id: string;
+  event_name: string;
+  event_date: string | null;
+  status: string;
+  assigned_at: string | null;
+};
+
 const normalizeAvailability = (payload: unknown): AvailabilityDay[] => {
   if (Array.isArray(payload)) {
     return payload.filter((day: any) => day && typeof day.date === 'string');
@@ -176,6 +184,7 @@ export async function GET(req: NextRequest) {
 
     const vendorIds = onboardedVendors.map((vendor: any) => vendor.id).filter(Boolean);
     const invitations: any[] = [];
+    const teamAssignments: any[] = [];
 
     for (const batch of chunkArray(vendorIds, VENDOR_BATCH_SIZE)) {
       const { data: invitationRows, error: invitationsError } = await supabaseAdmin
@@ -189,6 +198,35 @@ export async function GET(req: NextRequest) {
       }
 
       invitations.push(...(invitationRows || []));
+
+      let teamQuery = supabaseAdmin
+        .from('event_teams')
+        .select(`
+          vendor_id,
+          event_id,
+          status,
+          created_at,
+          events!inner (
+            id,
+            event_name,
+            event_date
+          )
+        `)
+        .in('vendor_id', batch);
+
+      if (rangeStart) {
+        teamQuery = teamQuery.gte('events.event_date', rangeStart);
+      }
+      if (rangeEnd) {
+        teamQuery = teamQuery.lte('events.event_date', rangeEnd);
+      }
+
+      const { data: teamRows, error: teamError } = await teamQuery;
+      if (teamError) {
+        return NextResponse.json({ error: teamError.message }, { status: 500 });
+      }
+
+      teamAssignments.push(...(teamRows || []));
     }
 
     invitations.sort((left, right) => {
@@ -253,6 +291,41 @@ export async function GET(req: NextRequest) {
       }
     >();
 
+    const teamEventsByVendor = new Map<string, TeamEventRow[]>();
+    for (const row of teamAssignments) {
+      const vendorId = String(row?.vendor_id || '').trim();
+      if (!vendorId) continue;
+
+      const event = Array.isArray(row?.events) ? row.events[0] : row?.events;
+      const eventId = String(row?.event_id || event?.id || '').trim();
+      if (!eventId) continue;
+
+      if (!teamEventsByVendor.has(vendorId)) {
+        teamEventsByVendor.set(vendorId, []);
+      }
+
+      const list = teamEventsByVendor.get(vendorId)!;
+      const alreadySeen = list.some((item) => item.event_id === eventId);
+      if (alreadySeen) continue;
+
+      list.push({
+        event_id: eventId,
+        event_name: String(event?.event_name || '').trim() || 'Unnamed event',
+        event_date: event?.event_date || null,
+        status: String(row?.status || 'assigned').trim() || 'assigned',
+        assigned_at: row?.created_at || null,
+      });
+    }
+
+    teamEventsByVendor.forEach((events) => {
+      events.sort((left, right) => {
+        const leftDate = String(left.event_date || '');
+        const rightDate = String(right.event_date || '');
+        if (leftDate !== rightDate) return rightDate.localeCompare(leftDate);
+        return left.event_name.localeCompare(right.event_name);
+      });
+    });
+
     const vendorRows = onboardedVendors
       .map((vendor: any) => {
         const profile = Array.isArray(vendor.profiles) ? vendor.profiles[0] : vendor.profiles;
@@ -283,6 +356,7 @@ export async function GET(req: NextRequest) {
             first_name: firstName,
             last_name: lastName,
           },
+          team_events: teamEventsByVendor.get(vendor.id) || [],
           daily_availability: Object.fromEntries(
             Array.from(dailyAvailabilityByVendor.get(vendor.id)?.entries() || [])
               .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
