@@ -234,6 +234,20 @@ export default function CheckInKioskPage() {
     checkAuth();
   }, []);
 
+  // Block the browser back button in capture phase before Next.js can handle it
+  useEffect(() => {
+    const url = window.location.href;
+    for (let i = 0; i < 20; i++) {
+      window.history.pushState(null, "", url);
+    }
+    const handlePopState = (e: PopStateEvent) => {
+      e.stopImmediatePropagation();
+      window.history.pushState(null, "", url);
+    };
+    window.addEventListener("popstate", handlePopState, true);
+    return () => window.removeEventListener("popstate", handlePopState, true);
+  }, []);
+
   // Attestation clock (for the displayed "Clock out time")
   useEffect(() => {
     if (!showAttestation || !worker) return;
