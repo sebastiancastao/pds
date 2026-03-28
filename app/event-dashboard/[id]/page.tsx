@@ -94,6 +94,8 @@ type TimesheetEditDraft = {
   lastMealEnd: string;
   secondMealStart: string;
   secondMealEnd: string;
+  thirdMealStart: string;
+  thirdMealEnd: string;
 };
 
 type TeamVendorOption = {
@@ -352,12 +354,16 @@ export default function EventDashboardPage() {
         lastMealEnd: string | null;
         secondMealStart: string | null;
         secondMealEnd: string | null;
+        thirdMealStart: string | null;
+        thirdMealEnd: string | null;
         firstInDisplay?: string;
         lastOutDisplay?: string;
         firstMealStartDisplay?: string;
         lastMealEndDisplay?: string;
         secondMealStartDisplay?: string;
         secondMealEndDisplay?: string;
+        thirdMealStartDisplay?: string;
+        thirdMealEndDisplay?: string;
         managerEdited?: boolean;
         managerEditNote?: string | null;
         managerEditedByRole?: string | null;
@@ -446,6 +452,15 @@ export default function EventDashboardPage() {
     });
   }, [timesheetLoaded, sortedTeamMembers, timesheetSpans]);
   const salesReadOnly = (salesLocked && userRole !== "exec") || submitting;
+
+  // Show the third meal columns only when at least one person has a third meal
+  // or a row is currently being edited (so the editor can add one if needed).
+  const showThirdMeal = useMemo(() => {
+    if (editingTimesheetUserId !== null) return true;
+    return Object.values(timesheetSpans).some(
+      (s) => s?.thirdMealStart || s?.thirdMealEnd
+    );
+  }, [editingTimesheetUserId, timesheetSpans]);
 
   // Derived: filtered team members based on search and role filter
   const filteredTeamListMembers = useMemo(() => sortedTeamMembers.filter((member: any) => {
@@ -2314,7 +2329,11 @@ export default function EventDashboardPage() {
       span?.secondMealStart && span?.secondMealEnd
         ? Math.max(new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime(), 0)
         : 0;
-    const mealMs = meal1Ms + meal2Ms;
+    const meal3Ms =
+      span?.thirdMealStart && span?.thirdMealEnd
+        ? Math.max(new Date(span.thirdMealEnd).getTime() - new Date(span.thirdMealStart).getTime(), 0)
+        : 0;
+    const mealMs = meal1Ms + meal2Ms + meal3Ms;
 
     let spanNetMs = 0;
     if (Number.isFinite(firstInMs) && Number.isFinite(lastOutMs) && lastOutMs > firstInMs) {
@@ -3000,12 +3019,16 @@ export default function EventDashboardPage() {
     lastMealEnd: string | null;
     secondMealStart: string | null;
     secondMealEnd: string | null;
+    thirdMealStart?: string | null;
+    thirdMealEnd?: string | null;
     firstInDisplay?: string;
     lastOutDisplay?: string;
     firstMealStartDisplay?: string;
     lastMealEndDisplay?: string;
     secondMealStartDisplay?: string;
     secondMealEndDisplay?: string;
+    thirdMealStartDisplay?: string;
+    thirdMealEndDisplay?: string;
   }) => {
     if (!canEditTimesheets) return;
     setTimesheetDrafts((prev) => ({
@@ -3017,6 +3040,8 @@ export default function EventDashboardPage() {
         lastMealEnd: span.lastMealEndDisplay || isoToEventHHMM(span.lastMealEnd),
         secondMealStart: span.secondMealStartDisplay || isoToEventHHMM(span.secondMealStart),
         secondMealEnd: span.secondMealEndDisplay || isoToEventHHMM(span.secondMealEnd),
+        thirdMealStart: span.thirdMealStartDisplay || isoToEventHHMM(span.thirdMealStart),
+        thirdMealEnd: span.thirdMealEndDisplay || isoToEventHHMM(span.thirdMealEnd),
       },
     }));
     setEditingTimesheetUserId(uid);
@@ -3034,6 +3059,8 @@ export default function EventDashboardPage() {
           lastMealEnd: "",
           secondMealStart: "",
           secondMealEnd: "",
+          thirdMealStart: "",
+          thirdMealEnd: "",
         }),
         [field]: value,
       },
@@ -3152,7 +3179,9 @@ export default function EventDashboardPage() {
           (original.firstMealStart && !draft.firstMealStart) ||
           (original.lastMealEnd && !draft.lastMealEnd) ||
           (original.secondMealStart && !draft.secondMealStart) ||
-          (original.secondMealEnd && !draft.secondMealEnd);
+          (original.secondMealEnd && !draft.secondMealEnd) ||
+          (original.thirdMealStart && !draft.thirdMealStart) ||
+          (original.thirdMealEnd && !draft.thirdMealEnd);
         if (wouldDelete) {
           setMessage("Only execs can delete time entries. You may update times but not clear existing entries.");
           return;
@@ -3222,9 +3251,6 @@ export default function EventDashboardPage() {
   };
 
   const getRestBreakAmount = (actualHours: number, state: string): number => {
-    const normalizedState = (state || "").toUpperCase().trim();
-    // Nevada & Wisconsin: no rest break amount/column in Payment tab
-    if (normalizedState === "NV" || normalizedState === "WI") return 0;
     return actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
   };
   const roundPayrollAmount = (amount: number): number => {
@@ -3245,7 +3271,7 @@ export default function EventDashboardPage() {
     roundPayrollAmount(amount).toFixed(2);
 
   const payrollState = event?.state?.toUpperCase()?.trim() || "CA";
-  const hideRestBreakColumn = payrollState === "NV" || payrollState === "WI";
+  const hideRestBreakColumn = false;
 
   // Helper: use the same worked-hours calculation as Timesheet/Payment (includes Gate/Phone offset).
   const getMealDeductedMsForSave = (uid: string) => {
@@ -5222,6 +5248,14 @@ export default function EventDashboardPage() {
                                               Out of Venue
                                             </span>
                                           )}
+                                          {member?.partialAvailability && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-200 flex items-center gap-1">
+                                              <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                              </svg>
+                                              Partial{member.availableFrom || member.availableTo ? `: ${formatCallTimeLabel(member.availableFrom)}–${formatCallTimeLabel(member.availableTo)}` : ""}
+                                            </span>
+                                          )}
                                         </div>
                                         <p className="text-xs text-gray-500 truncate">{email}</p>
                                       </div>
@@ -5374,6 +5408,14 @@ export default function EventDashboardPage() {
                                           {member.isOutOfVenue && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-orange-100 text-orange-800 border border-orange-200">
                                               Out of Venue
+                                            </span>
+                                          )}
+                                          {member.partialAvailability && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-200 flex items-center gap-1">
+                                              <svg className="w-2.5 h-2.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                              </svg>
+                                              Partial{member.availableFrom || member.availableTo ? `: ${formatCallTimeLabel(member.availableFrom)}–${formatCallTimeLabel(member.availableTo)}` : ""}
                                             </span>
                                           )}
                                         </div>
@@ -5533,6 +5575,8 @@ export default function EventDashboardPage() {
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 Start</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 End</th>
+            {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 Start</th>}
+            {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 End</th>}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Out</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Hrs</th>
             <th className="px-2 py-2 text-right font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
@@ -5541,7 +5585,7 @@ export default function EventDashboardPage() {
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={10} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={showThirdMeal ? 12 : 10} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -5574,6 +5618,8 @@ export default function EventDashboardPage() {
                 lastMealEnd: null,
                 secondMealStart: null,
                 secondMealEnd: null,
+                thirdMealStart: null,
+                thirdMealEnd: null,
               };
 
               // Display stored timestamps in the event's local timezone.
@@ -5583,6 +5629,8 @@ export default function EventDashboardPage() {
               const lastMealEnd      = span.lastMealEndDisplay || isoToEventHHMM(span.lastMealEnd);
               const secondMealStart  = span.secondMealStartDisplay || isoToEventHHMM(span.secondMealStart);
               const secondMealEnd    = span.secondMealEndDisplay || isoToEventHHMM(span.secondMealEnd);
+              const thirdMealStart   = span.thirdMealStartDisplay || isoToEventHHMM(span.thirdMealStart);
+              const thirdMealEnd     = span.thirdMealEndDisplay || isoToEventHHMM(span.thirdMealEnd);
 
               const isEditing = canEditTimesheets && editingTimesheetUserId === uid;
 
@@ -5593,6 +5641,8 @@ export default function EventDashboardPage() {
                 lastMealEnd,
                 secondMealStart,
                 secondMealEnd,
+                thirdMealStart,
+                thirdMealEnd,
               };
               const gatePhoneTime = subtractMinutesFromHHMM(
                 isEditing ? draft.firstIn : firstClockIn,
@@ -5611,13 +5661,13 @@ export default function EventDashboardPage() {
                       <span
                         className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
                           span.lastOut ? "bg-red-500"
-                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) ? "bg-orange-400"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) || (span.thirdMealStart && !span.thirdMealEnd) ? "bg-orange-400"
                             : span.firstIn ? "bg-green-500"
                             : "bg-gray-300"
                         }`}
                         title={
                           span.lastOut ? "Clocked out"
-                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) ? "Meal break"
+                            : (span.firstMealStart && !span.lastMealEnd) || (span.secondMealStart && !span.secondMealEnd) || (span.thirdMealStart && !span.thirdMealEnd) ? "Meal break"
                             : span.firstIn ? "Clocked in"
                             : "No activity"
                         }
@@ -5697,6 +5747,24 @@ export default function EventDashboardPage() {
                       onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
                       placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
+
+                  {/* M3 Start — unusual third meal, only shown when relevant */}
+                  {showThirdMeal && (
+                    <td className="px-1 py-1.5">
+                      <input type="time" value={isEditing ? draft.thirdMealStart : thirdMealStart}
+                        onChange={(e) => updateTimesheetDraft(uid, "thirdMealStart", e.target.value)}
+                        placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
+                    </td>
+                  )}
+
+                  {/* M3 End — unusual third meal */}
+                  {showThirdMeal && (
+                    <td className="px-1 py-1.5">
+                      <input type="time" value={isEditing ? draft.thirdMealEnd : thirdMealEnd}
+                        onChange={(e) => updateTimesheetDraft(uid, "thirdMealEnd", e.target.value)}
+                        placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
+                    </td>
+                  )}
 
                   {/* Clock Out */}
                   <td className="px-1 py-1.5">

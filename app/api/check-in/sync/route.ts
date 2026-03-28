@@ -63,8 +63,18 @@ function addOneDay(dateStr: string): string {
   return d.toISOString().split("T")[0];
 }
 
+/** Converts a wall-clock date+time in Pacific time to UTC milliseconds. */
 function parseEventMs(dateStr: string, timeStr: string): number {
-  return new Date(`${dateStr}T${timeStr}`).getTime();
+  const naiveUtcMs = Date.parse(`${dateStr}T${timeStr}Z`);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(naiveUtcMs));
+  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
+  return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
 
 async function findExistingTimeEntry(workerId: string, clientActionId?: string) {

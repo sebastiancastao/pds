@@ -45,16 +45,28 @@ async function getAuthedUser(req: Request) {
 }
 
 function toLocalDateStr(d: Date): string {
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  // Use Pacific time so today/yesterday align with California wall-clock dates.
+  return d.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 }
 
 function addDays(dateStr: string, days: number): string {
-  const d = new Date(`${dateStr}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  return toLocalDateStr(d);
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().split("T")[0];
+}
+
+/** Converts a wall-clock date+time in Pacific time to UTC milliseconds. */
+function parsePacificMs(dateStr: string, timeStr: string): number {
+  const naiveUtcMs = Date.parse(`${dateStr}T${timeStr}Z`);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(naiveUtcMs));
+  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
+  return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
 
 function computeEventWindow(event: any): { startIso: string; endIso: string } | null {
@@ -63,16 +75,16 @@ function computeEventWindow(event: any): { startIso: string; endIso: string } | 
   const endTime = String(event?.end_time || "");
   if (!dateStr || !startTime || !endTime) return null;
 
-  const start = new Date(`${dateStr}T${startTime}`);
-  const end = new Date(`${dateStr}T${endTime}`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  const startMs = parsePacificMs(dateStr, startTime);
+  let endMs = parsePacificMs(dateStr, endTime);
+  if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
 
   const endsNextDay = Boolean(event?.ends_next_day);
-  if (endsNextDay || end.getTime() <= start.getTime()) {
-    end.setDate(end.getDate() + 1);
+  if (endsNextDay || endMs <= startMs) {
+    endMs = parsePacificMs(addDays(dateStr, 1), endTime);
   }
 
-  return { startIso: start.toISOString(), endIso: end.toISOString() };
+  return { startIso: new Date(startMs).toISOString(), endIso: new Date(endMs).toISOString() };
 }
 
 function decryptProfileNamePart(value: unknown, userIdForLog: string): string {

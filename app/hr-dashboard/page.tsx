@@ -151,8 +151,6 @@ function HRDashboardContent() {
     return Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
   };
   const getRestBreakAmount = (actualHours: number, stateCode: string) => {
-    const st = normalizeState(stateCode);
-    if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
     if (actualHours <= 0) return 0;
     return actualHours >= 10 ? 12.5 : 9;
   };
@@ -1177,7 +1175,7 @@ function HRDashboardContent() {
         if (Array.isArray(event.payments) && event.payments.length > 0) {
           event.payments.forEach((p: any) => {
             const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
-            const hideRest = st === 'NV' || st === 'WI' || st === 'AZ' || st === 'NY';
+            const hideRest = false;
 
             const regRate = Number(p.regRate ?? event.baseRate ?? 0);
             const loadedRate = Number(p.loadedRate ?? regRate);
@@ -2226,7 +2224,7 @@ function HRDashboardContent() {
                                         <thead className="bg-gray-50">
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const hideRest = st === "NV" || st === "WI" || st === "AZ" || st === "NY";
+                                            const hideRest = false;
                                             const showOT = st === "AZ" || st === "NY";
                                             return (
                                               <tr>
@@ -2272,7 +2270,7 @@ function HRDashboardContent() {
                                               </td>
                                               {(() => {
                                                 const st = normalizeState(ev.state || v.state);
-                                                const hideRest = st === "NV" || st === "WI" || st === "AZ" || st === "NY";
+                                                const hideRest = false;
                                                 const showOT = st === "AZ" || st === "NY";
 
                                                 const regRate = Number(p.regRate ?? ev.baseRate ?? 0);

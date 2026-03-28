@@ -206,12 +206,16 @@ export async function GET(
       lastMealEnd: string | null;
       secondMealStart: string | null;
       secondMealEnd: string | null;
+      thirdMealStart: string | null;
+      thirdMealEnd: string | null;
       firstInDisplay: string;
       lastOutDisplay: string;
       firstMealStartDisplay: string;
       lastMealEndDisplay: string;
       secondMealStartDisplay: string;
       secondMealEndDisplay: string;
+      thirdMealStartDisplay: string;
+      thirdMealEndDisplay: string;
       managerEdited: boolean;
       managerEditNote: string | null;
       managerEditSignatureId: string | null;
@@ -250,12 +254,16 @@ export async function GET(
         lastMealEnd: null,
         secondMealStart: null,
         secondMealEnd: null,
+        thirdMealStart: null,
+        thirdMealEnd: null,
         firstInDisplay: "",
         lastOutDisplay: "",
         firstMealStartDisplay: "",
         lastMealEndDisplay: "",
         secondMealStartDisplay: "",
         secondMealEndDisplay: "",
+        thirdMealStartDisplay: "",
+        thirdMealEndDisplay: "",
         managerEdited: !!editedEntry,
         managerEditNote: parsed?.editNote ?? null,
         managerEditSignatureId: parsed?.sigId ?? null,
@@ -279,13 +287,17 @@ export async function GET(
         spans[uid].lastOutDisplay = formatIsoToHHMM(clockOuts[clockOuts.length - 1].timestamp, eventTimezone);
       }
 
-      // Track first and second meal periods
+      // Track first, second, and (unusual) third meal periods
       if (mealStarts.length > 0) {
         spans[uid].firstMealStart = mealStarts[0].timestamp;
         spans[uid].firstMealStartDisplay = formatIsoToHHMM(mealStarts[0].timestamp, eventTimezone);
         if (mealStarts.length > 1) {
           spans[uid].secondMealStart = mealStarts[1].timestamp;
           spans[uid].secondMealStartDisplay = formatIsoToHHMM(mealStarts[1].timestamp, eventTimezone);
+        }
+        if (mealStarts.length > 2) {
+          spans[uid].thirdMealStart = mealStarts[2].timestamp;
+          spans[uid].thirdMealStartDisplay = formatIsoToHHMM(mealStarts[2].timestamp, eventTimezone);
         }
       }
       if (mealEnds.length > 0) {
@@ -294,6 +306,10 @@ export async function GET(
         if (mealEnds.length > 1) {
           spans[uid].secondMealEnd = mealEnds[1].timestamp;
           spans[uid].secondMealEndDisplay = formatIsoToHHMM(mealEnds[1].timestamp, eventTimezone);
+        }
+        if (mealEnds.length > 2) {
+          spans[uid].thirdMealEnd = mealEnds[2].timestamp;
+          spans[uid].thirdMealEndDisplay = formatIsoToHHMM(mealEnds[2].timestamp, eventTimezone);
         }
       }
 
@@ -334,7 +350,7 @@ export async function GET(
           if (gapMs > 0) {
             gaps.push({ start: gapStart, end: gapEnd });
           }
-          if (gaps.length >= 2) break;
+          if (gaps.length >= 3) break;
         }
 
         if (gaps[0]) {
@@ -348,6 +364,12 @@ export async function GET(
           spans[uid].secondMealEnd = gaps[1].end.toISOString();
           spans[uid].secondMealStartDisplay = formatIsoToHHMM(gaps[1].start.toISOString(), eventTimezone);
           spans[uid].secondMealEndDisplay = formatIsoToHHMM(gaps[1].end.toISOString(), eventTimezone);
+        }
+        if (gaps[2]) {
+          spans[uid].thirdMealStart = gaps[2].start.toISOString();
+          spans[uid].thirdMealEnd = gaps[2].end.toISOString();
+          spans[uid].thirdMealStartDisplay = formatIsoToHHMM(gaps[2].start.toISOString(), eventTimezone);
+          spans[uid].thirdMealEndDisplay = formatIsoToHHMM(gaps[2].end.toISOString(), eventTimezone);
         }
       }
     }
@@ -431,6 +453,8 @@ type TimesheetSpanPayload = {
   lastMealEnd?: string;
   secondMealStart?: string;
   secondMealEnd?: string;
+  thirdMealStart?: string;
+  thirdMealEnd?: string;
 };
 
 const toEventIso = (eventDate: string, hhmm?: string) => {
@@ -586,8 +610,11 @@ export async function PUT(
     const meal1End = (spans.lastMealEnd || "").trim();
     const meal2Start = (spans.secondMealStart || "").trim();
     const meal2End = (spans.secondMealEnd || "").trim();
+    const meal3Start = (spans.thirdMealStart || "").trim();
+    const meal3End = (spans.thirdMealEnd || "").trim();
     const useMeal1 = !!(meal1Start && meal1End);
     const useMeal2 = !!(meal2Start && meal2End);
+    const useMeal3 = !!(meal3Start && meal3End);
 
     const timeline = [
       { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) },
@@ -601,6 +628,12 @@ export async function PUT(
         ? [
             { action: "meal_start", timestamp: toZonedIso(eventDate, meal2Start, eventTimezone) },
             { action: "meal_end", timestamp: toZonedIso(eventDate, meal2End, eventTimezone) },
+          ]
+        : []),
+      ...(useMeal3
+        ? [
+            { action: "meal_start", timestamp: toZonedIso(eventDate, meal3Start, eventTimezone) },
+            { action: "meal_end", timestamp: toZonedIso(eventDate, meal3End, eventTimezone) },
           ]
         : []),
       { action: "clock_out", timestamp: toZonedIso(eventDate, spans.lastOut, eventTimezone) },
@@ -753,7 +786,11 @@ export async function PUT(
         mealStarts[1]?.timestamp && mealEnds[1]?.timestamp
           ? Math.max(new Date(mealEnds[1].timestamp).getTime() - new Date(mealStarts[1].timestamp).getTime(), 0)
           : 0;
-      return Math.max(grossMs - meal1Ms - meal2Ms, 0);
+      const meal3Ms =
+        mealStarts[2]?.timestamp && mealEnds[2]?.timestamp
+          ? Math.max(new Date(mealEnds[2].timestamp).getTime() - new Date(mealStarts[2].timestamp).getTime(), 0)
+          : 0;
+      return Math.max(grossMs - meal1Ms - meal2Ms - meal3Ms, 0);
     })();
 
     return NextResponse.json({
@@ -766,12 +803,16 @@ export async function PUT(
         lastMealEnd: mealEnds[0]?.timestamp ?? null,
         secondMealStart: mealStarts[1]?.timestamp ?? null,
         secondMealEnd: mealEnds[1]?.timestamp ?? null,
+        thirdMealStart: mealStarts[2]?.timestamp ?? null,
+        thirdMealEnd: mealEnds[2]?.timestamp ?? null,
         firstInDisplay: (spans.firstIn || "").trim(),
         lastOutDisplay: (spans.lastOut || "").trim(),
         firstMealStartDisplay: useMeal1 ? meal1Start : "",
         lastMealEndDisplay: useMeal1 ? meal1End : "",
         secondMealStartDisplay: useMeal2 ? meal2Start : "",
         secondMealEndDisplay: useMeal2 ? meal2End : "",
+        thirdMealStartDisplay: useMeal3 ? meal3Start : "",
+        thirdMealEndDisplay: useMeal3 ? meal3End : "",
         managerEdited: true,
         managerEditNote: editNote,
         managerEditedByRole: requesterRole,
