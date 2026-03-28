@@ -86,13 +86,14 @@ export default function TeamMembersTimesheetPage() {
         const { data: profileData } = await supabase
           .from("profiles")
           .select("first_name, last_name")
-          .eq("id", userId)
+          .eq("user_id", userId)
           .single();
 
         if (profileData) {
-          const first = profileData.first_name ?? "";
-          const last = profileData.last_name ?? "";
-          setManagerName(`${first} ${last}`.trim());
+          const p = profileData as any;
+          const first = p.first_name ?? "";
+          const last = p.last_name ?? "";
+          setManagerName(`${first} ${last}`.trim() as string);
         }
       } catch (err: any) {
         setError(err?.message || "Failed to load team members.");
