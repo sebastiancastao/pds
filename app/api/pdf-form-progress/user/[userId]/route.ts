@@ -75,6 +75,17 @@ type SignatureAuditEntry = {
   reason: string;
 };
 
+type CustomFormCatalogRow = {
+  id: string;
+  title: string | null;
+};
+
+type ResolvedCustomForm = {
+  id: string | null;
+  title: string;
+  dedupeKey: string;
+};
+
 const parseSignedAt = (value?: string | null): number | null => {
   if (!value) return null;
   const time = Date.parse(value);
@@ -218,6 +229,8 @@ const isMissingFormsSignatureTableError = (error: any) => {
 };
 
 const STATE_CODE_PREFIXES = new Set(['ca', 'ny', 'wi', 'az', 'nv', 'tx']);
+const CUSTOM_FORM_LEGACY_PREFIX = 'custom-form-';
+const CUSTOM_FORM_YEAR_SUFFIX = /\s+\d{4}$/;
 const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9', 'ca-de4', 'de4', 'wi-state-tax', 'state-tax']);
 const BACKGROUND_CHECK_FORM_KEYS = new Set([
   'background-waiver',
@@ -328,6 +341,67 @@ function normalizeFormKey(formName: string) {
   return lower;
 }
 
+const normalizeComparableText = (value?: string | null) =>
+  (value || '').toLowerCase().trim().replace(/\s+/g, ' ');
+
+const stripTrailingCustomFormYear = (value: string) =>
+  value.replace(CUSTOM_FORM_YEAR_SUFFIX, '').trim();
+
+function buildCustomFormResolver(customForms: CustomFormCatalogRow[]) {
+  const formsById = new Map<string, CustomFormCatalogRow>();
+  const formsByNormalizedTitle = new Map<string, CustomFormCatalogRow>();
+
+  for (const form of customForms) {
+    const formId = (form.id || '').trim().toLowerCase();
+    const normalizedTitle = normalizeComparableText(form.title);
+
+    if (formId) {
+      formsById.set(formId, form);
+    }
+
+    if (normalizedTitle && !formsByNormalizedTitle.has(normalizedTitle)) {
+      formsByNormalizedTitle.set(normalizedTitle, form);
+    }
+  }
+
+  return (formName?: string | null): ResolvedCustomForm | null => {
+    const rawName = (formName || '').trim();
+    if (!rawName) return null;
+
+    const normalizedName = rawName.toLowerCase();
+    if (normalizedName.startsWith(CUSTOM_FORM_LEGACY_PREFIX)) {
+      const legacyId = normalizedName.slice(CUSTOM_FORM_LEGACY_PREFIX.length).trim();
+      const matchedForm = formsById.get(legacyId);
+      return {
+        id: matchedForm?.id || legacyId || null,
+        title: (matchedForm?.title || rawName).trim(),
+        dedupeKey: `custom-form:${matchedForm?.id || legacyId || normalizedName}`,
+      };
+    }
+
+    const exactTitleMatch = formsByNormalizedTitle.get(normalizeComparableText(rawName));
+    if (exactTitleMatch) {
+      return {
+        id: exactTitleMatch.id,
+        title: (exactTitleMatch.title || rawName).trim(),
+        dedupeKey: `custom-form:${exactTitleMatch.id}`,
+      };
+    }
+
+    const titleWithoutYear = stripTrailingCustomFormYear(rawName);
+    const titleMatch = formsByNormalizedTitle.get(normalizeComparableText(titleWithoutYear));
+    if (titleMatch) {
+      return {
+        id: titleMatch.id,
+        title: (titleMatch.title || titleWithoutYear || rawName).trim(),
+        dedupeKey: `custom-form:${titleMatch.id}`,
+      };
+    }
+
+    return null;
+  };
+}
+
 type PdfRect = { x: number; y: number; width: number; height: number };
 type FieldWidgetPlacement = { pageIndex: number; rect: PdfRect };
 
@@ -385,7 +459,8 @@ function normalizeSignatureImage(signatureData: string) {
   };
 }
 
-function displayNameForForm(formName: string) {
+function displayNameForForm(formName: string, customForm?: ResolvedCustomForm | null) {
+  if (customForm?.title) return customForm.title;
   if (formDisplayNames[formName]) return formDisplayNames[formName];
   // Fallback: prettify key
   return formName
@@ -1425,6 +1500,23 @@ export async function GET(
     const startTime = Date.now();
 
     const formsFetchStart = Date.now();
+    let resolveCustomForm = (_formName?: string | null): ResolvedCustomForm | null => null;
+
+    try {
+      const { data: customForms, error: customFormsError } = await supabaseAdmin
+        .from('custom_pdf_forms')
+        .select('id, title');
+
+      if (customFormsError) {
+        if (customFormsError.code !== '42P01') {
+          console.warn('[PDF_FORMS] Failed to fetch custom form catalog:', customFormsError.message);
+        }
+      } else {
+        resolveCustomForm = buildCustomFormResolver((customForms || []) as CustomFormCatalogRow[]);
+      }
+    } catch (customFormsError) {
+      console.warn('[PDF_FORMS] Failed to build custom form resolver:', customFormsError);
+    }
 
     // Retrieve all form progress for the user
     const { data: allForms, error } = await supabaseAdmin
@@ -1493,13 +1585,15 @@ export async function GET(
 
     for (const form of allForms) {
       const formKey = form.form_name || 'unknown';
-      const normalizedKey = normalizeFormKeyForDedup(formKey);
+      const customForm = resolveCustomForm(formKey);
+      const isCustomForm = !!customForm;
+      const normalizedKey = customForm?.dedupeKey || normalizeFormKeyForDedup(formKey);
       const formDataStr = toBase64(form.form_data);
       const formDataLength = formDataStr?.length || 0;
       const isHandbookOrI9 = normalizedKey.includes('handbook') || normalizedKey.includes('i9');
 
       // Skip forms with empty or very small data (likely empty/template PDFs)
-      if (formDataLength < MIN_FORM_DATA_LENGTH) {
+      if (!isCustomForm && formDataLength < MIN_FORM_DATA_LENGTH) {
         if (isHandbookOrI9) {
           console.log(`[PDF_FORMS] 🔍 DEBUG - Skipping EMPTY "${formKey}" (${(formDataLength / 1024).toFixed(2)} KB < ${(MIN_FORM_DATA_LENGTH / 1024).toFixed(2)} KB threshold)`);
         }
@@ -1803,7 +1897,8 @@ export async function GET(
 
     for (const form of formsToProcess) {
       try {
-        const normalizedFormKey = normalizeFormKey(form.form_name || '');
+        const customForm = resolveCustomForm(form.form_name || '');
+        const normalizedFormKey = customForm?.dedupeKey || normalizeFormKey(form.form_name || '');
         const isNoticeToEmployee = normalizedFormKey === 'notice-to-employee';
 
         const base64Data = toBase64(form.form_data);
@@ -2156,7 +2251,7 @@ export async function GET(
         signatureAuditEntries.push({
           formName: auditFormName,
           normalizedFormName,
-          displayName: displayNameForForm(auditFormName),
+          displayName: displayNameForForm(auditFormName, customForm),
           signatureType: signatureForForm?.signature_type || null,
           sourceForm: signatureSourceForm,
           hasData,
