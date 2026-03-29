@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { canUserAccessEventById } from "@/lib/event-access";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -168,78 +169,6 @@ async function getAuthContext(req: NextRequest): Promise<AuthContext | null> {
   };
 }
 
-async function canAccessEvent(eventId: string, auth: AuthContext): Promise<boolean> {
-  const { data: event, error: eventError } = await supabaseAdmin
-    .from("events")
-    .select("id, created_by, venue")
-    .eq("id", eventId)
-    .maybeSingle();
-
-  if (eventError) {
-    throw new Error(eventError.message);
-  }
-
-  if (!event) return false;
-  if (auth.role === "exec" || auth.role === "admin" || auth.role === "supervisor3") return true;
-  if (event.created_by === auth.user.id) return true;
-
-  if (auth.role === "manager") {
-    // Allow if directly on the event team
-    const { data: teamEntry } = await supabaseAdmin
-      .from("event_teams")
-      .select("event_id")
-      .eq("event_id", eventId)
-      .eq("vendor_id", auth.user.id)
-      .maybeSingle();
-    if (teamEntry) return true;
-
-    // Allow if the event is at one of their assigned venues
-    if (event.venue) {
-      const { data: venueLinks } = await supabaseAdmin
-        .from("venue_managers")
-        .select("venue_id")
-        .eq("manager_id", auth.user.id)
-        .eq("is_active", true);
-
-      if (venueLinks && venueLinks.length > 0) {
-        const venueIds = venueLinks.map((v: any) => v.venue_id);
-        const { data: venueRefs } = await supabaseAdmin
-          .from("venue_reference")
-          .select("venue_name")
-          .in("id", venueIds);
-
-        const assignedVenueNames = (venueRefs || []).map((v: any) => v.venue_name).filter(Boolean);
-        if (assignedVenueNames.includes(event.venue)) return true;
-      }
-    }
-  }
-
-  if (auth.role === "supervisor" || auth.role === "supervisor2" || auth.role === "supervisor3") {
-    const { data: links, error: linksError } = await supabaseAdmin
-      .from("manager_team_members")
-      .select("manager_id")
-      .eq("member_id", auth.user.id)
-      .eq("is_active", true);
-
-    if (linksError) {
-      throw new Error(linksError.message);
-    }
-
-    if ((links || []).some((row) => row.manager_id === event.created_by)) return true;
-
-    // Also allow if directly on the event team
-    const { data: teamEntry } = await supabaseAdmin
-      .from("event_teams")
-      .select("event_id")
-      .eq("event_id", eventId)
-      .eq("vendor_id", auth.user.id)
-      .maybeSingle();
-    if (teamEntry) return true;
-  }
-
-  return false;
-}
-
 async function getLocationsAndAssignments(eventId: string) {
   const [locationsResult, assignmentsResult] = await Promise.all([
     supabaseAdmin
@@ -278,7 +207,10 @@ export async function GET(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const allowed = await canAccessEvent(eventId, auth);
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.user.id,
+      role: auth.role,
+    });
     if (!allowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
@@ -305,7 +237,10 @@ export async function POST(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const allowed = await canAccessEvent(eventId, auth);
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.user.id,
+      role: auth.role,
+    });
     if (!allowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
@@ -384,7 +319,10 @@ export async function PUT(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const allowed = await canAccessEvent(eventId, auth);
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.user.id,
+      role: auth.role,
+    });
     if (!allowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
@@ -621,7 +559,10 @@ export async function DELETE(
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
-    const allowed = await canAccessEvent(eventId, auth);
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.user.id,
+      role: auth.role,
+    });
     if (!allowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }

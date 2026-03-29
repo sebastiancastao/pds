@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { canUserAccessEventById } from "@/lib/event-access";
 import { decrypt } from "@/lib/encryption";
 import { sendVenueProposalAlertEmail } from "@/lib/email";
 
@@ -178,6 +179,14 @@ export async function POST(req: NextRequest, { params }: { params: { id: string 
         { error: "You do not have permission to submit proposals" },
         { status: 403 }
       );
+    }
+
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.userId,
+      role: auth.role,
+    });
+    if (!allowed) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -422,6 +431,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
     }
 
     if (!MANAGE_ROLES.has(auth.role)) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+    }
+
+    const allowed = await canUserAccessEventById(supabaseAdmin, eventId, {
+      userId: auth.userId,
+      role: auth.role,
+    });
+    if (!allowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
     }
 

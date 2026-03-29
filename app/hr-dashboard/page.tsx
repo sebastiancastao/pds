@@ -226,13 +226,6 @@ function HRDashboardContent() {
     });
   };
 
-  type AzNyCommissionCalcItem = {
-    eligible: boolean;
-    actualHours: number;
-    extAmtRegular: number;
-    isWeeklyOT: boolean;
-  };
-
   type OtherAdjustmentType = "reimbursement_1" | "meal_break";
   const DEFAULT_OTHER_ADJUSTMENT_TYPE: OtherAdjustmentType = "reimbursement_1";
   const normalizeOtherAdjustmentType = (value?: string | null): OtherAdjustmentType => {
@@ -246,34 +239,6 @@ function HRDashboardContent() {
   };
   const getOtherAdjustmentTypeLabel = (value?: string | null): string =>
     normalizeOtherAdjustmentType(value) === "meal_break" ? "Meal Break" : "Reimbursement 1";
-
-  const computeAzNyCommissionPerVendor = (
-    items: AzNyCommissionCalcItem[],
-    totalCommissionPool: number
-  ): number => {
-    const eligibleItems = items.filter((i) => i.eligible && i.actualHours > 0);
-    const vendorCount = eligibleItems.length;
-    if (vendorCount <= 0) return 0;
-
-    let commissionPerVendor = 0;
-    for (let iter = 0; iter < 20; iter++) {
-      const sumExtAmtOnRegRate = eligibleItems.reduce((sum, i) => {
-        if (!i.isWeeklyOT) return sum + i.extAmtRegular;
-        const totalFinalCommissionBase = Math.max(150, i.extAmtRegular + commissionPerVendor);
-        return sum + (1.5 * totalFinalCommissionBase);
-      }, 0);
-
-      const next = (totalCommissionPool - sumExtAmtOnRegRate) / vendorCount;
-      const nextCapped = Math.max(0, next);
-      if (Math.abs(nextCapped - commissionPerVendor) < 0.01) {
-        commissionPerVendor = nextCapped;
-        break;
-      }
-      commissionPerVendor = nextCapped;
-    }
-
-    return commissionPerVendor;
-  };
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
@@ -740,25 +705,6 @@ function HRDashboardContent() {
           ? commissionPoolDollars / vendorCountForCommission
           : 0;
 
-        const commissionPerVendorAzNy = isAZorNY
-          ? computeAzNyCommissionPerVendor(
-            vendorPayments.map((p: any) => {
-              const actualHours = getEffectiveHours(p);
-              const div = p?.users?.division;
-              const eligible = !isTrailersDivision(div) && isVendorDivision(div) && actualHours > 0;
-              const priorWeeklyHours = weeklyHoursMap[eventId]?.[p.user_id] || 0;
-              const isWeeklyOT = (priorWeeklyHours + actualHours) > 40;
-              return {
-                eligible,
-                actualHours,
-                extAmtRegular: actualHours * baseRate,
-                isWeeklyOT,
-              };
-            }),
-            commissionPoolDollars
-          )
-          : 0;
-
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
         // Pro-rate tips by hours worked; exclude vendors with tips deleted
@@ -805,24 +751,29 @@ function HRDashboardContent() {
             let loadedRate = 0;
 
             if (isAZorNY) {
-              const rawCommissionAmt = (!isTrailers && isVendorDivision(memberDivision) && actualHours > 0)
-                ? commissionPerVendorAzNy
+              // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
+              const prelimCommission = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+                ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+                : 0;
+              const totalFinalCommissionBase = actualHours > 0
+                ? Math.max(150, extAmtRegular + prelimCommission)
+                : 0;
+              const loadedRateBase = actualHours > 0
+                ? totalFinalCommissionBase / actualHours
+                : baseRate;
+              otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
+              extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtOnRegRateNonAzNy;
+              // Final commission uses CA formula against the resolved extAmtOnRegRate
+              const rawCommissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+                ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
                 : 0;
               commissionAmt = payment.commission_deleted === true
                 ? 0
                 : payment.commission_override != null
                 ? Number(payment.commission_override)
                 : rawCommissionAmt;
-              const totalFinalCommissionBase = actualHours > 0
-                ? Math.max(150, extAmtRegular + commissionAmt)
-                : 0;
-              const loadedRateBase = actualHours > 0
-                ? totalFinalCommissionBase / actualHours
-                : baseRate;
-              otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-              extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtRegular;
               totalFinalCommissionAmt = actualHours > 0
-                ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase)
+                ? extAmtOnRegRate + commissionAmt
                 : 0;
               loadedRate = loadedRateBase;
             } else {

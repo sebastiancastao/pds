@@ -223,43 +223,6 @@ export async function POST(req: NextRequest) {
       };
     };
 
-    type AzNyCommissionCalcItem = {
-      eligible: boolean;
-      actualHours: number;
-      extAmtRegular: number;
-      isWeeklyOT: boolean;
-    };
-
-    const computeAzNyCommissionPerVendor = (
-      items: AzNyCommissionCalcItem[],
-      totalCommissionPool: number
-    ): number => {
-      const eligibleItems = items.filter((i) => i.eligible && i.actualHours > 0);
-      const vendorCount = eligibleItems.length;
-      if (vendorCount <= 0) return 0;
-
-      // Fixed-point iteration because weekly OT Ext Amt depends on commission via Loaded Rate.
-      let commissionPerVendor = 0;
-      for (let iter = 0; iter < 20; iter++) {
-        const sumExtAmtOnRegRate = eligibleItems.reduce((sum, i) => {
-          if (!i.isWeeklyOT) return sum + i.extAmtRegular;
-          const totalFinalCommissionBase = Math.max(150, i.extAmtRegular + commissionPerVendor);
-          // Weekly OT Ext Amt = OT Rate * hours = 1.5 * (regular Loaded Rate) * hours = 1.5 * totalFinalCommissionBase
-          return sum + (1.5 * totalFinalCommissionBase);
-        }, 0);
-
-        const next = (totalCommissionPool - sumExtAmtOnRegRate) / vendorCount;
-        const nextCapped = Math.max(0, next);
-        if (Math.abs(nextCapped - commissionPerVendor) < 0.01) {
-          commissionPerVendor = nextCapped;
-          break;
-        }
-        commissionPerVendor = nextCapped;
-      }
-
-      return commissionPerVendor;
-    };
-
     // Mirror HR dashboard getEffectiveHours: use effective_hours + 0.5h gate/phone lead when available.
     const GATE_PHONE_OFFSET_HOURS = 0.5;
     const HOURS_MISMATCH_THRESHOLD = 0.01;
@@ -1274,34 +1237,22 @@ export async function POST(req: NextRequest) {
         let extAmtOnRegRate = 0;
 
         if (azNyMode) {
-          const items: AzNyCommissionCalcItem[] = (eventWorkers || []).map((w: any) => {
-            const wh = getActualHoursForWorker(event, w);
-            const div = w?.division;
-            const divNorm = normalizeDivision(div);
-            const eligible = !isTrailersDivision(div) && (isVendorDivision(div) || divNorm === "") && wh > 0;
-            const prior = weeklyPriorHoursByEventId[eventId]?.[w?.user_id] || 0;
-            const wIsWeeklyOT = (prior + wh) > 40;
-            return {
-              eligible,
-              actualHours: wh,
-              extAmtRegular: wh * baseRate,
-              isWeeklyOT: wIsWeeklyOT,
-            };
-          });
-
-          const commissionPerVendorAzNy = computeAzNyCommissionPerVendor(items, commissionPoolDollars);
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
             (isVendorDivision(worker?.division) || normalizeDivision(worker?.division) === "") &&
             actualHours > 0;
-          commissionAmt = isEligibleThisWorker ? commissionPerVendorAzNy : 0;
-
-          const totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + commissionAmt) : 0;
+          const prelimCommission = isEligibleThisWorker
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            : 0;
+          const totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtRegular;
-          totalFinalCommissionAmt = actualHours > 0 ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase) : 0;
+          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
+          commissionAmt = isEligibleThisWorker
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            : 0;
+          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =
@@ -1842,39 +1793,22 @@ export async function POST(req: NextRequest) {
         let totalFinalCommissionAmt = 0;
 
         if (isAZorNY) {
-          const items: AzNyCommissionCalcItem[] = (eventWorkers || []).map((w: any) => {
-            const wh = getActualHoursForWorker(event, w);
-            const div = w?.division;
-            const divNorm = normalizeDivision(div);
-            const eligible = !isTrailersDivision(div) && (isVendorDivision(div) || divNorm === "") && wh > 0;
-            const prior = weeklyPriorHoursByEventId[eventId]?.[w?.user_id] || 0;
-            const wIsWeeklyOT = (prior + wh) > 40;
-            return {
-              eligible,
-              actualHours: wh,
-              extAmtRegular: wh * baseRate,
-              isWeeklyOT: wIsWeeklyOT,
-            };
-          });
-
-          const commissionPerVendorAzNy = computeAzNyCommissionPerVendor(items, commissionPoolDollars);
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
             (isVendorDivision(worker?.division) || normalizeDivision(worker?.division) === "") &&
             actualHours > 0;
-
-          commissionAmt = isEligibleThisWorker ? commissionPerVendorAzNy : 0;
-
-          totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + commissionAmt) : 0;
+          const prelimCommission = isEligibleThisWorker
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            : 0;
+          totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-
-          // Ext Amt on Reg Rate: AZ/NY = baseRate x hours; if weekly OT (>40h), use OT rate x hours
-          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtRegular;
-
-          // When weekly OT applies, Ext Amt already reflects the OT multiplier on Loaded Rate, so don't add commission again.
-          totalFinalCommissionAmt = actualHours > 0 ? (isWeeklyOT ? extAmtOnRegRate : totalFinalCommissionBase) : 0;
+          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
+          commissionAmt = isEligibleThisWorker
+            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            : 0;
+          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =

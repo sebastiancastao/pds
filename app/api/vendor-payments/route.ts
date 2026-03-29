@@ -410,8 +410,6 @@ export async function GET(req: NextRequest) {
       };
 
       // 8) AZ/NY has different commission logic
-      const isAZorNY = eventState === 'AZ' || eventState === 'NY';
-
       // 10) Build per-user vendor payment rows (matches event-dashboard logic exactly)
       const rows: any[] = [];
       for (const uid of vendorIds) {
@@ -420,22 +418,12 @@ export async function GET(req: NextRequest) {
         const isTrailers = memberDivision === 'trailers';
 
 
-        // Ext Amt on Reg Rate: AZ/NY = baseRate * hours (never 1.5x); others = baseRate * 1.5 * hours
-        const extAmtOnRegRate = isAZorNY
-          ? hours * baseRate
-          : hours * baseRate * 1.5;
+        // Ext Amt on Reg Rate: always baseRate * hours * 1.5 for all states
+        const extAmtOnRegRate = hours * baseRate * 1.5;
 
-        // Commission: AZ/NY = pool / vendors; others subtract Ext Amt
-        let commissions;
-        if (isAZorNY) {
-          commissions = !isTrailers && vendorCountForCommission > 0 && hours > 0
-            ? perVendorCommissionShare
-            : 0;
-        } else {
-          commissions = !isTrailers && vendorCountForCommission > 0
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
-            : 0;
-        }
+        const commissions = !isTrailers && vendorCountForCommission > 0 && hours > 0
+          ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+          : 0;
 
         // Total Final Commission = Ext Amt + Commission; minimum $150
         const totalFinalCommission = hours > 0

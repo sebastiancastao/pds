@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { canUserAccessLoadedEvent } from "@/lib/event-access";
 import { decrypt } from "@/lib/encryption";
 import { FIXED_REGION_RADIUS_MILES, geocodeAddress } from "@/lib/geocoding";
 
@@ -178,13 +179,6 @@ export async function GET(
     }
 
     const requesterRole = String(requester.role || '').toLowerCase();
-    const canAccessByRole =
-      requesterRole === 'exec' ||
-      requesterRole === 'admin' ||
-      requesterRole === 'manager' ||
-      requesterRole === 'supervisor' ||
-      requesterRole === 'supervisor2' ||
-      requesterRole === 'supervisor3';
 
     // Get event details
     const { data: event, error: eventError } = await supabaseAdmin
@@ -203,8 +197,20 @@ export async function GET(
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
 
-    // Allow event creator and authorized management roles to load availability.
-    if (!canAccessByRole && event.created_by !== user.id) {
+    const allowed = await canUserAccessLoadedEvent(
+      supabaseAdmin,
+      {
+        id: eventId,
+        created_by: String(event.created_by || '').trim() || null,
+        venue: String(event.venue || '').trim() || null,
+      },
+      {
+        userId: user.id,
+        role: requesterRole,
+      }
+    );
+
+    if (!allowed) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 403 });
     }
 
