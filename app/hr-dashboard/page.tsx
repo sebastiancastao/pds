@@ -160,12 +160,14 @@ function HRDashboardContent() {
     const mm = totalMinutes % 60;
     return `${hh}:${String(mm).padStart(2, "0")}`;
   };
-  const getHoursInDecimalFromHHMM = (decimalHours: number): number => {
-    const hoursHHMM = formatHoursHHMM(decimalHours);
-    const [hoursPartRaw, minutesPartRaw] = hoursHHMM.split(':');
-    const hoursPart = Number(hoursPartRaw || 0);
-    const minutesPart = Number(minutesPartRaw || 0);
-    return Number((hoursPart + (minutesPart / 60)).toFixed(2));
+  const roundHoursToTwoDecimals = (decimalHours: number): number => {
+    if (!Number.isFinite(decimalHours)) return 0;
+    const absHours = Math.abs(decimalHours);
+    const roundedHours = Math.round((absHours + 1e-9) * 100) / 100;
+    return decimalHours < 0 ? -roundedHours : roundedHours;
+  };
+  const formatHoursDecimal = (decimalHours: number): string => {
+    return roundHoursToTwoDecimals(decimalHours).toFixed(2);
   };
   const roundUpThousandsToNextHundred = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -707,14 +709,14 @@ function HRDashboardContent() {
 
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
-        // Pro-rate tips by hours worked; exclude vendors with tips deleted
-        const totalEventHours = vendorPayments.reduce((sum: number, p: any) => {
+        // Pro-rate tips by the same rounded payroll hours shown in the UI.
+        const totalEventTipHours = vendorPayments.reduce((sum: number, p: any) => {
           if (p.tips_deleted === true) return sum;
-          return sum + getEffectiveHours(p);
+          return sum + roundHoursToTwoDecimals(getEffectiveHours(p));
         }, 0);
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
-          commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventHours, memberCount, vendorCountForCommission,
+          commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventTipHours, memberCount, vendorCountForCommission,
           summaryPool: eventPaymentSummary.commission_pool_dollars,
           eventCommissionPool: eventInfo.commission_pool,
           summaryTips: eventPaymentSummary.total_tips,
@@ -734,14 +736,15 @@ function HRDashboardContent() {
             const adjustmentAmount = Number(payment.adjustment_amount || 0);
             const adjustmentType = normalizeOtherAdjustmentType(payment.adjustment_note);
             const actualHours = getEffectiveHours(payment);
+            const roundedPayrollHours = roundHoursToTwoDecimals(actualHours);
 
             const memberDivision = payment?.users?.division;
             const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
 
             const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
-            const extAmtRegular = actualHours * baseRate;
-            const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+            const extAmtRegular = roundedPayrollHours * baseRate;
+            const extAmtOnRegRateNonAzNy = roundedPayrollHours * baseRate * 1.5;
 
             // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
             let commissionAmt = 0;
@@ -752,19 +755,19 @@ function HRDashboardContent() {
 
             if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
-              const prelimCommission = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              const prelimCommission = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
                 ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
                 : 0;
-              const totalFinalCommissionBase = actualHours > 0
+              const totalFinalCommissionBase = roundedPayrollHours > 0
                 ? Math.max(150, extAmtRegular + prelimCommission)
                 : 0;
-              const loadedRateBase = actualHours > 0
-                ? totalFinalCommissionBase / actualHours
+              const loadedRateBase = roundedPayrollHours > 0
+                ? totalFinalCommissionBase / roundedPayrollHours
                 : baseRate;
               otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-              extAmtOnRegRate = isWeeklyOT ? (otRate * actualHours) : extAmtOnRegRateNonAzNy;
+              extAmtOnRegRate = isWeeklyOT ? (otRate * roundedPayrollHours) : extAmtOnRegRateNonAzNy;
               // Final commission uses CA formula against the resolved extAmtOnRegRate
-              const rawCommissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
                 ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
                 : 0;
               commissionAmt = payment.commission_deleted === true
@@ -772,7 +775,7 @@ function HRDashboardContent() {
                 : payment.commission_override != null
                 ? Number(payment.commission_override)
                 : rawCommissionAmt;
-              totalFinalCommissionAmt = actualHours > 0
+              totalFinalCommissionAmt = roundedPayrollHours > 0
                 ? extAmtOnRegRate + commissionAmt
                 : 0;
               loadedRate = loadedRateBase;
@@ -780,7 +783,7 @@ function HRDashboardContent() {
               const rawTotalFinalCommission = isTrailers
                 ? extAmtOnRegRateNonAzNy
                 : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
-              const rawCommissionAmt = (!isTrailers && actualHours > 0 && vendorCountForCommission > 0)
+              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
                 ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRateNonAzNy)
                 : 0;
               commissionAmt = payment.commission_deleted === true
@@ -789,7 +792,7 @@ function HRDashboardContent() {
                 ? Number(payment.commission_override)
                 : rawCommissionAmt;
               extAmtOnRegRate = extAmtOnRegRateNonAzNy;
-              totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
+              totalFinalCommissionAmt = roundedPayrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
             }
 
             const totalFinalCommissionForLoadedRate =
@@ -797,8 +800,8 @@ function HRDashboardContent() {
                 ? (totalFinalCommissionAmt + adjustmentAmount)
                 : totalFinalCommissionAmt;
             const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
-            loadedRate = actualHours > 0
-              ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / actualHours)
+            loadedRate = roundedPayrollHours > 0
+              ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
               : 0;
 
             // Tips: respect per-vendor overrides/deletions, then pro-rate, then fall back to stored value
@@ -806,8 +809,8 @@ function HRDashboardContent() {
               ? 0
               : payment.tips_override != null
               ? Number(payment.tips_override)
-              : (totalEventHours > 0 && totalTips > 0)
-              ? totalTips * (actualHours / totalEventHours)
+              : (totalEventTipHours > 0 && totalTips > 0)
+              ? totalTips * (roundedPayrollHours / totalEventTipHours)
               : Number(payment.tips || 0);
 
             const restBreak = getRestBreakAmount(actualHours, eventState);
@@ -1132,7 +1135,7 @@ function HRDashboardContent() {
             const loadedRate = Number(p.loadedRate ?? regRate);
             const hours = Number(p.actualHours || 0);
             const hoursHHMM = formatHoursHHMM(hours);
-            const hoursInDecimal = getHoursInDecimalFromHHMM(hours);
+            const hoursInDecimal = roundHoursToTwoDecimals(hours);
             const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
             const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
             const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
@@ -2103,7 +2106,7 @@ function HRDashboardContent() {
                       </div>
                       <div className="text-right">
                         <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(v.totalPayment)}</div>
-                        <div className="text-sm text-gray-500">{formatHoursHHMM(v.totalHours)} hrs</div>
+                        <div className="text-sm text-gray-500">{formatHoursDecimal(v.totalHours)} hrs</div>
                       </div>
                     </div>
                     <div className="overflow-x-auto">
@@ -2136,7 +2139,7 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Hours</div>
-                                  <div>{formatHoursHHMM(ev.eventHours || 0)}</div>
+                                  <div>{formatHoursDecimal(ev.eventHours || 0)}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Adjusted Gross Amount</div>
@@ -2244,7 +2247,7 @@ function HRDashboardContent() {
                                                   <>
                                                     <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
                                                     <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
-                                                    <td className="p-2 text-sm">{formatHoursHHMM(hours)}</td>
+                                                    <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
                                                     {showOT && (
                                                       <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                     )}

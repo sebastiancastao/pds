@@ -5,7 +5,7 @@ const nextConfig = {
 
   // Prevent Next.js from bundling tesseract.js — it relies on dynamic worker
   // paths that break when the package is bundled by webpack.
-  serverExternalPackages: ['tesseract.js'],
+  serverComponentsExternalPackages: ['tesseract.js'],
 
   // Webpack optimization for PDF libraries
   webpack: (config, { isServer }) => {
@@ -98,4 +98,3 @@ const nextConfig = {
 };
 
 module.exports = nextConfig;
-

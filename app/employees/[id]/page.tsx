@@ -66,6 +66,8 @@ type SickLeaveSummary = {
   accrued_months: number;
   accrued_hours: number;
   accrued_days: number;
+  carry_over_hours: number;
+  carry_over_days?: number;
   balance_hours: number;
   balance_days: number;
 };
