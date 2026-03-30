@@ -1112,15 +1112,15 @@ function HRDashboardContent() {
           'Event': event.name || '',
           'Date': event.date || '',
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
-          'Adjusted Gross Amount': `$${formatExactMoney(Number(event.adjustedGrossAmount || 0))}`,
-          'Total Commission': `$${formatExactMoney(Number(event.commissionDollars || 0))}`,
-          'Commission per Vendor': `$${formatPayrollMoney(Number(event.commissionPerVendor || 0))}`,
+          'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
+          'Total Commission': Number(Number(event.commissionDollars || 0).toFixed(2)),
+          'Commission per Vendor': Number(roundUpThousandsToNextHundred(Number(event.commissionPerVendor || 0)).toFixed(2)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
-          'Total Tips': `$${formatExactMoney(Number(event.totalTips || 0))}`,
-          'Total Rest Break': `$${formatExactMoney(Number(event.totalRestBreak || 0))}`,
-          'Total Other': `$${formatExactMoney(Number(event.totalOther || 0))}`,
-          'Total': `$${formatExactMoney(Number(event.eventTotal || 0))}`,
-          'Total Ext Amt Reg Rate': `$${formatExactMoney(totalExtAmtRegRate)}`,
+          'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
+          'Total Rest Break': Number(Number(event.totalRestBreak || 0).toFixed(2)),
+          'Total Other': Number(Number(event.totalOther || 0).toFixed(2)),
+          'Total': Number(Number(event.eventTotal || 0).toFixed(2)),
+          'Total Ext Amt Reg Rate': Number(Number(totalExtAmtRegRate).toFixed(2)),
         });
 
         if (Array.isArray(event.payments) && event.payments.length > 0) {
@@ -1153,13 +1153,13 @@ function HRDashboardContent() {
               'Rate in Effect': formatPayrollMoney(loadedRate),
               'Hours': hoursHHMM,
               'Hours in Decimal': hoursInDecimal,
-              'Ext Amt on Reg Rate': formatExactMoney(extAmtOnRegRate),
-              'Commission Amt': formatPayrollMoney(commissionAmt),
-              'Total Final Commission Amt': formatPayrollMoney(totalFinalCommissionAmt),
-              'Tips': formatPayrollMoney(tips),
-              'Rest Break': hideRest ? 'N/A' : formatPayrollMoney(restBreak),
-              'Other': formatPayrollMoney(other),
-              'Total Gross Pay': formatPayrollMoney(totalGrossPay),
+              'Ext Amt on Reg Rate': Number(Number(extAmtOnRegRate).toFixed(2)),
+              'Commission Amt': Number(roundUpThousandsToNextHundred(commissionAmt).toFixed(2)),
+              'Total Final Commission Amt': Number(roundUpThousandsToNextHundred(totalFinalCommissionAmt).toFixed(2)),
+              'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
+              'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
+              'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
+              'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
             });
           });
         }
@@ -1722,10 +1722,11 @@ function HRDashboardContent() {
     return sickLeaveAccruals.reduce(
       (acc, row) => {
         acc.totalAccruedHours += Number(row.accrued_hours || 0);
+        acc.totalCarryOverHours += Number(row.carry_over_hours || 0);
         acc.totalBalanceHours += Number(row.balance_hours || 0);
         return acc;
       },
-      { totalAccruedHours: 0, totalBalanceHours: 0 }
+      { totalAccruedHours: 0, totalCarryOverHours: 0, totalBalanceHours: 0 }
     );
   }, [sickLeaveAccruals]);
 
@@ -2592,10 +2593,16 @@ function HRDashboardContent() {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
               <div className="apple-card p-5">
                 <p className="text-sm text-blue-700">Employees With Earned Hours</p>
                 <p className="text-3xl font-semibold text-blue-700">{sickLeaveAccruals.length}</p>
+              </div>
+              <div className="apple-card p-5">
+                <p className="text-sm text-violet-700">Total Carry Over Hours</p>
+                <p className="text-3xl font-semibold text-violet-700">
+                  {formatSickLeaveHours(sickLeaveAccrualTotals.totalCarryOverHours)}
+                </p>
               </div>
               <div className="apple-card p-5">
                 <p className="text-sm text-indigo-700">Total Earned Hours</p>

@@ -18,6 +18,15 @@ const supabaseAnon = createClient(
 
 const SICK_LEAVE_ACCRUAL_HOURS_WORKED = 30;
 const HOURS_PER_WORKDAY = 8;
+const CARRY_OVER_OVERRIDE_REASON_MARKER = "HR_CARRY_OVER_OVERRIDE";
+const YEAR_TO_DATE_OVERRIDE_REASON_MARKER = "HR_YEAR_TO_DATE_OVERRIDE";
+
+function getAccrualOverrideField(reason: string | null): "carry_over" | "year_to_date" | null {
+  if (!reason) return null;
+  if (reason.includes(CARRY_OVER_OVERRIDE_REASON_MARKER)) return "carry_over";
+  if (reason.includes(YEAR_TO_DATE_OVERRIDE_REASON_MARKER)) return "year_to_date";
+  return null;
+}
 
 // ---------- Utilities ----------
 function toDateSafe(v: any): Date | null {
@@ -485,7 +494,7 @@ export async function GET(
 
     const { data: sickLeaveRows, error: sickLeaveErr } = await supabaseAdmin
       .from("sick_leaves")
-      .select("id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at")
+      .select("id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at, updated_at")
       .eq("user_id", userId)
       .order("start_date", { ascending: false });
 
@@ -497,35 +506,93 @@ export async function GET(
       );
     }
 
-    const sickLeaveEntries = (sickLeaveRows ?? []).map((row: any) => ({
-      id: row.id,
-      start_date: row.start_date,
-      end_date: row.end_date,
-      duration_hours: Number(row.duration_hours ?? 0),
-      status: String(row.status ?? "pending").toLowerCase(),
-      reason: row.reason ?? null,
-      approved_at: row.approved_at ?? null,
-      approved_by: row.approved_by ?? null,
-      created_at: row.created_at ?? null,
-    }));
+    const currentYearStart = new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1));
+    const teamEventIdSet = new Set(vendorEventIds);
 
-    const totalSickHours = sickLeaveEntries.reduce((sum, entry) => sum + (entry.duration_hours || 0), 0);
+    // Year-split worked hours (team events only, matching HR accrual logic)
+    const hoursBeforeYear = normalized
+      .filter(r => r.event_id && teamEventIdSet.has(r.event_id) && r.clock_in && new Date(r.clock_in) < currentYearStart)
+      .reduce((sum, r) => sum + r.duration_hours, 0);
+    const hoursThisYear = normalized
+      .filter(r => r.event_id && teamEventIdSet.has(r.event_id) && r.clock_in && new Date(r.clock_in) >= currentYearStart)
+      .reduce((sum, r) => sum + r.duration_hours, 0);
+
+    let carryOverOverride: { hours: number; ts: number } | null = null;
+    let yearToDateOverride: { hours: number; ts: number } | null = null;
+    let totalSickHours = 0;
+    let usedHoursBeforeYear = 0;
+    const sickLeaveEntries: any[] = [];
+
+    for (const row of (sickLeaveRows ?? []) as any[]) {
+      const overrideField = getAccrualOverrideField(row.reason);
+      if (overrideField) {
+        const overrideHours = Number(row.duration_hours || 0);
+        const ts =
+          toDateSafe(row.updated_at)?.getTime() ||
+          toDateSafe(row.created_at)?.getTime() ||
+          toDateSafe(row.approved_at)?.getTime() ||
+          toDateSafe(row.start_date)?.getTime() ||
+          0;
+        if (overrideField === "carry_over") {
+          if (!carryOverOverride || ts >= carryOverOverride.ts) {
+            carryOverOverride = { hours: Number(overrideHours.toFixed(2)), ts };
+          }
+        } else {
+          if (!yearToDateOverride || ts >= yearToDateOverride.ts) {
+            yearToDateOverride = { hours: Number(overrideHours.toFixed(2)), ts };
+          }
+        }
+        continue;
+      }
+
+      sickLeaveEntries.push({
+        id: row.id,
+        start_date: row.start_date,
+        end_date: row.end_date,
+        duration_hours: Number(row.duration_hours ?? 0),
+        status: String(row.status ?? "pending").toLowerCase(),
+        reason: row.reason ?? null,
+        approved_at: row.approved_at ?? null,
+        approved_by: row.approved_by ?? null,
+        created_at: row.created_at ?? null,
+      });
+
+      if (String(row.status ?? "").toLowerCase() !== "approved") continue;
+      const duration = Number(row.duration_hours || 0);
+      totalSickHours += duration;
+      const usedAt = toDateSafe(row.start_date) || toDateSafe(row.approved_at) || toDateSafe(row.created_at);
+      if (usedAt && usedAt < currentYearStart) {
+        usedHoursBeforeYear += duration;
+      }
+    }
+
     const tenureMonths = fullMonthsBetween(employee.hire_date);
-    const accruedHours = Number(
-      (totalHoursForTeamEvents / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2)
+    const base_carry_over_hours = Number(
+      Math.max(0, hoursBeforeYear / SICK_LEAVE_ACCRUAL_HOURS_WORKED - usedHoursBeforeYear).toFixed(2)
     );
-    const accruedDays = Number((accruedHours / HOURS_PER_WORKDAY).toFixed(2));
-    const availableHours = Number(Math.max(0, accruedHours - totalSickHours).toFixed(2));
-    const availableDays = Number((availableHours / HOURS_PER_WORKDAY).toFixed(2));
+    const carry_over_hours = Number(
+      Math.max(0, carryOverOverride?.hours ?? base_carry_over_hours).toFixed(2)
+    );
+    const base_year_to_date_hours = Number((hoursThisYear / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2));
+    const year_to_date_hours = Number(
+      Math.max(0, yearToDateOverride?.hours ?? base_year_to_date_hours).toFixed(2)
+    );
+    const accruedHours = Number((carry_over_hours + year_to_date_hours).toFixed(2));
+    const used_hours = Number(totalSickHours.toFixed(2));
+    const availableHours = Number(Math.max(0, accruedHours - used_hours).toFixed(2));
     const sickLeaveSummary = {
-      total_hours: Number(totalSickHours.toFixed(2)),
-      total_days: Number((totalSickHours / HOURS_PER_WORKDAY).toFixed(2)),
+      total_hours: used_hours,
+      total_days: Number((used_hours / HOURS_PER_WORKDAY).toFixed(2)),
       entries: sickLeaveEntries,
       accrued_months: tenureMonths,
       accrued_hours: accruedHours,
-      accrued_days: accruedDays,
+      accrued_days: Number((accruedHours / HOURS_PER_WORKDAY).toFixed(2)),
+      carry_over_hours,
+      carry_over_days: Number((carry_over_hours / HOURS_PER_WORKDAY).toFixed(2)),
+      year_to_date_hours,
+      year_to_date_days: Number((year_to_date_hours / HOURS_PER_WORKDAY).toFixed(2)),
       balance_hours: availableHours,
-      balance_days: availableDays,
+      balance_days: Number((availableHours / HOURS_PER_WORKDAY).toFixed(2)),
     };
 
     return NextResponse.json(

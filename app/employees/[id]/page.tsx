@@ -645,6 +645,7 @@ export default function WorkerProfilePage() {
   }, [eventInvitations, entries, sickLeaveEntries, submittedAvailability]);
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
+  const sickLeaveCarryOverHours = sickLeaveSummary?.carry_over_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
 
@@ -1315,10 +1316,14 @@ export default function WorkerProfilePage() {
                 </span>
               </div>
               <div className="apple-card p-4 space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   <div className="bg-pink-50 rounded-lg p-3 border border-pink-100">
                     <div className="text-xs font-medium text-pink-700">Used</div>
                     <div className="text-xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+                  </div>
+                  <div className="bg-violet-50 rounded-lg p-3 border border-violet-100">
+                    <div className="text-xs font-medium text-violet-700">Carry Over</div>
+                    <div className="text-xl font-bold text-violet-900">{formatHours(sickLeaveCarryOverHours)} hrs</div>
                   </div>
                   <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100">
                     <div className="text-xs font-medium text-indigo-700">Earned</div>

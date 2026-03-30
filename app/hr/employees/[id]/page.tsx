@@ -662,6 +662,7 @@ export default function EmployeeProfilePage() {
 
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
+  const sickLeaveCarryOverHours = sickLeaveSummary?.carry_over_hours ?? 0;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
 
@@ -1346,10 +1347,14 @@ export default function EmployeeProfilePage() {
                 </span>
               </div>
               <div className="apple-card p-6 space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="bg-gradient-to-br from-pink-50 to-pink-100 rounded-xl p-6 border border-pink-100 shadow-sm hover:shadow-md transition-shadow">
                     <div className="text-sm font-medium text-pink-700">Used</div>
                     <div className="text-3xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+                  </div>
+                  <div className="bg-gradient-to-br from-violet-50 to-violet-100 rounded-xl p-6 border border-violet-100 shadow-sm hover:shadow-md transition-shadow">
+                    <div className="text-sm font-medium text-violet-700">Carry Over</div>
+                    <div className="text-3xl font-bold text-violet-900">{formatHours(sickLeaveCarryOverHours)} hrs</div>
                   </div>
                   <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6 border border-indigo-100 shadow-sm hover:shadow-md transition-shadow">
                     <div className="text-sm font-medium text-indigo-700">Earned</div>

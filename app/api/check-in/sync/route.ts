@@ -142,6 +142,12 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
+        const itemTimestampMs = new Date(item.timestamp).getTime();
+        if (Number.isNaN(itemTimestampMs)) {
+          results.push({ id: item.id, success: false, error: "Invalid offline timestamp" });
+          continue;
+        }
+
         // Find active code
         const { data: codeRecord } = await supabaseAdmin
           .from("checkin_codes")
@@ -197,6 +203,76 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
+        const { data: lastClock } = await supabaseAdmin
+          .from("time_entries")
+          .select("action, timestamp")
+          .eq("user_id", workerId)
+          .in("action", ["clock_in", "clock_out"])
+          .lte("timestamp", item.timestamp)
+          .order("timestamp", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        const { data: lastEntry } = await supabaseAdmin
+          .from("time_entries")
+          .select("action, timestamp")
+          .eq("user_id", workerId)
+          .lte("timestamp", item.timestamp)
+          .order("timestamp", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (item.action === "clock_in") {
+          if (lastClock && lastClock.action === "clock_in") {
+            results.push({ id: item.id, success: false, error: "Worker is already clocked in" });
+            continue;
+          }
+        } else if (item.action === "clock_out") {
+          if (!lastClock || lastClock.action !== "clock_in") {
+            results.push({ id: item.id, success: false, error: "Worker is not clocked in" });
+            continue;
+          }
+
+          if (lastEntry?.action === "meal_start") {
+            const { error: autoMealErr } = await supabaseAdmin
+              .from("time_entries")
+              .insert({
+                user_id: workerId,
+                action: "meal_end",
+                division,
+                timestamp: item.timestamp,
+                notes: "Auto-ended on clock out (offline sync)",
+                event_id: item.eventId,
+              });
+            if (autoMealErr) {
+              results.push({ id: item.id, success: false, error: autoMealErr.message });
+              continue;
+            }
+          }
+        } else if (item.action === "meal_start") {
+          if (!lastEntry || (lastEntry.action !== "clock_in" && lastEntry.action !== "meal_end")) {
+            results.push({ id: item.id, success: false, error: "Worker must be clocked in to start a meal" });
+            continue;
+          }
+        } else if (item.action === "meal_end") {
+          if (!lastEntry || lastEntry.action !== "meal_start") {
+            results.push({ id: item.id, success: false, error: "Worker is not on a meal break" });
+            continue;
+          }
+          const mealStartMs = new Date(lastEntry.timestamp as string).getTime();
+          const elapsedMs = itemTimestampMs - mealStartMs;
+          const THIRTY_MINUTES_MS = 30 * 60 * 1000;
+          if (elapsedMs < THIRTY_MINUTES_MS) {
+            const remainingMins = Math.ceil((THIRTY_MINUTES_MS - elapsedMs) / 60000);
+            results.push({
+              id: item.id,
+              success: false,
+              error: `Meal break must be at least 30 minutes. ${remainingMins} minute(s) remaining.`,
+            });
+            continue;
+          }
+        }
+
         // Block clock_in for workers not confirmed on the event team, or outside the event window.
         if (item.action === "clock_in") {
           const [{ data: teamRecord }, { data: eventData }] = await Promise.all([
@@ -227,12 +303,6 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          const timestampMs = new Date(item.timestamp).getTime();
-          if (Number.isNaN(timestampMs)) {
-            results.push({ id: item.id, success: false, error: "Invalid offline timestamp" });
-            continue;
-          }
-
           const dateStr = String(eventData.event_date).split("T")[0];
           const eventStartMs = parseEventMs(dateStr, String(eventData.start_time));
           const windowOpenMs = eventStartMs - 3 * 60 * 60 * 1000;
@@ -248,7 +318,7 @@ export async function POST(req: NextRequest) {
             windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
           }
 
-          if (timestampMs < windowOpenMs) {
+          if (itemTimestampMs < windowOpenMs) {
             results.push({
               id: item.id,
               success: false,
@@ -257,7 +327,7 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          if (timestampMs > windowCloseMs) {
+          if (itemTimestampMs > windowCloseMs) {
             results.push({
               id: item.id,
               success: false,
