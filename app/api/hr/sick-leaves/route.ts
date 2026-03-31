@@ -74,12 +74,14 @@ type UserWithProfile = {
         last_name?: string | null;
         state?: string | null;
         city?: string | null;
+        sick_leave_carry_over_hours?: number | null;
       }
     | Array<{
         first_name?: string | null;
         last_name?: string | null;
         state?: string | null;
         city?: string | null;
+        sick_leave_carry_over_hours?: number | null;
       }>
     | null;
 };
@@ -90,6 +92,7 @@ type ProfileSummary = {
   employee_state: string | null;
   employee_city: string | null;
   hire_date: string | null;
+  sick_leave_carry_over_hours: number | null;
 };
 
 function chunkArray<T>(items: T[], size: number): T[][] {
@@ -136,12 +139,15 @@ function upsertProfile(profileMap: Map<string, ProfileSummary>, user: UserWithPr
   const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : "";
   const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : "";
   const fullName = `${firstName} ${lastName}`.trim() || String(user.email || "Unknown");
+  const rawCarryOver = profile?.sick_leave_carry_over_hours;
   profileMap.set(user.id, {
     employee_name: fullName,
     employee_email: String(user.email || ""),
     employee_state: profile?.state ?? null,
     employee_city: profile?.city ?? null,
     hire_date: user.created_at ?? null,
+    sick_leave_carry_over_hours:
+      rawCarryOver != null ? Number(rawCarryOver) : null,
   });
 }
 
@@ -215,7 +221,8 @@ export async function GET(req: NextRequest) {
             first_name,
             last_name,
             state,
-            city
+            city,
+            sick_leave_carry_over_hours
           )
         `
       )
@@ -522,8 +529,10 @@ export async function GET(req: NextRequest) {
         const base_carry_over_hours = Number(
           Math.max(0, accrued_hours_before_year - used_hours_before_year).toFixed(2)
         );
+        const profileCarryOver = profile?.sick_leave_carry_over_hours;
+        const markerCarryOver = carryOverOverrideByUser.get(id)?.hours;
         const carry_over_hours = Number(
-          Math.max(0, carryOverOverrideByUser.get(id)?.hours ?? base_carry_over_hours).toFixed(2)
+          Math.max(0, profileCarryOver ?? markerCarryOver ?? base_carry_over_hours).toFixed(2)
         );
         const year_to_date_hours = Number(
           Math.max(0, yearToDateOverrideByUser.get(id)?.hours ?? base_year_to_date_hours).toFixed(2)

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "security-check": "npm audit"
+    "security-check": "npm audit",
+    "import:sick-carryover": "node scripts/import-sick-leave-carry-over.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.71.2",

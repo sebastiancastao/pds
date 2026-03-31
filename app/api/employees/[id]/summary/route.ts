@@ -233,6 +233,7 @@ export async function GET(
           state,
           profile_photo_data,
           region_id,
+          sick_leave_carry_over_hours,
           regions ( id, name )
         )
       `)
@@ -264,6 +265,7 @@ export async function GET(
           state,
           profile_photo_data,
           region_id,
+          sick_leave_carry_over_hours,
           regions ( id, name )
         `)
         .eq("user_id", userId)
@@ -570,8 +572,11 @@ export async function GET(
     const base_carry_over_hours = Number(
       Math.max(0, hoursBeforeYear / SICK_LEAVE_ACCRUAL_HOURS_WORKED - usedHoursBeforeYear).toFixed(2)
     );
+    const profileCarryOver = profile?.sick_leave_carry_over_hours != null
+      ? Number(profile.sick_leave_carry_over_hours)
+      : null;
     const carry_over_hours = Number(
-      Math.max(0, carryOverOverride?.hours ?? base_carry_over_hours).toFixed(2)
+      Math.max(0, profileCarryOver ?? carryOverOverride?.hours ?? base_carry_over_hours).toFixed(2)
     );
     const base_year_to_date_hours = Number((hoursThisYear / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2));
     const year_to_date_hours = Number(
