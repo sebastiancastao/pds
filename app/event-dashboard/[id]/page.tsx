@@ -3309,7 +3309,7 @@ export default function EventDashboardPage() {
         if (memberDivision === 'trailers') return sum;
         if (tipsOverrides[uid] === null) return sum; // tips deleted for this user
         const ms = getDisplayedWorkedMs(uid);
-        return sum + (ms / (1000 * 60 * 60));
+        return sum + (Math.round((ms / (1000 * 60 * 60)) * 100) / 100);
       }, 0);
 
       const perVendorCommissionShare =
@@ -3319,7 +3319,7 @@ export default function EventDashboardPage() {
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getDisplayedWorkedMs(uid);
-        const actualHours = totalMs / (1000 * 60 * 60);
+        const actualHours = Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100;
         const memberDivision = member.users?.division;
 
         // No OT/DT logic in Payment tab
@@ -6043,7 +6043,7 @@ export default function EventDashboardPage() {
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
-                          const actualHours = totalMs / (1000 * 60 * 60);
+                          const actualHours = Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100;
                           const hoursHHMM = formatHoursFromMs(totalMs);
                           // Hours pool for prorating excludes 'trailers' division and users with deleted tips
                           const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
@@ -6051,7 +6051,7 @@ export default function EventDashboardPage() {
                             if (mDivision === 'trailers') return sum;
                             const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
                             if (tipsOverrides[mUid] === null) return sum; // tips deleted
-                            return sum + (getDisplayedWorkedMs(mUid) / (1000 * 60 * 60));
+                            return sum + (Math.round((getDisplayedWorkedMs(mUid) / (1000 * 60 * 60)) * 100) / 100);
                           }, 0);
 
                           // Use rates from database based on venue state

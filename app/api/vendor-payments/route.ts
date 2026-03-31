@@ -362,7 +362,7 @@ export async function GET(req: NextRequest) {
           if (m2 > 0) ms = Math.max(ms - m2, 0);
         }
 
-        totalsHours[uid] = ms / (1000 * 60 * 60);
+        totalsHours[uid] = Math.round((ms / (1000 * 60 * 60)) * 100) / 100;
       }
 
       // 5) Determine rates (matches event-dashboard logic)
@@ -621,7 +621,7 @@ export async function GET(req: NextRequest) {
           if (deductMs > 0) {
             mealDeductionHours[eid][uid] = deductMs / (1000 * 60 * 60);
           }
-          effectiveHoursFromTimesheet[eid][uid] = Math.max(workedMs - deductMs, 0) / (1000 * 60 * 60);
+          effectiveHoursFromTimesheet[eid][uid] = Math.round((Math.max(workedMs - deductMs, 0) / (1000 * 60 * 60)) * 100) / 100;
         }
       }
     }

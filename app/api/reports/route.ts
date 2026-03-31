@@ -134,10 +134,50 @@ export async function GET(req: NextRequest) {
         if (uid && !onboardingByUser.has(uid)) onboardingByUser.set(uid, o);
       });
 
+      // Attestation data — clock_out entries with attestation_accepted set
+      const allUserIds = (users || []).map((u: any) => u.id).filter(Boolean);
+      const attestationsByUser = new Map<string, any[]>();
+
+      if (allUserIds.length > 0) {
+        const { data: attestationEntries } = await supabaseAdmin
+          .from("time_entries")
+          .select("id, user_id, event_id, timestamp, attestation_accepted")
+          .in("user_id", allUserIds)
+          .eq("action", "clock_out")
+          .not("attestation_accepted", "is", null);
+
+        const { data: rejections } = await supabaseAdmin
+          .from("attestation_rejections")
+          .select("time_entry_id, user_id, rejection_reason, rejection_notes, created_at")
+          .in("user_id", allUserIds);
+
+        const rejectionsByTimeEntry = new Map<string, any>();
+        (rejections || []).forEach((r: any) => {
+          if (r.time_entry_id) rejectionsByTimeEntry.set(r.time_entry_id, r);
+        });
+
+        (attestationEntries || []).forEach((entry: any) => {
+          if (!entry.user_id) return;
+          if (!attestationsByUser.has(entry.user_id)) attestationsByUser.set(entry.user_id, []);
+          const rejection = rejectionsByTimeEntry.get(entry.id);
+          attestationsByUser.get(entry.user_id)!.push({
+            time_entry_id: entry.id,
+            event_id: entry.event_id || null,
+            timestamp: entry.timestamp,
+            accepted: entry.attestation_accepted,
+            rejection_reason: rejection?.rejection_reason || null,
+            rejection_notes: rejection?.rejection_notes || null,
+          });
+        });
+      }
+
       const mappedUsers = (users || []).map((u: any) => {
         const profile = Array.isArray(u.profiles) ? u.profiles[0] : u.profiles;
         const bg = bgByUser.get(u.id);
         const onboarding = onboardingByUser.get(u.id);
+        const attestations = attestationsByUser.get(u.id) || [];
+        const attestationAcceptedCount = attestations.filter((a: any) => a.accepted === true).length;
+        const attestationRejectedCount = attestations.filter((a: any) => a.accepted === false).length;
         return {
           id: u.id,
           email: u.email || "",
@@ -160,6 +200,10 @@ export async function GET(req: NextRequest) {
           onboarding_approved: onboarding?.onboarding_completed || false,
           onboarding_submitted_at: profile?.onboarding_completed_at || null,
           onboarding_approved_at: onboarding?.completed_date || null,
+          attestation_total: attestations.length,
+          attestation_accepted_count: attestationAcceptedCount,
+          attestation_rejected_count: attestationRejectedCount,
+          attestations,
         };
       });
 
@@ -171,6 +215,7 @@ export async function GET(req: NextRequest) {
       let inactiveCount = 0;
       let bgCompleted = 0;
       let onboardingApproved = 0;
+      let usersWithRejections = 0;
 
       for (const u of mappedUsers) {
         byRole[u.role || "unknown"] = (byRole[u.role || "unknown"] || 0) + 1;
@@ -179,6 +224,7 @@ export async function GET(req: NextRequest) {
         if (u.is_active) activeCount++; else inactiveCount++;
         if (u.background_check_completed) bgCompleted++;
         if (u.onboarding_approved) onboardingApproved++;
+        if (u.attestation_rejected_count > 0) usersWithRejections++;
       }
 
       result.users = {
@@ -187,6 +233,7 @@ export async function GET(req: NextRequest) {
         inactive: inactiveCount,
         background_check_completed: bgCompleted,
         onboarding_approved: onboardingApproved,
+        users_with_attestation_rejections: usersWithRejections,
         by_role: byRole,
         by_state: byState,
         by_division: byDivision,

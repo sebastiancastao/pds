@@ -823,7 +823,7 @@ function HRDashboardContent() {
               email: user?.email || 'N/A',
               division: memberDivision,
               actualHours,
-              regularHours: actualHours,
+              regularHours: roundedPayrollHours,
               regularPay: extAmtOnRegRate,
               overtimeHours: 0,
               overtimePay: 0,
@@ -965,7 +965,7 @@ function HRDashboardContent() {
               newAdj !== 0
                 ? (totalFinalCommissionAmt + newAdj)
                 : totalFinalCommissionAmt;
-            const rawHours = Number(p.actualHours || 0);
+            const rawHours = roundHoursToTwoDecimals(Number(p.actualHours || 0));
             const loadedRate = rawHours > 0
               ? Math.max(28.5, totalFinalCommissionForLoadedRate / rawHours)
               : 0;
