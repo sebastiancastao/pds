@@ -1174,6 +1174,53 @@ function HRDashboardContent() {
       return;
     }
 
+    // Add totals row to Event Summaries sheet
+    if (summaryRows.length > 0) {
+      const sumNum = (key: string) => summaryRows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
+      summaryRows.push({
+        'Venue': 'TOTAL',
+        'City': '',
+        'State': '',
+        'Event': '',
+        'Date': '',
+        'Hours': Number(paymentsByVenue.reduce((s: number, v: any) => s + v.events.reduce((es: number, ev: any) => es + Number(ev.eventHours || 0), 0), 0).toFixed(2)),
+        'Adjusted Gross Amount': Number(sumNum('Adjusted Gross Amount').toFixed(2)),
+        'Total Commission': Number(sumNum('Total Commission').toFixed(2)),
+        'Commission per Vendor': '',
+        'Vendors w/ Hours': '',
+        'Total Tips': Number(sumNum('Total Tips').toFixed(2)),
+        'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
+        'Total Other': Number(sumNum('Total Other').toFixed(2)),
+        'Total': Number(sumNum('Total').toFixed(2)),
+        'Total Ext Amt Reg Rate': Number(sumNum('Total Ext Amt Reg Rate').toFixed(2)),
+      });
+    }
+
+    // Add totals row to Payments sheet
+    if (rows.length > 0) {
+      const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
+      rows.push({
+        'Venue': 'TOTAL',
+        'City': '',
+        'State': '',
+        'Event Name': '',
+        'Event Date': '',
+        'Employee': '',
+        'Email': '',
+        'Reg Rate': '',
+        'Rate in Effect': '',
+        'Hours': '',
+        'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
+        'Ext Amt on Reg Rate': Number(sumNum('Ext Amt on Reg Rate').toFixed(2)),
+        'Commission Amt': Number(sumNum('Commission Amt').toFixed(2)),
+        'Total Final Commission Amt': Number(sumNum('Total Final Commission Amt').toFixed(2)),
+        'Tips': Number(sumNum('Tips').toFixed(2)),
+        'Rest Break': Number(rows.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
+        'Other': Number(sumNum('Other').toFixed(2)),
+        'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
+      });
+    }
+
     // Create workbook
     const workbook = XLSX.utils.book_new();
 
@@ -2321,6 +2368,36 @@ function HRDashboardContent() {
                                               })()}
                                             </tr>
                                           ))}
+                                          {(() => {
+                                            const st = normalizeState(ev.state || v.state);
+                                            const hideRest = false;
+                                            const showOT = st === "AZ" || st === "NY";
+                                            const payments: any[] = ev.payments;
+                                            const totHours = payments.reduce((s: number, p: any) => s + Number(p.actualHours || 0), 0);
+                                            const totExt = payments.reduce((s: number, p: any) => s + Number(p.extAmtOnRegRate ?? p.regularPay ?? 0), 0);
+                                            const totComm = payments.reduce((s: number, p: any) => s + Number(p.commissionAmt ?? p.commissions ?? 0), 0);
+                                            const totFinalComm = payments.reduce((s: number, p: any) => s + Number(p.totalFinalCommissionAmt ?? 0), 0);
+                                            const totTips = payments.reduce((s: number, p: any) => s + Number(p.tips || 0), 0);
+                                            const totRest = payments.reduce((s: number, p: any) => s + Number(p.restBreak || 0), 0);
+                                            const totOther = payments.reduce((s: number, p: any) => s + Number(p.adjustmentAmount || 0), 0);
+                                            const totGross = payments.reduce((s: number, p: any) => s + Number(p.finalPay || p.totalGrossPay || 0), 0);
+                                            return (
+                                              <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
+                                                <td className="p-2 uppercase tracking-wide">Total</td>
+                                                <td className="p-2"></td>
+                                                <td className="p-2"></td>
+                                                <td className="p-2">{totHours.toFixed(2)}</td>
+                                                {showOT && <td className="p-2"></td>}
+                                                <td className="p-2 text-green-600">${formatExactMoney(totExt)}</td>
+                                                <td className="p-2 text-purple-600">${formatPayrollMoney(totComm)}</td>
+                                                <td className="p-2 text-green-600">${formatPayrollMoney(totFinalComm)}</td>
+                                                <td className="p-2 text-orange-600">${formatPayrollMoney(totTips)}</td>
+                                                {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(totRest)}</td>}
+                                                <td className="p-2 text-right">${formatPayrollMoney(totOther)}</td>
+                                                <td className="p-2 text-right">${formatPayrollMoney(totGross)}</td>
+                                              </tr>
+                                            );
+                                          })()}
                                         </tbody>
                                       </table>
                                     </div>
@@ -2331,6 +2408,18 @@ function HRDashboardContent() {
                               </tr>
                             </>
                           ))}
+                          <tr key="venue-totals" style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
+                            <td className="px-4 py-2 text-gray-900 uppercase tracking-wide">Total</td>
+                            <td className="px-4 py-2"></td>
+                            <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => s + Number(ev.eventHours || 0), 0).toFixed(2)}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.adjustedGrossAmount || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.commissionDollars || 0), 0))}</td>
+                            <td className="px-4 py-2"></td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalTips || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalRestBreak || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalOther || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.eventTotal || 0), 0))}</td>
+                          </tr>
                         </tbody>
                       </table>
                     </div>
