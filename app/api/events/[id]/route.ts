@@ -318,6 +318,9 @@ export async function PUT(
     // Existing: tips
     const tips = body.tips === undefined || body.tips === "" ? null : Number(body.tips);
 
+    const fees = body.fees === undefined || body.fees === "" ? null : Number(body.fees);
+    const other_income = body.other_income === undefined || body.other_income === "" ? null : Number(body.other_income);
+
     // Debug
     console.log("EVENT UPDATE PAYLOAD:", {
       eventId,
@@ -382,6 +385,12 @@ export async function PUT(
     }
     if (tips !== null && !Number.isNaN(tips)) {
       updatePayload.tips = tips;
+    }
+    if (fees !== null && !Number.isNaN(fees)) {
+      updatePayload.fees = fees;
+    }
+    if (other_income !== null && !Number.isNaN(other_income)) {
+      updatePayload.other_income = other_income;
     }
 
     // Build update query - admin/exec can edit any event, supervisors own + manager's, others only their own

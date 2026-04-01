@@ -32,6 +32,8 @@ type EventItem = {
   tax_rate_percent?: number | null;
   merchandise_units?: number | null;
   merchandise_value?: number | null;
+  fees?: number | null;
+  other_income?: number | null;
 };
 
 type Venue = {
@@ -258,6 +260,8 @@ export default function EventDashboardPage() {
   const [stateTaxRate, setStateTaxRate] = useState<number>(0); // Tax rate from database based on venue state
   const [stateRatesData, setStateRatesData] = useState<StateRateData[]>([]); // Fetched rates from API
   const [tips, setTips] = useState<string>("");
+  const [fees, setFees] = useState<string>("");
+  const [otherIncome, setOtherIncome] = useState<string>("");
   // Tax amount displays the saved rate-derived value until the user edits it.
   const [manualTaxAmount, setManualTaxAmount] = useState<string>("");
   const [manualTaxEdited, setManualTaxEdited] = useState(false);
@@ -1019,6 +1023,8 @@ export default function EventDashboardPage() {
         setCommissionPool(eventData.commission_pool?.toString() || "");
         setTaxRate((eventData.tax_rate_percent ?? 0).toString());
         setTips((eventData as any).tips?.toString() || "");
+        setFees((eventData as any).fees?.toString() || "");
+        setOtherIncome((eventData as any).other_income?.toString() || "");
         setMerchandiseUnits(eventData.merchandise_units?.toString() || "");
         setMerchandiseValue(eventData.merchandise_value?.toString() || "");
 
@@ -2795,6 +2801,8 @@ export default function EventDashboardPage() {
         commission_pool: commissionPool !== "" ? Number(commissionPool) : null, // fraction (0.04)
         tax_rate_percent: normalizedTaxRatePercent,
         tips: tips !== "" ? Number(tips) : null,
+        fees: fees !== "" ? Number(fees) : null,
+        other_income: otherIncome !== "" ? Number(otherIncome) : null,
       };
       try { console.debug('[SALES-DEBUG] handleSaveSales payload:', payload); } catch {}
       const res = await fetch(`/api/events/${eventId}`, {
@@ -2907,17 +2915,19 @@ export default function EventDashboardPage() {
 
     const grossCollected = Number(ticketSales) || 0; // total collected
     const tipsNum = Number(tips) || 0;
+    const feesNum = Number(fees) || 0;
+    const otherIncomeNum = Number(otherIncome) || 0;
     const taxPct = Number(stateTaxRate) || 0;
 
     const totalSales = Math.max(grossCollected - tipsNum, 0); // Total collected - Tips
     const tax = resolveTaxAmount(totalSales, taxPct, manualTaxAmount, manualTaxEdited);
-    const netSales = Math.max(totalSales - tax, 0);
+    const netSales = Math.max(totalSales - tax - feesNum + otherIncomeNum, 0);
 
     const artistShare = netSales * (event.artist_share_percent / 100);
     const venueShare = netSales * (event.venue_share_percent / 100);
     const pdsShare = netSales * (event.pds_share_percent / 100);
 
-    const result = { grossCollected, tipsNum, totalSales, taxPct, tax, netSales, artistShare, venueShare, pdsShare };
+    const result = { grossCollected, tipsNum, totalSales, taxPct, tax, feesNum, otherIncomeNum, netSales, artistShare, venueShare, pdsShare };
     try {
       console.debug('[SALES-DEBUG] calculateShares:', result);
     } catch {}
@@ -2941,7 +2951,7 @@ export default function EventDashboardPage() {
   }, [ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
   // Memoize shares calculation - used across sales tab, payment tab, and save logic
-  const sharesData = useMemo(() => calculateShares(), [event, ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
+  const sharesData = useMemo(() => calculateShares(), [event, ticketSales, tips, fees, otherIncome, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
   const displayedTaxAmount = useMemo(() => {
     const grossCollected = Number(ticketSales) || 0;
@@ -4056,6 +4066,46 @@ export default function EventDashboardPage() {
                   </div>
 
                   <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Fees ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="number"
+                        value={fees}
+                        onChange={(e) => setFees(e.target.value)}
+                        disabled={salesReadOnly}
+                        placeholder="0"
+                        step="0.01"
+                        min="0"
+                        className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                          salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                        }`}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Processing/CC fees (deducted from net)</p>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">Others ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 text-lg">$</span>
+                      <input
+                        type="number"
+                        value={otherIncome}
+                        onChange={(e) => setOtherIncome(e.target.value)}
+                        disabled={salesReadOnly}
+                        placeholder="0"
+                        step="0.01"
+                        min="0"
+                        className={`w-full pl-10 pr-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
+                          salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
+                        }`}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-2">Other income (added to net)</p>
+                  </div>
+
+                  <div>
                     <label className="block text-sm font-semibold text-gray-700 mb-2">Commission Pool (%)</label>
                     <input
                       type="text"
@@ -4151,6 +4201,20 @@ export default function EventDashboardPage() {
                         <span className="font-semibold text-red-600">− Tax Amount</span>
                         <span className="text-xl font-bold text-red-600">−${shares.tax.toFixed(2)}</span>
                       </div>
+
+                      {shares.feesNum > 0 && (
+                        <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                          <span className="font-semibold text-red-600">− Fees</span>
+                          <span className="text-xl font-bold text-red-600">−${shares.feesNum.toFixed(2)}</span>
+                        </div>
+                      )}
+
+                      {shares.otherIncomeNum > 0 && (
+                        <div className="flex justify-between items-center pb-3 border-b border-gray-200">
+                          <span className="font-semibold text-green-600">+ Others</span>
+                          <span className="text-xl font-bold text-green-600">+${shares.otherIncomeNum.toFixed(2)}</span>
+                        </div>
+                      )}
 
                       <div className="flex justify-between items-center pt-2">
                         <span className="text-lg font-bold text-gray-900">= Adjusted Gross Amount</span>
