@@ -709,14 +709,16 @@ function HRDashboardContent() {
 
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
-        // Pro-rate tips by the same rounded payroll hours shown in the UI.
-        const totalEventTipHours = vendorPayments.reduce((sum: number, p: any) => {
-          if (p.tips_deleted === true) return sum;
-          return sum + roundHoursToTwoDecimals(getEffectiveHours(p));
+        const useEqualTips = eventInfo?.event_date ? String(eventInfo.event_date).slice(0, 10) >= '2026-03-30' : true;
+        // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
+        const tipsEligiblePool = vendorPayments.reduce((acc: number, p: any) => {
+          if (p.tips_deleted === true) return acc;
+          if (useEqualTips) return acc + 1;
+          return acc + roundHoursToTwoDecimals(getEffectiveHours(p));
         }, 0);
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
-          commissionPoolDollars, perVendorCommissionShare, totalTips, totalEventTipHours, memberCount, vendorCountForCommission,
+          commissionPoolDollars, perVendorCommissionShare, totalTips, tipsEligiblePool, memberCount, vendorCountForCommission,
           summaryPool: eventPaymentSummary.commission_pool_dollars,
           eventCommissionPool: eventInfo.commission_pool,
           summaryTips: eventPaymentSummary.total_tips,
@@ -804,13 +806,13 @@ function HRDashboardContent() {
               ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
               : 0;
 
-            // Tips: respect per-vendor overrides/deletions, then pro-rate, then fall back to stored value
+            // Tips: respect per-vendor overrides/deletions, then equal or prorated, then fall back to stored value
             const tips = payment.tips_deleted === true
               ? 0
               : payment.tips_override != null
               ? Number(payment.tips_override)
-              : (totalEventTipHours > 0 && totalTips > 0)
-              ? totalTips * (roundedPayrollHours / totalEventTipHours)
+              : (tipsEligiblePool > 0 && totalTips > 0)
+              ? (useEqualTips ? totalTips / tipsEligiblePool : totalTips * (roundedPayrollHours / tipsEligiblePool))
               : Number(payment.tips || 0);
 
             const restBreak = getRestBreakAmount(actualHours, eventState);

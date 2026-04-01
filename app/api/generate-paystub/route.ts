@@ -207,8 +207,13 @@ export async function POST(req: NextRequest) {
         vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
-      // Pro-rate tips by the same hours basis used by Event Dashboard timesheet/payment logic.
-      const totalEventHours = workers.reduce((sum: number, w: any) => sum + getActualHoursForWorker(event, w), 0);
+      const useEqualTips = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
+      // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
+      const totalEligibleVendors = workers.reduce((acc: number, w: any) => {
+        if (isTrailersDivision(w?.division)) return acc;
+        if (useEqualTips) return acc + 1;
+        return acc + getActualHoursForWorker(event, w);
+      }, 0);
 
       return {
         eventState,
@@ -219,7 +224,8 @@ export async function POST(req: NextRequest) {
         commissionPoolDollars,
         workers,
         totalTipsEvent,
-        totalEventHours,
+        totalEligibleVendors,
+        useEqualTips,
       };
     };
 
@@ -1200,7 +1206,8 @@ export async function POST(req: NextRequest) {
           commissionPoolDollars,
           workers: eventWorkers,
           totalTipsEvent,
-          totalEventHours
+          totalEligibleVendors,
+          useEqualTips
         } = getPayrollInputsForEvent(event);
 
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
@@ -1266,13 +1273,13 @@ export async function POST(req: NextRequest) {
         }
 
         const tipsFromPayment = Number(paymentData?.tips || 0);
-        const proratedTips =
-          totalEventHours > 0 && totalTipsEvent > 0
-            ? totalTipsEvent * (actualHours / totalEventHours)
+        const fallbackTips =
+          totalEligibleVendors > 0 && totalTipsEvent > 0
+            ? (useEqualTips ? totalTipsEvent / totalEligibleVendors : totalTipsEvent * (actualHours / totalEligibleVendors))
             : 0;
         // For paystub display/pay, use the persisted vendor tip when available;
-        // fall back to pro-rated event tips if needed.
-        const tips = tipsFromPayment > 0 ? tipsFromPayment : proratedTips;
+        // fall back to equal or prorated event tips depending on event date.
+        const tips = tipsFromPayment > 0 ? tipsFromPayment : fallbackTips;
         // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
         // Falls back to recomputed value if payment data has not been saved yet.
         const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);
@@ -1754,7 +1761,7 @@ export async function POST(req: NextRequest) {
         : !!paymentData;
 
       if (shouldRenderRow) {
-        const { eventState, baseRate, vendorCountForCommission, perVendorCommissionShare, commissionPoolDollars, workers: eventWorkers, totalTipsEvent, totalEventHours } = getPayrollInputsForEvent(event);
+        const { eventState, baseRate, vendorCountForCommission, perVendorCommissionShare, commissionPoolDollars, workers: eventWorkers, totalTipsEvent, totalEligibleVendors, useEqualTips } = getPayrollInputsForEvent(event);
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
 
         const regHours = Number(paymentData?.regular_hours || 0);
@@ -1823,13 +1830,13 @@ export async function POST(req: NextRequest) {
         }
 
         const tipsFromPayment = Number(paymentData?.tips || 0);
-        const proratedTips =
-          totalEventHours > 0 && totalTipsEvent > 0
-            ? totalTipsEvent * (actualHours / totalEventHours)
+        const fallbackTips =
+          totalEligibleVendors > 0 && totalTipsEvent > 0
+            ? (useEqualTips ? totalTipsEvent / totalEligibleVendors : totalTipsEvent * (actualHours / totalEligibleVendors))
             : 0;
         // For paystub display/pay, use the persisted vendor tip when available;
-        // fall back to pro-rated event tips if needed.
-        const tips = tipsFromPayment > 0 ? tipsFromPayment : proratedTips;
+        // fall back to equal or prorated event tips depending on event date.
+        const tips = tipsFromPayment > 0 ? tipsFromPayment : fallbackTips;
         // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
         // Falls back to recomputed value if payment data has not been saved yet.
         const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);

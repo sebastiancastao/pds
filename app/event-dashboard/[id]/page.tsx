@@ -2382,11 +2382,13 @@ export default function EventDashboardPage() {
     const perVendorCommissionShare = vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
     const totalTips = Number(tips) || 0;
 
-    const totalEligibleHours = teamMembers.reduce((sum: number, member: any) => {
-      if (member?.users?.division === "trailers") return sum;
+    const useEqualTipsExport = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
+    const tipsEligiblePoolExport = teamMembers.reduce((acc: number, member: any) => {
+      if (member?.users?.division === "trailers") return acc;
       const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
-      if (!uid) return sum;
-      return sum + getDisplayedWorkedMs(uid) / (1000 * 60 * 60);
+      if (!uid) return acc;
+      if (useEqualTipsExport) return acc + 1;
+      return acc + getDisplayedWorkedMs(uid) / (1000 * 60 * 60);
     }, 0);
 
     return filteredTeamMembers.map((member: any) => {
@@ -2412,8 +2414,8 @@ export default function EventDashboardPage() {
       const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
       const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
       const proratedTips =
-        !isTrailersDivision && totalEligibleHours > 0
-          ? (totalTips * actualHours) / totalEligibleHours
+        !isTrailersDivision && tipsEligiblePoolExport > 0
+          ? (useEqualTipsExport ? totalTips / tipsEligiblePoolExport : (totalTips * actualHours) / tipsEligiblePoolExport)
           : 0;
       const restBreak = getRestBreakAmount(actualHours, eventState);
       const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
@@ -3301,15 +3303,17 @@ export default function EventDashboardPage() {
       const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
       const totalCommissionPool = netSales * poolPercent;
       const totalTips = Number(tips) || 0;
+      const useEqualTips = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
 
-      // Only include non-trailers and non-deleted-tips users in the hours pool for tips prorating
-      const totalEligibleHours = teamMembers.reduce((sum: number, member: any) => {
+      // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
+      const tipsEligiblePool = teamMembers.reduce((acc: number, member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const memberDivision = member.users?.division;
-        if (memberDivision === 'trailers') return sum;
-        if (tipsOverrides[uid] === null) return sum; // tips deleted for this user
+        if (memberDivision === 'trailers') return acc;
+        if (tipsOverrides[uid] === null) return acc; // tips deleted for this user
+        if (useEqualTips) return acc + 1;
         const ms = getDisplayedWorkedMs(uid);
-        return sum + (Math.round((ms / (1000 * 60 * 60)) * 100) / 100);
+        return acc + (Math.round((ms / (1000 * 60 * 60)) * 100) / 100);
       }, 0);
 
       const perVendorCommissionShare =
@@ -3352,7 +3356,9 @@ export default function EventDashboardPage() {
           ? 0 // tips deleted for this user
           : tipsOverride !== undefined
           ? tipsOverride // manual override
-          : (!isTrailersDivision && totalEligibleHours > 0 ? (totalTips * actualHours) / totalEligibleHours : 0);
+          : (!isTrailersDivision && tipsEligiblePool > 0
+            ? (useEqualTips ? totalTips / tipsEligiblePool : (totalTips * actualHours) / tipsEligiblePool)
+            : 0);
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
 
@@ -3434,13 +3440,14 @@ export default function EventDashboardPage() {
       const totalCommissionPool = netSales * poolPercent;
       const totalTips = Number(tips) || 0;
 
-      // Only include non-trailers in the hours pool for email/payroll preview prorating
-      const totalEligibleHoursEmail = teamMembers.reduce((sum: number, member: any) => {
-        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
+      const useEqualTipsEmail = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
+      const tipsEligiblePoolEmail = teamMembers.reduce((acc: number, member: any) => {
         const memberDivision = member.users?.division;
-        if (memberDivision === 'trailers') return sum;
+        if (memberDivision === 'trailers') return acc;
+        if (useEqualTipsEmail) return acc + 1;
+        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const ms = getMealDeductedMsForSave(uid);
-        return sum + (ms / (1000 * 60 * 60));
+        return acc + (ms / (1000 * 60 * 60));
       }, 0);
 
       const perVendorCommissionShare =
@@ -3472,7 +3479,9 @@ export default function EventDashboardPage() {
           !isTrailersDivision && actualHours > 0 && vendorCount > 0
             ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
             : 0;
-        const proratedTips = !isTrailersDivision && totalEligibleHoursEmail > 0 ? (totalTips * actualHours) / totalEligibleHoursEmail : 0;
+        const proratedTips = !isTrailersDivision && tipsEligiblePoolEmail > 0
+          ? (useEqualTipsEmail ? totalTips / tipsEligiblePoolEmail : (totalTips * actualHours) / tipsEligiblePoolEmail)
+          : 0;
         const adjustment = adjustments[uid] || 0;
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak + adjustment;
@@ -6033,8 +6042,18 @@ export default function EventDashboardPage() {
                             No staff found matching filters
                           </td>
                         </tr>
-                      ) : (
-                        filteredTeamMembers.map((member: any) => {
+                      ) : (() => {
+                        const useEqualTipsUI = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
+                        // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
+                        const tipsEligiblePoolUI = teamMembers.reduce((acc: number, m: any) => {
+                          const mDivision = m.users?.division;
+                          if (mDivision === 'trailers') return acc;
+                          const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
+                          if (tipsOverrides[mUid] === null) return acc; // tips deleted
+                          if (useEqualTipsUI) return acc + 1;
+                          return acc + (Math.round((getDisplayedWorkedMs(mUid) / (1000 * 60 * 60)) * 100) / 100);
+                        }, 0);
+                        return filteredTeamMembers.map((member: any) => {
                           const profile = member.users?.profiles;
                           const firstName = profile?.first_name || "N/A";
                           const lastName = profile?.last_name || "";
@@ -6045,14 +6064,6 @@ export default function EventDashboardPage() {
                           const totalMs = getDisplayedWorkedMs(uid);
                           const actualHours = Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100;
                           const hoursHHMM = formatHoursFromMs(totalMs);
-                          // Hours pool for prorating excludes 'trailers' division and users with deleted tips
-                          const totalEligibleHours = teamMembers.reduce((sum: number, m: any) => {
-                            const mDivision = m.users?.division;
-                            if (mDivision === 'trailers') return sum;
-                            const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
-                            if (tipsOverrides[mUid] === null) return sum; // tips deleted
-                            return sum + (Math.round((getDisplayedWorkedMs(mUid) / (1000 * 60 * 60)) * 100) / 100);
-                          }, 0);
 
                           // Use rates from database based on venue state
                           const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
@@ -6097,15 +6108,15 @@ export default function EventDashboardPage() {
                           const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
                           const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
 
-                          // Tips prorated by hours (same method), respecting per-user overrides
+                          // Tips: equal per vendor (>= 2026-03-30) or prorated by hours (< 2026-03-30)
                           const totalTips = Number(tips) || 0;
                           const tipsOverride = tipsOverrides[uid];
                           const proratedTips = tipsOverride === null
                             ? 0 // tips deleted for this user
                             : tipsOverride !== undefined
                             ? tipsOverride // manual override
-                            : (!isTrailersDivision && totalEligibleHours > 0
-                              ? (totalTips * actualHours) / totalEligibleHours
+                            : (!isTrailersDivision && tipsEligiblePoolUI > 0
+                              ? (useEqualTipsUI ? totalTips / tipsEligiblePoolUI : (totalTips * actualHours) / tipsEligiblePoolUI)
                               : 0);
 
                           // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
@@ -6467,8 +6478,8 @@ export default function EventDashboardPage() {
                               </td>
                             </tr>
                           );
-                        })
-                      )}
+                        });
+                      })()}
                     </tbody>
                   </table>
                 </div>
