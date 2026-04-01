@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
     // ── 2. Time Entries ────────────────────────────────────────────────────
     const { data: timeEntries } = await supabaseAdmin
       .from("time_entries")
-      .select("id, action, timestamp, notes, event_id")
+      .select("id, action, timestamp, notes, event_id, attestation_accepted")
       .eq("user_id", userId)
       .order("timestamp", { ascending: false });
 
@@ -180,7 +180,45 @@ export async function GET(req: NextRequest) {
       .eq("user_id", userId)
       .order("signed_at", { ascending: false });
 
-    // ── 8. Payments ────────────────────────────────────────────────────────
+    // ── 8. Attestations ────────────────────────────────────────────────────
+    // Query rejections two ways and merge so nothing is missed:
+    //   1. by user_id  — catches cases where the FK matches the exported user
+    //   2. by time_entry_id — catches cases where user_id differs historically
+    const clockOutEntries = (timeEntries || []).filter((t: any) => t.action === "clock_out");
+    const clockOutIds = clockOutEntries.map((t: any) => t.id).filter(Boolean);
+
+    const rejMerged = new Map<string, any>(); // keyed by rejection id
+
+    // Approach 1: by user_id
+    const { data: rejByUser, error: rejByUserErr } = await supabaseAdmin
+      .from("attestation_rejections")
+      .select("id, time_entry_id, event_id, rejection_reason, rejection_notes, created_at")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
+    if (rejByUserErr) console.error("[USER-EXPORT] attestation_rejections by user_id failed:", rejByUserErr.message);
+    (rejByUser || []).forEach((r: any) => { if (r.id) rejMerged.set(r.id, r); });
+
+    // Approach 2: by time_entry_id
+    if (clockOutIds.length > 0) {
+      const { data: rejByEntry, error: rejByEntryErr } = await supabaseAdmin
+        .from("attestation_rejections")
+        .select("id, time_entry_id, event_id, rejection_reason, rejection_notes, created_at")
+        .in("time_entry_id", clockOutIds)
+        .order("created_at", { ascending: false });
+      if (rejByEntryErr) console.error("[USER-EXPORT] attestation_rejections by time_entry_id failed:", rejByEntryErr.message);
+      (rejByEntry || []).forEach((r: any) => { if (r.id) rejMerged.set(r.id, r); });
+    }
+
+    const attestationRejections = Array.from(rejMerged.values());
+    console.log(`[USER-EXPORT] userId=${userId} clockOuts=${clockOutIds.length} rejections found=${attestationRejections.length}`);
+
+    // Build a lookup map: time_entry_id -> rejection record
+    const rejectionByEntryId = new Map<string, any>();
+    attestationRejections.forEach((r: any) => {
+      if (r.time_entry_id) rejectionByEntryId.set(r.time_entry_id, r);
+    });
+
+    // ── 9. Payments ────────────────────────────────────────────────────────
     const { data: payments } = await supabaseAdmin
       .from("vendor_payments")
       .select("*")
@@ -450,7 +488,52 @@ export async function GET(req: NextRequest) {
     sigsSheet["!cols"] = [{ wch: 36 }, { wch: 25 }, { wch: 12 }, { wch: 22 }, { wch: 8 }, { wch: 18 }];
     XLSX.utils.book_append_sheet(wb, sigsSheet, "Form Signatures");
 
-    // Sheet 6: Payments
+    // Sheet 6: Attestations
+    // Source of truth: time_entries.attestation_accepted (same as the UI at /time-sheets/[id]).
+    // attestation_rejections is used only to enrich with rejection reason/notes when available.
+    const attestHeaders = ["Date & Time", "Event ID", "Event Name", "Status", "Rejection Reason", "Rejection Notes"];
+
+    // All clock-outs with an explicit attestation decision (true or false)
+    const rowsFromEntries = clockOutEntries
+      .filter((entry: any) => entry.attestation_accepted === true || entry.attestation_accepted === false)
+      .map((entry: any) => {
+        const isRejected = entry.attestation_accepted === false;
+        const rejection = isRejected ? rejectionByEntryId.get(entry.id) : undefined;
+        const eventId = entry.event_id || "";
+        return [
+          fmtDate(entry.timestamp),
+          eventId,
+          eventId ? (eventNameById.get(eventId) || "") : "",
+          isRejected ? "Rejected" : "Accepted",
+          rejection?.rejection_reason || "",
+          rejection?.rejection_notes || "",
+        ];
+      });
+
+    // Orphaned rejection records not linked to any of the user's clock-out entries
+    const clockOutIdSet = new Set(clockOutIds);
+    const rowsOrphaned = attestationRejections
+      .filter((r: any) => !clockOutIdSet.has(r.time_entry_id))
+      .map((r: any) => {
+        const eventId = r.event_id || "";
+        return [
+          fmtDate(r.created_at),
+          eventId,
+          eventId ? (eventNameById.get(eventId) || "") : "",
+          "Rejected",
+          r.rejection_reason || "",
+          r.rejection_notes || "",
+        ];
+      });
+
+    const attestRows = [...rowsFromEntries, ...rowsOrphaned].sort((a, b) =>
+      new Date(b[0] as string).getTime() - new Date(a[0] as string).getTime()
+    );
+    const attestSheet = XLSX.utils.aoa_to_sheet([attestHeaders, ...attestRows]);
+    attestSheet["!cols"] = [{ wch: 22 }, { wch: 36 }, { wch: 30 }, { wch: 12 }, { wch: 40 }, { wch: 40 }];
+    XLSX.utils.book_append_sheet(wb, attestSheet, "Attestations");
+
+    // Sheet 7: Payments
     if ((payments || []).length > 0) {
       const payKeys = Object.keys(payments![0]).filter(k => k !== "signature_data");
       const payHeaders = payKeys;

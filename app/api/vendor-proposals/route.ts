@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt } from "@/lib/encryption";
+import { calculateDistanceMiles } from "@/lib/geocoding";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,8 @@ type LoadedUser = {
   email: string;
   firstName: string;
   lastName: string;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 function safeDecrypt(value: string | null | undefined): string {
@@ -74,7 +77,7 @@ async function loadUsers(userIds: string[]): Promise<Map<string, LoadedUser>> {
 
   const [{ data: users, error: usersError }, { data: profiles, error: profilesError }] = await Promise.all([
     supabaseAdmin.from("users").select("id, email").in("id", uniqueIds),
-    supabaseAdmin.from("profiles").select("user_id, first_name, last_name").in("user_id", uniqueIds),
+    supabaseAdmin.from("profiles").select("user_id, first_name, last_name, latitude, longitude").in("user_id", uniqueIds),
   ]);
 
   if (usersError) {
@@ -85,11 +88,13 @@ async function loadUsers(userIds: string[]): Promise<Map<string, LoadedUser>> {
     throw new Error(profilesError.message);
   }
 
-  const profileMap = new Map<string, { first_name: string | null; last_name: string | null }>();
+  const profileMap = new Map<string, { first_name: string | null; last_name: string | null; latitude: number | null; longitude: number | null }>();
   for (const profile of profiles || []) {
     profileMap.set(String((profile as any).user_id), {
       first_name: (profile as any).first_name ?? null,
       last_name: (profile as any).last_name ?? null,
+      latitude: (profile as any).latitude != null ? Number((profile as any).latitude) : null,
+      longitude: (profile as any).longitude != null ? Number((profile as any).longitude) : null,
     });
   }
 
@@ -101,6 +106,8 @@ async function loadUsers(userIds: string[]): Promise<Map<string, LoadedUser>> {
       email: String((user as any).email || ""),
       firstName: safeDecrypt(profile?.first_name),
       lastName: safeDecrypt(profile?.last_name),
+      latitude: profile?.latitude ?? null,
+      longitude: profile?.longitude ?? null,
     });
   }
 
@@ -159,7 +166,38 @@ export async function GET(req: NextRequest) {
       )
     );
 
-    const users = await loadUsers(userIds);
+    // Collect unique venue names to fetch coordinates
+    const venueNames = Array.from(
+      new Set(
+        (data || [])
+          .map((proposal: any) => {
+            const eventData = coerceSingle(proposal.events as any);
+            return String(eventData?.venue || "").trim();
+          })
+          .filter(Boolean)
+      )
+    );
+
+    const [users, venueRefData] = await Promise.all([
+      loadUsers(userIds),
+      venueNames.length > 0
+        ? supabaseAdmin
+            .from("venue_reference")
+            .select("venue_name, latitude, longitude")
+            .in("venue_name", venueNames)
+            .then(({ data: vd }) => vd || [])
+        : Promise.resolve([]),
+    ]);
+
+    const venueCoordMap = new Map<string, { latitude: number; longitude: number }>();
+    for (const vr of venueRefData as any[]) {
+      if (vr.venue_name && vr.latitude != null && vr.longitude != null) {
+        venueCoordMap.set(String(vr.venue_name), {
+          latitude: Number(vr.latitude),
+          longitude: Number(vr.longitude),
+        });
+      }
+    }
 
     const proposals = (data || []).map((proposal: any) => {
       const eventData = coerceSingle(proposal.events as any);
@@ -167,6 +205,19 @@ export async function GET(req: NextRequest) {
       const vendor = users.get(String(proposal.vendor_id || ""));
       const proposer = users.get(String(proposal.proposed_by || ""));
       const reviewer = users.get(String(proposal.reviewed_by || ""));
+
+      const venueName = eventData?.venue || "";
+      const venueCoords = venueCoordMap.get(venueName) ?? null;
+      let distance_miles: number | null = null;
+      if (
+        vendor?.latitude != null &&
+        vendor?.longitude != null &&
+        venueCoords != null
+      ) {
+        distance_miles = Math.round(
+          calculateDistanceMiles(vendor.latitude, vendor.longitude, venueCoords.latitude, venueCoords.longitude) * 10
+        ) / 10;
+      }
 
       return {
         id: proposal.id,
@@ -177,7 +228,7 @@ export async function GET(req: NextRequest) {
         event_id: proposal.event_id,
         event_name: eventData?.event_name || "",
         event_date: eventData?.event_date || "",
-        venue_name: eventData?.venue || "",
+        venue_name: venueName,
         location_id: proposal.location_id,
         location_name: locationData?.name || "",
         vendor_id: proposal.vendor_id,
@@ -188,6 +239,7 @@ export async function GET(req: NextRequest) {
         proposer_email: proposer?.email || "",
         reviewed_by: proposal.reviewed_by,
         reviewer_name: reviewer ? displayName(reviewer, reviewer.email) : null,
+        distance_miles,
       };
     });
 

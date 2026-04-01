@@ -134,37 +134,47 @@ export async function GET(req: NextRequest) {
         if (uid && !onboardingByUser.has(uid)) onboardingByUser.set(uid, o);
       });
 
-      // Attestation data — clock_out entries with attestation_accepted set
+      // Attestation data — driven by time_entries.attestation_accepted (same source as the UI).
+      // attestation_rejections is used only to enrich rejected rows with reason/notes.
       const allUserIds = (users || []).map((u: any) => u.id).filter(Boolean);
       const attestationsByUser = new Map<string, any[]>();
 
       if (allUserIds.length > 0) {
-        const { data: attestationEntries } = await supabaseAdmin
+        // All clock-outs with an explicit attestation decision
+        const { data: attestEntries } = await supabaseAdmin
           .from("time_entries")
           .select("id, user_id, event_id, timestamp, attestation_accepted")
           .in("user_id", allUserIds)
           .eq("action", "clock_out")
           .not("attestation_accepted", "is", null);
 
-        const { data: rejections } = await supabaseAdmin
-          .from("attestation_rejections")
-          .select("time_entry_id, user_id, rejection_reason, rejection_notes, created_at")
-          .in("user_id", allUserIds);
+        const attestEntryIds = (attestEntries || [])
+          .filter((e: any) => e.attestation_accepted === false)
+          .map((e: any) => e.id)
+          .filter(Boolean);
 
-        const rejectionsByTimeEntry = new Map<string, any>();
-        (rejections || []).forEach((r: any) => {
-          if (r.time_entry_id) rejectionsByTimeEntry.set(r.time_entry_id, r);
-        });
+        // Fetch rejection reasons for the rejected entries
+        const rejectionByEntryId = new Map<string, any>();
+        if (attestEntryIds.length > 0) {
+          const { data: rejections } = await supabaseAdmin
+            .from("attestation_rejections")
+            .select("time_entry_id, rejection_reason, rejection_notes")
+            .in("time_entry_id", attestEntryIds);
+          (rejections || []).forEach((r: any) => {
+            if (r.time_entry_id) rejectionByEntryId.set(r.time_entry_id, r);
+          });
+        }
 
-        (attestationEntries || []).forEach((entry: any) => {
+        (attestEntries || []).forEach((entry: any) => {
           if (!entry.user_id) return;
           if (!attestationsByUser.has(entry.user_id)) attestationsByUser.set(entry.user_id, []);
-          const rejection = rejectionsByTimeEntry.get(entry.id);
+          const isRejected = entry.attestation_accepted === false;
+          const rejection = isRejected ? rejectionByEntryId.get(entry.id) : undefined;
           attestationsByUser.get(entry.user_id)!.push({
             time_entry_id: entry.id,
             event_id: entry.event_id || null,
             timestamp: entry.timestamp,
-            accepted: entry.attestation_accepted,
+            accepted: !isRejected,
             rejection_reason: rejection?.rejection_reason || null,
             rejection_notes: rejection?.rejection_notes || null,
           });

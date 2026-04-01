@@ -22,6 +22,7 @@ type Proposal = {
   proposer_email: string;
   reviewed_by: string | null;
   reviewer_name: string | null;
+  distance_miles: number | null;
 };
 
 type StatusFilter = "all" | "pending" | "approved" | "declined";
@@ -270,6 +271,11 @@ export default function VendorProposalsPage() {
                       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Venue / Station</p>
                       <p className="text-gray-900">{proposal.venue_name}</p>
                       <p className="text-gray-500 text-xs">{proposal.location_name}</p>
+                      {proposal.distance_miles != null && (
+                        <p className="text-xs mt-1 font-medium text-indigo-600">
+                          {proposal.distance_miles} mi from vendor
+                        </p>
+                      )}
                     </div>
                     <div>
                       <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Proposed By</p>
