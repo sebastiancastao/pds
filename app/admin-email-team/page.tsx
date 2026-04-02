@@ -35,7 +35,6 @@ function TeamEmailPageContent() {
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
   const [bodyFormat, setBodyFormat] = useState<'text' | 'html'>('text');
-  const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [confirmBulk, setConfirmBulk] = useState(false);
   const [attachments, setAttachments] = useState<File[]>([]);
@@ -170,7 +169,6 @@ function TeamEmailPageContent() {
       form.set('subject', subject.trim());
       form.set('body', body);
       form.set('bodyFormat', bodyFormat);
-      if (cc.trim()) form.set('cc', cc);
       if (bcc.trim()) form.set('bcc', bcc);
       if (bulkMode) form.set('confirm', 'true');
       for (const file of attachments) {
@@ -313,29 +311,16 @@ function TeamEmailPageContent() {
                 />
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    CC (optional)
-                  </label>
-                  <input
-                    value={cc}
-                    onChange={(e) => setCc(e.target.value)}
-                    className="w-full border rounded px-3 py-2"
-                    placeholder="cc@example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    BCC (optional)
-                  </label>
-                  <input
-                    value={bcc}
-                    onChange={(e) => setBcc(e.target.value)}
-                    className="w-full border rounded px-3 py-2"
-                    placeholder="bcc@example.com"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  BCC (optional)
+                </label>
+                <input
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  className="w-full border rounded px-3 py-2"
+                  placeholder="bcc@example.com"
+                />
               </div>
 
               <div>

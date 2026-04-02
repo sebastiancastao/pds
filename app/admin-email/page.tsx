@@ -61,7 +61,6 @@ function AdminEmailPageContent() {
   const [selectedRegion, setSelectedRegion] = useState('all');
   const [loadingRegions, setLoadingRegions] = useState(false);
   const [regionsError, setRegionsError] = useState('');
-  const [cc, setCc] = useState('');
   const [bcc, setBcc] = useState('');
   const [subject, setSubject] = useState('');
   const [bodyFormat, setBodyFormat] = useState<BodyFormat>('text');
@@ -232,7 +231,6 @@ function AdminEmailPageContent() {
       form.set('subject', subject.trim());
       form.set('body', body);
       form.set('bodyFormat', bodyFormat);
-      if (cc.trim()) form.set('cc', cc);
       if (bcc.trim()) form.set('bcc', bcc);
       if (bulkMode) form.set('confirm', 'true');
       for (const file of attachments) {
@@ -440,29 +438,16 @@ function AdminEmailPageContent() {
                 </div>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    CC (optional)
-                  </label>
-                  <input
-                    value={cc}
-                    onChange={(e) => setCc(e.target.value)}
-                    className="w-full border rounded px-3 py-2 font-mono text-sm"
-                    placeholder="cc1@example.com, cc2@example.com"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-2">
-                    BCC (optional)
-                  </label>
-                  <input
-                    value={bcc}
-                    onChange={(e) => setBcc(e.target.value)}
-                    className="w-full border rounded px-3 py-2 font-mono text-sm"
-                    placeholder="bcc1@example.com, bcc2@example.com"
-                  />
-                </div>
+              <div>
+                <label className="block text-sm font-semibold text-gray-700 mb-2">
+                  BCC (optional)
+                </label>
+                <input
+                  value={bcc}
+                  onChange={(e) => setBcc(e.target.value)}
+                  className="w-full border rounded px-3 py-2 font-mono text-sm"
+                  placeholder="bcc1@example.com, bcc2@example.com"
+                />
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -494,7 +479,6 @@ function AdminEmailPageContent() {
                       setSubject('');
                       setBody('');
                       setTo('');
-                      setCc('');
                       setBcc('');
                       setSelectedRegion('all');
                       setConfirmBulk(false);

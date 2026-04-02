@@ -131,7 +131,6 @@ export async function POST(req: NextRequest) {
     const subject = String(form.get("subject") || "").trim();
     const body = String(form.get("body") || "");
     const bodyFormat = String(form.get("bodyFormat") || "text").trim().toLowerCase() as BodyFormat;
-    const ccRaw = String(form.get("cc") || "");
     const bccRaw = String(form.get("bcc") || "");
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
 
@@ -188,7 +187,6 @@ export async function POST(req: NextRequest) {
     }
 
     to = to.filter(isValidEmail);
-    const cc = parseEmailList(ccRaw).filter(isValidEmail);
     const bcc = parseEmailList(bccRaw).filter(isValidEmail);
 
     if (!to.length) {
@@ -260,7 +258,6 @@ export async function POST(req: NextRequest) {
     let sentCount = 0;
     const messageIds: string[] = [];
     const basePayload = {
-      cc: cc.length ? cc : undefined,
       bcc: bcc.length ? bcc : undefined,
       subject,
       html,

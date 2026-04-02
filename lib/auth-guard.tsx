@@ -55,6 +55,10 @@ export function AuthGuard({
     }
 
     // Step 3: Check if page is onboarding-only (should redirect if MFA already set up)
+    // Restore mfa_verified from localStorage if sessionStorage was cleared (e.g. new tab)
+    if (!sessionStorage.getItem('mfa_verified') && localStorage.getItem('mfa_verified') === 'true') {
+      sessionStorage.setItem('mfa_verified', 'true');
+    }
     const mfaVerifiedFlag = sessionStorage.getItem('mfa_verified');
     const hasMfaVerified = mfaVerifiedFlag === 'true';
 
