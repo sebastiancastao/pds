@@ -2211,7 +2211,6 @@ export default function EventDashboardPage() {
       const firstName = (profile?.first_name || "").toString().trim();
       const lastName = (profile?.last_name || "").toString().trim();
       const fullName = `${firstName} ${lastName}`.trim() || "N/A";
-      const phone = (profile?.phone || "N/A").toString();
       const division = (member?.users?.division || "N/A").toString();
       const status = (member?.status || "Unknown").toString();
       const hasAttestation = Boolean(member?.has_attestation);
@@ -2224,13 +2223,10 @@ export default function EventDashboardPage() {
         "Event Name": event?.event_name || "N/A",
         "Event Date": event?.event_date ? String(event.event_date).slice(0, 10) : "N/A",
         Vendor: fullName,
-        Phone: phone,
         Division: division,
         Status: status,
         "Attestation Submitted": hasAttestation ? "Yes" : "No",
         "Invited On": invitedOn,
-        "Team Member ID": String(member?.id || ""),
-        "Vendor ID": String(member?.vendor_id || member?.users?.id || ""),
       };
     });
   };
@@ -2282,13 +2278,10 @@ export default function EventDashboardPage() {
         { wch: 28 },
         { wch: 14 },
         { wch: 24 },
-        { wch: 18 },
         { wch: 14 },
         { wch: 18 },
         { wch: 20 },
         { wch: 24 },
-        { wch: 38 },
-        { wch: 38 },
       ];
 
       XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
@@ -2402,7 +2395,6 @@ export default function EventDashboardPage() {
       const firstName = (profile?.first_name || "").toString().trim();
       const lastName = (profile?.last_name || "").toString().trim();
       const fullName = `${firstName} ${lastName}`.trim() || "N/A";
-      const email = (member?.users?.email || "N/A").toString();
       const division = (member?.users?.division || "").toString();
       const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
       const totalMs = getDisplayedWorkedMs(uid);
@@ -2430,7 +2422,6 @@ export default function EventDashboardPage() {
 
       const row: Record<string, string | number> = {
         Employee: fullName,
-        Email: email,
         Division: division || "N/A",
         "Reg Rate": money(baseRate),
         "Loaded Rate": money(finalCommissionRate),
@@ -2506,7 +2497,6 @@ export default function EventDashboardPage() {
       const paymentsSheet = XLSX.utils.json_to_sheet(rows);
       const paymentColumns = [
         { wch: 26 }, // Employee
-        { wch: 30 }, // Email
         { wch: 14 }, // Division
         { wch: 12 }, // Reg Rate
         { wch: 12 }, // Loaded Rate
