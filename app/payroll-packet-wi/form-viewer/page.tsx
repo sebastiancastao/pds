@@ -15,7 +15,7 @@ const WI_FORMS: FormSpec[] = [
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/employee-handbook' },
   { id: 'wi-state-supplements', formId: 'wi-state-supplements', display: 'WI State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/wi-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
-  { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
+  { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/notice-to-employee' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },

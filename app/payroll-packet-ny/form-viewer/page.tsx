@@ -11,7 +11,7 @@ const NY_FORMS: FormSpec[] = [
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/employee-handbook' },
   { id: 'ny-state-supplements', formId: 'ny-state-supplements', display: 'NY State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/ny-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
-  { id: 'time-of-hire', display: 'Time of Hire Notice', requiresSignature: true },
+  { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'fw4', formId: 'ny-fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/fw4' },
   { id: 'i9', formId: 'ny-i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/i9' },
