@@ -2225,7 +2225,6 @@ export default function EventDashboardPage() {
         Vendor: fullName,
         Division: division,
         Status: status,
-        "Attestation Submitted": hasAttestation ? "Yes" : "No",
         "Invited On": invitedOn,
       };
     });
@@ -2280,7 +2279,6 @@ export default function EventDashboardPage() {
         { wch: 24 },
         { wch: 14 },
         { wch: 18 },
-        { wch: 20 },
         { wch: 24 },
       ];
 

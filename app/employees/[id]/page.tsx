@@ -648,6 +648,7 @@ export default function WorkerProfilePage() {
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
   const sickLeaveCarryOverHours = sickLeaveSummary?.carry_over_hours ?? 0;
+  const sickLeaveEarnedOnlyHours = sickLeaveAccruedHours - sickLeaveCarryOverHours;
   const sickLeaveBalanceHours = sickLeaveSummary?.balance_hours ?? 0;
   const sickLeaveRequestCount = sickLeaveEntries.length;
 
@@ -1318,10 +1319,10 @@ export default function WorkerProfilePage() {
                 </span>
               </div>
               <div className="apple-card p-4 space-y-4">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="bg-pink-50 rounded-lg p-3 border border-pink-100">
-                    <div className="text-xs font-medium text-pink-700">Used</div>
-                    <div className="text-xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-100">
+                    <div className="text-xs font-medium text-emerald-700">Total Hours Worked</div>
+                    <div className="text-xl font-bold text-emerald-900">{formatHours(summary?.total_hours ?? 0)} hrs</div>
                   </div>
                   <div className="bg-violet-50 rounded-lg p-3 border border-violet-100">
                     <div className="text-xs font-medium text-violet-700">Carry Over</div>
@@ -1329,7 +1330,11 @@ export default function WorkerProfilePage() {
                   </div>
                   <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-100">
                     <div className="text-xs font-medium text-indigo-700">Earned</div>
-                    <div className="text-xl font-bold text-indigo-900">{formatHours(sickLeaveAccruedHours)} hrs</div>
+                    <div className="text-xl font-bold text-indigo-900">{formatHours(sickLeaveEarnedOnlyHours)} hrs</div>
+                  </div>
+                  <div className="bg-pink-50 rounded-lg p-3 border border-pink-100">
+                    <div className="text-xs font-medium text-pink-700">Used</div>
+                    <div className="text-xl font-bold text-pink-900">{formatHours(sickLeaveTotalHours)} hrs</div>
                   </div>
                   <div className="bg-amber-50 rounded-lg p-3 border border-amber-100">
                     <div className="text-xs font-medium text-amber-700">Balance</div>
