@@ -2319,14 +2319,13 @@ function HRDashboardContent() {
                                               <tr>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Loaded Rate</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rate in Effect</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
                                                 {showOT && (
                                                   <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
                                                 )}
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Ext Amt on Reg Rate</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Amt</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Total Final Commission Amt</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
                                                 {!hideRest && (
                                                   <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
@@ -2394,9 +2393,8 @@ function HRDashboardContent() {
                                                     {showOT && (
                                                       <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                     )}
-                                                    <td className="p-2 text-sm text-green-600">${formatExactMoney(extAmtOnRegRate)}</td>
-                                                    <td className="p-2 text-sm text-purple-600">{commissionAmt > 0 ? `$${formatPayrollMoney(commissionAmt)}` : '\u2014'}</td>
-                                                    <td className="p-2 text-sm text-green-600">${formatPayrollMoney(totalFinalCommissionAmt)}</td>
+                                                    <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</td>
+                                                    <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(Math.max(0, extAmtOnRegRate - Number(ev.commissionPerVendor || 0)))}</td>
                                                     <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
