@@ -95,9 +95,11 @@ export async function GET(req: NextRequest) {
       if (result) {
         v.latitude = result.latitude;
         v.longitude = result.longitude;
-        await supabaseAdmin.from('venue_reference')
-          .update({ latitude: result.latitude, longitude: result.longitude })
-          .eq('id', v.id).catch(() => {});
+        try {
+          await supabaseAdmin.from('venue_reference')
+            .update({ latitude: result.latitude, longitude: result.longitude })
+            .eq('id', v.id);
+        } catch (_) {}
       }
     }
 
@@ -153,7 +155,7 @@ export async function GET(req: NextRequest) {
     //    distToEventVenue  = distance(user home address → event venue)  [same as team tab]
     //    distToHomeVenue   = distance(user home address → user's home venue)
     //    differential miles = max(0, distToEventVenue - distToHomeVenue)
-    const mileage: Record<string, Record<string, { miles: number | null; mileagePay: number }>> = {};
+    const mileage: Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles: number }>> = {};
 
     for (const event of events) {
       const eventVenue = getVenueByName(event.venue || '');
