@@ -135,6 +135,32 @@ function HRDashboardContent() {
   const [approvalSubmissions, setApprovalSubmissions] = useState<Array<{ id: string; file_name: string; status: string; submitted_at: string }>>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
+  const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
+  const getMileageApproval = (eventId: string, userId: string) =>
+    mileageApprovals[eventId]?.[userId] ?? { mileage: true, travel: true };
+  const setMileageApproval = async (eventId: string, userId: string, field: 'mileage' | 'travel', value: boolean) => {
+    setMileageApprovals(prev => ({
+      ...prev,
+      [eventId]: { ...(prev[eventId] || {}), [userId]: { ...(prev[eventId]?.[userId] ?? { mileage: true, travel: true }), [field]: value } },
+    }));
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/mileage-approvals', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ event_id: eventId, user_id: userId, field, approved: value }),
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        console.error('[HR PAYMENTS] Failed to save mileage approval:', j.error || res.status);
+      }
+    } catch (e) {
+      console.error('[HR PAYMENTS] Failed to save mileage approval:', e);
+    }
+  };
   const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
   const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
   const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
@@ -891,16 +917,35 @@ function HRDashboardContent() {
       const venuesArr = Object.values(byVenue);
       setPaymentsByVenue(venuesArr);
 
-      // Fetch mileage pay data for all loaded events
+      // Fetch mileage pay data + approvals for all loaded events
       const allEventIdsForMileage = venuesArr.flatMap(v => v.events.map((ev: any) => ev.id)).filter(Boolean);
       if (allEventIdsForMileage.length > 0) {
         try {
-          const mileageRes = await fetch(`/api/mileage-pay?event_ids=${encodeURIComponent(allEventIdsForMileage.join(','))}`, {
-            headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-          });
+          const authHeaders = { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+          const idsParam = encodeURIComponent(allEventIdsForMileage.join(','));
+          const [mileageRes, approvalsRes] = await Promise.all([
+            fetch(`/api/mileage-pay?event_ids=${idsParam}`, { headers: authHeaders }),
+            fetch(`/api/mileage-approvals?event_ids=${idsParam}`, { headers: authHeaders }),
+          ]);
           if (mileageRes.ok) {
             const mileageJson = await mileageRes.json();
             setMileageByEvent(mileageJson.mileage || {});
+          }
+          if (approvalsRes.ok) {
+            const approvalsJson = await approvalsRes.json();
+            // Convert DB nulls to true (null = not yet reviewed = approved)
+            const loaded: Record<string, Record<string, { mileage: boolean; travel: boolean }>> = {};
+            for (const [evId, users] of Object.entries(approvalsJson.approvals || {})) {
+              loaded[evId] = {};
+              for (const [uid, vals] of Object.entries(users as any)) {
+                const v = vals as { mileage: boolean | null; travel: boolean | null };
+                loaded[evId][uid] = {
+                  mileage: v.mileage ?? true,
+                  travel: v.travel ?? true,
+                };
+              }
+            }
+            setMileageApprovals(loaded);
           }
         } catch (e) {
           console.warn('[HR PAYMENTS] Failed to fetch mileage data:', e);
@@ -1142,8 +1187,8 @@ function HRDashboardContent() {
           'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
           'Total Rest Break': Number(Number(event.totalRestBreak || 0).toFixed(2)),
           'Total Other': Number(Number(event.totalOther || 0).toFixed(2)),
-          'Total Mileage Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => s + Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0), 0) : 0).toFixed(2)),
-          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
+          'Total Mileage Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => s + (getMileageApproval(event.id, p.userId).mileage ? Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0) : 0), 0) : 0).toFixed(2)),
+          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { if (!getMileageApproval(event.id, p.userId).travel) return s; const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
           'Total': Number(Number(event.eventTotal || 0).toFixed(2)),
           'Total Ext Amt Reg Rate': Number(Number(totalExtAmtRegRate).toFixed(2)),
         });
@@ -1164,11 +1209,15 @@ function HRDashboardContent() {
             const other = Number(p.adjustmentAmount || 0);
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
-            const mileagePay = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
+            const _mileagePayExport = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
             const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
             const diffMilesExport = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
-            const travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
-            const travelPayExport = travelHoursExport * Number(p.regRate ?? event.baseRate ?? 0);
+            const _travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
+            const _travelPayExport = _travelHoursExport * Number(p.regRate ?? event.baseRate ?? 0);
+            const exportApproval = getMileageApproval(event.id, p.userId);
+            const mileagePay = exportApproval.mileage ? _mileagePayExport : 0;
+            const travelPayExport = exportApproval.travel ? _travelPayExport : 0;
+            const travelHoursExport = exportApproval.travel ? _travelHoursExport : 0;
             const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPayExport;
 
             rows.push({
@@ -2324,10 +2373,13 @@ function HRDashboardContent() {
                                                 const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = Number(p.restBreak || 0);
-                                                const mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
+                                                const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
-                                                const travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
-                                                const travelPay = travelHours * regRate;
+                                                const _travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
+                                                const _travelPay = _travelHours * regRate;
+                                                const approval = getMileageApproval(ev.id, p.userId);
+                                                const mileagePay = approval.mileage ? _mileagePay : 0;
+                                                const travelPay = approval.travel ? _travelPay : 0;
                                                 const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
                                                   ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
@@ -2350,12 +2402,28 @@ function HRDashboardContent() {
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}
                                                     <td className="p-2 text-sm text-blue-600">
-                                                      {mileagePay > 0 ? `$${formatPayrollMoney(mileagePay)}` : '\u2014'}
-                                                      {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.miles != null ? <div className="text-[10px] text-gray-400">{md.miles} mi × 2 × $1.71</div> : null; })()}
+                                                      {_mileagePay > 0 ? (
+                                                        <div className="flex flex-col gap-0.5">
+                                                          <span className={approval.mileage ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.mileage ? _mileagePay : 0)}</span>
+                                                          {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.differentialMiles != null && md.differentialMiles > 0 ? <div className="text-[10px] text-gray-400">{md.differentialMiles} mi diff × 2 × $0.71</div> : null; })()}
+                                                          <div className="flex gap-1 mt-0.5">
+                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'mileage', true)} className={`text-[10px] px-1.5 py-0.5 rounded border ${approval.mileage ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>✓</button>
+                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'mileage', false)} className={`text-[10px] px-1.5 py-0.5 rounded border ${!approval.mileage ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}>✗</button>
+                                                          </div>
+                                                        </div>
+                                                      ) : '\u2014'}
                                                     </td>
                                                     <td className="p-2 text-sm text-indigo-600">
-                                                      {travelPay > 0 ? `$${formatPayrollMoney(travelPay)}` : '\u2014'}
-                                                      {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff × 2 ÷ 60 × ${formatPayrollMoney(regRate)}/hr</div>}
+                                                      {_travelPay > 0 ? (
+                                                        <div className="flex flex-col gap-0.5">
+                                                          <span className={approval.travel ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.travel ? _travelPay : 0)}</span>
+                                                          {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff × 2 ÷ 60 × ${formatPayrollMoney(regRate)}/hr</div>}
+                                                          <div className="flex gap-1 mt-0.5">
+                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'travel', true)} className={`text-[10px] px-1.5 py-0.5 rounded border ${approval.travel ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>✓</button>
+                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'travel', false)} className={`text-[10px] px-1.5 py-0.5 rounded border ${!approval.travel ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}>✗</button>
+                                                          </div>
+                                                        </div>
+                                                      ) : '\u2014'}
                                                     </td>
                                                     <td className="p-2 text-sm text-right">
                                                       {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
@@ -2432,8 +2500,13 @@ function HRDashboardContent() {
                                             const totTips = payments.reduce((s: number, p: any) => s + Number(p.tips || 0), 0);
                                             const totRest = payments.reduce((s: number, p: any) => s + Number(p.restBreak || 0), 0);
                                             const totOther = payments.reduce((s: number, p: any) => s + Number(p.adjustmentAmount || 0), 0);
-                                            const totMileage = payments.reduce((s: number, p: any) => s + Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0), 0);
+                                            const totMileage = payments.reduce((s: number, p: any) => {
+                                              const appr = getMileageApproval(ev.id, p.userId);
+                                              return s + (appr.mileage ? Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0) : 0);
+                                            }, 0);
                                             const totTravel = payments.reduce((s: number, p: any) => {
+                                              const appr = getMileageApproval(ev.id, p.userId);
+                                              if (!appr.travel) return s;
                                               const diffMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
                                               const rate = Number(p.regRate ?? ev.baseRate ?? 0);
                                               return s + (diffMiles !== null ? ((diffMiles * 2) / 60) * rate : 0);

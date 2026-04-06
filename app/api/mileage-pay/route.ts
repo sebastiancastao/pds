@@ -6,7 +6,7 @@ import { calculateDistanceMiles, geocodeAddress, delay } from "@/lib/geocoding";
 
 export const dynamic = 'force-dynamic';
 
-const MILEAGE_RATE = 1.71;
+const MILEAGE_RATE = 0.71;
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -191,7 +191,7 @@ export async function GET(req: NextRequest) {
         }
 
         const differentialMiles = Math.max(0, distToEventVenue - distToHomeVenue);
-        const mileagePay = distToEventVenue * 2 * MILEAGE_RATE;
+        const mileagePay = differentialMiles * 2 * MILEAGE_RATE;
 
         if (!mileage[event.id]) mileage[event.id] = {};
         mileage[event.id][userId] = {

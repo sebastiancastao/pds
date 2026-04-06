@@ -2559,6 +2559,8 @@ export default function EventDashboardPage() {
         "Loaded Rate": money(finalCommissionRate),
         "Hours (HH:MM)": actualHours > 0 ? hoursHHMM : "0:00",
         "Hours (Decimal)": Number(actualHours.toFixed(2)),
+        "Commission Pay": money(perVendorCommissionShare),
+        "Variable Incentive": money(Math.max(0, extAmtOnRegRate - perVendorCommissionShare)),
         "Ext Amt on Reg Rate": money(extAmtOnRegRate),
         "Commission Amt": money(commissionAmount),
         "Total Final Commission": money(totalFinalCommission),
@@ -2634,6 +2636,8 @@ export default function EventDashboardPage() {
         { wch: 12 }, // Loaded Rate
         { wch: 14 }, // Hours (HH:MM)
         { wch: 14 }, // Hours (Decimal)
+        { wch: 16 }, // Commission Pay
+        { wch: 18 }, // Variable Incentive
         { wch: 18 }, // Ext Amt on Reg Rate
         { wch: 16 }, // Commission Amt
         { wch: 20 }, // Total Final Commission
@@ -6262,11 +6266,10 @@ export default function EventDashboardPage() {
                       <tr>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700 w-[18rem]">Employee</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Regular Rate">Reg</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Loaded</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Extended Amount on Regular Rate">Ext @ Reg</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Amount">Comm</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Total Final Commission">Final Comm</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Per Vendor">Commission Pay</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Commission Pay - Ext @ Reg)">Variable Incentive</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
                         {!hideRestBreakColumn && (
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
@@ -6279,7 +6282,7 @@ export default function EventDashboardPage() {
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={hideRestBreakColumn ? 11 : 12} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideRestBreakColumn ? 10 : 11} className="p-8 text-center text-gray-500">
                             No staff found matching filters
                           </td>
                         </tr>
@@ -6409,110 +6412,17 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
-                              {/* Ext Amt on Reg Rate */}
+                              {/* Commission Per Vendor */}
                               <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-green-600">
-                                  ${formatPayrollMoney(extAmtOnRegRate)}
-                                </div>
-                                <div className="hidden xl:block text-[10px] text-gray-500 mt-1">
-                                  {hoursHHMM} × ${formatPayrollMoney(baseRate)} × 1.5
+                                <div className="text-sm font-medium text-blue-600">
+                                  ${formatPayrollMoney(perVendorCommissionShare)}
                                 </div>
                               </td>
 
-                              {/* Commission Amt */}
+                              {/* Variable Incentive */}
                               <td className="px-2 py-2 align-top">
-                                {commissionOverrideVal === null ? (
-                                  <div className="flex flex-col gap-1">
-                                    <span className="text-xs text-red-500 line-through">$0.00</span>
-                                    <span className="text-[10px] text-red-400">Excluded</span>
-                                    {canEditTimesheets && (
-                                      <button
-                                        onClick={() => setCommissionsOverrides(prev => {
-                                          const next = { ...prev };
-                                          delete next[uid];
-                                          return next;
-                                        })}
-                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
-                                      >
-                                        Restore
-                                      </button>
-                                    )}
-                                  </div>
-                                ) : editingCommissionsMemberId === uid ? (
-                                  <div className="flex flex-col gap-1">
-                                    <input
-                                      type="number"
-                                      value={editingCommissionsValue}
-                                      onChange={(e) => setEditingCommissionsValue(e.target.value)}
-                                      className="w-16 px-1 py-0.5 border border-blue-500 rounded text-xs"
-                                      placeholder="0.00"
-                                      step="0.01"
-                                      min="0"
-                                      autoFocus
-                                    />
-                                    <div className="flex gap-1">
-                                      <button
-                                        onClick={() => {
-                                          const val = parseFloat(editingCommissionsValue);
-                                          if (!isNaN(val)) {
-                                            setCommissionsOverrides(prev => ({ ...prev, [uid]: val }));
-                                          }
-                                          setEditingCommissionsMemberId(null);
-                                          setEditingCommissionsValue("");
-                                        }}
-                                        className="text-[10px] text-green-600 hover:text-green-800 font-medium"
-                                      >
-                                        Save
-                                      </button>
-                                      <button
-                                        onClick={() => {
-                                          setEditingCommissionsMemberId(null);
-                                          setEditingCommissionsValue("");
-                                        }}
-                                        className="text-[10px] text-gray-500 hover:text-gray-700"
-                                      >
-                                        Cancel
-                                      </button>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <div className="flex flex-col gap-1">
-                                    <div className={`text-sm font-medium ${commissionOverrideVal !== undefined ? 'text-orange-600' : 'text-green-600'}`}>
-                                      ${formatPayrollMoney(commissionAmount)}
-                                      {commissionOverrideVal !== undefined && (
-                                        <span className="text-[9px] ml-1 text-orange-400">edited</span>
-                                      )}
-                                    </div>
-                                    <div className="hidden xl:block text-[10px] text-gray-500">
-                                      Pool {(poolPercent * 100).toFixed(2)}%
-                                    </div>
-                                    {canEditTimesheets && (
-                                      <div className="flex gap-1">
-                                        <button
-                                          onClick={() => {
-                                            setEditingCommissionsMemberId(uid);
-                                            setEditingCommissionsValue(String(commissionAmount.toFixed(2)));
-                                          }}
-                                          className="text-[10px] text-blue-500 hover:text-blue-700 underline"
-                                        >
-                                          Edit
-                                        </button>
-                                        <button
-                                          onClick={() => setCommissionsOverrides(prev => ({ ...prev, [uid]: null }))}
-                                          className="text-[10px] text-red-500 hover:text-red-700 underline"
-                                        >
-                                          Delete
-                                        </button>
-                                      </div>
-                                    )}
-                                  </div>
-                                )}
-                              </td>
-
-                              {/* Total Final Commission */}
-                              <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-green-600">
-                                  ${formatPayrollMoney(totalFinalCommission)}
+                                <div className="text-sm font-medium text-purple-600">
+                                  ${formatPayrollMoney(Math.max(0, extAmtOnRegRate - perVendorCommissionShare))}
                                 </div>
                               </td>
 
