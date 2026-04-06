@@ -1188,7 +1188,7 @@ function HRDashboardContent() {
           'Total Rest Break': Number(Number(event.totalRestBreak || 0).toFixed(2)),
           'Total Other': Number(Number(event.totalOther || 0).toFixed(2)),
           'Total Mileage Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => s + (getMileageApproval(event.id, p.userId).mileage ? Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0) : 0), 0) : 0).toFixed(2)),
-          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { if (!getMileageApproval(event.id, p.userId).travel) return s; const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
+          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { if (!getMileageApproval(event.id, p.userId).travel) return s; const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.loadedRate ?? p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
           'Total': Number(Number(event.eventTotal || 0).toFixed(2)),
           'Total Ext Amt Reg Rate': Number(Number(totalExtAmtRegRate).toFixed(2)),
         });
@@ -1213,7 +1213,7 @@ function HRDashboardContent() {
             const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
             const diffMilesExport = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
             const _travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
-            const _travelPayExport = _travelHoursExport * Number(p.regRate ?? event.baseRate ?? 0);
+            const _travelPayExport = _travelHoursExport * Number(p.loadedRate ?? p.regRate ?? event.baseRate ?? 0);
             const exportApproval = getMileageApproval(event.id, p.userId);
             const mileagePay = exportApproval.mileage ? _mileagePayExport : 0;
             const travelPayExport = exportApproval.travel ? _travelPayExport : 0;
@@ -2376,7 +2376,7 @@ function HRDashboardContent() {
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
                                                 const _travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
-                                                const _travelPay = _travelHours * regRate;
+                                                const _travelPay = _travelHours * loadedRate;
                                                 const approval = getMileageApproval(ev.id, p.userId);
                                                 const mileagePay = approval.mileage ? _mileagePay : 0;
                                                 const travelPay = approval.travel ? _travelPay : 0;
@@ -2406,21 +2406,21 @@ function HRDashboardContent() {
                                                         <div className="flex flex-col gap-0.5">
                                                           <span className={approval.mileage ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.mileage ? _mileagePay : 0)}</span>
                                                           {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.differentialMiles != null && md.differentialMiles > 0 ? <div className="text-[10px] text-gray-400">{md.differentialMiles} mi diff × 2 × $0.71</div> : null; })()}
-                                                          <div className="flex gap-1 mt-0.5">
-                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'mileage', true)} className={`text-[10px] px-1.5 py-0.5 rounded border ${approval.mileage ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>✓</button>
-                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'mileage', false)} className={`text-[10px] px-1.5 py-0.5 rounded border ${!approval.mileage ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}>✗</button>
-                                                          </div>
                                                         </div>
                                                       ) : '\u2014'}
                                                     </td>
                                                     <td className="p-2 text-sm text-indigo-600">
-                                                      {_travelPay > 0 ? (
+                                                      {(_mileagePay > 0 || _travelPay > 0) ? (
                                                         <div className="flex flex-col gap-0.5">
-                                                          <span className={approval.travel ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.travel ? _travelPay : 0)}</span>
-                                                          {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff × 2 ÷ 60 × ${formatPayrollMoney(regRate)}/hr</div>}
+                                                          {_travelPay > 0 ? (
+                                                            <>
+                                                              <span className={approval.travel ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.travel ? _travelPay : 0)}</span>
+                                                              {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff × 2 ÷ 60 × ${formatPayrollMoney(loadedRate)}/hr</div>}
+                                                            </>
+                                                          ) : <span className="text-gray-400">&mdash;</span>}
                                                           <div className="flex gap-1 mt-0.5">
-                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'travel', true)} className={`text-[10px] px-1.5 py-0.5 rounded border ${approval.travel ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>✓</button>
-                                                            <button type="button" onClick={() => setMileageApproval(ev.id, p.userId, 'travel', false)} className={`text-[10px] px-1.5 py-0.5 rounded border ${!approval.travel ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}>✗</button>
+                                                            <button type="button" onClick={() => { setMileageApproval(ev.id, p.userId, 'mileage', true); setMileageApproval(ev.id, p.userId, 'travel', true); }} className={`text-[10px] px-1.5 py-0.5 rounded border ${(approval.mileage && approval.travel) ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}>✓ Approve</button>
+                                                            <button type="button" onClick={() => { setMileageApproval(ev.id, p.userId, 'mileage', false); setMileageApproval(ev.id, p.userId, 'travel', false); }} className={`text-[10px] px-1.5 py-0.5 rounded border ${(!approval.mileage && !approval.travel) ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}>✗ Deny</button>
                                                           </div>
                                                         </div>
                                                       ) : '\u2014'}
@@ -2508,8 +2508,9 @@ function HRDashboardContent() {
                                               const appr = getMileageApproval(ev.id, p.userId);
                                               if (!appr.travel) return s;
                                               const diffMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
-                                              const rate = Number(p.regRate ?? ev.baseRate ?? 0);
-                                              return s + (diffMiles !== null ? ((diffMiles * 2) / 60) * rate : 0);
+                                              const regR = Number(p.regRate ?? ev.baseRate ?? 0);
+                                              const loadedR = Number(p.loadedRate ?? regR);
+                                              return s + (diffMiles !== null ? ((diffMiles * 2) / 60) * loadedR : 0);
                                             }, 0);
                                             const totGross = payments.reduce((s: number, p: any) => s + Number(p.finalPay || p.totalGrossPay || 0), 0) + totMileage + totTravel;
                                             return (
