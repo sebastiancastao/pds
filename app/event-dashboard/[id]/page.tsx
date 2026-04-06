@@ -63,6 +63,7 @@ type EventLocationAssignment = {
   event_id: string;
   location_id: string;
   vendor_id: string;
+  is_leader: boolean;
   created_at: string;
   updated_at: string;
 };
@@ -300,6 +301,8 @@ export default function EventDashboardPage() {
   const [locationTeamRegion, setLocationTeamRegion] = useState<string>("all");
   const [regions, setRegions] = useState<Region[]>([]);
   const [locationRegionFilter, setLocationRegionFilter] = useState<string>("all");
+  const [locationCityFilter, setLocationCityFilter] = useState<string>("all");
+  const [locationCardSearch, setLocationCardSearch] = useState<string>("");
   const [locationTeamVendors, setLocationTeamVendors] = useState<TeamVendorOption[]>([]);
   const [selectedLocationTeamMembers, setSelectedLocationTeamMembers] = useState<Set<string>>(new Set());
   const [savingLocationTeam, setSavingLocationTeam] = useState(false);
@@ -307,6 +310,11 @@ export default function EventDashboardPage() {
   const [locationTeamProposalStep, setLocationTeamProposalStep] = useState(false);
   const [locationTeamProposalLocationId, setLocationTeamProposalLocationId] = useState<string>("");
   const [showUninvitedHistoryModal, setShowUninvitedHistoryModal] = useState(false);
+  const [showCloseEventModal, setShowCloseEventModal] = useState(false);
+  const [closeEventVendors, setCloseEventVendors] = useState<TeamVendorOption[]>([]);
+  const [loadingCloseEvent, setLoadingCloseEvent] = useState(false);
+  const [sendingCloseEventEmail, setSendingCloseEventEmail] = useState(false);
+  const [closeEventEmailResult, setCloseEventEmailResult] = useState<{ success: boolean; message: string } | null>(null);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
   const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
@@ -325,6 +333,8 @@ export default function EventDashboardPage() {
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
+  const [locationLeaders, setLocationLeaders] = useState<Record<string, string>>({});
+  const [settingLeaderId, setSettingLeaderId] = useState<string | null>(null);
   const [newLocationName, setNewLocationName] = useState("");
   const [newLocationNotes, setNewLocationNotes] = useState("");
   const [newLocationCallTime, setNewLocationCallTime] = useState("");
@@ -614,6 +624,7 @@ export default function EventDashboardPage() {
           first_name: String(member?.users?.profiles?.first_name || ""),
           last_name: String(member?.users?.profiles?.last_name || ""),
           phone: String(member?.users?.profiles?.phone || ""),
+          city: member?.users?.profiles?.city || null,
         },
       });
     }
@@ -650,13 +661,31 @@ export default function EventDashboardPage() {
     [locationAssignableMembers]
   );
 
+  const availableLocationCardCities = useMemo(() => {
+    const cities = locationAssignableMembers
+      .map((m) => m.profiles?.city)
+      .filter((c): c is string => Boolean(c));
+    return [...new Set(cities)].sort();
+  }, [locationAssignableMembers]);
+
   const regionFilteredAssignableMembers = useMemo(() => {
-    if (locationRegionFilter === "all") return locationAssignableMembers;
+    const query = locationCardSearch.trim().toLowerCase();
     return locationAssignableMembers.filter((m) => {
-      const vendorRegionId = m.region_id || m.profiles?.region_id;
-      return vendorRegionId === locationRegionFilter;
+      if (locationRegionFilter !== "all") {
+        const vendorRegionId = m.region_id || m.profiles?.region_id;
+        if (vendorRegionId !== locationRegionFilter) return false;
+      }
+      if (locationCityFilter !== "all" && m.profiles?.city !== locationCityFilter) return false;
+      if (query) {
+        const firstName = (m.profiles?.first_name || "").toLowerCase();
+        const lastName = (m.profiles?.last_name || "").toLowerCase();
+        const email = (m.email || "").toLowerCase();
+        const division = (m.division || "").toLowerCase();
+        if (!`${firstName} ${lastName}`.includes(query) && !email.includes(query) && !division.includes(query)) return false;
+      }
+      return true;
     });
-  }, [locationAssignableMembers, locationRegionFilter]);
+  }, [locationAssignableMembers, locationRegionFilter, locationCityFilter, locationCardSearch]);
 
   const savedAssignedUninvitedLocationVendorIds = useMemo(() => {
     const assignedUninvitedIds = new Set<string>();
@@ -1445,6 +1474,71 @@ export default function EventDashboardPage() {
     }
   };
 
+  const handleSendCloseEventEmails = async () => {
+    if (!closeEventVendors.length || !event) return;
+    setSendingCloseEventEmail(true);
+    setCloseEventEmailResult(null);
+    try {
+      const token = await getSessionToken();
+      const eventName = event.event_name || "the event";
+      const eventDate = event.event_date ? new Date(`${String(event.event_date).split("T")[0]}T12:00:00Z`).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "";
+      const emails = closeEventVendors.map((v) => v.email).filter(Boolean).join(",");
+      const subject = `Event Team Complete – ${eventName}`;
+      const body = `Hello,\n\nWe wanted to let you know that the team for ${eventName}${eventDate ? ` on ${eventDate}` : ""}${event.venue ? ` at ${event.venue}` : ""} has been completed.\n\nThank you for your interest and availability. We look forward to working with you at future events.\n\nBest regards,\nPDS Events Team`;
+      const form = new FormData();
+      form.append("audience", "manual");
+      form.append("to", emails);
+      form.append("subject", subject);
+      form.append("body", body);
+      form.append("bodyFormat", "text");
+      form.append("confirm", "true");
+      const res = await fetch("/api/admin/send-email", {
+        method: "POST",
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        setCloseEventEmailResult({ success: true, message: `Email sent to ${data.recipientCount} vendor${data.recipientCount !== 1 ? "s" : ""}.` });
+      } else {
+        setCloseEventEmailResult({ success: false, message: data.error || "Failed to send email." });
+      }
+    } catch (err: any) {
+      setCloseEventEmailResult({ success: false, message: err?.message || "Failed to send email." });
+    } finally {
+      setSendingCloseEventEmail(false);
+    }
+  };
+
+  const openCloseEventModal = async () => {
+    setShowCloseEventModal(true);
+    setCloseEventVendors([]);
+    setCloseEventEmailResult(null);
+    if (!event?.venue) return;
+    setLoadingCloseEvent(true);
+    try {
+      const token = await getSessionToken();
+      const query = new URLSearchParams({ venue: event.venue, slim: 'true' });
+      const res = await fetch(`/api/vendors?${query.toString()}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      let allVendors: TeamVendorOption[] = [];
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        allVendors = Array.isArray(data?.vendors) ? data.vendors : [];
+      }
+      const invitedIds = new Set(
+        (teamMembers || []).map((m: any) => (m?.vendor_id || m?.user_id || m?.users?.id || "").toString()).filter(Boolean)
+      );
+      const notInvited = allVendors.filter((v) => !invitedIds.has(v.id.toString()));
+      setCloseEventVendors(notInvited);
+    } catch {
+      setCloseEventVendors([]);
+    } finally {
+      setLoadingCloseEvent(false);
+    }
+  };
+
   const openAddVendorModal = async () => {
     setShowAddVendorModal(true);
     setAddVendorSearch("");
@@ -1580,6 +1674,7 @@ export default function EventDashboardPage() {
       const assignments: EventLocationAssignment[] = data?.assignments || [];
 
       const assignmentMap: Record<string, string[]> = {};
+      const leaderMap: Record<string, string> = {};
       const callTimeDraftMap: Record<string, string> = {};
       for (const location of locations) {
         assignmentMap[location.id] = [];
@@ -1590,10 +1685,14 @@ export default function EventDashboardPage() {
           assignmentMap[assignment.location_id] = [];
         }
         assignmentMap[assignment.location_id].push(assignment.vendor_id);
+        if (assignment.is_leader) {
+          leaderMap[assignment.location_id] = assignment.vendor_id;
+        }
       }
 
       setEventLocations(locations);
       setLocationAssignments(assignmentMap);
+      setLocationLeaders(leaderMap);
       setEditingLocationIds({});
       setLocationAssignmentDrafts({});
       setLocationCallTimeDrafts(callTimeDraftMap);
@@ -1865,15 +1964,16 @@ export default function EventDashboardPage() {
     if (!eventId || !locationId) return;
 
     const selectedIds = locationAssignmentDrafts[locationId] || [];
+    const alreadyAssignedIds = new Set(locationAssignments[locationId] || []);
 
-    // Separate out-of-venue vendors from in-venue vendors
+    // Only newly added out-of-venue vendors need approval (not ones already assigned)
     const outOfVenueIds = selectedIds.filter((id) => {
       const member = locationAssignableMemberById.get(id);
-      return member?.isOutOfVenue === true;
+      return member?.isOutOfVenue === true && !alreadyAssignedIds.has(id);
     });
     const inVenueIds = selectedIds.filter((id) => !outOfVenueIds.includes(id));
 
-    // If there are out-of-venue vendors selected, show confirmation dialog
+    // If there are newly added out-of-venue vendors, show confirmation dialog
     if (outOfVenueIds.length > 0) {
       setProposalConfirmState({ locationId, outOfVenueIds, inVenueIds });
       return;
@@ -1969,6 +2069,40 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to submit requests");
     } finally {
       setSubmittingProposalLocationId(null);
+    }
+  };
+
+  const handleSetLocationLeader = async (locationId: string, vendorId: string, unset = false) => {
+    if (!eventId || !locationId || !vendorId) return;
+    setSettingLeaderId(vendorId);
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/locations`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ locationId, leaderId: unset ? null : vendorId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data?.error || "Failed to update leader");
+        return;
+      }
+      setLocationLeaders((prev) => {
+        const next = { ...prev };
+        if (unset) {
+          delete next[locationId];
+        } else {
+          next[locationId] = vendorId;
+        }
+        return next;
+      });
+    } catch {
+      alert("Failed to update leader");
+    } finally {
+      setSettingLeaderId(null);
     }
   };
 
@@ -2398,7 +2532,7 @@ export default function EventDashboardPage() {
       const totalMs = getDisplayedWorkedMs(uid);
       const actualHours = totalMs / (1000 * 60 * 60);
       const hoursHHMM = formatHoursFromMs(totalMs);
-      const extAmtOnRegRate = actualHours * baseRate * 1.5;
+      const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
       const isTrailersDivision = division === "trailers";
       const totalFinalCommission = isTrailersDivision
         ? extAmtOnRegRate
@@ -3333,7 +3467,7 @@ export default function EventDashboardPage() {
         const isTrailersDivision = memberDivision === 'trailers';
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
@@ -3467,7 +3601,7 @@ export default function EventDashboardPage() {
         const isTrailersDivision = memberDivision === 'trailers';
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = actualHours * baseRate * 1.5;
+        const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
@@ -4767,7 +4901,7 @@ export default function EventDashboardPage() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
                 <div className="flex items-center gap-2">
-                  {canManageTeam && (
+                  {canManageTeam && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
                     <button
                       onClick={openAddVendorModal}
                       disabled={loadingAddVendors || addingVendorToTeam}
@@ -4789,6 +4923,13 @@ export default function EventDashboardPage() {
                     className="bg-rose-600 hover:bg-rose-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                   >
                     Uninvited ({uninvitedTeamMembers.length})
+                  </button>
+                  <button
+                    onClick={openCloseEventModal}
+                    disabled={loadingTeam}
+                    className="bg-gray-800 hover:bg-gray-900 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                  >
+                    Close Event
                   </button>
                   <button
                     onClick={() => loadTeam(false)}
@@ -5290,6 +5431,8 @@ export default function EventDashboardPage() {
                                   const fullName = `${firstName} ${lastName}`.trim();
                                   const email = member?.email || "No email";
                                   const isUninvited = !member?.isExistingMember;
+                                  const isConfirmed = member?.isExistingMember && String(member?.status || "").toLowerCase() === "confirmed";
+                                  const isLeader = locationLeaders[loc.id] === memberId;
 
                                   return (
                                     <div
@@ -5299,6 +5442,15 @@ export default function EventDashboardPage() {
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {isLeader && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-1">
+                                              <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
+                                                <path d="M3 17l3-8 5 5 4-7 3 4v6H3z" />
+                                                <path d="M2 19h20v2H2z" />
+                                              </svg>
+                                              Leader
+                                            </span>
+                                          )}
                                           {isUninvited && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
@@ -5318,9 +5470,22 @@ export default function EventDashboardPage() {
                                             </span>
                                           )}
                                         </div>
-                                        <p className="text-xs text-gray-500 truncate">{email}</p>
+                                        <p className="text-xs text-gray-500 truncate">{email}{profile?.city ? ` • ${profile.city}` : ""}</p>
                                       </div>
                                       <div className="flex items-center gap-2">
+                                        {isConfirmed && canManageLocations && (
+                                          <button
+                                            type="button"
+                                            title={isLeader ? "Remove leader" : "Set as leader"}
+                                            onClick={() => { void handleSetLocationLeader(loc.id, memberId, isLeader); }}
+                                            disabled={settingLeaderId !== null}
+                                            className={`p-1.5 rounded transition ${isLeader ? "text-yellow-500 hover:text-gray-400 hover:bg-gray-50" : "text-gray-400 hover:text-yellow-500 hover:bg-yellow-50"}`}
+                                          >
+                                            <svg className="w-4 h-4" viewBox="0 0 24 24" fill={isLeader ? "currentColor" : "none"} stroke="currentColor" strokeWidth={isLeader ? 0 : 1.5}>
+                                              <path strokeLinecap="round" strokeLinejoin="round" d="M11.48 3.499a.562.562 0 011.04 0l2.125 5.111a.563.563 0 00.475.345l5.518.442c.499.04.701.663.321.988l-4.204 3.602a.563.563 0 00-.182.557l1.285 5.385a.562.562 0 01-.84.61l-4.725-2.885a.563.563 0 00-.586 0L6.982 20.54a.562.562 0 01-.84-.61l1.285-5.386a.562.562 0 00-.182-.557l-4.204-3.602a.563.563 0 01.321-.988l5.518-.442a.563.563 0 00.475-.345L11.48 3.5z" />
+                                            </svg>
+                                          </button>
+                                        )}
                                         {isUninvited && canSendTeamInvites && (
                                           <button
                                             type="button"
@@ -5400,23 +5565,45 @@ export default function EventDashboardPage() {
                                   ({regionFilteredAssignableMembers.length} vendor{regionFilteredAssignableMembers.length !== 1 ? "s" : ""})
                                 </span>
                               </p>
-                              {regions.length > 0 && (
-                                <select
-                                  value={locationRegionFilter}
-                                  onChange={(e) => setLocationRegionFilter(e.target.value)}
-                                  className="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                                >
-                                  <option value="all">All Regions</option>
-                                  {regions.map((r) => (
-                                    <option key={r.id} value={r.id}>{r.name}</option>
-                                  ))}
-                                </select>
-                              )}
+                              <div className="flex items-center gap-2">
+                                {availableLocationCardCities.length > 0 && (
+                                  <select
+                                    value={locationCityFilter}
+                                    onChange={(e) => setLocationCityFilter(e.target.value)}
+                                    className="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  >
+                                    <option value="all">All Cities</option>
+                                    {availableLocationCardCities.map((c) => (
+                                      <option key={c} value={c}>{c}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                {regions.length > 0 && (
+                                  <select
+                                    value={locationRegionFilter}
+                                    onChange={(e) => setLocationRegionFilter(e.target.value)}
+                                    className="text-xs border border-gray-300 rounded px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  >
+                                    <option value="all">All Regions</option>
+                                    {regions.map((r) => (
+                                      <option key={r.id} value={r.id}>{r.name}</option>
+                                    ))}
+                                  </select>
+                                )}
+                              </div>
                             </div>
+
+                            <input
+                              type="text"
+                              value={locationCardSearch}
+                              onChange={(e) => setLocationCardSearch(e.target.value)}
+                              placeholder="Search by name, email, or division..."
+                              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                            />
 
                             {regionFilteredAssignableMembers.length === 0 ? (
                               <div className="text-sm text-gray-500 bg-gray-50 border rounded-lg p-4 space-y-3">
-                                <p>{locationAssignableMembers.length === 0 ? "No available users found for this event date." : "No vendors match the selected region."}</p>
+                                <p>{locationAssignableMembers.length === 0 ? "No available users found for this event date." : "No vendors match the selected filters."}</p>
                                 {locationAssignableMembers.length === 0 && (
                                   <button
                                     onClick={() => {
@@ -5480,7 +5667,7 @@ export default function EventDashboardPage() {
                                             </span>
                                           )}
                                         </div>
-                                        <p className="text-xs text-gray-500 truncate">{email}</p>
+                                        <p className="text-xs text-gray-500 truncate">{email}{profile?.city ? ` • ${profile.city}` : ""}</p>
                                         {member.isOutOfVenue && (
                                           <p className="text-[10px] text-orange-600 mt-0.5">
                                             Selecting will submit an approval request to management
@@ -5930,13 +6117,15 @@ export default function EventDashboardPage() {
                       <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
                     )}
                   </div>
-                  <button
-                    onClick={handleExportPayments}
-                    disabled={loadingPaymentTab || filteredTeamMembers.length === 0}
-                    className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                  >
-                    Export Payments
-                  </button>
+                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
+                    <button
+                      onClick={handleExportPayments}
+                      disabled={loadingPaymentTab || filteredTeamMembers.length === 0}
+                      className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Export Payments
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -6126,7 +6315,7 @@ export default function EventDashboardPage() {
                           const loadedRate = baseRate;
 
                           // Ext Amt on Reg Rate = total hours × base rate × 1.5
-                          const extAmtOnRegRate = actualHours * baseRate * 1.5;
+                          const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
 
                           // Commission pool (Net Sales × pool fraction)
                           const currentShares = sharesData;
@@ -6888,6 +7077,7 @@ export default function EventDashboardPage() {
                               {vendor.email || "N/A"}
                               {phone ? ` | ${phone}` : ""}
                               {vendor.division ? ` | ${vendor.division}` : ""}
+                              {vendor.profiles?.city ? ` | ${vendor.profiles.city}` : ""}
                               {isOutOfVenueNew && (
                                 <span className="ml-1 text-orange-600">· Selecting will submit an approval request to management</span>
                               )}
@@ -6899,6 +7089,102 @@ export default function EventDashboardPage() {
                   </div>
                 </>
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showCloseEventModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => setShowCloseEventModal(false)}
+        >
+          <div
+            className="w-full max-w-3xl bg-white rounded-2xl shadow-2xl border border-gray-200 max-h-[85vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h3 className="text-xl font-semibold text-gray-900">Close Event — Not Invited</h3>
+                <p className="text-sm text-gray-500 mt-1">
+                  Vendors in this venue&apos;s region who were not invited to the event
+                  {!loadingCloseEvent && ` (${closeEventVendors.length})`}
+                </p>
+              </div>
+              <button
+                onClick={() => setShowCloseEventModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="px-6 py-4 overflow-y-auto">
+              {loadingCloseEvent ? (
+                <div className="py-10 text-center">
+                  <div className="inline-block w-7 h-7 border-4 border-gray-800 border-t-transparent rounded-full animate-spin"></div>
+                  <p className="mt-3 text-sm text-gray-500">Loading vendors in region...</p>
+                </div>
+              ) : closeEventVendors.length === 0 ? (
+                <div className="py-10 text-center bg-green-50 rounded-lg border border-green-200">
+                  <p className="text-sm text-green-700 font-medium">All vendors in this region were invited to the event.</p>
+                </div>
+              ) : (
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Email</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">City / State</th>
+                      </tr>
+                    </thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
+                      {closeEventVendors.map((vendor) => {
+                        const name = `${vendor.profiles?.first_name || ""} ${vendor.profiles?.last_name || ""}`.trim() || "Unknown";
+                        const location = [vendor.profiles?.city, vendor.profiles?.state].filter(Boolean).join(", ") || "N/A";
+                        return (
+                          <tr key={vendor.id} className="hover:bg-gray-50">
+                            <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{name}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{vendor.email}</td>
+                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{location}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between gap-2 px-6 py-4 border-t border-gray-200">
+              <div className="flex-1">
+                {closeEventEmailResult && (
+                  <p className={`text-sm font-medium ${closeEventEmailResult.success ? "text-green-700" : "text-red-600"}`}>
+                    {closeEventEmailResult.message}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {!loadingCloseEvent && closeEventVendors.length > 0 && (
+                  <button
+                    onClick={handleSendCloseEventEmails}
+                    disabled={sendingCloseEventEmail}
+                    className="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-900 text-white font-medium disabled:bg-gray-400 transition"
+                  >
+                    {sendingCloseEventEmail ? "Sending..." : `Notify All (${closeEventVendors.length})`}
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowCloseEventModal(false)}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -7317,6 +7603,7 @@ export default function EventDashboardPage() {
                                 {vendor.email}
                                 {phone ? ` • ${phone}` : ""}
                                 {vendor.division ? ` • ${vendor.division}` : ""}
+                                {vendor.profiles?.city ? ` • ${vendor.profiles.city}` : ""}
                                 {vendor.distance !== null && vendor.distance !== undefined ? ` • ${vendor.distance} mi` : ""}
                               </div>
                             </div>

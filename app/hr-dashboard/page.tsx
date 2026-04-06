@@ -134,6 +134,7 @@ function HRDashboardContent() {
   const [approvalError, setApprovalError] = useState<string>('');
   const [approvalSubmissions, setApprovalSubmissions] = useState<Array<{ id: string; file_name: string; status: string; submitted_at: string }>>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
   const normalizeState = (s?: string | null) => (s || "").toUpperCase().trim();
   const normalizeDivision = (d?: string | null) => (d || "").toString().toLowerCase().trim();
   const isTrailersDivision = (d?: string | null) => normalizeDivision(d) === "trailers";
@@ -416,6 +417,7 @@ function HRDashboardContent() {
     setLoadingPayments(true);
     setPaymentsError("");
     setPaymentsByVenue([]);
+    setMileageByEvent({});
     try {
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[HR PAYMENTS] loading events for HR dashboard');
@@ -745,8 +747,8 @@ function HRDashboardContent() {
 
             const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
-            const extAmtRegular = roundedPayrollHours * baseRate;
-            const extAmtOnRegRateNonAzNy = roundedPayrollHours * baseRate * 1.5;
+            const extAmtRegular = Math.round(roundedPayrollHours * baseRate * 100) / 100;
+            const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * baseRate * 1.5 * 100) / 100;
 
             // Keep AZ/NY weekly-OT logic unchanged, but mirror Event Dashboard math for CA/NV/WI.
             let commissionAmt = 0;
@@ -767,7 +769,7 @@ function HRDashboardContent() {
                 ? totalFinalCommissionBase / roundedPayrollHours
                 : baseRate;
               otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-              extAmtOnRegRate = isWeeklyOT ? (otRate * roundedPayrollHours) : extAmtOnRegRateNonAzNy;
+              extAmtOnRegRate = isWeeklyOT ? Math.round(otRate * roundedPayrollHours * 100) / 100 : extAmtOnRegRateNonAzNy;
               // Final commission uses CA formula against the resolved extAmtOnRegRate
               const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
                 ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
@@ -888,6 +890,22 @@ function HRDashboardContent() {
       console.log('[HR PAYMENTS] venues assembled', { venueCount: Object.keys(byVenue).length });
       const venuesArr = Object.values(byVenue);
       setPaymentsByVenue(venuesArr);
+
+      // Fetch mileage pay data for all loaded events
+      const allEventIdsForMileage = venuesArr.flatMap(v => v.events.map((ev: any) => ev.id)).filter(Boolean);
+      if (allEventIdsForMileage.length > 0) {
+        try {
+          const mileageRes = await fetch(`/api/mileage-pay?event_ids=${encodeURIComponent(allEventIdsForMileage.join(','))}`, {
+            headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          });
+          if (mileageRes.ok) {
+            const mileageJson = await mileageRes.json();
+            setMileageByEvent(mileageJson.mileage || {});
+          }
+        } catch (e) {
+          console.warn('[HR PAYMENTS] Failed to fetch mileage data:', e);
+        }
+      }
 
       // Seed editable adjustments map from loaded data
       const initialAdjustments: Record<string, Record<string, number>> = {};
@@ -1124,6 +1142,8 @@ function HRDashboardContent() {
           'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
           'Total Rest Break': Number(Number(event.totalRestBreak || 0).toFixed(2)),
           'Total Other': Number(Number(event.totalOther || 0).toFixed(2)),
+          'Total Mileage Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => s + Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0), 0) : 0).toFixed(2)),
+          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
           'Total': Number(Number(event.eventTotal || 0).toFixed(2)),
           'Total Ext Amt Reg Rate': Number(Number(totalExtAmtRegRate).toFixed(2)),
         });
@@ -1144,7 +1164,12 @@ function HRDashboardContent() {
             const other = Number(p.adjustmentAmount || 0);
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
-            const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+            const mileagePay = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
+            const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
+            const diffMilesExport = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
+            const travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
+            const travelPayExport = travelHoursExport * Number(p.regRate ?? event.baseRate ?? 0);
+            const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPayExport;
 
             rows.push({
               'Venue': venue.venue,
@@ -1163,6 +1188,11 @@ function HRDashboardContent() {
               'Total Final Commission Amt': Number(roundUpThousandsToNextHundred(totalFinalCommissionAmt).toFixed(2)),
               'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
               'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
+              'Mileage Miles': mileageMiles !== null ? mileageMiles : 'N/A',
+              'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
+              'Travel Differential Miles': diffMilesExport !== null ? diffMilesExport : 'N/A',
+              'Travel Hours': diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A',
+              'Travel Pay': Number(roundUpThousandsToNextHundred(travelPayExport).toFixed(2)),
               'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
               'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
             });
@@ -1193,6 +1223,8 @@ function HRDashboardContent() {
         'Total Tips': Number(sumNum('Total Tips').toFixed(2)),
         'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
         'Total Other': Number(sumNum('Total Other').toFixed(2)),
+        'Total Mileage Pay': Number(sumNum('Total Mileage Pay').toFixed(2)),
+        'Total Travel Pay': Number(sumNum('Total Travel Pay').toFixed(2)),
         'Total': Number(sumNum('Total').toFixed(2)),
         'Total Ext Amt Reg Rate': Number(sumNum('Total Ext Amt Reg Rate').toFixed(2)),
       });
@@ -1218,6 +1250,10 @@ function HRDashboardContent() {
         'Total Final Commission Amt': Number(sumNum('Total Final Commission Amt').toFixed(2)),
         'Tips': Number(sumNum('Tips').toFixed(2)),
         'Rest Break': Number(rows.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
+        'Mileage Miles': '',
+        'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
+        'Travel Hours': '',
+        'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
         'Other': Number(sumNum('Other').toFixed(2)),
         'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
       });
@@ -1280,7 +1316,7 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate]);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent]);
 
   // Load onboarding forms
   const loadOnboardingForms = useCallback(async () => {
@@ -2246,6 +2282,8 @@ function HRDashboardContent() {
                                                 {!hideRest && (
                                                   <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
                                                 )}
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
+                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                                               </tr>
@@ -2286,7 +2324,11 @@ function HRDashboardContent() {
                                                 const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = Number(p.restBreak || 0);
-                                                const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0);
+                                                const mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
+                                                const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
+                                                const travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
+                                                const travelPay = travelHours * regRate;
+                                                const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
                                                   ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
                                                 );
@@ -2307,6 +2349,14 @@ function HRDashboardContent() {
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}
+                                                    <td className="p-2 text-sm text-blue-600">
+                                                      {mileagePay > 0 ? `$${formatPayrollMoney(mileagePay)}` : '\u2014'}
+                                                      {(() => { const md = (mileageByEvent[ev.id] || {})[p.userId]; return md?.miles != null ? <div className="text-[10px] text-gray-400">{md.miles} mi × 2 × $1.71</div> : null; })()}
+                                                    </td>
+                                                    <td className="p-2 text-sm text-indigo-600">
+                                                      {travelPay > 0 ? `$${formatPayrollMoney(travelPay)}` : '\u2014'}
+                                                      {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff × 2 ÷ 60 × ${formatPayrollMoney(regRate)}/hr</div>}
+                                                    </td>
                                                     <td className="p-2 text-sm text-right">
                                                       {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
                                                         <div className="flex flex-col items-end gap-1">
@@ -2382,7 +2432,13 @@ function HRDashboardContent() {
                                             const totTips = payments.reduce((s: number, p: any) => s + Number(p.tips || 0), 0);
                                             const totRest = payments.reduce((s: number, p: any) => s + Number(p.restBreak || 0), 0);
                                             const totOther = payments.reduce((s: number, p: any) => s + Number(p.adjustmentAmount || 0), 0);
-                                            const totGross = payments.reduce((s: number, p: any) => s + Number(p.finalPay || p.totalGrossPay || 0), 0);
+                                            const totMileage = payments.reduce((s: number, p: any) => s + Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0), 0);
+                                            const totTravel = payments.reduce((s: number, p: any) => {
+                                              const diffMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
+                                              const rate = Number(p.regRate ?? ev.baseRate ?? 0);
+                                              return s + (diffMiles !== null ? ((diffMiles * 2) / 60) * rate : 0);
+                                            }, 0);
+                                            const totGross = payments.reduce((s: number, p: any) => s + Number(p.finalPay || p.totalGrossPay || 0), 0) + totMileage + totTravel;
                                             return (
                                               <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                                                 <td className="p-2 uppercase tracking-wide">Total</td>
@@ -2395,6 +2451,8 @@ function HRDashboardContent() {
                                                 <td className="p-2 text-green-600">${formatPayrollMoney(totFinalComm)}</td>
                                                 <td className="p-2 text-orange-600">${formatPayrollMoney(totTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(totRest)}</td>}
+                                                <td className="p-2 text-blue-600">${formatPayrollMoney(totMileage)}</td>
+                                                <td className="p-2 text-indigo-600">${formatPayrollMoney(totTravel)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(totOther)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(totGross)}</td>
                                               </tr>

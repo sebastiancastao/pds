@@ -63,15 +63,16 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const venueName = searchParams.get('venue');
     const regionId = searchParams.get('region_id');
+    const slim = searchParams.get('slim') === 'true';
 
     if (!venueName) {
       return NextResponse.json({ error: 'Venue name is required' }, { status: 400 });
     }
 
-    // Get venue coordinates from venue_reference table
+    // Get venue coordinates and region from venue_reference table
     const { data: venueData, error: venueError } = await supabaseAdmin
       .from('venue_reference')
-      .select('latitude, longitude, city, state')
+      .select('latitude, longitude, city, state, region_id')
       .eq('venue_name', venueName)
       .single();
 
@@ -84,7 +85,7 @@ export async function GET(req: NextRequest) {
       }, { status: 404 });
     }
 
-    const { latitude: venueLat, longitude: venueLon } = venueData;
+    const { latitude: venueLat, longitude: venueLon, region_id: venueRegionId } = venueData;
 
     if (!venueLat || !venueLon) {
       console.error('Venue coordinates missing for:', venueName, { latitude: venueLat, longitude: venueLon });
@@ -98,6 +99,10 @@ export async function GET(req: NextRequest) {
     // Query all vendors (users with division 'vendor' or 'both')
     // Include vendors with AND without coordinates
     // IMPORTANT: Only select non-sensitive fields to avoid exposing encrypted data
+    const profileFields = slim
+      ? 'first_name, last_name, city, state, latitude, longitude, region_id'
+      : 'first_name, last_name, phone, city, state, latitude, longitude, profile_photo_data, region_id';
+
     let vendorQuery = supabaseAdmin
       .from('users')
       .select(`
@@ -107,44 +112,39 @@ export async function GET(req: NextRequest) {
         division,
         is_active,
         profiles!inner (
-          first_name,
-          last_name,
-          phone,
-          city,
-          state,
-          latitude,
-          longitude,
-          profile_photo_data,
-          region_id
+          ${profileFields}
         )
       `)
       .in('division', ['vendor', 'both', 'trailers'])
       .eq('is_active', true);
 
-    // Apply region filter if provided
-    if (regionId && regionId !== 'all') {
-      vendorQuery = vendorQuery.eq('profiles.region_id', regionId);
+    // Apply region filter: explicit param takes priority, otherwise use the venue's own region
+    const effectiveRegionId = (regionId && regionId !== 'all') ? regionId : venueRegionId;
+    if (effectiveRegionId) {
+      vendorQuery = vendorQuery.eq('profiles.region_id', effectiveRegionId);
     }
 
     const { data: vendors, error } = await vendorQuery;
 
-    // Compute recent availability responders in the past 7 days for these vendors
+    // Compute recent availability responders in the past 7 days (skipped in slim mode)
     let recentResponderSet = new Set<string>();
-    try {
-      const vendorIds = (vendors || []).map((v: any) => v.id);
-      if (vendorIds.length > 0) {
-        const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const { data: recent, error: recentErr } = await supabaseAdmin
-          .from('vendor_invitations')
-          .select('vendor_id, responded_at')
-          .in('vendor_id', vendorIds)
-          .eq('invited_by', (user as any).id)
-          .gte('responded_at', weekAgoIso);
-        if (!recentErr && Array.isArray(recent)) {
-          recentResponderSet = new Set(recent.map((r: any) => r.vendor_id));
+    if (!slim) {
+      try {
+        const vendorIds = (vendors || []).map((v: any) => v.id);
+        if (vendorIds.length > 0) {
+          const weekAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+          const { data: recent, error: recentErr } = await supabaseAdmin
+            .from('vendor_invitations')
+            .select('vendor_id, responded_at')
+            .in('vendor_id', vendorIds)
+            .eq('invited_by', (user as any).id)
+            .gte('responded_at', weekAgoIso);
+          if (!recentErr && Array.isArray(recent)) {
+            recentResponderSet = new Set(recent.map((r: any) => r.vendor_id));
+          }
         }
-      }
-    } catch {}
+      } catch {}
+    }
 
     if (error) {
       console.error('SUPABASE SELECT ERROR:', error);
@@ -175,25 +175,20 @@ export async function GET(req: NextRequest) {
         let profilePhotoUrl = null;
 
         try {
-          firstName = vendor.profiles.first_name
-            ? decrypt(vendor.profiles.first_name)
-            : '';
-          lastName = vendor.profiles.last_name
-            ? decrypt(vendor.profiles.last_name)
-            : '';
-          phone = vendor.profiles.phone
-            ? decrypt(vendor.profiles.phone)
-            : '';
+          firstName = vendor.profiles.first_name ? decrypt(vendor.profiles.first_name) : '';
+          lastName = vendor.profiles.last_name ? decrypt(vendor.profiles.last_name) : '';
+          if (!slim) {
+            phone = vendor.profiles.phone ? decrypt(vendor.profiles.phone) : '';
+          }
         } catch (decryptError) {
           console.error('❌ Error decrypting vendor profile data:', decryptError);
-          // Use fallback values
           firstName = 'Vendor';
           lastName = '';
           phone = '';
         }
 
-        // Convert binary profile photo (bytea) to data URL if exists
-        if (vendor.profiles.profile_photo_data) {
+        // Convert binary profile photo (bytea) to data URL if exists (skipped in slim mode)
+        if (!slim && vendor.profiles.profile_photo_data) {
           try {
             let photoData = vendor.profiles.profile_photo_data;
 

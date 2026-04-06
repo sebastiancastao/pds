@@ -10,10 +10,12 @@ import { supabase } from '@/lib/supabase';
 const NV_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'uniform-policy', display: 'Uniform Package / Dress Code Policy', requiresSignature: true },
   { id: 'nv-state-supplements', formId: 'nv-state-supplements', display: 'NV State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/nv-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
+  { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/fw4' },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/notice-to-employee' },

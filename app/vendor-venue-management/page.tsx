@@ -11,6 +11,8 @@ type Venue = {
   venue_name: string;
   city: string | null;
   state: string | null;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 type Vendor = {
@@ -23,6 +25,8 @@ type Vendor = {
   first_name: string;
   last_name: string;
   full_name: string;
+  latitude: number | null;
+  longitude: number | null;
 };
 
 type AssignedByUser = {
@@ -65,6 +69,16 @@ type BulkRow = {
   venue_id: string | null;
   error: string | null;
 };
+
+function calcDistanceMiles(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 3959;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 export default function VendorVenueManagementPage() {
   const [loading, setLoading] = useState(true);
@@ -379,6 +393,59 @@ export default function VendorVenueManagementPage() {
     }
   };
 
+  const exportToExcel = () => {
+    const rows: object[] = [];
+
+    vendors.forEach((vendor) => {
+      const vendorAssignments = assignmentsByVendor.get(vendor.id) || [];
+      const vendorHasCoords = vendor.latitude != null && vendor.longitude != null;
+
+      if (vendorAssignments.length === 0) {
+        rows.push({
+          'Vendor Name': getVendorDisplayName(vendor),
+          Email: vendor.email,
+          Division: vendor.division || '',
+          Role: vendor.role || '',
+          'Manual Override': vendor.manual_override ? 'Yes' : 'No',
+          Venue: '',
+          City: '',
+          State: '',
+          'Distance (mi)': '',
+        });
+      } else {
+        vendorAssignments.forEach((assignment) => {
+          const fullVenue = venues.find((v) => v.id === assignment.venue_id);
+          const distanceMiles =
+            vendorHasCoords && fullVenue?.latitude != null && fullVenue?.longitude != null
+              ? calcDistanceMiles(
+                  vendor.latitude!,
+                  vendor.longitude!,
+                  fullVenue.latitude,
+                  fullVenue.longitude
+                )
+              : null;
+
+          rows.push({
+            'Vendor Name': getVendorDisplayName(vendor),
+            Email: vendor.email,
+            Division: vendor.division || '',
+            Role: vendor.role || '',
+            'Manual Override': vendor.manual_override ? 'Yes' : 'No',
+            Venue: assignment.venue?.venue_name || '',
+            City: assignment.venue?.city || '',
+            State: assignment.venue?.state || '',
+            'Distance (mi)': distanceMiles != null ? parseFloat(distanceMiles.toFixed(1)) : '',
+          });
+        });
+      }
+    });
+
+    const worksheet = XLSX.utils.json_to_sheet(rows);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Assignments');
+    XLSX.writeFile(workbook, 'vendor_venue_assignments.xlsx');
+  };
+
   const downloadBulkTemplate = () => {
     const csv = 'vendor_email,venue_name\nexample@vendor.com,Main Venue Name\n';
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -594,6 +661,12 @@ export default function VendorVenueManagementPage() {
             >
               Bulk Upload
             </button>
+            <button
+              onClick={exportToExcel}
+              className="px-4 py-2.5 rounded-lg bg-emerald-700 text-white text-sm font-medium hover:bg-emerald-800 transition-colors"
+            >
+              Export Excel
+            </button>
             <Link
               href="/venue-management"
               className="px-4 py-2.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition-colors text-center"
@@ -677,6 +750,7 @@ export default function VendorVenueManagementPage() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-5">
           {filteredVendors.map((vendor) => {
             const vendorAssignments = assignmentsByVendor.get(vendor.id) || [];
+            const vendorHasCoords = vendor.latitude != null && vendor.longitude != null;
 
             return (
               <div
@@ -728,7 +802,21 @@ export default function VendorVenueManagementPage() {
                     <p className="text-sm text-gray-400 italic">No venues assigned</p>
                   ) : (
                     <div className="space-y-2.5">
-                      {vendorAssignments.map((assignment) => (
+                      {vendorAssignments.map((assignment) => {
+                        const fullVenue = venues.find((v) => v.id === assignment.venue_id);
+                        const distanceMiles =
+                          vendorHasCoords &&
+                          fullVenue?.latitude != null &&
+                          fullVenue?.longitude != null
+                            ? calcDistanceMiles(
+                                vendor.latitude!,
+                                vendor.longitude!,
+                                fullVenue.latitude,
+                                fullVenue.longitude
+                              )
+                            : null;
+
+                        return (
                         <div
                           key={assignment.id}
                           className="flex items-start justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5"
@@ -741,6 +829,11 @@ export default function VendorVenueManagementPage() {
                               {assignment.venue?.city || ''}{assignment.venue?.city && assignment.venue?.state ? ', ' : ''}
                               {assignment.venue?.state || ''}
                             </p>
+                            {distanceMiles != null && (
+                              <p className="text-xs text-blue-600 mt-0.5">
+                                {distanceMiles.toFixed(1)} mi from home
+                              </p>
+                            )}
                           </div>
                           <button
                             onClick={() => handleRemoveAssignment(assignment)}
@@ -754,7 +847,8 @@ export default function VendorVenueManagementPage() {
                             {deletingAssignmentId === assignment.id ? 'Removing...' : 'Unassign'}
                           </button>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
                 </div>

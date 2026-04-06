@@ -9,10 +9,12 @@ import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/S
 const NY_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/employee-handbook' },
+  { id: 'uniform-policy', display: 'Uniform Package / Dress Code Policy', requiresSignature: true },
   { id: 'ny-state-supplements', formId: 'ny-state-supplements', display: 'NY State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/ny-state-supplements' },
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
+  { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
   { id: 'fw4', formId: 'ny-fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/fw4' },
   { id: 'i9', formId: 'ny-i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/notice-to-employee' },

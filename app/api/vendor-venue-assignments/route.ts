@@ -310,6 +310,8 @@ export async function GET(request: NextRequest) {
           last_name: lastName,
           full_name: fullName,
           manual_override: !!manualOverrideByVendor.get(vendor.id),
+          latitude: toCoordinate(profile?.latitude),
+          longitude: toCoordinate(profile?.longitude),
         };
       })
       .sort((a: any, b: any) => {
@@ -369,6 +371,8 @@ export async function GET(request: NextRequest) {
           venue_name: venue.venue_name,
           city: venue.city,
           state: venue.state,
+          latitude: toCoordinate(venue.latitude),
+          longitude: toCoordinate(venue.longitude),
         })),
         assignments,
       },

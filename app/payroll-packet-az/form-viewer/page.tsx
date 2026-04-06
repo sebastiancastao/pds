@@ -10,10 +10,12 @@ import { supabase } from '@/lib/supabase';
 const AZ_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
   { id: 'employee-handbook', formId: 'employee-handbook', display: 'PDS Employee Handbook 2026', requiresSignature: true, apiOverride: '/api/payroll-packet-ca/employee-handbook' },
+  { id: 'uniform-policy', display: 'Uniform Package / Dress Code Policy', requiresSignature: true },
   { id: 'az-state-supplements', formId: 'az-state-supplements', display: 'AZ State Supplements to Employee Handbook', requiresSignature: true, apiOverride: '/api/payroll-packet-az/az-state-supplements' },
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', formId: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
+  { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fw4' },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-az/i9' },
   { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-az/notice-to-employee' },

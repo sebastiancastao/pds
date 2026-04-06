@@ -157,10 +157,22 @@ export default function StatePayrollFormViewer({
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [healthInsuranceAcknowledged, setHealthInsuranceAcknowledged] = useState(false);
+  const [uniformPolicyDate, setUniformPolicyDate] = useState('');
+  const [homeVenueDate, setHomeVenueDate] = useState('');
+  const [homeVenuePrintName, setHomeVenuePrintName] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
   const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
   const lastSavedSignatureRef = useRef<string | null>(null);
+
+  // Home venue assignment state
+  type VenueOption = { id: string; venue_name: string; city: string | null; state: string | null };
+  const [venueOptions, setVenueOptions] = useState<VenueOption[]>([]);
+  const [selectedVenueId, setSelectedVenueId] = useState<string>('');
+  const [currentVenue, setCurrentVenue] = useState<VenueOption | null>(null);
+  const [venueLoadError, setVenueLoadError] = useState<string | null>(null);
+  const [venueSaving, setVenueSaving] = useState(false);
+  const [venueSaved, setVenueSaved] = useState(false);
 
   const basePath = `/payroll-packet-${stateCode}`;
   const isWiOrNv = stateCode === 'wi' || stateCode === 'nv';
@@ -315,8 +327,73 @@ export default function StatePayrollFormViewer({
 
     // Reset health insurance acknowledgment when form changes
     setHealthInsuranceAcknowledged(false);
+    setUniformPolicyDate('');
+    setHomeVenueDate('');
+    setHomeVenuePrintName('');
     setMissingRequiredFields([]);
   }, [currentForm?.formId, selectedForm, signatures]);
+
+  // Load venues when home-venue-assignment form is shown
+  useEffect(() => {
+    if (selectedForm !== 'home-venue-assignment') return;
+    setVenueLoadError(null);
+    setVenueSaved(false);
+    const load = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/home-venue', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        if (!res.ok) throw new Error('Failed to load venues');
+        const json = await res.json();
+        setVenueOptions(json.venues || []);
+        if (json.currentVenue) {
+          setCurrentVenue(json.currentVenue);
+          setSelectedVenueId(json.currentVenue.id);
+        } else {
+          setCurrentVenue(null);
+          setSelectedVenueId('');
+        }
+      } catch (e: any) {
+        setVenueLoadError(e.message || 'Could not load venue list');
+      }
+    };
+    load();
+  }, [selectedForm]);
+
+  const handleSaveHomeVenue = async (): Promise<boolean> => {
+    if (!selectedVenueId) {
+      alert('Please select a home venue before continuing.');
+      return false;
+    }
+    setVenueSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/home-venue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ venue_id: selectedVenueId }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Failed to save venue assignment.');
+        setVenueSaving(false);
+        return false;
+      }
+      const chosen = venueOptions.find((v) => v.id === selectedVenueId) || null;
+      setCurrentVenue(chosen);
+      setVenueSaved(true);
+      setVenueSaving(false);
+      return true;
+    } catch (e: any) {
+      alert(e.message || 'Failed to save venue assignment.');
+      setVenueSaving(false);
+      return false;
+    }
+  };
 
   const handlePDFSave = (pdfBytes: Uint8Array) => {
     console.log(`[FORM VIEWER] onSave called with ${pdfBytes.length} bytes for form: ${currentForm?.formId}`);
@@ -610,6 +687,16 @@ export default function StatePayrollFormViewer({
     if (!asUser && selectedForm === 'health-insurance' && !healthInsuranceAcknowledged) {
       alert('Please acknowledge that you have read the Health Insurance Marketplace notice before continuing.');
       return;
+    }
+
+    if (!asUser && selectedForm === 'uniform-policy' && !uniformPolicyDate) {
+      alert('Please enter a date before continuing.');
+      return;
+    }
+
+    if (!asUser && selectedForm === 'home-venue-assignment') {
+      if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
+      if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
     }
 
     // Validate required fields for ADP Direct Deposit
@@ -2401,7 +2488,13 @@ export default function StatePayrollFormViewer({
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
             key={`${currentForm.formId}-${selectedForm}-${currentForm.api}`}
-            pdfUrl={selectedForm === 'notice-to-employee' && userRole === 'employee' ? `${currentForm.api}?role=employee` : currentForm.api}
+            pdfUrl={
+              selectedForm === 'home-venue-assignment'
+                ? `/api/payroll-packet-common/home-venue-assignment?state=${stateCode}`
+                : selectedForm === 'notice-to-employee' && userRole === 'employee'
+                  ? `${currentForm.api}?role=employee`
+                  : currentForm.api
+            }
             formId={currentForm.formId}
             onSave={handlePDFSave}
             //@ts-ignore
@@ -2426,6 +2519,97 @@ export default function StatePayrollFormViewer({
             <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: 'bold' }}>
               Signature Required
             </h2>
+
+            {selectedForm === 'home-venue-assignment' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Print Name <span style={{ color: '#d32f2f' }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={homeVenuePrintName}
+                    onChange={(e) => setHomeVenuePrintName(e.target.value)}
+                    placeholder="Full legal name"
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      fontSize: '15px',
+                      border: homeVenuePrintName.trim() ? '2px solid #4caf50' : '2px solid #ddd',
+                      borderRadius: '6px',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Venue Assignment
+                  </label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      venueOptions.find((v) => v.id === selectedVenueId)
+                        ? (() => { const v = venueOptions.find((x) => x.id === selectedVenueId)!; return `${v.venue_name}${v.city ? ` — ${v.city}${v.state ? `, ${v.state}` : ''}` : ''}`; })()
+                        : selectedVenueId ? 'Loading...' : 'No venue assigned'
+                    }
+                    style={{
+                      width: '100%',
+                      padding: '10px 14px',
+                      fontSize: '15px',
+                      border: '2px solid #e0e0e0',
+                      borderRadius: '6px',
+                      outline: 'none',
+                      backgroundColor: '#f5f5f5',
+                      color: '#555',
+                      boxSizing: 'border-box',
+                      cursor: 'default',
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Date <span style={{ color: '#d32f2f' }}>*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={homeVenueDate}
+                    onChange={(e) => setHomeVenueDate(e.target.value)}
+                    style={{
+                      padding: '10px 14px',
+                      fontSize: '15px',
+                      border: homeVenueDate ? '2px solid #4caf50' : '2px solid #ddd',
+                      borderRadius: '6px',
+                      outline: 'none',
+                      width: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {selectedForm === 'uniform-policy' && (
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                  Date <span style={{ color: '#d32f2f' }}>*</span>
+                </label>
+                <input
+                  type="date"
+                  value={uniformPolicyDate}
+                  onChange={(e) => setUniformPolicyDate(e.target.value)}
+                  style={{
+                    padding: '10px 14px',
+                    fontSize: '15px',
+                    border: uniformPolicyDate ? '2px solid #4caf50' : '2px solid #ddd',
+                    borderRadius: '6px',
+                    outline: 'none',
+                    width: '220px',
+                  }}
+                />
+              </div>
+            )}
 
             <div style={{
               border: '2px solid #ddd',
@@ -2694,6 +2878,7 @@ export default function StatePayrollFormViewer({
           </div>
         )}
 
+
         <div
           style={{
             display: 'flex',
@@ -2773,24 +2958,24 @@ export default function StatePayrollFormViewer({
             {!asUser && (
               <button
                 onClick={handleContinue}
-                disabled={saveStatus === 'saving'}
+                disabled={saveStatus === 'saving' || venueSaving}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
+                  backgroundColor: saveStatus === 'saving' || venueSaving ? '#ccc' : '#1976d2',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
                   fontWeight: 'bold',
-                  cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+                  cursor: saveStatus === 'saving' || venueSaving ? 'not-allowed' : 'pointer',
                   fontSize: '16px',
                 }}
                 onMouseOver={(e) => {
-                  if (saveStatus !== 'saving') {
+                  if (saveStatus !== 'saving' && !venueSaving) {
                     e.currentTarget.style.backgroundColor = '#1565c0';
                   }
                 }}
                 onMouseOut={(e) => {
-                  if (saveStatus !== 'saving') {
+                  if (saveStatus !== 'saving' && !venueSaving) {
                     e.currentTarget.style.backgroundColor = '#1976d2';
                   }
                 }}

@@ -179,7 +179,7 @@ async function getLocationsAndAssignments(eventId: string) {
       .order("created_at", { ascending: true }),
     supabaseAdmin
       .from("event_location_assignments")
-      .select("id, event_id, location_id, vendor_id, created_at, updated_at")
+      .select("id, event_id, location_id, vendor_id, is_leader, created_at, updated_at")
       .eq("event_id", eventId),
   ]);
 
@@ -333,6 +333,7 @@ export async function PUT(
     const body = await req.json().catch(() => ({}));
     const locationId = normalizeText(body?.locationId);
     const teamMemberIdsRaw: unknown[] | null = Array.isArray(body?.teamMemberIds) ? body.teamMemberIds : null;
+    const leaderId = body?.leaderId !== undefined ? normalizeText(body?.leaderId) : undefined;
     const name = body?.name !== undefined ? normalizeText(body?.name) : undefined;
     const notes = body?.notes !== undefined ? normalizeText(body?.notes) : undefined;
     const hasCallTime = body && Object.prototype.hasOwnProperty.call(body, "callTime");
@@ -534,6 +535,62 @@ export async function PUT(
           .upsert(upsertPayload, { onConflict: "event_id,vendor_id" });
         if (upsertError) {
           return NextResponse.json({ error: upsertError.message }, { status: 500 });
+        }
+      }
+    }
+
+    if (leaderId !== undefined) {
+      // Clear existing leader for this location
+      const { error: clearError } = await supabaseAdmin
+        .from("event_location_assignments")
+        .update({ is_leader: false })
+        .eq("event_id", eventId)
+        .eq("location_id", locationId);
+
+      if (clearError) {
+        return NextResponse.json({ error: clearError.message }, { status: 500 });
+      }
+
+      if (leaderId) {
+        // Verify the vendor is assigned to this location and is confirmed on the event team
+        const { data: leaderAssignment, error: leaderAssignmentError } = await supabaseAdmin
+          .from("event_location_assignments")
+          .select("vendor_id")
+          .eq("event_id", eventId)
+          .eq("location_id", locationId)
+          .eq("vendor_id", leaderId)
+          .maybeSingle();
+
+        if (leaderAssignmentError) {
+          return NextResponse.json({ error: leaderAssignmentError.message }, { status: 500 });
+        }
+        if (!leaderAssignment) {
+          return NextResponse.json({ error: "Vendor is not assigned to this location" }, { status: 400 });
+        }
+
+        const { data: teamMember, error: teamMemberError } = await supabaseAdmin
+          .from("event_teams")
+          .select("status")
+          .eq("event_id", eventId)
+          .eq("vendor_id", leaderId)
+          .maybeSingle();
+
+        if (teamMemberError) {
+          return NextResponse.json({ error: teamMemberError.message }, { status: 500 });
+        }
+        if (!teamMember || String(teamMember.status || "").toLowerCase() !== "confirmed") {
+          return NextResponse.json({ error: "Only confirmed vendors can be set as leader" }, { status: 400 });
+        }
+
+        const { error: setLeaderError } = await supabaseAdmin
+          .from("event_location_assignments")
+          .update({ is_leader: true })
+          .eq("event_id", eventId)
+          .eq("location_id", locationId)
+          .eq("vendor_id", leaderId);
+
+        if (setLeaderError) {
+          return NextResponse.json({ error: setLeaderError.message }, { status: 500 });
         }
       }
     }

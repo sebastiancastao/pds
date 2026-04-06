@@ -89,6 +89,18 @@ function FormViewerContent() {
   }>({});
   const [uploadingDoc, setUploadingDoc] = useState<'i9_list_a' | 'i9_list_b' | 'i9_list_c' | null>(null);
   const [hasReadForm, setHasReadForm] = useState(false);
+  const [uniformPolicyDate, setUniformPolicyDate] = useState('');
+  const [homeVenueDate, setHomeVenueDate] = useState('');
+  const [homeVenuePrintName, setHomeVenuePrintName] = useState('');
+
+  // Home venue assignment state
+  type VenueOption = { id: string; venue_name: string; city: string | null; state: string | null };
+  const [venueOptions, setVenueOptions] = useState<VenueOption[]>([]);
+  const [selectedVenueId, setSelectedVenueId] = useState<string>('');
+  const [currentVenue, setCurrentVenue] = useState<VenueOption | null>(null);
+  const [venueLoadError, setVenueLoadError] = useState<string | null>(null);
+  const [venueSaving, setVenueSaving] = useState(false);
+  const [venueSaved, setVenueSaved] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
   const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
@@ -105,7 +117,8 @@ function FormViewerContent() {
     fw4: { display: 'Federal W-4', api: '/api/payroll-packet-ca/fw4', formId: 'fw4', next: 'i9', requiresSignature: true },
     i9: { display: 'I-9 Employment Verification', api: '/api/payroll-packet-ca/i9', formId: 'i9', next: 'adp-deposit', requiresSignature: true },
     'adp-deposit': { display: 'ADP Direct Deposit', api: '/api/payroll-packet-ca/adp-deposit', formId: 'adp-deposit', next: 'employee-handbook', requiresSignature: true },
-    'employee-handbook': { display: 'PDS Employee Handbook 2026', api: '/api/payroll-packet-ca/employee-handbook', formId: 'employee-handbook', next: 'ui-guide', requiresSignature: true },
+    'employee-handbook': { display: 'PDS Employee Handbook 2026', api: '/api/payroll-packet-ca/employee-handbook', formId: 'employee-handbook', next: 'uniform-policy', requiresSignature: true },
+    'uniform-policy': { display: 'Uniform Package / Dress Code Policy', api: '/api/payroll-packet-common/uniform-policy?state=ca', formId: 'ca-uniform-policy', next: 'ui-guide', requiresSignature: true },
     'ui-guide': { display: 'UI Guide', api: '/api/payroll-packet-ca/ui-guide', formId: 'ui-guide', next: 'disability-insurance' },
     'disability-insurance': { display: 'Disability Insurance', api: '/api/payroll-packet-ca/disability-insurance', formId: 'disability-insurance', next: 'paid-family-leave' },
     'paid-family-leave': { display: 'Paid Family Leave', api: '/api/payroll-packet-ca/paid-family-leave', formId: 'paid-family-leave', next: 'sexual-harassment' },
@@ -118,7 +131,8 @@ function FormViewerContent() {
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'meal-waiver-6hour' },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'home-venue-assignment' },
+    'home-venue-assignment': { display: 'Home Venue Assignment', api: '/api/payroll-packet-common/home-venue-assignment?state=ca', formId: 'ca-home-venue-assignment', next: 'meal-waiver-6hour', requiresSignature: true },
   };
 
   const currentForm = formConfig[formName];
@@ -194,6 +208,10 @@ function FormViewerContent() {
       autoSaveTimerRef.current = null;
     }
     setMissingRequiredFields([]);
+    setUniformPolicyDate('');
+    setHomeVenueDate('');
+    setHomeVenuePrintName('');
+    setVenueSaved(false);
     // Reset PDF bytes ref for current form to force reload
     pdfBytesRef.current = null;
     // Clear validation state
@@ -431,6 +449,68 @@ function FormViewerContent() {
     }
   };
 
+  // Load venues when home-venue-assignment form is shown
+  useEffect(() => {
+    if (formName !== 'home-venue-assignment') return;
+    setVenueLoadError(null);
+    setVenueSaved(false);
+    const load = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/home-venue', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        });
+        if (!res.ok) throw new Error('Failed to load venues');
+        const json = await res.json();
+        setVenueOptions(json.venues || []);
+        if (json.currentVenue) {
+          setCurrentVenue(json.currentVenue);
+          setSelectedVenueId(json.currentVenue.id);
+        } else {
+          setCurrentVenue(null);
+          setSelectedVenueId('');
+        }
+      } catch (e: any) {
+        setVenueLoadError(e.message || 'Could not load venue list');
+      }
+    };
+    load();
+  }, [formName]);
+
+  const handleSaveHomeVenue = async (): Promise<boolean> => {
+    if (!selectedVenueId) {
+      alert('Please select a home venue before continuing.');
+      return false;
+    }
+    setVenueSaving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/home-venue', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ venue_id: selectedVenueId }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(err.error || 'Failed to save venue assignment.');
+        setVenueSaving(false);
+        return false;
+      }
+      const chosen = venueOptions.find((v) => v.id === selectedVenueId) || null;
+      setCurrentVenue(chosen);
+      setVenueSaved(true);
+      setVenueSaving(false);
+      return true;
+    } catch (e: any) {
+      alert(e.message || 'Failed to save venue assignment.');
+      setVenueSaving(false);
+      return false;
+    }
+  };
+
   // Continue to next form
   const handleContinue = async () => {
     const currentPdfBytes = getPdfBytesForForm();
@@ -460,6 +540,16 @@ function FormViewerContent() {
     if (!asUser && !currentForm.requiresSignature && !hasReadForm) {
       alert('Please confirm that you have read and understood this document.');
       return;
+    }
+
+    if (!asUser && formName === 'uniform-policy' && !uniformPolicyDate) {
+      alert('Please enter a date before continuing.');
+      return;
+    }
+
+    if (!asUser && formName === 'home-venue-assignment') {
+      if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
+      if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
     }
 
     // Validate required fields for ADP Direct Deposit
@@ -1778,7 +1868,13 @@ function FormViewerContent() {
         <div style={{ flex: 1, marginBottom: '20px' }}>
           <PDFFormEditor
             key={`${currentForm.formId}-${formName}`}
-            pdfUrl={formName === 'notice-to-employee' && userRole === 'employee' ? `${currentForm.api}?role=employee` : currentForm.api}
+            pdfUrl={
+              formName === 'home-venue-assignment'
+                ? '/api/payroll-packet-common/home-venue-assignment?state=ca'
+                : formName === 'notice-to-employee' && userRole === 'employee'
+                  ? `${currentForm.api}?role=employee`
+                  : currentForm.api
+            }
             formId={currentForm.formId}
             onSave={handlePDFSave}
             onFieldChange={handleFieldChange}
@@ -1790,6 +1886,7 @@ function FormViewerContent() {
             userId={asUser}
           />
         </div>
+
 
         {/* Read Confirmation Section - Only show if form doesn't require signature */}
         {!currentForm.requiresSignature && (
@@ -1859,6 +1956,63 @@ function FormViewerContent() {
             <h2 style={{ margin: '0 0 16px 0', fontSize: '20px', fontWeight: 'bold' }}>
               Signature Required
             </h2>
+
+            {formName === 'home-venue-assignment' && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Print Name <span style={{ color: '#d32f2f' }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={homeVenuePrintName}
+                    onChange={(e) => setHomeVenuePrintName(e.target.value)}
+                    placeholder="Full legal name"
+                    style={{ width: '100%', padding: '10px 14px', fontSize: '15px', border: homeVenuePrintName.trim() ? '2px solid #4caf50' : '2px solid #ddd', borderRadius: '6px', outline: 'none', boxSizing: 'border-box' as const }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Venue Assignment
+                  </label>
+                  <input
+                    type="text"
+                    readOnly
+                    value={
+                      venueOptions.find((v) => v.id === selectedVenueId)
+                        ? (() => { const v = venueOptions.find((x) => x.id === selectedVenueId)!; return `${v.venue_name}${v.city ? ` — ${v.city}${v.state ? `, ${v.state}` : ''}` : ''}`; })()
+                        : selectedVenueId ? 'Loading...' : 'No venue assigned'
+                    }
+                    style={{ width: '100%', padding: '10px 14px', fontSize: '15px', border: '2px solid #e0e0e0', borderRadius: '6px', outline: 'none', backgroundColor: '#f5f5f5', color: '#555', boxSizing: 'border-box' as const, cursor: 'default' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                    Date <span style={{ color: '#d32f2f' }}>*</span>
+                  </label>
+                  <input
+                    type="date"
+                    value={homeVenueDate}
+                    onChange={(e) => setHomeVenueDate(e.target.value)}
+                    style={{ width: '100%', padding: '10px 14px', fontSize: '15px', border: homeVenueDate ? '2px solid #4caf50' : '2px solid #ddd', borderRadius: '6px', outline: 'none', boxSizing: 'border-box' as const }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {formName === 'uniform-policy' && (
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                  Date <span style={{ color: '#d32f2f' }}>*</span>
+                </label>
+                <input
+                  type="date"
+                  value={uniformPolicyDate}
+                  onChange={(e) => setUniformPolicyDate(e.target.value)}
+                  style={{ padding: '10px 14px', fontSize: '15px', border: uniformPolicyDate ? '2px solid #4caf50' : '2px solid #ddd', borderRadius: '6px', outline: 'none', width: '220px' }}
+                />
+              </div>
+            )}
 
             <div style={{
               border: '2px solid #ddd',
@@ -2308,24 +2462,24 @@ function FormViewerContent() {
             {!asUser && (
               <button
                 onClick={handleContinue}
-                disabled={saveStatus === 'saving'}
+                disabled={saveStatus === 'saving' || venueSaving}
                 style={{
                   padding: '12px 24px',
-                  backgroundColor: saveStatus === 'saving' ? '#ccc' : '#1976d2',
+                  backgroundColor: saveStatus === 'saving' || venueSaving ? '#ccc' : '#1976d2',
                   color: 'white',
                   border: 'none',
                   borderRadius: '6px',
                   fontWeight: 'bold',
-                  cursor: saveStatus === 'saving' ? 'not-allowed' : 'pointer',
+                  cursor: saveStatus === 'saving' || venueSaving ? 'not-allowed' : 'pointer',
                   fontSize: '16px'
                 }}
                 onMouseOver={(e) => {
-                  if (saveStatus !== 'saving') {
+                  if (saveStatus !== 'saving' && !venueSaving) {
                     e.currentTarget.style.backgroundColor = '#1565c0';
                   }
                 }}
                 onMouseOut={(e) => {
-                  if (saveStatus !== 'saving') {
+                  if (saveStatus !== 'saving' && !venueSaving) {
                     e.currentTarget.style.backgroundColor = '#1976d2';
                   }
                 }}
