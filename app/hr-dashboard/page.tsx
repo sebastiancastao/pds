@@ -1232,9 +1232,8 @@ function HRDashboardContent() {
               'Rate in Effect': formatPayrollMoney(loadedRate),
               'Hours': hoursHHMM,
               'Hours in Decimal': hoursInDecimal,
-              'Ext Amt on Reg Rate': Number(Number(extAmtOnRegRate).toFixed(2)),
-              'Commission Amt': Number(roundUpThousandsToNextHundred(commissionAmt).toFixed(2)),
-              'Total Final Commission Amt': Number(roundUpThousandsToNextHundred(totalFinalCommissionAmt).toFixed(2)),
+              'Commission Pay': Number(Number(event.commissionPerVendor || 0).toFixed(2)),
+              'Variable Incentive': Number(Math.max(0, extAmtOnRegRate - Number(event.commissionPerVendor || 0)).toFixed(2)),
               'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
               'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
               'Mileage Miles': mileageMiles !== null ? mileageMiles : 'N/A',
@@ -1294,9 +1293,8 @@ function HRDashboardContent() {
         'Rate in Effect': '',
         'Hours': '',
         'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
-        'Ext Amt on Reg Rate': Number(sumNum('Ext Amt on Reg Rate').toFixed(2)),
-        'Commission Amt': Number(sumNum('Commission Amt').toFixed(2)),
-        'Total Final Commission Amt': Number(sumNum('Total Final Commission Amt').toFixed(2)),
+        'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
+        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
         'Tips': Number(sumNum('Tips').toFixed(2)),
         'Rest Break': Number(rows.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
         'Mileage Miles': '',
@@ -1347,9 +1345,8 @@ function HRDashboardContent() {
         { wch: 12 }, // Rate in Effect
         { wch: 8 },  // Hours
         { wch: 16 }, // Hours in Decimal
-        { wch: 18 }, // Ext Amt on Reg Rate
-        { wch: 15 }, // Commission Amt
-        { wch: 22 }, // Total Final Commission Amt
+        { wch: 16 }, // Commission Pay
+        { wch: 18 }, // Variable Incentive
         { wch: 10 }, // Tips
         { wch: 12 }, // Rest Break
         { wch: 10 }, // Other
