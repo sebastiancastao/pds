@@ -465,6 +465,53 @@ export async function GET(req: NextRequest) {
     }
 
     // ─────────────────────────────────────────────
+    // LOGINS SECTION
+    // ─────────────────────────────────────────────
+    if (section === "all" || section === "login") {
+      // Fetch all auth users (paginated, up to 1000)
+      const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000, page: 1 });
+      if (authError) throw new Error(authError.message);
+
+      // Fetch profiles for names and roles
+      const { data: profileRows } = await supabaseAdmin
+        .from("users")
+        .select("id, role, is_active, profiles(first_name, last_name)");
+
+      const profileByAuthId = new Map<string, any>();
+      (profileRows || []).forEach((u: any) => {
+        const p = Array.isArray(u.profiles) ? u.profiles[0] : u.profiles;
+        profileByAuthId.set(u.id, { role: u.role, is_active: u.is_active, profile: p });
+      });
+
+      const sevenDaysAgo = Date.now() - 7 * 24 * 3600 * 1000;
+
+      const loginRows = (authData?.users || []).map((au: any) => {
+        const userData = profileByAuthId.get(au.id);
+        const profile = userData?.profile;
+        return {
+          id: au.id,
+          email: au.email || "",
+          first_name: dec(profile?.first_name) || "",
+          last_name: dec(profile?.last_name) || "",
+          role: userData?.role || "",
+          is_active: userData?.is_active ?? true,
+          last_sign_in_at: au.last_sign_in_at || null,
+          created_at: au.created_at || null,
+        };
+      }).sort((a: any, b: any) => {
+        if (!a.last_sign_in_at) return 1;
+        if (!b.last_sign_in_at) return -1;
+        return new Date(b.last_sign_in_at).getTime() - new Date(a.last_sign_in_at).getTime();
+      });
+
+      result.logins = {
+        total: loginRows.length,
+        logged_in_recently: loginRows.filter((r: any) => r.last_sign_in_at && new Date(r.last_sign_in_at).getTime() > sevenDaysAgo).length,
+        rows: loginRows,
+      };
+    }
+
+    // ─────────────────────────────────────────────
     // REGIONS (always included for context)
     // ─────────────────────────────────────────────
     const { data: regions } = await supabaseAdmin

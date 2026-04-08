@@ -92,11 +92,29 @@ interface BackgroundReport {
   rows: any[];
 }
 
+interface LoginRow {
+  id: string;
+  email: string;
+  first_name: string;
+  last_name: string;
+  role: string;
+  is_active: boolean;
+  last_sign_in_at: string | null;
+  created_at: string | null;
+}
+
+interface LoginsReport {
+  total: number;
+  logged_in_recently: number;
+  rows: LoginRow[];
+}
+
 interface ReportData {
   users?: UsersReport;
   events?: EventsReport;
   time?: TimeReport;
   background?: BackgroundReport;
+  logins?: LoginsReport;
   regions?: { id: string; name: string; is_active: boolean }[];
 }
 
@@ -134,7 +152,7 @@ function exportCSV(filename: string, headers: string[], rows: (string | number |
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-type ActiveTab = 'overview' | 'users' | 'events' | 'time' | 'background';
+type ActiveTab = 'overview' | 'users' | 'events' | 'time' | 'background' | 'login';
 
 export default function ReportsPage() {
   const router = useRouter();
@@ -144,6 +162,7 @@ export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadingLoginExcel, setDownloadingLoginExcel] = useState(false);
 
   // Filters
   const [fromDate, setFromDate] = useState('');
@@ -152,6 +171,7 @@ export default function ReportsPage() {
   const [userSearch, setUserSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [eventSearch, setEventSearch] = useState('');
+  const [loginSearch, setLoginSearch] = useState('');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -194,6 +214,11 @@ export default function ReportsPage() {
   const filteredEvents = (data?.events?.rows || []).filter(e => {
     const term = eventSearch.toLowerCase();
     return !term || `${e.event_name} ${e.venue} ${e.artist} ${e.city} ${e.state}`.toLowerCase().includes(term);
+  });
+
+  const filteredLogins = (data?.logins?.rows || []).filter(r => {
+    const term = loginSearch.toLowerCase();
+    return !term || `${r.first_name} ${r.last_name} ${r.email} ${r.role}`.toLowerCase().includes(term);
   });
 
   // Build user name lookup for time section
@@ -308,6 +333,30 @@ export default function ReportsPage() {
     );
   };
 
+  const downloadLoginExcel = async () => {
+    setDownloadingLoginExcel(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch('/api/reports/login-export', {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        alert(json.error || 'Export failed');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || 'login-sheet.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingLoginExcel(false);
+    }
+  };
+
   // ─────────────────────────────────────────────────────────────────────────
   // RENDER
   // ─────────────────────────────────────────────────────────────────────────
@@ -346,6 +395,7 @@ export default function ReportsPage() {
     { id: 'events', label: 'Events', count: String(data?.events?.total || 0) },
     { id: 'time', label: 'Time & Hours', count: fmtHours(data?.time?.total_hours || 0) },
     { id: 'background', label: 'Background Checks', count: String(data?.background?.total || 0) },
+    { id: 'login', label: 'Login Sheet', count: String(data?.logins?.total || 0) },
   ];
 
   return (
@@ -859,6 +909,116 @@ export default function ReportsPage() {
                           <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{fmtDate(u.created_at)}</td>
                         </tr>
                       ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── LOGIN SHEET TAB ──────────────────────────────────────────────── */}
+        {activeTab === 'login' && (
+          <div className="space-y-6 animate-fade-in">
+            <div className="grid grid-cols-2 gap-4">
+              <StatCard label="Total Users" value={data?.logins?.total ?? 0} color="blue" />
+              <StatCard label="Active Last 7 Days" value={data?.logins?.logged_in_recently ?? 0} sub="recent logins" color="green" />
+            </div>
+
+            <div className="liquid-card overflow-hidden">
+              <div className="p-5 border-b border-gray-100 flex flex-wrap items-center justify-between gap-3">
+                <h3 className="font-bold text-gray-900 text-sm uppercase tracking-wide">User Login Sheet</h3>
+                <div className="flex gap-3 items-center flex-wrap">
+                  <input
+                    type="text"
+                    placeholder="Search users..."
+                    value={loginSearch}
+                    onChange={e => setLoginSearch(e.target.value)}
+                    className="border border-gray-200 rounded-liquid px-3 py-2 text-sm bg-white/70 focus:outline-none focus:ring-2 focus:ring-ios-blue/30 w-52"
+                  />
+                  <span className="text-sm text-gray-500">{filteredLogins.length} users</span>
+                  <button
+                    onClick={() => exportCSV('login-sheet.csv',
+                      ['Name', 'Email', 'Role', 'Active', 'Last Sign-In', 'Joined'],
+                      filteredLogins.map(r => [
+                        [r.first_name, r.last_name].filter(Boolean).join(' ') || '—',
+                        r.email,
+                        r.role,
+                        r.is_active ? 'Yes' : 'No',
+                        r.last_sign_in_at ? new Date(r.last_sign_in_at).toLocaleString('en-US') : 'Never',
+                        r.created_at ? fmtDate(r.created_at) : '—',
+                      ])
+                    )}
+                    className="liquid-btn-glass liquid-btn-sm inline-flex items-center gap-1.5"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    Export CSV
+                  </button>
+                  <button
+                    onClick={downloadLoginExcel}
+                    disabled={downloadingLoginExcel}
+                    className="liquid-btn-glass liquid-btn-sm inline-flex items-center gap-1.5 bg-green-50 text-green-700 border border-green-200 hover:bg-green-100"
+                  >
+                    {downloadingLoginExcel ? (
+                      <span className="w-4 h-4 border-2 border-green-400 border-t-transparent rounded-full animate-spin" />
+                    ) : (
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                    )}
+                    Export Excel
+                  </button>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-gray-50/50">
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">#</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">Name</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">Email</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">Role</th>
+                      <th className="text-center px-4 py-3 font-semibold text-gray-600">Active</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">Last Sign-In</th>
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600">Joined</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50">
+                    {filteredLogins.map((r, idx) => {
+                      const name = [r.first_name, r.last_name].filter(Boolean).join(' ') || '—';
+                      const signedInRecently = r.last_sign_in_at
+                        ? (Date.now() - new Date(r.last_sign_in_at).getTime()) < 7 * 24 * 3600 * 1000
+                        : false;
+                      return (
+                        <tr key={r.id} className="hover:bg-white/60 transition-colors">
+                          <td className="px-4 py-3 text-xs text-gray-400 font-mono">{idx + 1}</td>
+                          <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{name}</td>
+                          <td className="px-4 py-3 text-gray-600 text-xs">{r.email}</td>
+                          <td className="px-4 py-3">
+                            <span className="inline-block px-2 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 capitalize">{r.role || '—'}</span>
+                          </td>
+                          <td className="px-4 py-3 text-center">
+                            <StatusDot active={r.is_active} label={r.is_active ? 'Yes' : 'No'} />
+                          </td>
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            {r.last_sign_in_at ? (
+                              <span className={`text-xs font-medium ${signedInRecently ? 'text-green-600' : 'text-gray-500'}`}>
+                                {new Date(r.last_sign_in_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                              </span>
+                            ) : (
+                              <span className="text-xs text-gray-400">Never</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">{fmtDate(r.created_at)}</td>
+                        </tr>
+                      );
+                    })}
+                    {filteredLogins.length === 0 && (
+                      <tr>
+                        <td colSpan={7} className="px-4 py-8 text-center text-gray-400 text-sm">No users found</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>

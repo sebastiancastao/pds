@@ -1343,6 +1343,7 @@ export default function WorkerProfilePage() {
                 </div>
 
                 <p className="text-xs text-gray-400">1 hr earned per 30 hrs worked</p>
+                <p className="text-xs text-amber-600 font-medium">Maximum sick leave allowed is 48 hours per year.</p>
 
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
                   <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>

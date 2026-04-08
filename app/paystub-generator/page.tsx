@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
 
 interface PaymentData {
+  effective_hours?: number | null;
   actual_hours: number | null;
   regular_hours: number | null;
   overtime_hours: number | null;
@@ -15,6 +16,9 @@ interface PaymentData {
   overtime_pay: number | null;
   doubletime_pay: number | null;
   commissions: number | null;
+  variable_incentive: number | null;
+  rest_break_pay: number | null;
+  travel_pay: number | null;
   tips: number | null;
   total_pay: number | null;
 }
@@ -23,11 +27,21 @@ interface Worker {
   user_id: string;
   user_name: string;
   user_email: string;
+  division?: string | null;
   phone?: string;
   address?: string;
   status: string;
   payment_data: PaymentData | null;
   worked_hours?: number;
+  adjustment_amount?: number;
+}
+
+interface EventPaymentSummary {
+  net_sales?: number | null;
+  commission_pool_dollars?: number | null;
+  commission_pool_percent?: number | null;
+  total_tips?: number | null;
+  base_rate?: number | null;
 }
 
 interface Event {
@@ -40,6 +54,11 @@ interface Event {
   event_date: string;
   city: string | null;
   state: string | null;
+  commission_pool?: number | null;
+  tips?: number | null;
+  ticket_sales?: number | null;
+  tax_rate_percent?: number | null;
+  event_payment?: EventPaymentSummary | null;
   workers?: Worker[];
 }
 
@@ -190,6 +209,116 @@ export default function PaystubGenerator() {
       ARIZONA: 'AZ',
     };
     return map[st] || st;
+  };
+  const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
+  const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
+  const isVendorDivision = (value?: string | null) => {
+    const division = normalizeDivision(value);
+    return division === 'vendor' || division === 'both';
+  };
+  const roundMoney = (value: number) =>
+    Number((Number.isFinite(value) ? value : 0).toFixed(2));
+  const roundHours = (value: number) =>
+    Number((Number.isFinite(value) ? value : 0).toFixed(2));
+  const formatCommissionReportDate = (rawValue: string) => {
+    const raw = (rawValue || '').toString();
+    const dateOnly = raw.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+      const [yy, mm, dd] = dateOnly.split('-').map((n) => Number(n));
+      return `${mm}/${dd}`;
+    }
+    const asDate = new Date(raw);
+    if (!Number.isNaN(asDate.getTime())) {
+      return asDate.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric' });
+    }
+    return raw || '';
+  };
+  const getCommissionReportHours = (worker?: Worker | null): number => {
+    if (!worker) return 0;
+    const effective = Number(worker.payment_data?.effective_hours ?? 0);
+    if (Number.isFinite(effective) && effective > 0) {
+      return roundHours(effective + 0.5);
+    }
+    const actual = Number(worker.payment_data?.actual_hours ?? 0);
+    if (Number.isFinite(actual) && actual > 0) {
+      return roundHours(actual);
+    }
+    const workedHours = Number(worker.worked_hours ?? 0);
+    if (Number.isFinite(workedHours) && workedHours > 0) {
+      return roundHours(workedHours);
+    }
+    const regularHours = Number(worker.payment_data?.regular_hours ?? 0);
+    const overtimeHours = Number(worker.payment_data?.overtime_hours ?? 0);
+    const doubletimeHours = Number(worker.payment_data?.doubletime_hours ?? 0);
+    const summed = regularHours + overtimeHours + doubletimeHours;
+    return summed > 0 ? roundHours(summed) : 0;
+  };
+  const getAdjustedGrossForEvent = (event: Event): number => {
+    const eventPaymentSummary = event.event_payment || null;
+    const hasSalesInputs =
+      event.ticket_sales !== null &&
+      event.ticket_sales !== undefined;
+    const eventTips = Number(event.tips || 0);
+    const ticketSales = Number(event.ticket_sales || 0);
+    const totalSales = Math.max(ticketSales - eventTips, 0);
+    const taxRate = Number(event.tax_rate_percent || 0);
+    const tax = totalSales * (taxRate / 100);
+    const adjustedGrossFromSales = Math.max(totalSales - tax, 0);
+
+    if (hasSalesInputs) {
+      return roundMoney(adjustedGrossFromSales);
+    }
+
+    const persistedAdjustedGrossRaw = Number(eventPaymentSummary?.net_sales);
+    const hasPersistedAdjustedGross =
+      eventPaymentSummary?.net_sales !== null &&
+      eventPaymentSummary?.net_sales !== undefined &&
+      Number.isFinite(persistedAdjustedGrossRaw);
+
+    if (hasPersistedAdjustedGross) {
+      return roundMoney(Math.max(persistedAdjustedGrossRaw, 0));
+    }
+
+    return roundMoney(adjustedGrossFromSales);
+  };
+  const getCommissionPoolPercentForEvent = (
+    event: Event,
+    adjustedGross: number,
+    grossCommission: number
+  ) => {
+    const persistedPercent = Number(event.event_payment?.commission_pool_percent);
+    if (Number.isFinite(persistedPercent) && persistedPercent > 0) {
+      return persistedPercent;
+    }
+
+    const eventPercent = Number(event.commission_pool);
+    if (Number.isFinite(eventPercent) && eventPercent > 0) {
+      return eventPercent;
+    }
+
+    return adjustedGross > 0 && grossCommission > 0
+      ? grossCommission / adjustedGross
+      : 0;
+  };
+  const getCommissionVendorCountForEvent = (event: Event) => {
+    const workers = Array.isArray(event.workers) ? event.workers : [];
+    const workersWithHours = workers.filter((worker) => getCommissionReportHours(worker) > 0);
+    const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
+    const eligibleVendorCount = workersWithHours.reduce((count, worker) => {
+      return isVendorDivision(worker.division) ? count + 1 : count;
+    }, 0);
+
+    return eligibleVendorCount > 0 ? eligibleVendorCount : memberCount;
+  };
+  const getRestPayForReport = (actualHours: number, stateCode: string | null | undefined) => {
+    const normalizedState = normalizeStateCode(stateCode);
+    if (normalizedState === 'NV' || normalizedState === 'WI' || normalizedState === 'AZ' || normalizedState === 'NY') {
+      return 0;
+    }
+    if (!Number.isFinite(actualHours) || actualHours <= 0) {
+      return 0;
+    }
+    return actualHours >= 10 ? 12 : 9;
   };
 
   const fetchEmployeeSummary = async (userId: string): Promise<{
@@ -825,8 +954,40 @@ export default function PaystubGenerator() {
     setCreatingReport(true);
 
     try {
-      const filteredEvents = getFilteredEvents();
+      const reportUserId =
+        matchedUserId ||
+        (formData.employeeName
+          ? await resolveEmployeeUserIdByOfficialName(formData.employeeName)
+          : null);
+
+      if (!reportUserId) {
+        throw new Error('Could not match this employee to a user profile.');
+      }
+
+      if (reportUserId !== matchedUserId) {
+        setMatchedUserId(reportUserId);
+      }
+
+      const filteredEvents = filterEventsForUserId(reportUserId);
       const generatedAt = new Date().toISOString();
+      const finalPayByEventId = new Map(finalPayEvents.map((event) => [event.eventId, event]));
+
+      type CommissionReportRow = {
+        showDate: string;
+        eventName: string;
+        venueStadium: string;
+        adjustedGross: number;
+        adjustedGrossPercent: number;
+        grossCommission: number;
+        employeeCount: number | string;
+        commission: number;
+        hoursWorked: number;
+        rateInEffect: number;
+        variableIncentive: number | '';
+        tips: number | '';
+        restPay: number | '';
+        finalPay: number;
+      };
 
       const summaryRows: Array<[string, string | number]> = [
         ['Generated At', generatedAt],
@@ -834,7 +995,7 @@ export default function PaystubGenerator() {
         ['Employee ID', formData.employeeId],
         ['SSN', formData.ssn],
         ['Address', formData.address],
-        ['Matched User ID', matchedUserId ?? ''],
+        ['Matched User ID', reportUserId],
         ['Pay Period Start', formData.payPeriodStart],
         ['Pay Period End', formData.payPeriodEnd],
         ['Pay Date', formData.payDate],
@@ -867,6 +1028,85 @@ export default function PaystubGenerator() {
         },
       ];
 
+      const commissionReportRows: CommissionReportRow[] =
+        filteredEvents?.flatMap((event) => {
+          const worker =
+            (event.workers || []).find((candidate) => candidate.user_id === reportUserId) || null;
+
+          if (!worker) {
+            return [];
+          }
+
+          const finalPayData = finalPayByEventId.get(event.id);
+          const hoursWorked = roundHours(
+            Number(finalPayData?.actualHours ?? getCommissionReportHours(worker))
+          );
+          const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
+
+          const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
+          const adjustedGrossPercent = getCommissionPoolPercentForEvent(
+            event,
+            adjustedGross,
+            persistedGrossCommission
+          );
+          const grossCommission = roundMoney(
+            persistedGrossCommission || adjustedGross * adjustedGrossPercent
+          );
+          const employeeCount = getCommissionVendorCountForEvent(event);
+          const commission = employeeCount > 0
+            ? roundMoney(grossCommission / Number(employeeCount))
+            : 0;
+
+          const restPayRaw =
+            Number(worker.payment_data?.rest_break_pay ?? 0) ||
+            getRestPayForReport(
+              hoursWorked,
+              formData.state || event.state
+            );
+          const restPay = roundMoney(restPayRaw);
+          const tips = roundMoney(Number(finalPayData?.tips ?? worker.payment_data?.tips ?? 0));
+          const totalPayRaw =
+            Number(finalPayData?.totalPay ?? worker.payment_data?.total_pay ?? 0);
+          const persistedCommissionPay =
+            Number(worker.payment_data?.regular_pay || 0) +
+            Number(worker.payment_data?.commissions || 0);
+          const commissionPaid = roundMoney(
+            totalPayRaw > 0
+              ? totalPayRaw - tips - restPay
+              : persistedCommissionPay
+          );
+          const variableIncentiveRaw = roundMoney(commissionPaid - commission);
+          const totalPay = roundMoney(
+            totalPayRaw > 0
+              ? totalPayRaw
+              : commissionPaid + tips + restPay
+          );
+          const rateInEffect = hoursWorked > 0
+            ? roundMoney(commissionPaid / hoursWorked)
+            : 0;
+
+          return [{
+            showDate: formatCommissionReportDate(event.event_date),
+            eventName: (event.event_name ?? event.name ?? '').toString(),
+            venueStadium: (event.venue ?? '').toString(),
+            adjustedGross,
+            adjustedGrossPercent,
+            grossCommission,
+            employeeCount,
+            commission,
+            hoursWorked,
+            rateInEffect,
+            variableIncentive: Math.abs(variableIncentiveRaw) < 0.005 ? '' : variableIncentiveRaw,
+            tips: Math.abs(tips) < 0.005 ? '' : tips,
+            restPay: Math.abs(restPay) < 0.005 ? '' : restPay,
+            finalPay: totalPay,
+          }];
+        }) ?? [];
+
+      if (commissionReportRows.length === 0) {
+        throw new Error('No commission-report rows were found for this employee in the selected pay period.');
+      }
+
       const eventsRows =
         filteredEvents?.flatMap(event => {
           const workers = event.workers && event.workers.length > 0 ? event.workers : [undefined];
@@ -883,16 +1123,25 @@ export default function PaystubGenerator() {
             worker_name: worker?.user_name ?? '',
             worker_email: worker?.user_email ?? '',
             worker_status: worker?.status ?? '',
+            worker_division: worker?.division ?? '',
             actual_hours: worker?.payment_data?.actual_hours ?? '',
+            effective_hours: worker?.payment_data?.effective_hours ?? '',
             regular_hours: worker?.payment_data?.regular_hours ?? '',
             overtime_hours: worker?.payment_data?.overtime_hours ?? '',
             doubletime_hours: worker?.payment_data?.doubletime_hours ?? '',
             regular_pay: worker?.payment_data?.regular_pay ?? '',
             overtime_pay: worker?.payment_data?.overtime_pay ?? '',
             doubletime_pay: worker?.payment_data?.doubletime_pay ?? '',
+            variable_incentive: worker?.payment_data?.variable_incentive ?? '',
             commissions: worker?.payment_data?.commissions ?? '',
+            rest_break_pay: worker?.payment_data?.rest_break_pay ?? '',
+            travel_pay: worker?.payment_data?.travel_pay ?? '',
             tips: worker?.payment_data?.tips ?? '',
             total_pay: worker?.payment_data?.total_pay ?? '',
+            adjustment_amount: worker?.adjustment_amount ?? '',
+            event_net_sales: event?.event_payment?.net_sales ?? '',
+            event_commission_pool_percent: event?.event_payment?.commission_pool_percent ?? event?.commission_pool ?? '',
+            event_commission_pool_dollars: event?.event_payment?.commission_pool_dollars ?? '',
           }));
         }) ?? [];
 
@@ -906,26 +1155,146 @@ export default function PaystubGenerator() {
           ]
         : [];
 
-      const finalCommissionRows = finalPayEvents.map(fp => ({
-        event_id: fp.eventId,
-        event_name: fp.eventName,
-        event_date: fp.eventDate,
-        venue: fp.venue,
-        city: fp.city ?? '',
-        state: fp.state ?? '',
-        actual_hours: fp.actualHours,
-        regular_pay: fp.regularPay,
-        overtime_pay: fp.overtimePay,
-        doubletime_pay: fp.doubletimePay,
-        commissions: fp.commissions,
-        tips: fp.tips,
-        total_pay: fp.totalPay,
-        adjustment_amount: fp.adjustmentAmount,
-        adjustment_type: fp.adjustmentType ?? '',
-        final_commission: fp.finalPay,
+      const finalCommissionRows = commissionReportRows.map((row) => ({
+        show_date: row.showDate,
+        event_name: row.eventName,
+        venue_stadium: row.venueStadium,
+        adjusted_gross: row.adjustedGross,
+        adjusted_gross_percent: row.adjustedGrossPercent,
+        gross_commission: row.grossCommission,
+        employee_count: row.employeeCount,
+        commission: row.commission,
+        hours_worked: row.hoursWorked,
+        rate_in_effect: row.rateInEffect,
+        variable_incentive: row.variableIncentive === '' ? 0 : row.variableIncentive,
+        tips: row.tips === '' ? 0 : row.tips,
+        rest_pay: row.restPay === '' ? 0 : row.restPay,
+        final_pay: row.finalPay,
       }));
 
       const wb = XLSX.utils.book_new();
+      const commissionReportSheetData: Array<Array<string | number>> = [
+        [
+          'Show Date/Event Date',
+          'Event Name',
+          'Venue/Stadium',
+          'Adjusted Gross',
+          '% of Adjusted Gross',
+          'Gross Commission',
+          '# of Employees',
+          'Commission',
+          'Hours Worked',
+          'Rate in Effect',
+          'Variable Incentive',
+          'Tips',
+          'Rest Pay',
+          'Final Pay (incl. tips/rest)',
+        ],
+        ...commissionReportRows.map((row) => [
+          row.showDate,
+          row.eventName,
+          row.venueStadium,
+          row.adjustedGross,
+          row.adjustedGrossPercent,
+          row.grossCommission,
+          row.employeeCount,
+          row.commission,
+          row.hoursWorked,
+          row.rateInEffect,
+          row.variableIncentive,
+          row.tips,
+          row.restPay,
+          row.finalPay,
+        ]),
+      ];
+
+      const totals = commissionReportRows.reduce((acc, row) => {
+        const variableIncentive =
+          typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
+        const tips = typeof row.tips === 'number' ? row.tips : 0;
+        const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
+        const commissionPaid = row.commission + variableIncentive;
+
+        return {
+          commission: acc.commission + row.commission,
+          hoursWorked: acc.hoursWorked + row.hoursWorked,
+          commissionPaid: acc.commissionPaid + commissionPaid,
+          variableIncentive: acc.variableIncentive + variableIncentive,
+          tips: acc.tips + tips,
+          restPay: acc.restPay + restPay,
+          finalPay: acc.finalPay + row.finalPay,
+        };
+      }, {
+        commission: 0,
+        hoursWorked: 0,
+        commissionPaid: 0,
+        variableIncentive: 0,
+        tips: 0,
+        restPay: 0,
+        finalPay: 0,
+      });
+
+      commissionReportSheetData.push([
+        '',
+        '',
+        '',
+        '',
+        '',
+        '',
+        'TOTALS',
+        roundMoney(totals.commission),
+        roundHours(totals.hoursWorked),
+        totals.hoursWorked > 0 ? roundMoney(totals.commissionPaid / totals.hoursWorked) : 0,
+        roundMoney(totals.variableIncentive),
+        roundMoney(totals.tips),
+        roundMoney(totals.restPay),
+        roundMoney(totals.finalPay),
+      ]);
+
+      const commissionReportSheet = XLSX.utils.aoa_to_sheet(commissionReportSheetData);
+      commissionReportSheet['!cols'] = [
+        { wch: 18 },
+        { wch: 28 },
+        { wch: 22 },
+        { wch: 16 },
+        { wch: 18 },
+        { wch: 18 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 14 },
+        { wch: 18 },
+        { wch: 12 },
+        { wch: 12 },
+        { wch: 24 },
+      ];
+      commissionReportSheet['!autofilter'] = {
+        ref: `A1:N${commissionReportSheetData.length}`,
+      };
+
+      const currencyColumns = ['D', 'F', 'H', 'J', 'K', 'L', 'M', 'N'];
+      const numericColumns = ['I'];
+      for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
+        for (const column of currencyColumns) {
+          const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;
+          if (cell && typeof cell.v === 'number') {
+            cell.z = '$#,##0.00';
+          }
+        }
+        const percentCell = commissionReportSheet[`E${rowIndex}`] as XLSX.CellObject | undefined;
+        if (percentCell && typeof percentCell.v === 'number') {
+          percentCell.z = '0.00%';
+        }
+        for (const column of numericColumns) {
+          const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;
+          if (cell && typeof cell.v === 'number') {
+            cell.z = '0.00';
+          }
+        }
+      }
+
+      XLSX.utils.book_append_sheet(wb, commissionReportSheet, 'Commission Report');
+
       const summarySheet = XLSX.utils.aoa_to_sheet([['Field', 'Value'], ...summaryRows.map(([k, v]) => [k, v])]);
       XLSX.utils.book_append_sheet(wb, summarySheet, 'Summary');
 
@@ -939,7 +1308,7 @@ export default function PaystubGenerator() {
 
       const safeName = formData.employeeName ? sanitizeFilePart(formData.employeeName) : 'employee';
       const safePayDate = formData.payDate ? sanitizeFilePart(formData.payDate) : sanitizeFilePart(generatedAt);
-      XLSX.writeFile(wb, `paystub-report-${safeName}-${safePayDate}.xlsx`);
+      XLSX.writeFile(wb, `commission-report-${safeName}-${safePayDate}.xlsx`);
     } catch (error: any) {
       console.error('Error creating report:', error);
       alert(`Error: ${error.message}`);
@@ -1666,28 +2035,34 @@ export default function PaystubGenerator() {
                                               <span className="font-medium text-slate-900">${worker.payment_data.overtime_pay.toFixed(2)}</span>
                                             </div>
                                           )}
-                                          {worker.payment_data.doubletime_hours !== null && worker.payment_data.doubletime_hours > 0 && (
-                                            <div>
-                                              <span className="text-slate-500">DT Hours:</span>{' '}
-                                              <span className="font-medium text-slate-900">{worker.payment_data.doubletime_hours}</span>
-                                            </div>
-                                          )}
-                                          {worker.payment_data.doubletime_pay !== null && worker.payment_data.doubletime_pay > 0 && (
-                                            <div>
-                                              <span className="text-slate-500">DT Pay:</span>{' '}
-                                              <span className="font-medium text-slate-900">${worker.payment_data.doubletime_pay.toFixed(2)}</span>
-                                            </div>
-                                          )}
                                           {worker.payment_data.tips !== null && worker.payment_data.tips > 0 && (
                                             <div>
                                               <span className="text-slate-500">Tips:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.tips.toFixed(2)}</span>
                                             </div>
                                           )}
+                                          {worker.payment_data.variable_incentive !== null && worker.payment_data.variable_incentive > 0 && (
+                                            <div>
+                                              <span className="text-slate-500">Variable Incentive:</span>{' '}
+                                              <span className="font-medium text-blue-700">${worker.payment_data.variable_incentive.toFixed(2)}</span>
+                                            </div>
+                                          )}
                                           {worker.payment_data.commissions !== null && worker.payment_data.commissions > 0 && (
                                             <div>
                                               <span className="text-slate-500">Commissions:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.commissions.toFixed(2)}</span>
+                                            </div>
+                                          )}
+                                          {worker.payment_data.rest_break_pay !== null && worker.payment_data.rest_break_pay > 0 && (
+                                            <div>
+                                              <span className="text-slate-500">Rest Break Pay:</span>{' '}
+                                              <span className="font-medium text-blue-700">${worker.payment_data.rest_break_pay.toFixed(2)}</span>
+                                            </div>
+                                          )}
+                                          {worker.payment_data.travel_pay !== null && worker.payment_data.travel_pay > 0 && (
+                                            <div>
+                                              <span className="text-slate-500">Travel Pay:</span>{' '}
+                                              <span className="font-medium text-blue-700">${worker.payment_data.travel_pay.toFixed(2)}</span>
                                             </div>
                                           )}
                                         </div>
@@ -1815,7 +2190,7 @@ export default function PaystubGenerator() {
                 {creatingReport ? (
                   <>
                     <div className="inline-block h-4 w-4 border-2 border-slate-500 border-t-transparent rounded-full animate-spin" />
-                    Creating report...
+                    Downloading commission report...
                   </>
                 ) : (
                   <>
@@ -1827,7 +2202,7 @@ export default function PaystubGenerator() {
                         d="M9 17v-6a2 2 0 012-2h2a2 2 0 012 2v6m-8 0h8m-8 0a2 2 0 01-2-2V7a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V15a2 2 0 01-2 2"
                       />
                     </svg>
-                    Create report
+                    Download commission report
                   </>
                 )}
               </button>

@@ -92,6 +92,20 @@ export async function GET(req: NextRequest) {
     const lastName = dec(profile?.last_name);
     const fullName = [firstName, lastName].filter(Boolean).join(" ") || userData.email;
 
+    // ── 1b. Auth user (last sign-in, email confirmed, etc.) ───────────────
+    let authUser: any = null;
+    try {
+      const { data: authData } = await supabaseAdmin.auth.admin.getUserById(userId);
+      authUser = authData?.user ?? null;
+    } catch { /* non-fatal */ }
+
+    // ── 1c. Login history from login_locations ─────────────────────────────
+    const { data: loginLocations } = await supabaseAdmin
+      .from("login_locations")
+      .select("timestamp, ip_address, user_agent, latitude, longitude, within_geofence, matched_zone_name, login_allowed, login_denied_reason, accuracy_meters")
+      .eq("user_id", userId)
+      .order("timestamp", { ascending: false });
+
     // ── 2. Time Entries ────────────────────────────────────────────────────
     const { data: timeEntries } = await supabaseAdmin
       .from("time_entries")
@@ -665,6 +679,37 @@ export async function GET(req: NextRequest) {
       leavesSheet["!cols"] = [{ wch: 36 }, { wch: 25 }, { wch: 36 }, { wch: 12 }, { wch: 12 }, { wch: 8 }, { wch: 12 }, { wch: 30 }, { wch: 22 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(wb, leavesSheet, "Sick Leaves Approved");
     }
+
+    // Sheet: Login History
+    const loginHeaders = ["Date & Time", "IP Address", "Allowed", "Denied Reason", "Within Geofence", "Zone", "Latitude", "Longitude", "Accuracy (m)", "User Agent"];
+    const loginRows = (loginLocations || []).map((l: any) => [
+      fmtDate(l.timestamp),
+      l.ip_address || "",
+      l.login_allowed ? "Yes" : "No",
+      l.login_denied_reason || "",
+      l.within_geofence ? "Yes" : "No",
+      l.matched_zone_name || "",
+      l.latitude ?? "",
+      l.longitude ?? "",
+      l.accuracy_meters ?? "",
+      l.user_agent || "",
+    ]);
+
+    const loginSummaryRows = [
+      ["Last Sign-In (Auth)", authUser?.last_sign_in_at ? fmtDate(authUser.last_sign_in_at) : "Never"],
+      ["Email Confirmed", authUser?.email_confirmed_at ? fmtDate(authUser.email_confirmed_at) : "No"],
+      ["Auth Provider", authUser?.app_metadata?.provider || "email"],
+      ["Total Login Attempts", loginRows.length],
+      [""],
+    ];
+
+    const loginSheet = XLSX.utils.aoa_to_sheet([
+      ...loginSummaryRows,
+      loginHeaders,
+      ...loginRows,
+    ]);
+    loginSheet["!cols"] = [{ wch: 22 }, { wch: 18 }, { wch: 10 }, { wch: 28 }, { wch: 16 }, { wch: 20 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 50 }];
+    XLSX.utils.book_append_sheet(wb, loginSheet, "Login History");
 
     // ── Write to buffer ────────────────────────────────────────────────────
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });

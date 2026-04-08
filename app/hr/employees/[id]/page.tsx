@@ -1390,12 +1390,12 @@ export default function EmployeeProfilePage() {
                     <p className="text-lg font-semibold text-gray-900">
                       {formatHours(sickLeaveBalanceHours)} hours
                     </p>
-                    <p className="text-xs text-gray-400">
-                      {sickLeaveBalanceHours > 0 ? "Ready to use" : "No balance available yet"}
-                    </p>
                   </div>
                   <p className="text-xs text-gray-400 self-end">
                     Employees earn 1 hour of sick leave per 30 hours worked.
+                  </p>
+                  <p className="text-xs text-amber-600 font-medium self-end">
+                    Maximum sick leave allowed is 48 hours per year.
                   </p>
                 </div>
 

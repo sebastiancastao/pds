@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
+import { calculateDistanceMiles } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -1005,6 +1006,11 @@ export async function POST(req: NextRequest) {
       commissionPool: number;
       numEmployees: number;
       commissionPerEmployee: number;
+      hoursWorked: number;
+      rateInEffect: number;
+      variableIncentive: number;
+      tips: number;
+      restBreak: number;
       finalPay: number;
     };
 
@@ -1032,7 +1038,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 25, show: 78, venue: 150, adjGross: 218, pool: 286, numEmp: 352, comm: 406, finalPay: 470 };
+      const C = { date: 20, show: 58, venue: 105, adjGross: 152, pool: 192, numEmp: 232, comm: 275, hours: 313, rate: 345, varInc: 377, tips: 425, restPay: 456, finalPay: 487 };
       let y = 760;
       drawR("Commission Report", 190, y, { bold: true, size: 13 });
       y -= 16;
@@ -1040,58 +1046,61 @@ export async function POST(req: NextRequest) {
       y -= 8;
       drawRL(20, y, 592);
       y -= 13;
-      drawR("Date", C.date, y, { bold: true, size: 7 });
-      drawR("Show", C.show, y, { bold: true, size: 7 });
-      drawR("Stadium / Venue", C.venue, y, { bold: true, size: 7 });
-      drawR("Adj. Gross Sales", C.adjGross, y, { bold: true, size: 7 });
-      drawR("3% of Adj. Gross", C.pool, y, { bold: true, size: 7 });
-      drawR("# of Employees", C.numEmp, y, { bold: true, size: 7 });
-      drawR("Commission", C.comm, y, { bold: true, size: 7 });
-      drawR("Final Pay", C.finalPay, y, { bold: true, size: 7 });
+      // Header row 1
+      drawR("Show Date /", C.date, y, { bold: true, size: 6 });
+      drawR("Event Name /", C.show, y, { bold: true, size: 6 });
+      drawR("Venue /", C.venue, y, { bold: true, size: 6 });
+      drawR("Adjusted", C.adjGross, y, { bold: true, size: 6 });
+      drawR("% of Adj.", C.pool, y, { bold: true, size: 6 });
+      drawR("# of", C.numEmp, y, { bold: true, size: 6 });
+      drawR("Commission", C.comm, y, { bold: true, size: 6 });
+      drawR("Hours", C.hours, y, { bold: true, size: 6 });
+      drawR("Rate in", C.rate, y, { bold: true, size: 6 });
+      drawR("Variable", C.varInc, y, { bold: true, size: 6 });
+      drawR("Tips", C.tips, y, { bold: true, size: 6 });
+      drawR("Rest Pay", C.restPay, y, { bold: true, size: 6 });
+      drawR("Final Pay", C.finalPay, y, { bold: true, size: 6 });
+      y -= 7;
+      // Header row 2
+      drawR("Event Date", C.date, y, { bold: true, size: 6 });
+      drawR("Show Name", C.show, y, { bold: true, size: 6 });
+      drawR("Stadium Name", C.venue, y, { bold: true, size: 6 });
+      drawR("Gross Sales", C.adjGross, y, { bold: true, size: 6 });
+      drawR("Gross Sales", C.pool, y, { bold: true, size: 6 });
+      drawR("Employees", C.numEmp, y, { bold: true, size: 6 });
+      drawR("Paid", C.comm, y, { bold: true, size: 6 });
+      drawR("Worked", C.hours, y, { bold: true, size: 6 });
+      drawR("Effect", C.rate, y, { bold: true, size: 6 });
+      drawR("Incentive Pay", C.varInc, y, { bold: true, size: 6 });
       y -= 4;
       drawRL(20, y, 592);
       y -= 11;
-      const weekMap: Map<string, CommissionReportRow[]> = new Map();
-      for (const row of rows) {
-        const mon = getMondayOfWeek(row.dateStr);
-        if (!weekMap.has(mon)) weekMap.set(mon, []);
-        weekMap.get(mon)!.push(row);
-      }
-      const mondays = Array.from(weekMap.keys()).sort();
       let grandTotal = 0;
       let grandFinalPay = 0;
-      let weekNum = 1;
-      for (const monday of mondays) {
-        const weekRows = weekMap.get(monday)!;
-        let weekTotal = 0;
-        let weekFinalPay = 0;
-        for (const row of weekRows) {
-          const showT = row.show.length > 17 ? row.show.substring(0, 17) + "..." : row.show;
-          const venueT = row.stadium.length > 13 ? row.stadium.substring(0, 13) + "..." : row.stadium;
-          drawR(fmtDate(row.dateStr), C.date, y, { size: 7 });
-          drawR(showT, C.show, y, { size: 7 });
-          drawR(venueT, C.venue, y, { size: 7 });
-          drawR(fmtMoney(row.adjGrossSales), C.adjGross, y, { size: 7 });
-          drawR(fmtMoney(row.commissionPool), C.pool, y, { size: 7 });
-          drawR(row.numEmployees.toString(), C.numEmp, y, { size: 7 });
-          drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 7 });
-          drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 7 });
-          weekTotal += row.commissionPerEmployee;
-          weekFinalPay += row.finalPay;
-          y -= 11;
-        }
-        drawR(`Week ${weekNum} Total`, C.date, y, { bold: true, size: 7 });
-        drawR(fmtMoney(weekTotal), C.comm, y, { bold: true, size: 7 });
-        drawR(fmtMoney(weekFinalPay), C.finalPay, y, { bold: true, size: 7 });
-        grandTotal += weekTotal;
-        grandFinalPay += weekFinalPay;
-        weekNum++;
-        y -= 13;
+      for (const row of rows) {
+        const showT = row.show.length > 12 ? row.show.substring(0, 12) + "..." : row.show;
+        const venueT = row.stadium.length > 10 ? row.stadium.substring(0, 10) + "..." : row.stadium;
+        drawR(fmtDate(row.dateStr), C.date, y, { size: 6 });
+        drawR(showT, C.show, y, { size: 6 });
+        drawR(venueT, C.venue, y, { size: 6 });
+        drawR(fmtMoney(row.adjGrossSales), C.adjGross, y, { size: 6 });
+        drawR(fmtMoney(row.commissionPool), C.pool, y, { size: 6 });
+        drawR(row.numEmployees.toString(), C.numEmp, y, { size: 6 });
+        drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
+        drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
+        drawR(`$${Number(row.rateInEffect).toFixed(2)}`, C.rate, y, { size: 6 });
+        drawR(fmtMoney(row.variableIncentive), C.varInc, y, { size: 6 });
+        drawR(fmtMoney(row.tips), C.tips, y, { size: 6 });
+        drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
+        drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
+        grandTotal += row.commissionPerEmployee;
+        grandFinalPay += row.finalPay;
+        y -= 11;
       }
       drawRL(20, y + 9, 592);
-      drawR("Total for Pay Period", C.date, y, { bold: true, size: 8 });
-      drawR(fmtMoney(grandTotal), C.comm, y, { bold: true, size: 8 });
-      drawR(fmtMoney(grandFinalPay), C.finalPay, y, { bold: true, size: 8 });
+      drawR("Total for Pay Period", C.date, y, { bold: true, size: 7 });
+      drawR(fmtMoney(grandTotal), C.comm, y, { bold: true, size: 7 });
+      drawR(fmtMoney(grandFinalPay), C.finalPay, y, { bold: true, size: 7 });
     };
 
     if (paystubState === "CA") {
@@ -1174,6 +1183,80 @@ export async function POST(req: NextRequest) {
       const statementNumberSeed = `${payDateDigits}${ssnDigits}${(employeeId || "").replace(/\D/g, "")}`;
       const statementNumber = (statementNumberSeed.slice(-7) || "0000000").padStart(7, "0");
 
+      // Pre-fetch differential miles per event for travel pay calculation (mirrors HR dashboard formula)
+      const differentialMilesByEventId: Record<string, number> = {};
+      const mileageApprovedByEvent: Record<string, boolean> = {};
+      if (matchedUserId) {
+        const eventIds = (events || []).map((e: any) => String(e.id)).filter(Boolean);
+        if (eventIds.length > 0) {
+          const [{ data: approvalRows }, { data: profile }] = await Promise.all([
+            supabaseAdmin
+              .from('event_payment_approvals')
+              .select('event_id, travel_approved, mileage_approved')
+              .in('event_id', eventIds)
+              .eq('user_id', matchedUserId),
+            supabaseAdmin
+              .from('profiles')
+              .select('latitude, longitude')
+              .eq('user_id', matchedUserId)
+              .maybeSingle(),
+          ]);
+
+          const travelApprovedByEvent: Record<string, boolean> = {};
+          for (const row of approvalRows || []) {
+            travelApprovedByEvent[String(row.event_id)] = row.travel_approved ?? true;
+            mileageApprovedByEvent[String(row.event_id)] = row.mileage_approved ?? true;
+          }
+
+          if (profile?.latitude && profile?.longitude) {
+            const userLat = Number(profile.latitude);
+            const userLng = Number(profile.longitude);
+
+            const { data: homeVenueRow } = await supabaseAdmin
+              .from('vendor_venue_assignments')
+              .select('venue_id')
+              .eq('vendor_id', matchedUserId)
+              .limit(1)
+              .maybeSingle();
+
+            let distToHomeVenue = 0;
+            if (homeVenueRow?.venue_id) {
+              const { data: homeVenue } = await supabaseAdmin
+                .from('venue_reference')
+                .select('latitude, longitude')
+                .eq('id', homeVenueRow.venue_id)
+                .maybeSingle();
+              if (homeVenue?.latitude && homeVenue?.longitude) {
+                distToHomeVenue = calculateDistanceMiles(userLat, userLng, Number(homeVenue.latitude), Number(homeVenue.longitude));
+              }
+            }
+
+            const venueNames = [...new Set((events || []).map((e: any) => e.venue).filter(Boolean))];
+            const { data: venueRows } = await supabaseAdmin
+              .from('venue_reference')
+              .select('venue_name, latitude, longitude')
+              .in('venue_name', venueNames);
+
+            const venueByName: Record<string, any> = {};
+            for (const v of venueRows || []) {
+              venueByName[(v.venue_name || '').toLowerCase().trim()] = v;
+            }
+
+            for (const event of events || []) {
+              const eventId = String(event.id);
+              if (travelApprovedByEvent[eventId] === false) continue;
+              const venue = venueByName[(event.venue || '').toLowerCase().trim()];
+              if (!venue?.latitude || !venue?.longitude) continue;
+              const evLat = Number(venue.latitude);
+              const evLng = Number(venue.longitude);
+              if (!Number.isFinite(evLat) || !Number.isFinite(evLng)) continue;
+              const distToEvent = calculateDistanceMiles(userLat, userLng, evLat, evLng);
+              differentialMilesByEventId[eventId] = Math.max(0, distToEvent - distToHomeVenue);
+            }
+          }
+        }
+      }
+
       let totalRegHours = 0;
       let totalOtHours = 0;
       let totalDtHours = 0;
@@ -1186,6 +1269,10 @@ export async function POST(req: NextRequest) {
       let totalRegularPayAmount = 0;
       let totalOvertimePayAmount = 0;
       let totalDoubletimePayAmount = 0;
+      let totalVariableIncentive = 0;
+      let totalTravelPay = 0;
+      let totalMileageReimbursement = 0;
+      let totalFinalCommission = 0;
       const caCommissionRows: CommissionReportRow[] = [];
 
       for (const event of events || []) {
@@ -1298,10 +1385,12 @@ export async function POST(req: NextRequest) {
         const computedTotalGrossPay = computedTotalPay + other;
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
-        const reportCommissionPerEmployee =
-          vendorCountForCommission > 0 ? reportCommissionPool / vendorCountForCommission : 0;
 
         if ((adjustedGrossForReport > 0 && vendorCountForCommission > 0) || reportFinalCommissionAmt > 0) {
+          // Match HR dashboard payroll logic:
+          // Commission Paid = perVendorCommissionShare (actual event pool / vendor count)
+          // Variable Incentive = Max(0, extAmtOnRegRate - perVendorCommissionShare)
+          const caRowVarIncentive = Math.max(0, extAmtOnRegRate - perVendorCommissionShare);
           caCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
@@ -1309,7 +1398,12 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: reportCommissionPerEmployee,
+            commissionPerEmployee: perVendorCommissionShare,
+            hoursWorked: displayHours,
+            rateInEffect: loadedRateBase,
+            variableIncentive: caRowVarIncentive,
+            tips,
+            restBreak,
             finalPay: reportFinalCommissionAmt,
           });
         }
@@ -1319,14 +1413,32 @@ export async function POST(req: NextRequest) {
         totalDtHours += dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        // Keep "This Period" commission aligned with the commission report's pay-period final pay total.
-        totalCommission += reportFinalCommissionAmt;
+        // Split commission pay like HR dashboard:
+        // When eligible + pool exists: Commission = pool share, Variable Incentive = excess above pool.
+        // Otherwise (no pool or ineligible): Commission = full final pay, Variable Incentive = 0.
+        const isEligibleForPool =
+          !isTrailersDivision(worker?.division) &&
+          actualHours > 0 &&
+          vendorCountForCommission > 0 &&
+          perVendorCommissionShare > 0;
+        const pdfCommissionShare = isEligibleForPool ? perVendorCommissionShare : reportFinalCommissionAmt;
+        const pdfVariableIncentive = isEligibleForPool ? Math.max(0, reportFinalCommissionAmt - perVendorCommissionShare) : 0;
+        totalCommission += pdfCommissionShare;
+        totalVariableIncentive += pdfVariableIncentive;
+        totalFinalCommission += reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += computedTotalGrossPay;
         totalRegularPayAmount += regPay;
         totalOvertimePayAmount += otPay;
         totalDoubletimePayAmount += dtPay;
+        // Travel pay = (differentialMiles × 2 / 60) × loadedRate — mirrors HR dashboard formula
+        const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
+        const travelPay = (differentialMiles * 2 / 60) * loadedRateBase;
+        totalTravelPay += travelPay;
+        // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
+        const mileageApproved = mileageApprovedByEvent[eventId] ?? true;
+        totalMileageReimbursement += mileageApproved ? differentialMiles * 2 * 0.71 : 0;
       }
 
       const federalIncomeAmt = parseAmount(federalIncome);
@@ -1350,11 +1462,13 @@ export async function POST(req: NextRequest) {
         totalTips +
         totalCommission +
         totalDoubletimePayAmount +
+        totalVariableIncentive +
+        totalTravelPay +
         totalRestBreak +
         sickThisPeriod +
         mealPremiumThisPeriod;
-      const netPay = grossPayThisPeriod - totalDeductions + reimbursement;
-      const effectiveRate = totalHoursWorked > 0 ? totalCommission / totalHoursWorked : 0;
+      const netPay = grossPayThisPeriod - totalDeductions + reimbursement + totalMileageReimbursement;
+      const effectiveRate = totalHoursWorked > 0 ? totalFinalCommission / totalHoursWorked : 0;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -1401,9 +1515,8 @@ export async function POST(req: NextRequest) {
       const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
       const ytdRegularPay = runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayAmount);
       const ytdOvertimePay = runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayAmount);
-      const ytdDoubleTimePay = runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayAmount);
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = totalCommission;
+      const ytdCommission = totalFinalCommission;
       const ytdTips = totalTips;
       const ytdRestBreak = totalRestBreak;
       const ytdMealPremium = mealPremiumThisPeriod;
@@ -1500,17 +1613,17 @@ export async function POST(req: NextRequest) {
       drawTopLine(40, 192, 332);
 
       const overtimeRateAvg = totalOtHours > 0 ? (totalOvertimePayAmount / totalOtHours) : 0;
-      const doubleTimeRateAvg = totalDtHours > 0 ? (totalDoubletimePayAmount / totalDtHours) : 0;
 
       const earningsRows = [
         { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay, hideThisPeriod: true },
         { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayAmount, ytd: ytdOvertimePay },
-        { y: 216, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
-        { y: 224, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommission, ytd: ytdCommission },
-        { y: 232, label: "Double-time", color: black, rate: doubleTimeRateAvg, hours: totalDtHours, thisPeriod: totalDoubletimePayAmount, ytd: ytdDoubleTimePay },
-        { y: 240, label: "Rest Break", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
-        { y: 248, label: "Sick", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
-        { y: 256, label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
+        { y: 216, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommission, ytd: ytdCommission },
+        { y: 224, label: "Variable Incentive", color: black, rate: 0, hours: 0, thisPeriod: totalVariableIncentive, ytd: totalVariableIncentive },
+        { y: 232, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
+        { y: 240, label: "Rest Break Pay", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
+        { y: 248, label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: totalTravelPay, ytd: totalTravelPay },
+        { y: 256, label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
+        { y: 264, label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
       ];
 
       for (const row of earningsRows) {
@@ -1520,21 +1633,21 @@ export async function POST(req: NextRequest) {
         if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
       }
 
-      drawTopLine(40, 259, 332);
-      drawTopText("Gross Pay", 95, 266, { size: 8, bold: true });
-      drawTopText(money(grossPayThisPeriod), 255, 266, { size: 8, bold: true });
+      drawTopLine(40, 267, 332);
+      drawTopText("Gross Pay", 95, 274, { size: 8, bold: true });
+      drawTopText(money(grossPayThisPeriod), 255, 274, { size: 8, bold: true });
 
-      drawTopText("Statutory Deductions", 112, 277, { size: 8, bold: true });
-      drawTopText("this period", 233, 277, { size: 8 });
-      drawTopText("year to date", 289, 277, { size: 8 });
-      drawTopLine(109, 284, 332);
+      drawTopText("Statutory Deductions", 112, 285, { size: 8, bold: true });
+      drawTopText("this period", 233, 285, { size: 8 });
+      drawTopText("year to date", 289, 285, { size: 8 });
+      drawTopLine(109, 292, 332);
 
       const deductionRows = [
-        { y: 297.1, label: "Federal Income", thisPeriod: -federalIncomeAmt, ytd: ytdFederalIncome },
-        { y: 304.3, label: "Social Security", thisPeriod: -socialSecurityAmt, ytd: ytdSocialSecurity },
-        { y: 311.8, label: "Medicare", thisPeriod: -medicareAmt, ytd: ytdMedicare },
-        { y: 319.0, label: "California State Income", thisPeriod: -stateIncomeAmt, ytd: ytdStateIncome },
-        { y: 326.4, label: "California State DI", thisPeriod: -stateDIAmt, ytd: ytdStateDI },
+        { y: 305.1, label: "Federal Income", thisPeriod: -federalIncomeAmt, ytd: ytdFederalIncome },
+        { y: 312.3, label: "Social Security", thisPeriod: -socialSecurityAmt, ytd: ytdSocialSecurity },
+        { y: 319.8, label: "Medicare", thisPeriod: -medicareAmt, ytd: ytdMedicare },
+        { y: 327.0, label: "California State Income", thisPeriod: -stateIncomeAmt, ytd: ytdStateIncome },
+        { y: 334.4, label: "California State DI", thisPeriod: -stateDIAmt, ytd: ytdStateDI },
       ];
 
       for (const row of deductionRows) {
@@ -1544,15 +1657,26 @@ export async function POST(req: NextRequest) {
       }
 
       if (miscDeductionAmt > 0) {
-        drawTopText("Misc Deduction", 112, 333.8, { size: 8 });
-        drawTopText(fmt(-miscDeductionAmt), 249, 333.8, { size: 8 });
-        drawTopText(fmt(miscDeductionAmt), 299, 333.8, { size: 8 });
+        drawTopText("Misc Deduction", 112, 341.8, { size: 8 });
+        drawTopText(fmt(-miscDeductionAmt), 249, 341.8, { size: 8 });
+        drawTopText(fmt(miscDeductionAmt), 299, 341.8, { size: 8 });
       }
 
-      drawTopLine(109, 326, 332);
-      drawTopText("Net Pay", 112, 335, { size: 8, bold: true });
-      drawTopText(money(netPay), 240, 335, { size: 8, bold: true });
-      drawTopText(money(ytdNet), 286, 335, { size: 8, bold: true });
+      drawTopLine(109, 334, 332);
+      drawTopText("Net Pay Adjustments", 112, 343, { size: 8, bold: true });
+      drawTopText("this period", 233, 343, { size: 8 });
+      drawTopText("year to date", 289, 343, { size: 8 });
+      drawTopLine(109, 350, 332);
+      drawTopText("Miscellaneous Reimbursement", 112, 360, { size: 8 });
+      drawTopText(fmt(reimbursement), 249, 360, { size: 8 });
+      drawTopText(fmt(reimbursement), 299, 360, { size: 8 });
+      drawTopText("Mileage Reimbursement", 112, 368, { size: 8 });
+      drawTopText(fmt(totalMileageReimbursement), 249, 368, { size: 8 });
+      drawTopText(fmt(totalMileageReimbursement), 299, 368, { size: 8 });
+      drawTopLine(109, 375, 332);
+      drawTopText("Net Pay", 112, 383, { size: 8, bold: true });
+      drawTopText(money(netPay), 240, 383, { size: 8, bold: true });
+      drawTopText(money(ytdNet), 286, 383, { size: 8, bold: true });
 
       drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
       drawTopText("Information", 353, 187, { size: 8, bold: true });
@@ -1870,10 +1994,12 @@ export async function POST(req: NextRequest) {
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
-        const reportCommissionPerEmployee =
-          vendorCountForCommission > 0 ? reportCommissionPool / vendorCountForCommission : 0;
 
         if ((adjustedGrossForReport > 0 && vendorCountForCommission > 0) || reportFinalCommissionAmt > 0) {
+          // Match HR dashboard payroll logic:
+          // Commission Paid = perVendorCommissionShare (actual event pool / vendor count)
+          // Variable Incentive = Max(0, extAmtOnRegRate - perVendorCommissionShare)
+          const ncRowVarIncentive = Math.max(0, extAmtOnRegRate - perVendorCommissionShare);
           nonCaCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
@@ -1881,7 +2007,12 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: vendorCountForCommission,
-            commissionPerEmployee: reportCommissionPerEmployee,
+            commissionPerEmployee: perVendorCommissionShare,
+            hoursWorked: displayHours,
+            rateInEffect: loadedRateBase,
+            variableIncentive: ncRowVarIncentive,
+            tips,
+            restBreak,
             finalPay: reportFinalCommissionAmt,
           });
         }
