@@ -197,10 +197,12 @@ export async function POST(req: NextRequest) {
       if (commissionPoolDollars === 0 && Number(event?.commission_pool || 0) > 0) {
         const ticketSales = Number(event?.ticket_sales || 0);
         const eventTips = Number(event?.tips || 0);
+        const eventFees = Number(event?.fees || 0);
+        const eventOtherIncome = Number(event?.other_income || 0);
         const taxRate = Number(event?.tax_rate_percent || 0);
         const totalSales = Math.max(ticketSales - eventTips, 0);
         const tax = totalSales * (taxRate / 100);
-        const netSales = Number(eventPaymentSummary?.net_sales || 0) || Math.max(totalSales - tax, 0);
+        const netSales = Number(eventPaymentSummary?.net_sales || 0) || Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
         commissionPoolDollars = netSales * Number(event?.commission_pool || 0);
       }
 
@@ -657,11 +659,13 @@ export async function POST(req: NextRequest) {
         event?.ticket_sales !== undefined &&
         event?.ticket_sales !== "";
       const eventTips = Number(event?.tips || 0);
+      const eventFees = Number(event?.fees || 0);
+      const eventOtherIncome = Number(event?.other_income || 0);
       const ticketSales = Number(event?.ticket_sales || 0);
       const totalSales = Math.max(ticketSales - eventTips, 0);
       const taxRate = Number(event?.tax_rate_percent || 0);
       const tax = totalSales * (taxRate / 100);
-      const adjustedGrossFromSales = Math.max(totalSales - tax, 0);
+      const adjustedGrossFromSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
       if (hasSalesInputs) return adjustedGrossFromSales;
 
       // Fallback when sales fields are missing on the event payload.

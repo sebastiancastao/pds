@@ -2916,10 +2916,15 @@ export default function EventDashboardPage() {
       const { data: { session } } = await supabase.auth.getSession();
       const grossCollected = Number(ticketSales) || 0;
       const tipsNum = Number(tips) || 0;
+      const feesNum = Number(fees) || 0;
+      const otherIncomeNum = Number(otherIncome) || 0;
       const totalSales = Math.max(grossCollected - tipsNum, 0);
       const taxAmountForSave = resolveTaxAmount(totalSales, Number(stateTaxRate) || 0, manualTaxAmount, manualTaxEdited);
       const taxRatePercentFromManual = totalSales > 0 ? (taxAmountForSave / totalSales) * 100 : 0;
       const normalizedTaxRatePercent = Number(taxRatePercentFromManual.toFixed(6));
+      const adjustedGrossAmountForSave = Number(
+        Math.max(totalSales - taxAmountForSave - feesNum + otherIncomeNum, 0).toFixed(2)
+      );
       const payload = {
         ...event,
         ticket_sales: ticketSales !== "" ? Number(ticketSales) : null,
@@ -2929,6 +2934,7 @@ export default function EventDashboardPage() {
         tips: tips !== "" ? Number(tips) : null,
         fees: fees !== "" ? Number(fees) : null,
         other_income: otherIncome !== "" ? Number(otherIncome) : null,
+        net_sales: adjustedGrossAmountForSave,
       };
       try { console.debug('[SALES-DEBUG] handleSaveSales payload:', payload); } catch {}
       const res = await fetch(`/api/events/${eventId}`, {

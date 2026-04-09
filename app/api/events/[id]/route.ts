@@ -268,8 +268,16 @@ export async function PUT(
     const hasSalesFieldsInPayload =
       Object.prototype.hasOwnProperty.call(body, "ticket_sales") ||
       Object.prototype.hasOwnProperty.call(body, "tips") ||
+      Object.prototype.hasOwnProperty.call(body, "fees") ||
+      Object.prototype.hasOwnProperty.call(body, "other_income") ||
       Object.prototype.hasOwnProperty.call(body, "tax_rate_percent") ||
-      Object.prototype.hasOwnProperty.call(body, "commission_pool");
+      Object.prototype.hasOwnProperty.call(body, "commission_pool") ||
+      Object.prototype.hasOwnProperty.call(body, "net_sales");
+    const hasTicketCountInPayload = Object.prototype.hasOwnProperty.call(body, "ticket_count");
+    const hasTaxRateInPayload = Object.prototype.hasOwnProperty.call(body, "tax_rate_percent");
+    const hasTipsInPayload = Object.prototype.hasOwnProperty.call(body, "tips");
+    const hasFeesInPayload = Object.prototype.hasOwnProperty.call(body, "fees");
+    const hasOtherIncomeInPayload = Object.prototype.hasOwnProperty.call(body, "other_income");
 
     // Core fields
     const event_name = body.event_name?.trim() || "";
@@ -320,6 +328,7 @@ export async function PUT(
 
     const fees = body.fees === undefined || body.fees === "" ? null : Number(body.fees);
     const other_income = body.other_income === undefined || body.other_income === "" ? null : Number(body.other_income);
+    const net_sales = body.net_sales === undefined || body.net_sales === "" ? null : Number(body.net_sales);
 
     // Debug
     console.log("EVENT UPDATE PAYLOAD:", {
@@ -343,6 +352,9 @@ export async function PUT(
       confirmed_staff,
       is_active,
       tips,
+      fees,
+      other_income,
+      net_sales,
     });
 
     // Required fields
@@ -377,20 +389,20 @@ export async function PUT(
       updated_at: new Date().toISOString(),
     };
 
-    if (ticket_count !== null && !Number.isNaN(ticket_count)) {
-      updatePayload.ticket_count = ticket_count;
+    if (hasTicketCountInPayload) {
+      updatePayload.ticket_count = ticket_count !== null && !Number.isNaN(ticket_count) ? ticket_count : null;
     }
-    if (tax_rate_percent !== null && !Number.isNaN(tax_rate_percent)) {
-      updatePayload.tax_rate_percent = tax_rate_percent;
+    if (hasTaxRateInPayload) {
+      updatePayload.tax_rate_percent = !Number.isNaN(tax_rate_percent) ? tax_rate_percent : 0;
     }
-    if (tips !== null && !Number.isNaN(tips)) {
-      updatePayload.tips = tips;
+    if (hasTipsInPayload) {
+      updatePayload.tips = tips !== null && !Number.isNaN(tips) ? tips : null;
     }
-    if (fees !== null && !Number.isNaN(fees)) {
-      updatePayload.fees = fees;
+    if (hasFeesInPayload) {
+      updatePayload.fees = fees !== null && !Number.isNaN(fees) ? fees : null;
     }
-    if (other_income !== null && !Number.isNaN(other_income)) {
-      updatePayload.other_income = other_income;
+    if (hasOtherIncomeInPayload) {
+      updatePayload.other_income = other_income !== null && !Number.isNaN(other_income) ? other_income : null;
     }
 
     // Build update query - admin/exec can edit any event, supervisors own + manager's, others only their own
@@ -448,22 +460,29 @@ export async function PUT(
       const updatedEvent = data[0] || {};
       const savedTicketSales = Number(updatedEvent.ticket_sales || 0);
       const savedTips = Number(updatedEvent.tips || 0);
+      const savedFees = Number(updatedEvent.fees || 0);
+      const savedOtherIncome = Number(updatedEvent.other_income || 0);
       const savedTotalSales = Math.max(savedTicketSales - savedTips, 0);
       const savedTaxRatePercent = Number(updatedEvent.tax_rate_percent || 0);
       const savedTax = savedTotalSales * (savedTaxRatePercent / 100);
-      const savedNetSales = Math.max(savedTotalSales - savedTax, 0);
+      const computedNetSales = Math.max(savedTotalSales - savedTax - savedFees + savedOtherIncome, 0);
+      const savedNetSalesRaw =
+        net_sales !== null && Number.isFinite(net_sales)
+          ? Math.max(net_sales, 0)
+          : computedNetSales;
+      const savedNetSales = Number(savedNetSalesRaw.toFixed(2));
       const savedCommissionPoolPercent = Number(updatedEvent.commission_pool || 0);
-      const savedCommissionPoolDollars = savedNetSales * savedCommissionPoolPercent;
+      const savedCommissionPoolDollars = Number((savedNetSales * savedCommissionPoolPercent).toFixed(2));
 
       const { error: upsertEventPaymentErr } = await supabaseAdmin
         .from("event_payments")
         .upsert(
           {
             event_id: eventId,
-            net_sales: Number(savedNetSales.toFixed(2)),
+            net_sales: savedNetSales,
             total_tips: Number(savedTips.toFixed(2)),
             commission_pool_percent: savedCommissionPoolPercent,
-            commission_pool_dollars: Number(savedCommissionPoolDollars.toFixed(2)),
+            commission_pool_dollars: savedCommissionPoolDollars,
             created_by: user.id,
             updated_at: new Date().toISOString(),
           },
@@ -679,4 +698,3 @@ export async function DELETE(
     return NextResponse.json({ error: err.message || (err as any) }, { status: 500 });
   }
 }
-

@@ -557,6 +557,8 @@ function HRDashboardContent() {
         const configuredBaseRate = getConfiguredBaseRate(eventState);
         // Sales-tab parity: prefer persisted net_sales from event_payments (saved by Sales tab), fallback to event fields.
         const eventTips = Number(eventInfo.tips || 0);
+        const eventFees = Number(eventInfo.fees || 0);
+        const eventOtherIncome = Number(eventInfo.other_income || 0);
         const ticketSales = Number(eventInfo.ticket_sales || 0);
         const totalSales = Math.max(ticketSales - eventTips, 0);
         const taxRate = Number(eventInfo.tax_rate_percent || 0);
@@ -569,7 +571,7 @@ function HRDashboardContent() {
           Number.isFinite(persistedAdjustedGrossRaw);
         const adjustedGrossAmount = hasPersistedAdjustedGross
           ? Math.max(persistedAdjustedGrossRaw, 0)
-          : Math.max(totalSales - tax, 0);
+          : Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
         const commissionPoolPercent =
           Number(eventInfo.commission_pool ?? eventPaymentSummary.commission_pool_percent ?? 0) || 0;
         const eventCommissionDollarsRaw =

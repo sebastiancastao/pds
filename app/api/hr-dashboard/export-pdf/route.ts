@@ -520,7 +520,7 @@ export async function GET(req: NextRequest) {
     // Batch fetch all data in parallel
     const [eventsResult, teamsResult, timeEntriesResult, vendorPaymentsResult, eventPaymentsResult, ratesResult] = await Promise.all([
       supabaseAdmin.from("events")
-        .select("id, event_name, venue, city, state, event_date, start_time, end_time, ends_next_day, tips, ticket_sales, tax_rate_percent, commission_pool")
+        .select("id, event_name, venue, city, state, event_date, start_time, end_time, ends_next_day, tips, fees, other_income, ticket_sales, tax_rate_percent, commission_pool")
         .in("id", eventIds),
       supabaseAdmin.from("event_teams")
         .select("event_id, vendor_id")
@@ -656,11 +656,13 @@ export async function GET(req: NextRequest) {
 
       // Event financial data
       const eventTips = Number(evt.tips || 0);
+      const eventFees = Number(evt.fees || 0);
+      const eventOtherIncome = Number(evt.other_income || 0);
       const ticketSales = Number(evt.ticket_sales || 0);
       const totalSales = Math.max(ticketSales - eventTips, 0);
       const taxRate = Number(evt.tax_rate_percent || 0);
       const tax = totalSales * (taxRate / 100);
-      const adjustedGrossAmount = Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax, 0);
+      const adjustedGrossAmount = Number(eventPaymentSummary.net_sales || 0) || Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
       const commissionPoolPercent = Number(eventPaymentSummary.commission_pool_percent || evt.commission_pool || 0) || 0;
       const eventCommissionDollars = Number(eventPaymentSummary.commission_pool_dollars || 0) || (adjustedGrossAmount * commissionPoolPercent);
       const eventTotalTips = Number(eventPaymentSummary.total_tips || 0) || eventTips;
