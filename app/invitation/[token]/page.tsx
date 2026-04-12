@@ -11,42 +11,136 @@ type DayAvailability = {
   endTime?: string;   // HH:MM — only when allDay is false
 };
 
+type InvitationEvent = {
+  id: string;
+  eventName: string | null;
+  venue: string | null;
+  city: string | null;
+  state: string | null;
+  startTime: string | null;
+  endTime: string | null;
+};
+
+type InvitationDetails = {
+  id: string;
+  type?: "single" | "bulk";
+  eventName?: string | null;
+  eventDate?: string | null;
+  venue?: string | null;
+  status?: string;
+  expiresAt?: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  durationWeeks?: number | null;
+  regionId?: string | null;
+  regionName?: string | null;
+};
+
+type InvitationPayload = {
+  invitation?: InvitationDetails;
+  availability?: DayAvailability[] | null;
+  notes?: string;
+  regionEventsByDate?: Record<string, InvitationEvent[]>;
+};
+
+const DEFAULT_DAY_COUNT = 42;
+
+const normalizeDateKey = (value: string | null | undefined): string => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toISOString().slice(0, 10);
+};
+
+const buildDateRange = (
+  startDate?: string | null,
+  endDate?: string | null
+): DayAvailability[] => {
+  const normalizedStart = normalizeDateKey(startDate);
+  const normalizedEnd = normalizeDateKey(endDate);
+  const start = normalizedStart ? new Date(`${normalizedStart}T00:00:00`) : new Date();
+  const end = normalizedEnd ? new Date(`${normalizedEnd}T00:00:00`) : new Date(start);
+
+  if (!normalizedEnd) {
+    end.setDate(start.getDate() + (DEFAULT_DAY_COUNT - 1));
+  }
+
+  if (end < start) {
+    end.setTime(start.getTime());
+  }
+
+  const days: DayAvailability[] = [];
+  for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
+    days.push({
+      date: cursor.toISOString().slice(0, 10),
+      available: false,
+      allDay: true,
+    });
+  }
+
+  return days;
+};
+
+const formatDisplayTime = (value: string | null | undefined): string | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const normalized = raw.length === 5 ? `${raw}:00` : raw;
+  const parsed = new Date(`1970-01-01T${normalized}`);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return raw.slice(0, 5) || raw;
+  }
+
+  return parsed.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
 export default function InvitationPage() {
   const params = useParams();
   const token = params?.token as string | undefined;
 
   const [days, setDays] = useState<DayAvailability[]>([]);
+  const [invitation, setInvitation] = useState<InvitationDetails | null>(null);
+  const [eventsByDate, setEventsByDate] = useState<Record<string, InvitationEvent[]>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>("");
   const [showSuccessModal, setShowSuccessModal] = useState(false);
 
-  // Generate the next 42 days (including today)
-  const buildNext42Days = (): DayAvailability[] => {
-    const arr: DayAvailability[] = [];
-    const today = new Date();
-    for (let i = 0; i < 42; i++) {
-      const d = new Date(today);
-      d.setDate(today.getDate() + i);
-      const iso = d.toISOString().slice(0, 10);
-      arr.push({ date: iso, available: false, allDay: true });
-    }
-    return arr;
-  };
-
   useEffect(() => {
     if (!token) return;
     setLoading(true);
-    const initial = buildNext42Days();
+    const initial = buildDateRange();
     setDays(initial);
+    setInvitation(null);
+    setEventsByDate({});
 
     fetch(`/api/invitations/${encodeURIComponent(token)}`)
       .then(async (res) => {
-        if (!res.ok) throw new Error("No data");
-        const data = await res.json();
+        if (!res.ok) {
+          let errorMessage = "Unable to load invitation details.";
+          try {
+            const errorPayload = await res.json();
+            if (typeof errorPayload?.error === "string" && errorPayload.error.trim()) {
+              errorMessage = errorPayload.error.trim();
+            }
+          } catch {}
+          throw new Error(errorMessage);
+        }
+        const data: InvitationPayload = await res.json();
+        const invitationDetails = data.invitation || null;
+        const nextDays = buildDateRange(
+          invitationDetails?.startDate,
+          invitationDetails?.endDate
+        );
         const existing: DayAvailability[] = data.availability || [];
         const map = new Map(existing.map(e => [e.date, e]));
-        const merged = initial.map(d => {
+        const merged = nextDays.map(d => {
           const saved = map.get(d.date);
           if (!saved) return d;
           // Normalise: if available and allDay is undefined treat as allDay
@@ -56,10 +150,12 @@ export default function InvitationPage() {
             allDay: saved.allDay !== false,
           };
         });
+        setInvitation(invitationDetails);
+        setEventsByDate(data.regionEventsByDate || {});
         setDays(merged);
       })
-      .catch(() => {
-        // Leave initial days if no data
+      .catch((error: any) => {
+        setMessage(error?.message || "Unable to load invitation details.");
       })
       .finally(() => setLoading(false));
   }, [token]);
@@ -124,6 +220,11 @@ export default function InvitationPage() {
 
   const availableCount = days.filter(d => d.available).length;
   const partialCount   = days.filter(d => d.available && d.allDay === false).length;
+  const totalRegionEvents = Object.values(eventsByDate).reduce(
+    (count, eventList) => count + eventList.length,
+    0
+  );
+  const eventDayCount = Object.keys(eventsByDate).length;
 
   if (!token) {
     return (
@@ -146,7 +247,7 @@ export default function InvitationPage() {
         <div className="mb-10">
           <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Your Availability</h1>
           <p className="text-lg text-gray-600 font-normal">
-            Check a day if you're available. If you're only free for part of the day, uncheck "All Day" and pick your hours.
+            Check a day if you're available. Each date shows the events scheduled in your region during this invitation window.
           </p>
         </div>
 
@@ -164,6 +265,51 @@ export default function InvitationPage() {
           </div>
         ) : (
           <>
+            {invitation && (
+              <div className="apple-card mb-8">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold uppercase tracking-wide text-blue-600">
+                      {invitation.type === "bulk" ? "Regional Invitation" : "Invitation"}
+                    </div>
+                    <h2 className="mt-1 text-2xl font-semibold text-gray-900">
+                      {invitation.regionName
+                        ? `${invitation.regionName} events`
+                        : "Events in your area"}
+                    </h2>
+                    <p className="mt-2 text-sm text-gray-600">
+                      {invitation.startDate && invitation.endDate
+                        ? `${new Date(`${invitation.startDate}T00:00:00`).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })} to ${new Date(`${invitation.endDate}T00:00:00`).toLocaleDateString("en-US", {
+                            month: "short",
+                            day: "numeric",
+                            year: "numeric",
+                          })}`
+                        : `${days.length} days available`}
+                    </p>
+                    {invitation.eventName && (
+                      <p className="mt-2 text-sm text-gray-500">
+                        Related event: {invitation.eventName}
+                        {invitation.venue ? ` | ${invitation.venue}` : ""}
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                    <div className="font-semibold">
+                      {totalRegionEvents} event{totalRegionEvents !== 1 ? "s" : ""}
+                    </div>
+                    <div className="mt-1 text-blue-700">
+                      across {eventDayCount} day{eventDayCount !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Action Buttons */}
             <div className="flex flex-wrap gap-4 mb-8">
               <button
@@ -195,6 +341,7 @@ export default function InvitationPage() {
                 const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
                 const isToday = d.date === new Date().toISOString().slice(0, 10);
                 const isPartial = d.available && d.allDay === false;
+                const dayEvents = eventsByDate[d.date] || [];
 
                 return (
                   <div
@@ -221,6 +368,41 @@ export default function InvitationPage() {
                         <span className="checkmark"></span>
                       </label>
                     </div>
+
+                    {dayEvents.length > 0 && (
+                      <div className="mb-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
+                        <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-blue-700">
+                          {dayEvents.length} event{dayEvents.length !== 1 ? "s" : ""} in your region
+                        </div>
+                        <div className="space-y-2">
+                          {dayEvents.map((event) => {
+                            const timeLabel = [
+                              formatDisplayTime(event.startTime),
+                              formatDisplayTime(event.endTime),
+                            ]
+                              .filter(Boolean)
+                              .join(" - ");
+                            const locationLabel = [event.venue, event.city, event.state]
+                              .filter(Boolean)
+                              .join(", ");
+
+                            return (
+                              <div
+                                key={event.id}
+                                className="rounded-lg border border-blue-100 bg-white/90 px-3 py-2"
+                              >
+                                <div className="text-sm font-semibold text-gray-900">
+                                  {event.eventName || "Event"}
+                                </div>
+                                <div className="mt-1 text-xs text-gray-600">
+                                  {[timeLabel, locationLabel].filter(Boolean).join(" | ")}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
 
                     {/* Time section — shown only when day is checked */}
                     {d.available && (
@@ -308,6 +490,11 @@ export default function InvitationPage() {
                 {partialCount > 0 && (
                   <span className="ml-2 text-amber-600">
                     ({partialCount} partial-day{partialCount !== 1 ? 's' : ''})
+                  </span>
+                )}
+                {totalRegionEvents > 0 && (
+                  <span className="ml-2 text-blue-700">
+                    {totalRegionEvents} regional event{totalRegionEvents !== 1 ? "s" : ""}
                   </span>
                 )}
               </div>
