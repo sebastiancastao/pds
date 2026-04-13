@@ -11,6 +11,7 @@ type FormKey =
   | 'marketplace'
   | 'health-insurance'
   | 'time-of-hire'
+  | 'attestation'
   | 'employee-information'
   | 'fw4'
   | 'i9'
@@ -37,6 +38,10 @@ const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>>
 };
 
 const CA_STATE_TAX_FILE = { file: 'de4_State Tax Form.pdf', downloadName: 'State_Tax.pdf' };
+const ATTESTATION_SOURCE_FILE = 'PDS Attestation 2.23.2026.pdf';
+const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
+const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 
 const STATE_SPECIFIC_FILE_MAP: Partial<
   Record<FormKey, Record<string, { file: string; downloadName: string }>>
@@ -58,6 +63,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   marketplace: 'Marketplace Coverage Notice',
   'health-insurance': 'Health Insurance',
   'time-of-hire': 'Time of Hire Notice',
+  attestation: 'Timekeeping / Meal Period Attestation',
   'employee-information': 'Employee Information',
   fw4: 'Federal W-4',
   i9: 'I-9 Employment Verification',
@@ -176,6 +182,45 @@ async function buildFw4WithEmployeeDate(): Promise<Buffer> {
   return Buffer.from(updatedBytes);
 }
 
+async function buildAttestationPdf(): Promise<Buffer> {
+  const pdfBytes = readRootPdf(ATTESTATION_SOURCE_FILE);
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const form = pdfDoc.getForm();
+  const pages = pdfDoc.getPages();
+  const signaturePage = pages[1] || pages[pages.length - 1];
+
+  const ensureTextField = (
+    fieldName: string,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+  ) => {
+    let field;
+    try {
+      field = form.getTextField(fieldName);
+    } catch {
+      field = form.createTextField(fieldName);
+      field.addToPage(signaturePage, {
+        x,
+        y,
+        width,
+        height,
+        borderWidth: 0,
+      });
+    }
+    field.setFontSize(11);
+    return field;
+  };
+
+  ensureTextField(ATTESTATION_NAME_FIELD, 238, 333, 298, 18);
+  ensureTextField(ATTESTATION_SIGNATURE_FIELD, 184, 286, 352, 20);
+  ensureTextField(ATTESTATION_DATE_FIELD, 101, 279, 192, 14);
+
+  const updatedBytes = await pdfDoc.save();
+  return Buffer.from(updatedBytes);
+}
+
 async function createPlaceholderPdf(formKey: FormKey, stateCode: string) {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
@@ -231,6 +276,11 @@ function readStaticPdf(fileName: string) {
   return readFileSync(pdfPath);
 }
 
+function readRootPdf(fileName: string) {
+  const pdfPath = join(process.cwd(), fileName);
+  return readFileSync(pdfPath);
+}
+
 function bufferToBodyInit(buffer: Buffer) {
   const view = new Uint8Array(buffer);
   const arrayBuffer = new ArrayBuffer(view.byteLength);
@@ -258,6 +308,25 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
       console.error('[PAYROLL-PACKET-COMMON FW4] PDF generation error:', error);
       return NextResponse.json(
         { error: 'Failed to generate FW4 PDF', details: error.message },
+        { status: 500 },
+      );
+    }
+  }
+
+  if (formKey === 'attestation') {
+    try {
+      const buffer = await buildAttestationPdf();
+      return new NextResponse(bufferToBodyInit(buffer), {
+        status: 200,
+        headers: {
+          ...PDF_HEADERS,
+          'Content-Disposition': 'inline; filename="PDS_Attestation.pdf"',
+        },
+      });
+    } catch (error: any) {
+      console.error('[PAYROLL-PACKET-COMMON ATTESTATION] PDF generation error:', error);
+      return NextResponse.json(
+        { error: 'Failed to generate attestation PDF', details: error.message },
         { status: 500 },
       );
     }

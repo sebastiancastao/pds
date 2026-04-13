@@ -16,6 +16,7 @@ const NV_FORMS: FormSpec[] = [
   { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
+  { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/fw4' },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-nv/notice-to-employee' },
@@ -218,7 +219,7 @@ function EmployeeInformationNVForm() {
   const handleContinue = async () => {
     const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-nv/form-viewer?form=fw4');
+      router.push('/payroll-packet-nv/form-viewer?form=attestation');
     }
   };
 

@@ -16,6 +16,7 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'time-of-hire', formId: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
   { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
+  { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fw4' },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-az/i9' },
   { id: 'notice-to-employee', formId: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-az/notice-to-employee' },
@@ -139,7 +140,7 @@ function EmployeeInformationAZForm() {
   const handleContinue = async () => {
     const ok = handleSave();
     if (ok) {
-      router.push('/payroll-packet-az/form-viewer?form=fw4');
+      router.push('/payroll-packet-az/form-viewer?form=attestation');
     }
   };
 

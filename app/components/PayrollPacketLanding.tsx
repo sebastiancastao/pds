@@ -5,6 +5,7 @@ const REQUIRED_FORMS = [
   'Health Insurance Marketplace',
   'Time of Hire Notice',
   'Employee Information',
+  'Timekeeping / Meal Period Attestation',
   'Federal W-4',
   'I-9 Employment Verification',
   'LC 2810.5 Notice to Employee',

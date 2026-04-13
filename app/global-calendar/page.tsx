@@ -35,6 +35,8 @@ type EventItem = {
   updated_at: string;
   tax_rate_percent?: number | null;
   tips_total?: number | null;
+  fees?: number | null;
+  other_income?: number | null;
   is_empty?: boolean;
   event_type?: "normal" | "special";
 };
@@ -967,7 +969,16 @@ export default function DashboardPage() {
     totalEvents: filteredEvents.length,
     activeEvents: filteredEvents.filter((e) => e.is_active).length,
     upcomingEvents: filteredEvents.filter((e) => new Date(e.event_date) >= new Date()).length,
-    totalTicketSales: filteredEvents.reduce((sum, e) => sum + (e.ticket_sales || 0), 0),
+    totalTicketSales: filteredEvents.reduce((sum, e) => {
+      const ticketSales = Number(e.ticket_sales || 0);
+      const tips = Number(e.tips_total || 0);
+      const totalSales = Math.max(ticketSales - tips, 0);
+      const taxRate = Number(e.tax_rate_percent || 0);
+      const tax = totalSales * (taxRate / 100);
+      const fees = Number(e.fees || 0);
+      const otherIncome = Number(e.other_income || 0);
+      return sum + Math.max(totalSales - tax - fees + otherIncome, 0);
+    }, 0),
     totalCommissionPool: filteredEvents.reduce((sum, e) => sum + (e.commission_pool || 0), 0),
     totalRequiredStaff: filteredEvents.reduce((sum, e) => sum + (e.required_staff || 0), 0),
     totalConfirmedStaff: filteredEvents.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
@@ -1793,13 +1804,13 @@ export default function DashboardPage() {
                           </div>
                           <span className="px-3 py-1 bg-green-100 text-green-700 rounded-full text-xs font-semibold">Revenue</span>
                         </div>
-                        <h3 className="text-sm font-medium text-gray-600 mb-2">Total Collected</h3>
+                        <h3 className="text-sm font-medium text-gray-600 mb-2">Adjusted Gross</h3>
                         <div className="text-4xl font-bold text-gray-900 mb-2 keeping-tight">${(eventStats.totalTicketSales / 1000).toFixed(1)}k</div>
                         <p className="text-sm text-green-600 font-medium flex items-center gap-1">
                           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                           </svg>
-                          total revenue
+                          adjusted gross amount
                         </p>
                       </div>
                     </div>

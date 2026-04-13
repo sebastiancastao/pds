@@ -15,6 +15,7 @@ const NY_FORMS: FormSpec[] = [
   { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
+  { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'fw4', formId: 'ny-fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/fw4' },
   { id: 'i9', formId: 'ny-i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/i9' },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-ny/notice-to-employee' },
@@ -146,7 +147,7 @@ function EmployeeInformationNYForm() {
   const handleContinue = async () => {
     const ok = handleSave();
     if (ok) {
-      router.push('/payroll-packet-ny/form-viewer?form=fw4');
+      router.push('/payroll-packet-ny/form-viewer?form=attestation');
     }
   };
 

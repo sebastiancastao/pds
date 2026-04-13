@@ -24,6 +24,7 @@ const DEFAULT_FORMS: FormSpec[] = [
   { id: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', display: 'Time of Hire Notice' },
   { id: 'employee-information', display: 'Employee Information' },
+  { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'fw4', display: 'Federal W-4', requiresSignature: true },
   { id: 'i9', display: 'I-9 Employment Verification', requiresSignature: true },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true },
@@ -78,6 +79,78 @@ const isCheckboxCheckedInDom = (fieldName: string) => {
   const inputs = getCheckboxInputsForField(fieldName);
   if (inputs.length === 0) return false;
   return inputs.some((input) => input.checked);
+};
+
+const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
+const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
+
+const isAttestationFormId = (formId?: string | null) =>
+  Boolean(formId && (formId === 'attestation' || formId.endsWith('-attestation')));
+
+const embedAttestationSignature = async (pdfBytes: Uint8Array, signatureData: string) => {
+  const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+  const { PDFDocument, rgb } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const form = pdfDoc.getForm();
+
+  let field: any;
+  try {
+    field = form.getTextField(ATTESTATION_SIGNATURE_FIELD);
+  } catch (error) {
+    console.warn('[ATTESTATION] Signature field not found in PDF', error);
+    return pdfBytes;
+  }
+
+  const widgets = field?.acroField?.getWidgets?.() || [];
+  if (!widgets.length) return pdfBytes;
+
+  const widget = widgets[0];
+  const rect = widget.getRectangle();
+  const pageRef = widget.P?.();
+  let page = pageRef ? pdfDoc.getPages().find((p) => p.ref === pageRef) : undefined;
+
+  if (!page && typeof (pdfDoc as any).findPageForAnnotationRef === 'function') {
+    const widgetRef = (pdfDoc as any).context?.getObjectRef?.(widget.dict);
+    if (widgetRef) {
+      page = (pdfDoc as any).findPageForAnnotationRef(widgetRef);
+    }
+  }
+
+  if (!page) {
+    page = pdfDoc.getPages()[pdfDoc.getPages().length - 1];
+  }
+
+  page.drawRectangle({
+    x: rect.x - 2,
+    y: rect.y - 2,
+    width: rect.width + 4,
+    height: rect.height + 4,
+    color: rgb(1, 1, 1),
+  });
+
+  if (!match) {
+    const updatedBytes = await pdfDoc.save();
+    return new Uint8Array(updatedBytes);
+  }
+
+  const base64 = match[2];
+  const imageBytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const format = match[1].toLowerCase();
+  const image =
+    format === 'jpg' || format === 'jpeg'
+      ? await pdfDoc.embedJpg(imageBytes)
+      : await pdfDoc.embedPng(imageBytes);
+
+  const scale = Math.min(rect.width / image.width, rect.height / image.height, 1);
+  const drawWidth = image.width * scale;
+  const drawHeight = image.height * scale;
+  const x = rect.x + (rect.width - drawWidth) / 2;
+  const y = rect.y + (rect.height - drawHeight) / 2;
+
+  page.drawImage(image, { x, y, width: drawWidth, height: drawHeight });
+  const updatedBytes = await pdfDoc.save();
+  return new Uint8Array(updatedBytes);
 };
 
 function buildFormConfig(stateCode: string, forms?: FormSpec[]) {
@@ -443,6 +516,15 @@ export default function StatePayrollFormViewer({
         setSaveStatus('saving');
       }
 
+      let pdfBytesToSave = pdfBytes;
+      if (isAttestationFormId(formId) && (!asUser || currentSignature)) {
+        pdfBytesToSave = await embedAttestationSignature(pdfBytes, currentSignature);
+        if (isCurrentForm) {
+          pdfBytesRef.current = pdfBytesToSave;
+        }
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[SAVE] Session check:', {
@@ -454,7 +536,7 @@ export default function StatePayrollFormViewer({
 
       // Convert Uint8Array to base64
       const base64 = btoa(
-        Array.from(pdfBytes)
+        Array.from(pdfBytesToSave)
           .map(byte => String.fromCharCode(byte))
           .join('')
       );
@@ -697,6 +779,70 @@ export default function StatePayrollFormViewer({
     if (!asUser && selectedForm === 'home-venue-assignment') {
       if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
       if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
+    }
+
+    if (selectedForm === 'attestation' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const form = pdfDoc.getForm();
+
+        const getFieldPage = (field: any) => {
+          try {
+            const widgets = field?.acroField?.getWidgets?.() || [];
+            if (!widgets.length) return 1;
+            const widget = widgets[0];
+            const pageRef = widget?.P?.();
+            if (!pageRef) return 1;
+            const pages = pdfDoc.getPages();
+            const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+            return pageIndex >= 0 ? pageIndex + 1 : 1;
+          } catch {
+            return 1;
+          }
+        };
+
+        const requiredFields = [
+          { name: ATTESTATION_NAME_FIELD, friendly: 'Employee Name' },
+          { name: ATTESTATION_DATE_FIELD, friendly: 'Date' },
+        ];
+
+        for (const fieldInfo of requiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            if (!value || value.trim() === '') {
+              const page = getFieldPage(field);
+              const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(message);
+              setEmptyFieldPage(page);
+
+              if (shouldSaveOnMissing) {
+                void handleManualSave();
+              }
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
+          }
+        }
+
+        setValidationError(null);
+        setEmptyFieldPage(null);
+      } catch (err) {
+        console.error('Error validating attestation fields:', err);
+      }
     }
 
     // Validate required fields for ADP Direct Deposit
@@ -2172,6 +2318,44 @@ export default function StatePayrollFormViewer({
       }
     }
 
+    if (selectedForm === 'home-venue-assignment' && pdfBytesRef.current) {
+      try {
+        const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+        const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
+        const lastPage = pdfDoc.getPages().at(-1)!;
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+        if (homeVenuePrintName.trim()) {
+          lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+          lastPage.drawText(homeVenuePrintName.trim(), { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+          lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+        }
+
+        const venueName = venueOptions.find(v => v.id === selectedVenueId)?.venue_name || currentVenue?.venue_name || '';
+        if (venueName) {
+          lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+          lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+          lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+        }
+
+        if (homeVenueDate) {
+          const [yr, mo, dy] = homeVenueDate.split('-').map(Number);
+          const formatted = new Date(yr, mo - 1, dy).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+          lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+          lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+          lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+        }
+
+        const stamped = new Uint8Array(await pdfDoc.save());
+        pdfBytesRef.current = stamped;
+        if (currentForm?.formId) {
+          pdfBytesByFormRef.current.set(currentForm.formId, stamped);
+        }
+      } catch (err) {
+        console.error('[HOME VENUE] Error stamping home venue data:', err);
+      }
+    }
+
     if (pdfBytesRef.current) {
       await handleManualSave();
     }
@@ -2609,6 +2793,12 @@ export default function StatePayrollFormViewer({
                   }}
                 />
               </div>
+            )}
+
+            {selectedForm === 'attestation' && (
+              <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#555' }}>
+                Enter your printed name and date directly on page 2 of the PDF, then sign below.
+              </p>
             )}
 
             <div style={{

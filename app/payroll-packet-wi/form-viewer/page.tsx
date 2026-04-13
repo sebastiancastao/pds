@@ -19,6 +19,7 @@ const WI_FORMS: FormSpec[] = [
   { id: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', display: 'Employee Information' },
   { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
+  { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'notice-to-employee', display: 'LC 2810.5 Notice to Employee', requiresSignature: true, apiOverride: '/api/payroll-packet-wi/notice-to-employee' },
   { id: 'meal-waiver-6hour', display: 'Meal Waiver (6 Hour)' },
   { id: 'meal-waiver-10-12', display: 'Meal Waiver (10/12 Hour)' },
@@ -177,7 +178,7 @@ function EmployeeInformationWIForm() {
   const handleContinue = async () => {
     const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-wi/form-viewer?form=notice-to-employee');
+      router.push('/payroll-packet-wi/form-viewer?form=attestation');
     }
   };
 

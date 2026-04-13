@@ -25,6 +25,44 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
 const DEFAULT_FROM = process.env.RESEND_FROM || 'PDS Time Keeping <service@pdsportal.site>';
 const EVENTS_FROM = process.env.RESEND_FROM_EVENTS || process.env.RESEND_FROM || 'PDS Events <service@pdsportal.site>';
+const GLOBAL_BCC_RECIPIENTS = ['jenvillar@1pds.net'];
+
+interface ResendEmailPayload {
+  from: string;
+  to: string | string[];
+  subject: string;
+  html: string;
+  cc?: string | string[];
+  bcc?: string | string[];
+  attachments?: Attachment[];
+}
+
+function normalizeEmailList(emails?: string | string[]): string[] {
+  return (Array.isArray(emails) ? emails : emails ? [emails] : [])
+    .map((value) => (value || '').toString().trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function mergeBccRecipients(bcc?: string | string[]): string | string[] | undefined {
+  const merged = [...new Set([
+    ...normalizeEmailList(bcc).filter(isValidEmail),
+    ...normalizeEmailList(GLOBAL_BCC_RECIPIENTS).filter(isValidEmail),
+  ])];
+
+  if (merged.length === 0) {
+    return undefined;
+  }
+
+  return Array.isArray(bcc) || merged.length > 1 ? merged : merged[0];
+}
+
+async function sendResendEmail(data: ResendEmailPayload) {
+  const { bcc, ...emailData } = data;
+  return resend.emails.send({
+    ...emailData,
+    bcc: mergeBccRecipients(bcc),
+  });
+}
 
 function formatResendError(error: any): string {
   if (!error) return 'Unknown email provider error';
@@ -69,7 +107,7 @@ export async function sendTemporaryPasswordEmail(
 
   // Send email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Portal <service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
@@ -408,7 +446,7 @@ export async function sendInviteEmail(data: {
 
   // Send invite email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>', // Using Resend's test domain (change to your verified domain later)
       to: email,
       subject: emailSubject,
@@ -504,7 +542,7 @@ export async function sendMFAVerificationEmail(
 
   // Send email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
@@ -728,7 +766,7 @@ export async function sendVendorEventInvitationEmail(data: {
 
   // Send email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: normalizedEmail,
       subject: emailSubject,
@@ -952,7 +990,7 @@ export async function sendVendorBulkInvitationEmail(data: {
 
   // Send email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: normalizedEmail,
       subject: emailSubject,
@@ -1208,7 +1246,7 @@ export async function sendTeamConfirmationEmail(data: {
 
   // Send email via Resend
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: normalizedEmail,
       subject: emailSubject,
@@ -1391,7 +1429,7 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
 
   // Send email via Resend to admin
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com', // Admin email
       
@@ -1459,7 +1497,7 @@ export async function sendEmail(data: {
   const validBccList = bccList.filter((email) => isValidEmail(email));
 
   try {
-    const { data: resendData, error } = await resend.emails.send({
+    const { data: resendData, error } = await sendResendEmail({
       from: from || DEFAULT_FROM,
       to: Array.isArray(to) ? toList : toList[0],
       cc: validCcList.length > 0 ? (Array.isArray(cc) ? validCcList : validCcList[0]) : undefined,
@@ -1630,7 +1668,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
 
   // Send email via Resend to admin
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>',
       to: 'sebastiancastao379@gmail.com',
       subject: emailSubject,
@@ -1805,7 +1843,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
 
   // Send email via Resend to user
   try {
-    const { data, error } = await resend.emails.send({
+    const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>',
       to: email,
       subject: emailSubject,
@@ -1950,7 +1988,7 @@ export async function sendVenueProposalAlertEmail(data: {
 </html>`;
 
   try {
-    const { data: result, error } = await resend.emails.send({
+    const { data: result, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: ['jenvillar@1pds.net', 'sebastiancastao379@gmail.com'],
       subject,
@@ -2061,7 +2099,7 @@ export async function sendProposalDeclinedEmail(data: {
 </html>`;
 
   try {
-    const { data: result, error } = await resend.emails.send({
+    const { data: result, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: proposedByEmail,
       subject,

@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
-import { sendBackgroundCheckSubmissionNotification } from '@/lib/email';
+import { sendBackgroundCheckSubmissionNotification, sendEmail } from '@/lib/email';
 import { decrypt } from '@/lib/encryption';
-import { Resend } from 'resend';
 
 export const runtime = 'nodejs'; // ensure Node runtime for Resend
 
-const resend = new Resend(process.env.RESEND_API_KEY || '');
 
 function userReceiptHtml(first: string) {
   return `
@@ -293,12 +291,15 @@ export async function POST(request: NextRequest) {
     } else {
       try {
         const first = (firstName || '').split(' ')[0] || 'there';
-        await resend.emails.send({
+        const emailResult = await sendEmail({
           from: `PDS HR Team <${fromEmail}>`,
           to: [toEmail],
           subject: 'Background Check Submitted Successfully - Subject to Approval',
           html: userReceiptHtml(first),
         });
+        if (!emailResult.success) {
+          throw new Error(emailResult.error || 'Failed to send user receipt email');
+        }
         emailSentToUser = true;
         console.log('[BACKGROUND CHECK COMPLETE] ✅ User receipt email sent');
       } catch (e) {
@@ -320,4 +321,3 @@ export async function POST(request: NextRequest) {
     );
   }
 }
-

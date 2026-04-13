@@ -25,6 +25,7 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
+const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 
 const formDisplayNames: Record<string, string> = {
   // California
@@ -40,6 +41,7 @@ const formDisplayNames: Record<string, string> = {
   'transgender-rights': 'Transgender Rights',
   'health-insurance': 'Health Insurance',
   'time-of-hire': 'Time of Hire Notice',
+  'attestation': 'Timekeeping / Meal Period Attestation',
   'discrimination-law': 'Discrimination Law',
   'immigration-rights': 'Immigration Rights',
   'military-rights': 'Military Rights',
@@ -1422,6 +1424,7 @@ async function cacheMergedPdf(userId: string, pdfBytes: Uint8Array, sourceTimest
 
   try {
     console.log('[PDF_FORMS] Caching merged PDF for user:', userId, 'timestamp:', sourceTimestamp);
+    await fsPromises.mkdir(CACHE_DIR, { recursive: true });
     await fsPromises.writeFile(cachePath, pdfBytes);
     await fsPromises.writeFile(
       metaPath,
@@ -1690,6 +1693,15 @@ export async function GET(
       .maybeSingle();
 
     const employeeDateOfBirth = employeeInfo?.date_of_birth || null;
+
+    // Fetch the user's assigned home venue name for stamping on home-venue-assignment PDFs
+    const { data: venueAssignment } = await supabaseAdmin
+      .from('vendor_venue_assignments')
+      .select('venue:venue_reference(venue_name)')
+      .eq('vendor_id', userId)
+      .limit(1)
+      .maybeSingle();
+    const targetUserHomeVenueName: string = (venueAssignment?.venue as any)?.venue_name?.toString().trim() || '';
 
     const normalizedUserState = (targetProfile?.state || '').toString().toLowerCase().trim();
     const isTargetStateWI = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin';
@@ -2210,6 +2222,33 @@ export async function GET(
           console.log('[PDF_FORMS] Could not flatten form (may not have editable fields):', form.form_name, (flattenError as Error).message);
         }
 
+        // Stamp print name, home venue, and date onto home-venue-assignment PDFs
+        const isHomeVenueAssignment = formNameLower.includes('home-venue-assignment');
+        if (isHomeVenueAssignment && (targetUserFullName || targetUserHomeVenueName)) {
+          try {
+            const font = await formPdf.embedFont(StandardFonts.Helvetica);
+            const lastPage = formPdf.getPages().at(-1)!;
+            if (targetUserFullName) {
+              lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+              lastPage.drawText(targetUserFullName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+              lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+            }
+            if (targetUserHomeVenueName) {
+              lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+              lastPage.drawText(targetUserHomeVenueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+              lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+            }
+            const formUpdatedAt = form.updated_at ? new Date(form.updated_at) : new Date();
+            const dateFormatted = formUpdatedAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+            lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+            lastPage.drawText(dateFormatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+            lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+            console.log('[PDF_FORMS] Stamped home venue data onto:', form.form_name);
+          } catch (stampError) {
+            console.warn('[PDF_FORMS] Failed to stamp home venue data onto:', form.form_name, (stampError as Error).message);
+          }
+        }
+
         const formPageCount = formPdf.getPageCount();
 
         if (isHandbook && useFormSignatures && signatureByForm.size > 0 && !isValidSignature(signatureForForm)) {
@@ -2347,6 +2386,7 @@ export async function GET(
             const isFW4Form = normalizedFormName === 'fw4';
             const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
             const isCaDE4Form = normalizedFormName === 'ca-de4' || normalizedFormName === 'de4';
+            const isAttestationForm = normalizedFormName === 'attestation';
             const isWIStateTax =
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
@@ -2355,6 +2395,70 @@ export async function GET(
           // WI and NV use different Y position for temp-employment-agreement (y: 470 vs y: 420)
           const isWINVState = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin' ||
             normalizedUserState === 'nv' || normalizedUserState === 'nevada';
+
+          let attestationSignaturePlacement:
+            | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
+            | null = null;
+
+          if (isAttestationForm) {
+            try {
+              const attestationField = formPdf.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
+              const widgets = attestationField?.acroField?.getWidgets?.() || [];
+              if (widgets.length > 0) {
+                const widget = widgets[0];
+                const rect = widget.getRectangle();
+                const pageRef = widget.P?.();
+                const targetPage = pageRef
+                  ? pages.find((candidate: any) => candidate.ref === pageRef)
+                  : pages[pages.length - 1];
+
+                if (targetPage) {
+                  attestationSignaturePlacement = {
+                    page: targetPage,
+                    rect: {
+                      x: rect.x,
+                      y: rect.y,
+                      width: rect.width,
+                      height: rect.height,
+                    },
+                  };
+                }
+              }
+            } catch (error) {
+              console.warn('[PDF_FORMS] Failed to resolve attestation signature field placement', error);
+            }
+          }
+
+          if (isAttestationForm && attestationSignaturePlacement) {
+            const { page, rect } = attestationSignaturePlacement;
+            page.drawRectangle({
+              x: rect.x - 2,
+              y: rect.y - 2,
+              width: rect.width + 4,
+              height: rect.height + 4,
+              color: rgb(1, 1, 1),
+            });
+
+            if (isTyped && !isDataUrl) {
+              page.drawText(signatureValue, {
+                x: rect.x + 2,
+                y: rect.y + rect.height / 2 - 3,
+                size: 10,
+              });
+            } else if (signatureImage) {
+              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+              const drawWidth = signatureImage.width * scale;
+              const drawHeight = signatureImage.height * scale;
+              const x = rect.x + (rect.width - drawWidth) / 2;
+              const y = rect.y + (rect.height - drawHeight) / 2;
+              page.drawImage(signatureImage, {
+                x,
+                y,
+                width: drawWidth,
+                height: drawHeight,
+              });
+            }
+          } else {
 
           for (const pageIdx of signaturePageIndexes) {
             if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
@@ -2416,6 +2520,7 @@ export async function GET(
                 size: 8,
               });
             }
+          }
           } catch (imgError) {
             console.error('[PDF_FORMS] ? Error embedding signature on form:', form.form_name, imgError);
           }

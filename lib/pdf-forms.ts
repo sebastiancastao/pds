@@ -11,6 +11,7 @@
   'transgender-rights': 'Transgender Rights',
   'health-insurance': 'Health Insurance',
   'time-of-hire': 'Time of Hire Notice',
+  'attestation': 'Timekeeping / Meal Period Attestation',
   'discrimination-law': 'Discrimination Law',
   'immigration-rights': 'Immigration Rights',
   'military-rights': 'Military Rights',

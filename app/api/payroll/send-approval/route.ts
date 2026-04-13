@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { Resend } from 'resend';
+import { sendEmail } from '@/lib/email';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -13,8 +13,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 const APPROVAL_EMAIL = 'sebastiancastao379@gmail.com';
 const FROM = process.env.RESEND_FROM || 'PDS Time Keeping <service@pdsportal.site>';
@@ -71,7 +69,7 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const fileBuffer = Buffer.from(arrayBuffer);
 
-    const { data, error } = await resend.emails.send({
+    const emailResult = await sendEmail({
       from: FROM,
       to: APPROVAL_EMAIL,
       subject: 'Payroll Approval Request',
@@ -106,9 +104,9 @@ export async function POST(req: NextRequest) {
       ],
     });
 
-    if (error) {
-      console.error('[send-approval] Resend error:', error);
-      return NextResponse.json({ error: error.message || 'Failed to send email' }, { status: 500 });
+    if (!emailResult.success) {
+      console.error('[send-approval] Email error:', emailResult.error);
+      return NextResponse.json({ error: emailResult.error || 'Failed to send email' }, { status: 500 });
     }
 
     // Record the submission in the database
@@ -127,7 +125,7 @@ export async function POST(req: NextRequest) {
       console.error('[send-approval] DB insert error:', dbError);
     }
 
-    return NextResponse.json({ success: true, messageId: data?.id, submission: submission ?? null });
+    return NextResponse.json({ success: true, messageId: emailResult.messageId, submission: submission ?? null });
   } catch (err: any) {
     console.error('[send-approval] Unexpected error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

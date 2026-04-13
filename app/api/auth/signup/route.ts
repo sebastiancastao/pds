@@ -11,6 +11,7 @@ interface NewUser {
   firstName: string;
   lastName: string;
   official_name: string;
+  home_venue_id?: string;
 }
 
 interface CreateUserResult {
@@ -217,6 +218,21 @@ export async function POST(request: NextRequest) {
           console.error('[Signup API] Failed to create vendor_background_checks row:', bgCheckError);
         }
 
+        // Assign home venue if provided
+        if (user.home_venue_id) {
+          const { error: venueAssignError } = await (supabase.from('vendor_venue_assignments') as any)
+            .insert({
+              vendor_id: authData.user.id,
+              venue_id: user.home_venue_id,
+              assigned_by: authData.user.id,
+              assigned_at: new Date().toISOString(),
+            });
+
+          if (venueAssignError) {
+            console.error('[Signup API] Failed to assign home venue:', venueAssignError);
+          }
+        }
+
         // Note: Email sending is now done separately via the "Send Email" button
         // This gives admins control over when credentials are sent
 
@@ -231,7 +247,7 @@ export async function POST(request: NextRequest) {
             email,
             role: user.role,
             division: user.division,
-            state: user.state,
+            home_venue_id: user.home_venue_id || null,
             createdBy: 'admin',
             passwordExpiresAt: passwordExpiresAt.toISOString(),
           },

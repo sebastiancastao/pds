@@ -201,6 +201,7 @@ export default function AdminPdfFormsPage() {
   const [forms, setForms] = useState<CustomForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [downloadingFormId, setDownloadingFormId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
 
@@ -494,6 +495,16 @@ export default function AdminPdfFormsPage() {
     if (!pageVenueId || venueFormIds === null) return forms;
     return forms.filter(f => venueFormIds.has(f.id));
   }, [forms, pageVenueId, venueFormIds]);
+
+  const activeFormsSummary = useMemo(() => ({
+    visible: filteredForms.length,
+    hidden: Math.max(forms.length - filteredForms.length, 0),
+    signatureRequired: filteredForms.filter(form => form.requires_signature).length,
+    restricted: filteredForms.filter(form => (form.assignment_count ?? 0) > 0).length,
+  }), [filteredForms, forms.length]);
+
+  const formActionButtonClass =
+    'inline-flex h-9 items-center justify-center rounded-lg border px-3 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50';
 
   const getAssignedVenueLabel = useCallback((userId: string) => {
     const venueNames = vendorIdToVenueNames.get(userId);
@@ -1120,6 +1131,47 @@ export default function AdminPdfFormsPage() {
       setSuccessMsg(`"${formTitle}" removed.`);
     } catch (err: any) {
       setError(err.message);
+    }
+  };
+
+  const handleDownload = async (form: CustomForm) => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      setDownloadingFormId(form.id);
+      setError('');
+
+      const res = await fetch(`/api/custom-forms/${form.id}/pdf`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        throw new Error(json?.error || 'Download failed');
+      }
+
+      const blob = await res.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      const sanitizedTitle = form.title
+        .trim()
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .replace(/\.+$/g, '');
+      const safeTitle = sanitizedTitle || `pdf-form-${form.id}`;
+      const filename = safeTitle.toLowerCase().endsWith('.pdf') ? safeTitle : `${safeTitle}.pdf`;
+
+      link.href = downloadUrl;
+      link.download = filename || `pdf-form-${form.id}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+    } catch (err: any) {
+      setError(err.message || 'Failed to download form.');
+    } finally {
+      setDownloadingFormId(null);
     }
   };
 
@@ -1779,87 +1831,144 @@ export default function AdminPdfFormsPage() {
         </div>
 
         {/* Active Forms List */}
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
-          <h2 className="text-lg font-semibold text-gray-800 mb-4">
-            Active Forms ({filteredForms.length}{pageVenueId && forms.length !== filteredForms.length ? ` of ${forms.length}` : ''})
-          </h2>
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+          <div className="border-b border-gray-200 bg-gray-50 px-6 py-5">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Active Forms</h2>
+                <p className="mt-1 text-sm text-gray-500">
+                  {pageVenueId
+                    ? 'Showing the forms currently available to users at the selected venue.'
+                    : 'Manage the forms employees can open, preview, and download.'}
+                </p>
+              </div>
 
+              <div className="flex flex-wrap gap-2 lg:justify-end">
+                <div className="inline-flex min-w-[112px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <span className="text-xs font-medium text-gray-500">Visible</span>
+                  <span className="text-sm font-semibold text-gray-900">{activeFormsSummary.visible}</span>
+                </div>
+                <div className="inline-flex min-w-[112px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <span className="text-xs font-medium text-gray-500">Signature</span>
+                  <span className="text-sm font-semibold text-gray-900">{activeFormsSummary.signatureRequired}</span>
+                </div>
+                <div className="inline-flex min-w-[112px] items-center justify-between rounded-lg border border-gray-200 bg-white px-3 py-2">
+                  <span className="text-xs font-medium text-gray-500">Restricted</span>
+                  <span className="text-sm font-semibold text-gray-900">{activeFormsSummary.restricted}</span>
+                </div>
+                {pageVenueId && activeFormsSummary.hidden > 0 && (
+                  <div className="inline-flex min-w-[112px] items-center justify-between rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                    <span className="text-xs font-medium text-blue-700">Hidden</span>
+                    <span className="text-sm font-semibold text-blue-900">{activeFormsSummary.hidden}</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="px-6 py-6">
           {filteredForms.length === 0 ? (
-            <p className="text-gray-500 text-sm text-center py-8">
-              {pageVenueId ? 'No forms assigned to users at this venue.' : 'No forms uploaded yet. Upload a PDF above to get started.'}
-            </p>
+            <div className="rounded-lg border border-dashed border-gray-300 bg-gray-50 px-6 py-10 text-center">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg border border-gray-200 bg-white text-gray-400 shadow-sm">
+                <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <p className="text-sm font-semibold text-gray-900">
+                {pageVenueId ? 'No forms available for this venue.' : 'No active forms yet.'}
+              </p>
+              <p className="mt-1 text-sm text-gray-500">
+                {pageVenueId
+                  ? 'Assign forms to users at this venue or clear the venue filter to see the full library.'
+                  : 'Upload a PDF above to start building the employee forms library.'}
+              </p>
+            </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-4">
               {filteredForms.map(form => (
                 <div
                   key={form.id}
-                  className="flex items-center justify-between p-4 border border-gray-100 rounded-lg hover:bg-gray-50"
+                  className="flex flex-col gap-4 rounded-lg border border-gray-200 bg-white p-5 shadow-sm transition hover:border-gray-300 hover:shadow-md xl:flex-row xl:items-start xl:justify-between"
                 >
-                  <div>
-                    <p className="font-medium text-gray-900">{form.title}</p>
-                    <div className="flex items-center gap-3 mt-1">
-                      <span className="text-xs text-gray-500">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-base font-semibold text-gray-900">{form.title}</p>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center rounded-lg border border-gray-200 bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
                         Uploaded {new Date(form.created_at).toLocaleDateString()}
                       </span>
                       {form.requires_signature && (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
                           Signature required
                         </span>
                       )}
                       {form.allow_date_input && (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-violet-200 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">
                           Date input
                         </span>
                       )}
                       {form.allow_print_name && (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700">
                           Print name
                         </span>
                       )}
                       <button
                         onClick={() => handleToggleVenueDisplay(form.id, form.allow_venue_display)}
-                        className={`inline-flex items-center gap-1 text-xs font-medium rounded-full px-2 py-0.5 border transition-colors ${
+                        className={`inline-flex items-center gap-2 rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors ${
                           form.allow_venue_display
-                            ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100'
-                            : 'text-gray-400 bg-gray-50 border-gray-200 hover:bg-gray-100'
+                            ? 'border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100'
+                            : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50'
                         }`}
                         title={form.allow_venue_display ? 'Click to hide venue' : 'Click to show venue'}
                       >
-                        Show venue: {form.allow_venue_display ? 'ON' : 'OFF'}
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            form.allow_venue_display ? 'bg-sky-500' : 'bg-gray-300'
+                          }`}
+                        />
+                        Venue {form.allow_venue_display ? 'visible' : 'hidden'}
                       </button>
                       {form.target_state && (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
                           {form.target_state}
                         </span>
                       )}
                       {form.assignment_count != null && form.assignment_count > 0 ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
                           Restricted · {form.assignment_count} user{form.assignment_count !== 1 ? 's' : ''}
                         </span>
                       ) : form.assignment_count === 0 ? (
-                        <span className="inline-flex items-center gap-1 text-xs font-medium text-gray-500 bg-gray-50 border border-gray-200 rounded-full px-2 py-0.5">
+                        <span className="inline-flex items-center rounded-lg border border-gray-200 bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-600">
                           All employees
                         </span>
                       ) : null}
-                      <span className="text-xs text-gray-400 font-mono">/employee/form/{form.id}</span>
+                      <span className="inline-flex items-center rounded-lg border border-gray-200 bg-white px-2.5 py-1 font-mono text-xs text-gray-500">
+                        /employee/form/{form.id}
+                      </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                    <button
+                      onClick={() => handleDownload(form)}
+                      disabled={downloadingFormId === form.id}
+                      className={`${formActionButtonClass} border-emerald-200 bg-emerald-50 text-emerald-700 hover:border-emerald-300 hover:bg-emerald-100`}
+                    >
+                      {downloadingFormId === form.id ? 'Downloading...' : 'Download'}
+                    </button>
                     <button
                       onClick={() => router.push(`/employee/form/${form.id}`)}
-                      className="text-sm text-blue-600 hover:text-blue-800 font-medium px-3 py-1 rounded-lg hover:bg-blue-50 transition-colors"
+                      className={`${formActionButtonClass} border-blue-200 bg-blue-50 text-blue-700 hover:border-blue-300 hover:bg-blue-100`}
                     >
                       Preview
                     </button>
                     <button
                       onClick={() => openSendModal(form)}
-                      className="text-sm text-purple-600 hover:text-purple-800 font-medium px-3 py-1 rounded-lg hover:bg-purple-50 transition-colors"
+                      className={`${formActionButtonClass} border-gray-200 bg-white text-gray-700 hover:border-gray-300 hover:bg-gray-50`}
                     >
                       Send
                     </button>
                     <button
                       onClick={() => handleDelete(form.id, form.title)}
-                      className="text-sm text-red-600 hover:text-red-800 font-medium px-3 py-1 rounded-lg hover:bg-red-50 transition-colors"
+                      className={`${formActionButtonClass} border-red-200 bg-red-50 text-red-700 hover:border-red-300 hover:bg-red-100`}
                     >
                       Remove
                     </button>
@@ -1868,6 +1977,7 @@ export default function AdminPdfFormsPage() {
               ))}
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

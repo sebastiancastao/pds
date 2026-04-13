@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -717,17 +718,22 @@ export default function EmployeeProfilePage() {
     return btoa(b);
   };
 
-  const withVenueEmbedded = async (base64Data: string, venueName: string): Promise<string> => {
+  const withVenueEmbedded = async (base64Data: string, venueName: string, employeeName?: string): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const lastPage = pdfDoc.getPages().at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    lastPage.drawText('Your assigned venue', { x: 260, y: 180, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(venueName, { x: 260, y: 155, size: 11, font, color: rgb(0, 0, 0) });
+    if (employeeName) {
+      lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      lastPage.drawText(employeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+      lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    }
+    lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
     lastPage.drawLine({
-      start: { x: 260, y: 140 },
-      end: { x: 470, y: 140 },
+      start: { x: 220, y: 160 },
+      end: { x: 470, y: 160 },
       thickness: 0.5,
       color: rgb(0.6, 0.6, 0.6),
     });
@@ -756,7 +762,8 @@ export default function EmployeeProfilePage() {
 
     if (
       normalizedName.endsWith('employee-information') ||
-      normalizedName.endsWith('notice-to-employee')
+      normalizedName.endsWith('notice-to-employee') ||
+      normalizedName.endsWith('home-venue-assignment')
     ) {
       return venueName;
     }
@@ -788,7 +795,7 @@ export default function EmployeeProfilePage() {
     try {
       let data = await getFormDataWithSignature(form);
       if (form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (venueName) data = await withVenueEmbedded(data, venueName);
+      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -807,7 +814,7 @@ export default function EmployeeProfilePage() {
     try {
       let data = await getFormDataWithSignature(form);
       if (form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (venueName) data = await withVenueEmbedded(data, venueName);
+      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
@@ -1178,6 +1185,8 @@ export default function EmployeeProfilePage() {
                 </div>
               </div>
             </section>
+
+            <KnowYourRightsNoticeSection />
 
             {/* Personal Calendar */}
             {(() => {

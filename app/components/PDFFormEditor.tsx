@@ -126,6 +126,10 @@ const HIDDEN_STATE_TAX_FIELDS = new Set<string>([
   'EIN',
 ]);
 
+const HIDDEN_ATTESTATION_FIELDS = new Set<string>([
+  'employee_attestation_signature',
+]);
+
 const isAdpDepositForm = (formId: string) =>
   formId === 'adp-deposit' || formId.endsWith('-adp-deposit');
 
@@ -143,6 +147,35 @@ const shouldMaskField = (formId: string, fieldName: string) =>
 
 const isStateTaxForm = (formId: string) =>
   formId === 'state-tax' || formId.endsWith('-state-tax');
+
+const isAttestationForm = (formId: string) =>
+  formId === 'attestation' || formId.endsWith('-attestation');
+
+const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
+
+const isDateInputField = (fieldName: string) => fieldName === ATTESTATION_DATE_FIELD;
+
+const formatPdfDateToInputValue = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  const match = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return '';
+
+  const [, month, day, year] = match;
+  return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+};
+
+const formatDateInputToPdfValue = (value: string) => {
+  if (!value) return '';
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return value;
+  const [, year, month, day] = match;
+  return `${month}/${day}/${year}`;
+};
 
 const normalizeVenueFieldName = (fieldName: string) =>
   fieldName.toLowerCase().replace(/[^a-z0-9]/g, '');
@@ -187,7 +220,8 @@ const shouldHideField = (formId: string, fieldName: string) =>
   (isI9Form(formId) && HIDDEN_I9_FIELDS.has(fieldName)) ||
   (isNoticeToEmployeeForm(formId) && HIDDEN_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
   (isWiNoticeToEmployeeForm(formId) && HIDDEN_WI_NOTICE_TO_EMPLOYEE_FIELDS.has(fieldName)) ||
-  (isStateTaxForm(formId) && HIDDEN_STATE_TAX_FIELDS.has(fieldName));
+  (isStateTaxForm(formId) && HIDDEN_STATE_TAX_FIELDS.has(fieldName)) ||
+  (isAttestationForm(formId) && HIDDEN_ATTESTATION_FIELDS.has(fieldName));
 
 const ADP_NET_AMOUNT_SLOTS = [
   { name: 'adp_entire_net_amount_1', referenceField: 'Checking1', fallbackY: 241.745 },
@@ -1267,6 +1301,8 @@ export default function PDFFormEditor({
                 ? fieldValue === field.widgetValue
                 : fieldValue === 'true'
               : false;
+            const isDateField = field.type !== 'checkbox' && isDateInputField(field.baseName);
+            const renderedValue = isDateField ? formatPdfDateToInputValue(fieldValue) : fieldValue;
             const isMissingRequired = Boolean(
               showRequiredFieldErrors &&
               requiredFieldNames?.includes(field.baseName) &&
@@ -1326,9 +1362,15 @@ export default function PDFFormEditor({
                   />
                 ) : (
                   <input
-                    type="text"
-                    value={fieldValue}
-                    onChange={(e) => handleFieldChange(field.id, field.baseName, e.target.value)}
+                    type={isDateField ? 'date' : 'text'}
+                    value={renderedValue}
+                    onChange={(e) =>
+                      handleFieldChange(
+                        field.id,
+                        field.baseName,
+                        isDateField ? formatDateInputToPdfValue(e.target.value) : e.target.value,
+                      )
+                    }
                     style={{
                       width: '100%',
                       height: '100%',

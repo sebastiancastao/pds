@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 
 const supabaseAdmin = createClient(
@@ -10,6 +10,7 @@ const supabaseAdmin = createClient(
 
 const STATE_CODE_PREFIXES = ['ca', 'ny', 'wi', 'az', 'nv', 'tx', 'fl', 'il', 'oh', 'pa', 'nj'] as const;
 const STATE_CODE_PREFIX_SET = new Set(STATE_CODE_PREFIXES);
+const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 
 type SignatureEntry = {
   form_id?: string | null;
@@ -392,6 +393,7 @@ export async function GET(request: NextRequest) {
         }
       }
     }
+    const isAttestation = normalizedName === 'attestation';
     const pageIdx = isI9 ? 0 : Math.max(pages.length - 1, 0);
     const page = pages[pageIdx];
     const { width, height } = page.getSize();
@@ -415,7 +417,79 @@ export async function GET(request: NextRequest) {
     const isImageDataUrl = signatureData.trim().toLowerCase().startsWith('data:image/');
     const isTyped = signatureKind === 'typed' || signatureKind === 'type' || !isImageDataUrl;
 
-    if (isTyped) {
+    if (isAttestation) {
+      let placedAttestationSignature = false;
+      try {
+        const attestationField = pdfDoc.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
+        const widgets = attestationField?.acroField?.getWidgets?.() || [];
+        if (widgets.length > 0) {
+          const widget = widgets[0];
+          const rect = widget.getRectangle();
+          const pageRef = widget.P?.();
+          const targetPage = pageRef
+            ? pages.find((candidate: any) => candidate.ref === pageRef)
+            : page;
+
+          if (targetPage) {
+            targetPage.drawRectangle({
+              x: rect.x - 2,
+              y: rect.y - 2,
+              width: rect.width + 4,
+              height: rect.height + 4,
+              color: rgb(1, 1, 1),
+            });
+
+            if (isTyped) {
+              const { StandardFonts } = await import('pdf-lib');
+              const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+              targetPage.drawText(signatureData, {
+                x: rect.x + 2,
+                y: rect.y + rect.height / 2 - 3,
+                size: 10,
+                font,
+              });
+            } else {
+              const { format, base64 } = normalizeSignatureImage(signatureData);
+              const imageBytes = Buffer.from(base64, 'base64');
+              const signatureImage =
+                format === 'jpg' || format === 'jpeg'
+                  ? await pdfDoc.embedJpg(imageBytes)
+                  : await pdfDoc.embedPng(imageBytes);
+              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+              const drawWidth = signatureImage.width * scale;
+              const drawHeight = signatureImage.height * scale;
+              const drawX = rect.x + (rect.width - drawWidth) / 2;
+              const drawY = rect.y + (rect.height - drawHeight) / 2;
+              targetPage.drawImage(signatureImage, {
+                x: drawX,
+                y: drawY,
+                width: drawWidth,
+                height: drawHeight,
+              });
+            }
+            placedAttestationSignature = true;
+          }
+        }
+      } catch (error) {
+        console.warn('[WITH_SIGNATURE] Failed to place attestation signature in field, falling back to default placement', error);
+      }
+
+      if (!placedAttestationSignature) {
+        if (isTyped) {
+          const { StandardFonts } = await import('pdf-lib');
+          const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+          page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });
+        } else {
+          const { format, base64 } = normalizeSignatureImage(signatureData);
+          const imageBytes = Buffer.from(base64, 'base64');
+          const signatureImage =
+            format === 'jpg' || format === 'jpeg'
+              ? await pdfDoc.embedJpg(imageBytes)
+              : await pdfDoc.embedPng(imageBytes);
+          page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
+        }
+      }
+    } else if (isTyped) {
       const { StandardFonts } = await import('pdf-lib');
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });

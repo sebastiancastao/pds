@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
-import { Resend } from 'resend';
 import { decrypt } from '@/lib/encryption';
+import { sendEmail } from '@/lib/email';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -14,8 +14,6 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
@@ -193,13 +191,15 @@ export async function POST(req: NextRequest) {
       `;
 
       try {
-        const { error } = await resend.emails.send({
+        const emailResult = await sendEmail({
           from: 'PDS Payments <service@pdsportal.site>',
           to: email,
           subject,
           html,
         });
-        if (error) throw error;
+        if (!emailResult.success) {
+          throw new Error(emailResult.error || 'send failed');
+        }
         sent += 1;
       } catch (e: any) {
         failures.push({ userId, email, error: e?.message || 'send failed' });
@@ -211,4 +211,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
   }
 }
-

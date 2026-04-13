@@ -4,6 +4,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -781,16 +782,21 @@ export default function WorkerProfilePage() {
     return btoa(b);
   };
 
-  // Embed the home venue name on the bottom-left of the last PDF page.
-  const withVenueEmbedded = async (base64Data: string, venueName: string): Promise<string> => {
+  // Embed the home venue name on the bottom of the last PDF page.
+  const withVenueEmbedded = async (base64Data: string, venueName: string, employeeName?: string): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const lastPage = pdfDoc.getPages().at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    lastPage.drawText('Your assigned venue', { x: 260, y: 180, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(venueName, { x: 260, y: 155, size: 11, font, color: rgb(0, 0, 0) });
-    lastPage.drawLine({ start: { x: 260, y: 140 }, end: { x: 470, y: 140 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    if (employeeName) {
+      lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      lastPage.drawText(employeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+      lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    }
+    lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
     const saved = await pdfDoc.save();
     let b = '';
     for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
@@ -825,7 +831,7 @@ export default function WorkerProfilePage() {
       let data = form.form_date
         ? await withDateEmbedded(form.form_data, form.form_date)
         : form.form_data;
-      if (venueName) data = await withVenueEmbedded(data, venueName);
+      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -845,7 +851,7 @@ export default function WorkerProfilePage() {
       let data = form.form_date
         ? await withDateEmbedded(form.form_data, form.form_date)
         : form.form_data;
-      if (venueName) data = await withVenueEmbedded(data, venueName);
+      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
@@ -877,7 +883,7 @@ export default function WorkerProfilePage() {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
-        await downloadPDFForm(form);
+        await downloadPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined);
         // Small delay between downloads to avoid browser blocking
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -1092,6 +1098,8 @@ export default function WorkerProfilePage() {
                 </div>
               </div>
             </section>
+
+            <KnowYourRightsNoticeSection />
 
             {/* Personal Calendar */}
             {(() => {
@@ -1751,7 +1759,7 @@ export default function WorkerProfilePage() {
                                 </div>
                                 <div className="flex gap-2">
                                   <button
-                                    onClick={() => viewPDFForm(form)}
+                                    onClick={() => viewPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined)}
                                     className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
                                   >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1761,7 +1769,7 @@ export default function WorkerProfilePage() {
                                     View
                                   </button>
                                   <button
-                                    onClick={() => downloadPDFForm(form)}
+                                    onClick={() => downloadPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined)}
                                     className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
                                   >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
