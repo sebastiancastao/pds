@@ -1699,6 +1699,7 @@ export async function GET(
       .from('vendor_venue_assignments')
       .select('venue:venue_reference(venue_name)')
       .eq('vendor_id', userId)
+      .order('assigned_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     const targetUserHomeVenueName: string = (venueAssignment?.venue as any)?.venue_name?.toString().trim() || '';

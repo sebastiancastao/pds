@@ -15,7 +15,6 @@ const AZ_FORMS: FormSpec[] = [
   { id: 'health-insurance', formId: 'health-insurance', display: 'Health Insurance Marketplace' },
   { id: 'time-of-hire', formId: 'time-of-hire', display: "Worker's Comp", requiresSignature: true },
   { id: 'employee-information', formId: 'employee-information', display: 'Employee Information' },
-  { id: 'home-venue-assignment', display: 'Home Venue Assignment', requiresSignature: true },
   { id: 'attestation', display: 'Timekeeping / Meal Period Attestation', requiresSignature: true },
   { id: 'fw4', formId: 'fw4', display: 'Federal W-4', requiresSignature: true, apiOverride: '/api/payroll-packet-az/fw4' },
   { id: 'i9', formId: 'i9', display: 'I-9 Employment Verification', requiresSignature: true, apiOverride: '/api/payroll-packet-az/i9' },

@@ -190,7 +190,9 @@ export async function GET(req: NextRequest) {
           }
         }
 
-        const differentialMiles = Math.max(0, distToEventVenue - distToHomeVenue);
+        // Only pay if the extra distance (home→event minus home→home venue) is >= 2 miles
+        const rawDiff = distToEventVenue - distToHomeVenue;
+        const differentialMiles = rawDiff >= 2 ? rawDiff : 0;
         const mileagePay = differentialMiles * 2 * MILEAGE_RATE;
 
         if (!mileage[event.id]) mileage[event.id] = {};

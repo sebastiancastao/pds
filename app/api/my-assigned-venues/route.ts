@@ -42,7 +42,8 @@ export async function GET(request: NextRequest) {
     const { data: rows, error } = await adminClient
       .from('vendor_venue_assignments')
       .select('venue:venue_reference(id, venue_name, city, state)')
-      .eq('vendor_id', targetUserId);
+      .eq('vendor_id', targetUserId)
+      .order('assigned_at', { ascending: false });
 
     if (error) {
       console.error('[MY-ASSIGNED-VENUES] DB error:', error);

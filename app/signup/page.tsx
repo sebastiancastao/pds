@@ -5,13 +5,6 @@ import Link from 'next/link';
 import { isValidEmail, supabase } from '@/lib/supabase';
 import Papa from 'papaparse';
 
-interface Venue {
-  id: string;
-  venue_name: string;
-  city: string;
-  state: string;
-}
-
 interface NewUser {
   id: string;
   email: string;
@@ -20,7 +13,6 @@ interface NewUser {
   firstName: string;
   lastName: string;
   official_name: string;
-  home_venue_id?: string;
 }
 
 interface CreatedUser extends NewUser {
@@ -29,7 +21,6 @@ interface CreatedUser extends NewUser {
   message?: string;
   emailSent?: boolean;
   emailSending?: boolean;
-  home_venue_id?: string;
 }
 
 interface VendorRecord {
@@ -54,7 +45,6 @@ export default function SignupPage() {
       firstName: '',
       lastName: '',
       official_name: '',
-      home_venue_id: '',
     },
   ]);
   const [isLoading, setIsLoading] = useState(false);
@@ -68,8 +58,6 @@ export default function SignupPage() {
   const [vendorError, setVendorError] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const usersPerPage = 20;
-  const [venues, setVenues] = useState<Venue[]>([]);
-  const [venuesLoading, setVenuesLoading] = useState(false);
 
   const addUser = () => {
     setUsers([
@@ -82,7 +70,6 @@ export default function SignupPage() {
         firstName: '',
         lastName: '',
         official_name: '',
-        home_venue_id: '',
       },
     ]);
   };
@@ -182,7 +169,6 @@ export default function SignupPage() {
             firstName: '',
             lastName: '',
             official_name: '',
-            home_venue_id: '',
           },
         ]);
       } else {
@@ -196,7 +182,6 @@ export default function SignupPage() {
             firstName: u.firstName,
             lastName: u.lastName,
             official_name: u.official_name,
-            home_venue_id: u.home_venue_id || '',
           }))
         );
       }
@@ -375,13 +360,12 @@ export default function SignupPage() {
   };
 
   const downloadCSVTemplate = () => {
-    const venueExample = venues.length > 0 ? venues[0].venue_name : 'Main Street Venue';
-    const template = `firstName,lastName,email,role,division,homeVenue
-John,Doe,john.doe@example.com,worker,vendor,${venueExample}
-Jane,Smith,jane.smith@example.com,manager,trailers,
-Bob,Johnson,bob.johnson@example.com,finance,both,
-Helen,Reed,helen.reed@example.com,hr,vendor,
-Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
+    const template = `firstName,lastName,email,role,division
+John,Doe,john.doe@example.com,worker,vendor
+Jane,Smith,jane.smith@example.com,manager,trailers
+Bob,Johnson,bob.johnson@example.com,finance,both
+Helen,Reed,helen.reed@example.com,hr,vendor
+Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
 
     const blob = new Blob([template], { type: 'text/csv' });
     const url = window.URL.createObjectURL(blob);
@@ -443,24 +427,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
             const lastName = row.lastName.trim();
             const fullName = `${firstName} ${lastName}`.trim();
 
-            // Resolve optional homeVenue column to a venue ID
-            let home_venue_id = '';
-            if (row.homeVenue?.trim()) {
-              const venueName = row.homeVenue.trim().toLowerCase();
-              const match = venues.find(
-                (v) =>
-                  v.venue_name.toLowerCase() === venueName ||
-                  v.venue_name.toLowerCase().includes(venueName) ||
-                  venueName.includes(v.venue_name.toLowerCase())
-              );
-              if (match) {
-                home_venue_id = match.id;
-              } else {
-                errors.push(`Row ${rowNum}: Home venue "${row.homeVenue.trim()}" not found — leave blank or check the venue name`);
-                return;
-              }
-            }
-
             importedUsers.push({
               id: crypto.randomUUID(),
               firstName,
@@ -469,7 +435,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
               role: row.role.toLowerCase() as 'worker' | 'manager' | 'finance' | 'exec' | 'hr' | 'backgroundchecker',
               division: row.division.toLowerCase() as 'vendor' | 'trailers' | 'both',
               official_name: fullName,
-              home_venue_id,
             });
           });
 
@@ -566,27 +531,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
     fetchVendorRoster();
   }, []);
 
-  useEffect(() => {
-    const fetchVenues = async () => {
-      setVenuesLoading(true);
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const response = await fetch('/api/venues-list', {
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
-          credentials: 'include',
-        });
-        if (response.ok) {
-          const data = await response.json();
-          setVenues(data.venues || []);
-        }
-      } catch (err) {
-        console.error('[Signup] Failed to fetch venues:', err);
-      } finally {
-        setVenuesLoading(false);
-      }
-    };
-    fetchVenues();
-  }, []);
 
   const createAllVendorUsers = () => {
     // Get all vendors with email addresses
@@ -633,7 +577,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
         firstName,
         lastName,
         official_name: fullName,
-        home_venue_id: '',
       };
     });
 
@@ -809,7 +752,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
                                   firstName,
                                   lastName,
                                   official_name: fullName,
-                                  home_venue_id: '',
                                 }
                               ]);
 
@@ -914,10 +856,9 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
               <div className="text-sm text-blue-800">
                 <p className="font-medium mb-2">Required CSV Format:</p>
                 <ul className="list-disc ml-4 space-y-1">
-                  <li><strong>Headers:</strong> firstName, lastName, email, role, division, homeVenue</li>
+                  <li><strong>Headers:</strong> firstName, lastName, email, role, division</li>
                   <li><strong>Role values:</strong> worker, manager, finance, exec, hr, or backgroundchecker</li>
                   <li><strong>Division values:</strong> vendor, trailers, or both</li>
-                  <li><strong>homeVenue:</strong> optional — use the exact venue name (e.g. "Main Street Venue"). Leave blank to skip.</li>
                   <li>Download the template above for an example</li>
                 </ul>
               </div>
@@ -1179,7 +1120,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Division</th>
-                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Home Venue</th>
                         <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase w-16"></th>
                       </tr>
                     </thead>
@@ -1241,21 +1181,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
                               <option value="vendor">Vendor</option>
                               <option value="trailers">Trailers</option>
                               <option value="both">Both</option>
-                            </select>
-                          </td>
-                          <td className="px-3 py-2">
-                            <select
-                              value={user.home_venue_id || ''}
-                              onChange={(e) => updateUser(user.id, 'home_venue_id', e.target.value)}
-                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-transparent"
-                              disabled={venuesLoading}
-                            >
-                              <option value="">— None —</option>
-                              {venues.map((v) => (
-                                <option key={v.id} value={v.id}>
-                                  {v.venue_name}{v.city ? ` (${v.city})` : ''}
-                                </option>
-                              ))}
                             </select>
                           </td>
                           <td className="px-3 py-2 text-center">
@@ -1452,25 +1377,6 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor,`;
                     </select>
                   </div>
 
-                  {/* Home Venue */}
-                  <div className="md:col-span-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">
-                      Home Venue <span className="text-gray-400 text-xs font-normal">(optional)</span>
-                    </label>
-                    <select
-                      value={user.home_venue_id || ''}
-                      onChange={(e) => updateUser(user.id, 'home_venue_id', e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                      disabled={venuesLoading}
-                    >
-                      <option value="">— No home venue assigned —</option>
-                      {venues.map((v) => (
-                        <option key={v.id} value={v.id}>
-                          {v.venue_name}{v.city ? ` — ${v.city}` : ''}{v.state ? `, ${v.state}` : ''}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
                 </div>
               </div>
             ))
