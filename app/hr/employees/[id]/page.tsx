@@ -704,6 +704,7 @@ export default function EmployeeProfilePage() {
       month: 'long',
       day: 'numeric',
     });
+    lastPage.drawRectangle({ x: 325, y: 28, width: 195, height: 85, color: rgb(1, 1, 1), borderWidth: 0 });
     lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
     lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
     lastPage.drawLine({
@@ -724,6 +725,7 @@ export default function EmployeeProfilePage() {
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const lastPage = pdfDoc.getPages().at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    lastPage.drawRectangle({ x: 35, y: 150, width: 445, height: 60, color: rgb(1, 1, 1), borderWidth: 0 });
     if (employeeName) {
       lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
       lastPage.drawText(employeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
