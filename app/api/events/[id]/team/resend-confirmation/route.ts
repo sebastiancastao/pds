@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendTeamConfirmationEmail } from "@/lib/email";
+import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt } from "@/lib/encryption";
 import crypto from "crypto";
 
@@ -110,7 +111,7 @@ export async function POST(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("id, created_by, event_name, event_date, start_time")
+      .select("id, created_by, event_name, event_date, start_time, venue")
       .eq("id", eventId)
       .single();
 
@@ -195,6 +196,9 @@ export async function POST(
     const eventDate = formatEventDate(event.event_date);
     const eventStartTime = formatEventStartTime((event as any).start_time);
 
+    // Resolve per-venue BCC recipients
+    const venueBccEmails = await getVenueBccEmails((event as any).venue, supabaseAdmin);
+
     let emailsSent = 0;
     let emailsFailed = 0;
     let tokensRefreshed = 0;
@@ -267,6 +271,7 @@ export async function POST(
             managerName,
             managerPhone,
             confirmationToken,
+            bcc: venueBccEmails.length > 0 ? venueBccEmails : undefined,
           });
 
           if (emailResult?.success) break;

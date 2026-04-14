@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendVendorEventInvitationEmail } from "@/lib/email";
 import { decrypt } from "@/lib/encryption";
+import { getVenueBccEmails } from "@/lib/venue-bcc";
 import crypto from "crypto";
 
 const supabaseAdmin = createClient(
@@ -142,6 +143,9 @@ export async function POST(
     const eventDate = formatEventDate(rawDate);
     const eventStartTime = formatEventStartTime(eventData.start_time);
 
+    // Resolve per-venue BCC recipients from venue_email_bcc settings
+    const venueBccEmails = await getVenueBccEmails(eventData.venue, supabaseAdmin);
+
     // Send invitations sequentially to avoid provider burst rate limiting (429)
     let successes = 0;
     const failedEmails: string[] = [];
@@ -198,7 +202,8 @@ export async function POST(
             eventDate,
             eventStartTime,
             venueName: eventData.venue,
-            invitationToken
+            invitationToken,
+            bcc: venueBccEmails.length > 0 ? venueBccEmails : undefined,
           });
 
           if (emailResult.success) break;

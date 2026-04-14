@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendEmail } from "@/lib/email";
 import { canUserAccessEventById } from "@/lib/event-access";
 import { decrypt } from "@/lib/encryption";
+import { getVenueBccEmails } from "@/lib/venue-bcc";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -397,6 +398,9 @@ export async function POST(
     const city = normalizeText(eventData?.city);
     const state = normalizeText(eventData?.state);
 
+    // Resolve per-venue BCC recipients from venue_email_bcc settings
+    const venueBccEmails = await getVenueBccEmails(venue, supabaseAdmin);
+
     const batchSizeRaw = Number(process.env.LOCATION_EMAIL_SEND_BATCH_SIZE || DEFAULT_BATCH_SIZE);
     const batchDelayMsRaw = Number(process.env.LOCATION_EMAIL_SEND_BATCH_DELAY_MS || DEFAULT_BATCH_DELAY_MS);
     const perEmailDelayMsRaw = Number(
@@ -438,6 +442,7 @@ export async function POST(
           subject: `Location Assignment - ${eventName}`,
           html,
           from: process.env.RESEND_FROM_EVENTS || process.env.RESEND_FROM || undefined,
+          bcc: venueBccEmails.length > 0 ? venueBccEmails : undefined,
         });
 
         if (!result.success && isRateLimitError(result.error)) {
@@ -447,6 +452,7 @@ export async function POST(
             subject: `Location Assignment - ${eventName}`,
             html,
             from: process.env.RESEND_FROM_EVENTS || process.env.RESEND_FROM || undefined,
+            bcc: venueBccEmails.length > 0 ? venueBccEmails : undefined,
           });
         }
 

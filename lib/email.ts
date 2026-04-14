@@ -587,6 +587,7 @@ export async function sendVendorEventInvitationEmail(data: {
   eventStartTime?: string;
   venueName: string;
   invitationToken: string;
+  bcc?: string | string[];
 }): Promise<EmailResult> {
   const {
     email,
@@ -597,6 +598,7 @@ export async function sendVendorEventInvitationEmail(data: {
     eventStartTime,
     venueName,
     invitationToken,
+    bcc,
   } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
 
@@ -771,6 +773,7 @@ export async function sendVendorEventInvitationEmail(data: {
       to: normalizedEmail,
       subject: emailSubject,
       html: emailBody,
+      bcc,
     });
 
     if (error) {
@@ -1037,6 +1040,7 @@ export async function sendTeamConfirmationEmail(data: {
   managerPhone: string;
   confirmationToken: string;
   cc?: string | string[];
+  bcc?: string | string[];
 }): Promise<EmailResult> {
   const {
     email,
@@ -1049,6 +1053,7 @@ export async function sendTeamConfirmationEmail(data: {
     managerPhone,
     confirmationToken,
     cc,
+    bcc,
   } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
   const ccList = (Array.isArray(cc) ? cc : cc ? [cc] : [])
@@ -1246,11 +1251,16 @@ export async function sendTeamConfirmationEmail(data: {
 
   // Send email via Resend
   try {
+    const bccList = (Array.isArray(bcc) ? bcc : bcc ? [bcc] : [])
+      .map((v) => (v || '').toString().trim().toLowerCase())
+      .filter((v) => v.length > 0 && isValidEmail(v));
+
     const { data, error } = await sendResendEmail({
       from: EVENTS_FROM,
       to: normalizedEmail,
       subject: emailSubject,
       cc: ccList.length > 0 ? (Array.isArray(cc) ? ccList : ccList[0]) : undefined,
+      bcc: bccList.length > 0 ? bccList : undefined,
       html: emailBody,
     });
 
