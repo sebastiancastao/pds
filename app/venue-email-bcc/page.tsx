@@ -41,7 +41,11 @@ export default function VenueEmailBccPage() {
   const [selectedUserId, setSelectedUserId] = useState<string>("");
   const [adding, setAdding] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
-  const [token, setToken] = useState<string>("");
+
+  const getToken = async (): Promise<string> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ?? "";
+  };
 
   useEffect(() => {
     const init = async () => {
@@ -69,8 +73,6 @@ export default function VenueEmailBccPage() {
           return;
         }
 
-        setToken(session.access_token);
-
         // Load venues
         const venuesRes = await fetch("/api/venues", {
           headers: { Authorization: `Bearer ${session.access_token}` },
@@ -93,13 +95,14 @@ export default function VenueEmailBccPage() {
   // Refresh the managers list every time the add modal opens so newly
   // promoted managers always appear without requiring a page reload.
   useEffect(() => {
-    if (!showAddModal || !token) return;
+    if (!showAddModal) return;
 
     const fetchUsers = async () => {
       try {
+        const t = await getToken();
         const res = await fetch("/api/users/managers", {
           cache: "no-store",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${t}` },
         });
         if (res.ok) {
           const data = await res.json();
@@ -111,11 +114,11 @@ export default function VenueEmailBccPage() {
     };
 
     fetchUsers();
-  }, [showAddModal, token]);
+  }, [showAddModal]);
 
   // Load BCC entries whenever selected venue changes
   useEffect(() => {
-    if (!selectedVenueId || !token) {
+    if (!selectedVenueId) {
       setBccEntries([]);
       return;
     }
@@ -123,9 +126,10 @@ export default function VenueEmailBccPage() {
     const loadEntries = async () => {
       setLoadingEntries(true);
       try {
+        const t = await getToken();
         const res = await fetch(
           `/api/venue-email-bcc?venue_id=${selectedVenueId}`,
-          { cache: "no-store", headers: { Authorization: `Bearer ${token}` } }
+          { cache: "no-store", headers: { Authorization: `Bearer ${t}` } }
         );
         if (res.ok) {
           const data = await res.json();
@@ -139,17 +143,18 @@ export default function VenueEmailBccPage() {
     };
 
     loadEntries();
-  }, [selectedVenueId, token]);
+  }, [selectedVenueId]);
 
   const handleAdd = async () => {
     if (!selectedUserId || !selectedVenueId) return;
     setAdding(true);
     try {
+      const t = await getToken();
       const res = await fetch("/api/venue-email-bcc", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${t}`,
         },
         body: JSON.stringify({
           venue_id: selectedVenueId,
@@ -161,7 +166,7 @@ export default function VenueEmailBccPage() {
         // Reload entries
         const entriesRes = await fetch(
           `/api/venue-email-bcc?venue_id=${selectedVenueId}`,
-          { cache: "no-store", headers: { Authorization: `Bearer ${token}` } }
+          { cache: "no-store", headers: { Authorization: `Bearer ${t}` } }
         );
         if (entriesRes.ok) {
           const data = await entriesRes.json();
@@ -185,9 +190,10 @@ export default function VenueEmailBccPage() {
     if (!confirm("Remove this person from the BCC list for this venue?")) return;
     setRemoving(entryId);
     try {
+      const t = await getToken();
       const res = await fetch(`/api/venue-email-bcc?id=${entryId}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${t}` },
       });
       if (res.ok) {
         setBccEntries((prev) => prev.filter((e) => e.id !== entryId));

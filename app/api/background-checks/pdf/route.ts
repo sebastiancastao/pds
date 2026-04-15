@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { cookies } from "next/headers";
 import { NextRequest, NextResponse } from 'next/server';
+import { safeDecrypt } from "@/lib/encryption";
 
 export const dynamic = 'force-dynamic';
 
@@ -118,7 +119,9 @@ export async function GET(req: NextRequest) {
         .eq('user_id', userId)
         .maybeSingle();
       if (prof && (prof.first_name || prof.last_name)) {
-        printedName = `${prof.first_name || ''} ${prof.last_name || ''}`.trim();
+        const firstName = prof.first_name ? safeDecrypt(prof.first_name) : '';
+        const lastName = prof.last_name ? safeDecrypt(prof.last_name) : '';
+        printedName = `${firstName} ${lastName}`.trim();
       }
       if (!printedName) {
         const { data: userRow } = await adminClient
@@ -128,7 +131,9 @@ export async function GET(req: NextRequest) {
           .maybeSingle();
         if (userRow) {
           if (userRow.first_name || userRow.last_name) {
-            printedName = `${userRow.first_name || ''} ${userRow.last_name || ''}`.trim();
+            const firstName = userRow.first_name ? safeDecrypt(userRow.first_name) : '';
+            const lastName = userRow.last_name ? safeDecrypt(userRow.last_name) : '';
+            printedName = `${firstName} ${lastName}`.trim();
           } else if (userRow.email) {
             const local = String(userRow.email).split('@')[0];
             printedName = local
