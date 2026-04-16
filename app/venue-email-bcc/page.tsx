@@ -65,7 +65,7 @@ export default function VenueEmailBccPage() {
           .from("users")
           .select("role")
           .eq("id", session.user.id)
-          .single();
+          .single() as { data: { role: string } | null; error: unknown };
 
         if (!userData || !["exec", "admin"].includes(userData.role)) {
           alert("Access denied. This page is for executives only.");
