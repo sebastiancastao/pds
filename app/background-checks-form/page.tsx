@@ -717,10 +717,10 @@ export default function BackgroundChecksForm() {
                 </svg>
               </div>
               <h2 style={{ margin: '0 0 12px 0', fontSize: '24px', color: '#333' }}>
-                Approved!
+                Completed!
               </h2>
               <p style={{ margin: '0', fontSize: '16px', color: '#666' }}>
-                Your background check has been approved. Redirecting...
+                Your background check has been completed. Redirecting...
               </p>
             </>
           )}
