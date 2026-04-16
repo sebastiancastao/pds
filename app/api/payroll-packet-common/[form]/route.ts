@@ -184,7 +184,7 @@ async function buildFw4WithEmployeeDate(): Promise<Buffer> {
 
 async function buildAttestationPdf(): Promise<Buffer> {
   const pdfBytes = readRootPdf(ATTESTATION_SOURCE_FILE);
-  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const form = pdfDoc.getForm();
   const pages = pdfDoc.getPages();
   const signaturePage = pages[1] || pages[pages.length - 1];
@@ -200,16 +200,27 @@ async function buildAttestationPdf(): Promise<Buffer> {
     try {
       field = form.getTextField(fieldName);
     } catch {
-      field = form.createTextField(fieldName);
-      field.addToPage(signaturePage, {
-        x,
-        y,
-        width,
-        height,
-        borderWidth: 0,
-      });
+      try {
+        field = form.createTextField(fieldName);
+        field.addToPage(signaturePage, {
+          x,
+          y,
+          width,
+          height,
+          borderWidth: 0,
+        });
+      } catch (createErr) {
+        console.warn(`[ATTESTATION] Could not create text field "${fieldName}":`, createErr);
+        return;
+      }
     }
-    field.setFontSize(11);
+    if (field) {
+      try {
+        field.setFontSize(11);
+      } catch (e) {
+        console.warn(`[ATTESTATION] Could not set font size for "${fieldName}":`, e);
+      }
+    }
     return field;
   };
 
