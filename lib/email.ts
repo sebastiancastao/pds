@@ -1731,7 +1731,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
           <tr>
             <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
               <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check </h1>
-              <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">You're one step closer to getting started</p>
+              
             </td>
           </tr>
 
