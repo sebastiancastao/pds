@@ -1571,7 +1571,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
           <!-- Header -->
           <tr>
             <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check Approved</h1>
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check </h1>
               <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">Admin Notification</p>
             </td>
           </tr>
@@ -1620,15 +1620,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
               </table>
 
               <!-- Status Update -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #e7f3ff; border-radius: 8px; border-left: 4px solid #2196F3; margin: 30px 0;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="color: #0c5280; margin: 0; font-size: 14px;">
-                      <strong>📝 What Happened:</strong> The background check for ${vendorFirstName} ${vendorLastName} has been marked as completed and approved. An approval email has been automatically sent to the vendor at ${vendorEmail}.
-                    </p>
-                  </td>
-                </tr>
-              </table>
+              
 
               <!-- Dashboard Button -->
               <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
@@ -1721,7 +1713,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
 }): Promise<EmailResult> {
   const { email, firstName, lastName } = data;
 
-  const emailSubject = 'Background Check Approved - Complete Your Onboarding';
+  const emailSubject = 'Background Check status open - Complete Your Onboarding';
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -1738,7 +1730,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
           <!-- Header -->
           <tr>
             <td style="background: linear-gradient(135deg, #34C759 0%, #28A745 100%); padding: 40px 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check Completed!</h1>
+              <h1 style="color: #ffffff; margin: 0; font-size: 28px;">✅ Background Check </h1>
               <p style="color: rgba(255, 255, 255, 0.9); margin: 10px 0 0 0; font-size: 16px;">You're one step closer to getting started</p>
             </td>
           </tr>
