@@ -1554,7 +1554,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
 }): Promise<EmailResult> {
   const { vendorEmail, vendorFirstName, vendorLastName, approvedAt } = data;
 
-  const emailSubject = `Background Check Approved - ${vendorFirstName} ${vendorLastName}`;
+  const emailSubject = `Background Check Status Open - ${vendorFirstName} ${vendorLastName}`;
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -1580,7 +1580,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
           <tr>
             <td style="padding: 40px 30px;">
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                A background check has been marked as approved in the system.
+                A background check has been marked as open for onboarding in the system.
               </p>
 
               <!-- Vendor Details Box -->
@@ -1713,7 +1713,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
 }): Promise<EmailResult> {
   const { email, firstName, lastName } = data;
 
-  const emailSubject = 'Background Check status open - Complete Your Onboarding';
+  const emailSubject = 'Background Check Status Open - Complete Your Onboarding';
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -1743,7 +1743,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
               </p>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
-                Great news! Your background check has been successfully completed and approved.
+                Great news! Your background check has been set as open  to go through onboarding.
               </p>
 
               <p style="color: #333333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
