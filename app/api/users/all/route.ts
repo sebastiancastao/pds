@@ -37,12 +37,31 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
     }
 
-    // Use service role to bypass RLS and get all users
+    // Use service role to bypass RLS
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
       auth: { persistSession: false }
     });
 
-    const { data: users, error: usersError } = await supabaseAdmin
+    // --- 1. Get ALL auth users (paginated) ---
+    const authUsers: any[] = [];
+    let page = 1;
+    const perPage = 1000;
+    while (true) {
+      const { data: listData, error: listError } = await supabaseAdmin.auth.admin.listUsers({
+        page,
+        perPage,
+      });
+      if (listError) {
+        console.error('[USERS-ALL] Error listing auth users:', listError);
+        return NextResponse.json({ error: 'Failed to list auth users' }, { status: 500 });
+      }
+      authUsers.push(...(listData.users ?? []));
+      if ((listData.users ?? []).length < perPage) break;
+      page++;
+    }
+
+    // --- 2. Fetch public users table (all rows) ---
+    const { data: publicUsers, error: publicUsersError } = await supabaseAdmin
       .from('users')
       .select(`
         id,
@@ -60,121 +79,122 @@ export async function GET(request: NextRequest) {
         password_expires_at,
         last_password_change,
         background_check_completed,
-        background_check_completed_at,
-        profiles!inner(
-          first_name,
-          last_name,
-          phone,
-          address,
-          city,
-          state,
-          zip_code,
-          mfa_enabled,
-          onboarding_status,
-          onboarding_completed_at,
-          latitude,
-          longitude,
-          created_at,
-          updated_at
-        )
+        background_check_completed_at
       `)
-      .order('email')
-      .limit(10000);
+      .limit(100000);
 
-    if (usersError) {
-      console.error('[USERS-ALL] Error fetching users:', usersError);
+    if (publicUsersError) {
+      console.error('[USERS-ALL] Error fetching public users:', publicUsersError);
       return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 });
     }
 
-    // Get all users who have download records
+    // Build a map of id -> public user row
+    const publicUserMap = new Map((publicUsers || []).map((u: any) => [u.id, u]));
+
+    // --- 3. Fetch profiles ---
+    const { data: profilesData, error: profilesError } = await supabaseAdmin
+      .from('profiles')
+      .select(`
+        id,
+        user_id,
+        first_name,
+        last_name,
+        phone,
+        address,
+        city,
+        state,
+        zip_code,
+        mfa_enabled,
+        onboarding_status,
+        onboarding_completed_at,
+        latitude,
+        longitude,
+        created_at,
+        updated_at
+      `)
+      .limit(100000);
+
+    if (profilesError) {
+      console.error('[USERS-ALL] Error fetching profiles:', profilesError);
+    }
+
+    // Build maps: user_id -> profile row, user_id -> profile_id
+    const profileByUserId = new Map((profilesData || []).map((p: any) => [p.user_id, p]));
+    const profileIdByUserId = new Map((profilesData || []).map((p: any) => [p.user_id, p.id]));
+
+    // --- 4. Download records ---
     const { data: downloadRecords, error: downloadError } = await supabaseAdmin
       .from('background_check_pdf_downloads')
       .select('user_id');
 
     if (downloadError) {
       console.error('[USERS-ALL] Error fetching download records:', downloadError);
-      // Continue without download records instead of failing
     }
+    const userIdsWithDownloads = new Set((downloadRecords || []).map((r: any) => r.user_id));
 
-    // Create a Set of user IDs that have download records
-    const userIdsWithDownloads = new Set(
-      (downloadRecords || []).map((record: any) => record.user_id)
-    );
-
-    // Get all vendor_onboarding_status records
+    // --- 5. Vendor onboarding statuses ---
     const { data: onboardingStatuses, error: onboardingError } = await supabaseAdmin
       .from('vendor_onboarding_status')
       .select('profile_id, onboarding_completed');
 
     if (onboardingError) {
       console.error('[USERS-ALL] Error fetching onboarding statuses:', onboardingError);
-      // Continue without onboarding statuses instead of failing
     }
-
-    // Create a map of profile_id to onboarding status
     const onboardingStatusMap = new Map(
-      (onboardingStatuses || []).map((record: any) => [record.profile_id, record.onboarding_completed])
+      (onboardingStatuses || []).map((r: any) => [r.profile_id, r.onboarding_completed])
     );
 
-    // Get profile IDs for mapping
-    const { data: profilesData, error: profilesError } = await supabaseAdmin
-      .from('profiles')
-      .select('id, user_id');
-
-    if (profilesError) {
-      console.error('[USERS-ALL] Error fetching profiles:', profilesError);
-    }
-
-    // Create a map of user_id to profile_id
-    const userToProfileMap = new Map(
-      (profilesData || []).map((p: any) => [p.user_id, p.id])
-    );
-
-    // Transform the data to flatten the profiles and decrypt PII
-    const transformedUsers = (users || []).map((user: any) => {
-      const profileId = userToProfileMap.get(user.id);
+    // --- 6. Merge: auth users are the source of truth ---
+    const transformedUsers = authUsers.map((authUser: any) => {
+      const pub = publicUserMap.get(authUser.id);
+      const profile = profileByUserId.get(authUser.id);
+      const profileId = profileIdByUserId.get(authUser.id);
       const hasOnboardingRecord = profileId ? onboardingStatusMap.has(profileId) : false;
-      const vendorOnboardingCompleted = profileId ? onboardingStatusMap.get(profileId) : null;
+      const vendorOnboardingCompleted = profileId ? (onboardingStatusMap.get(profileId) ?? null) : null;
 
       return {
-        // User fields
-        id: user.id,
-        email: user.email,
-        role: user.role,
-        division: user.division,
-        is_active: user.is_active,
-        created_at: user.created_at,
-        updated_at: user.updated_at,
-        last_login: user.last_login,
-        failed_login_attempts: user.failed_login_attempts,
-        account_locked_until: user.account_locked_until,
-        is_temporary_password: user.is_temporary_password,
-        must_change_password: user.must_change_password,
-        password_expires_at: user.password_expires_at,
-        last_password_change: user.last_password_change,
-        background_check_completed: user.background_check_completed ?? false,
-        background_check_completed_at: user.background_check_completed_at,
+        // User fields (fall back to auth data when public row is missing)
+        id: authUser.id,
+        email: pub?.email ?? authUser.email ?? '',
+        role: pub?.role ?? 'unknown',
+        division: pub?.division ?? null,
+        is_active: pub?.is_active ?? true,
+        created_at: pub?.created_at ?? authUser.created_at,
+        updated_at: pub?.updated_at ?? authUser.updated_at,
+        last_login: pub?.last_login ?? authUser.last_sign_in_at ?? null,
+        failed_login_attempts: pub?.failed_login_attempts ?? 0,
+        account_locked_until: pub?.account_locked_until ?? null,
+        is_temporary_password: pub?.is_temporary_password ?? false,
+        must_change_password: pub?.must_change_password ?? false,
+        password_expires_at: pub?.password_expires_at ?? null,
+        last_password_change: pub?.last_password_change ?? null,
+        background_check_completed: pub?.background_check_completed ?? false,
+        background_check_completed_at: pub?.background_check_completed_at ?? null,
         // Profile fields (decrypted PII)
-        first_name: safeDecrypt(user.profiles.first_name),
-        last_name: safeDecrypt(user.profiles.last_name),
-        phone: safeDecrypt(user.profiles.phone),
-        address: safeDecrypt(user.profiles.address),
-        city: safeDecrypt(user.profiles.city),
-        state: user.profiles.state,
-        zip_code: safeDecrypt(user.profiles.zip_code),
-        mfa_enabled: user.profiles.mfa_enabled,
-        onboarding_status: user.profiles.onboarding_status,
-        onboarding_completed_at: user.profiles.onboarding_completed_at,
-        latitude: user.profiles.latitude,
-        longitude: user.profiles.longitude,
-        profile_created_at: user.profiles.created_at,
-        profile_updated_at: user.profiles.updated_at,
+        first_name: profile ? (safeDecrypt(profile.first_name) || '') : '',
+        last_name: profile ? (safeDecrypt(profile.last_name) || '') : '',
+        phone: profile ? safeDecrypt(profile.phone) : null,
+        address: profile ? safeDecrypt(profile.address) : null,
+        city: profile ? safeDecrypt(profile.city) : null,
+        state: profile?.state ?? null,
+        zip_code: profile ? safeDecrypt(profile.zip_code) : null,
+        mfa_enabled: profile?.mfa_enabled ?? false,
+        onboarding_status: profile?.onboarding_status ?? null,
+        onboarding_completed_at: profile?.onboarding_completed_at ?? null,
+        latitude: profile?.latitude ?? null,
+        longitude: profile?.longitude ?? null,
+        profile_created_at: profile?.created_at ?? null,
+        profile_updated_at: profile?.updated_at ?? null,
         // Computed fields
-        has_download_records: userIdsWithDownloads.has(user.id),
+        has_download_records: userIdsWithDownloads.has(authUser.id),
         has_vendor_onboarding_record: hasOnboardingRecord,
         vendor_onboarding_completed: vendorOnboardingCompleted,
       };
-    }).sort((a: any, b: any) => a.first_name.localeCompare(b.first_name));
+    }).sort((a: any, b: any) => {
+      const nameA = `${a.first_name} ${a.last_name}`.trim() || a.email;
+      const nameB = `${b.first_name} ${b.last_name}`.trim() || b.email;
+      return nameA.localeCompare(nameB);
+    });
 
     return NextResponse.json({ users: transformedUsers }, { status: 200 });
   } catch (err: any) {

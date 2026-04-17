@@ -4259,7 +4259,7 @@ export default function EventDashboardPage() {
                         setCommissionPool(fraction.toString());
                       }}
                       disabled={salesReadOnly}
-                      placeholder="4%"
+                      placeholder="%"
                       className={`w-full px-4 py-3 text-lg border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all ${
                         salesReadOnly ? "bg-gray-100 cursor-not-allowed hover:border-gray-300" : "bg-white hover:border-gray-400"
                       }`}
