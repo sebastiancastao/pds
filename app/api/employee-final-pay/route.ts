@@ -16,23 +16,24 @@ const HOURS_MISMATCH_THRESHOLD = 0.01;
 
 const addGatePhoneLeadHours = (hours: number): number =>
   Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
+const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 const roundHoursForDebug = (value: number): number =>
   Number((Number.isFinite(value) ? value : 0).toFixed(6));
 
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
     const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
-    if (Number.isFinite(effective) && effective >= 0) return addGatePhoneLeadHours(effective);
+    if (Number.isFinite(effective) && effective >= 0) return addLongShiftBonus(addGatePhoneLeadHours(effective));
   }
   const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
-  if (actual > 0) return actual;
+  if (actual > 0) return addLongShiftBonus(actual);
   const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
-  if (worked > 0) return worked;
+  if (worked > 0) return addLongShiftBonus(worked);
   const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
   const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
   const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
   const summed = reg + ot + dt;
-  return summed > 0 ? summed : 0;
+  return summed > 0 ? addLongShiftBonus(summed) : 0;
 };
 
 const getHoursDebugBreakdown = (payment: any) => {

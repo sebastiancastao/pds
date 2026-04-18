@@ -155,7 +155,7 @@ export async function POST(req: NextRequest) {
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
-      return actualHours >= 10 ? 12.5 : 9;
+      return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
     };
 
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
@@ -237,6 +237,7 @@ export async function POST(req: NextRequest) {
     const HOURS_MISMATCH_THRESHOLD = 0.01;
     const addGatePhoneLeadHours = (hours: number): number =>
       Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
+    const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
     const roundHoursForDebug = (value: number): number =>
       Number((Number.isFinite(value) ? value : 0).toFixed(6));
     const getEffectiveHoursBreakdownFromPayment = (paymentData: any): {
@@ -274,16 +275,16 @@ export async function POST(req: NextRequest) {
       const summed = reg + ot + dt;
 
       if (effectivePlusGatePhone > 0) {
-        return { hours: effectivePlusGatePhone, source: "effective_hours+gate_phone", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: addLongShiftBonus(effectivePlusGatePhone), source: "effective_hours+gate_phone", effectivePlusGatePhone, actual, worked, summed };
       }
       if (actual > 0) {
-        return { hours: actual, source: "actual_hours", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: addLongShiftBonus(actual), source: "actual_hours", effectivePlusGatePhone, actual, worked, summed };
       }
       if (worked > 0) {
-        return { hours: worked, source: "worked_hours", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: addLongShiftBonus(worked), source: "worked_hours", effectivePlusGatePhone, actual, worked, summed };
       }
       if (summed > 0) {
-        return { hours: summed, source: "regular+ot+dt", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: addLongShiftBonus(summed), source: "regular+ot+dt", effectivePlusGatePhone, actual, worked, summed };
       }
       return { hours: 0, source: "zero", effectivePlusGatePhone, actual, worked, summed };
     };
@@ -292,7 +293,7 @@ export async function POST(req: NextRequest) {
 
     const getActualHoursForWorker = (event: any, worker: any): number => {
       const timesheetHours = getTimesheetHoursForWorker(event, worker);
-      if (timesheetHours > 0) return timesheetHours;
+      if (timesheetHours > 0) return addLongShiftBonus(timesheetHours);
 
       const paymentData = worker?.payment_data;
       const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
@@ -303,8 +304,8 @@ export async function POST(req: NextRequest) {
       return hoursFromPayment > 0
         ? hoursFromPayment
         : workedHoursFromTimeEntries > 0
-          ? workedHoursFromTimeEntries
-          : regHours + otHours + dtHours;
+          ? addLongShiftBonus(workedHoursFromTimeEntries)
+          : addLongShiftBonus(regHours + otHours + dtHours);
     };
 
     const getDisplayHoursForWorker = (event: any, worker: any): number => getActualHoursForWorker(event, worker);

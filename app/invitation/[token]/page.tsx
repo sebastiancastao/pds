@@ -1,6 +1,7 @@
 "use client";
 import React, { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import { getVenueAbbreviation } from "@/lib/utils";
 import "./invitation-styles.css";
 
 type DayAvailability = {
@@ -393,6 +394,11 @@ export default function InvitationPage() {
                               >
                                 <div className="text-sm font-semibold text-gray-900">
                                   {event.eventName || "Event"}
+                                  {event.venue && (
+                                    <span className="ml-1 text-xs font-medium text-blue-600">
+                                      ({getVenueAbbreviation(event.venue)})
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="mt-1 text-xs text-gray-600">
                                   {[timeLabel, locationLabel].filter(Boolean).join(" | ")}

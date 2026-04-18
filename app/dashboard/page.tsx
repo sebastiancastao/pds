@@ -8,6 +8,7 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { geocodeAddress, getUserRegion } from "@/lib/geocoding";
 import { safeDecrypt } from "@/lib/encryption";
+import { getVenueAbbreviation } from "@/lib/utils";
 import "./dashboard-styles.css";
 
 type EventItem = {
@@ -828,7 +829,9 @@ export default function DashboardPage() {
         const startIso = toIsoDateTime(ev.event_date, ev.start_time);
         let endIso = toIsoDateTime(ev.event_date, ev.end_time);
         if (!endIso && startIso) endIso = addHours(startIso, 1);
-        return { id: ev.id, title: ev.event_name, start: startIso, end: endIso, allDay: false };
+        const abbrev = getVenueAbbreviation(ev.venue);
+        const title = abbrev ? `${ev.event_name} (${abbrev})` : ev.event_name;
+        return { id: ev.id, title, start: startIso, end: endIso, allDay: false };
       }),
     [filteredEvents]
   );

@@ -260,13 +260,6 @@ function TeamEmailPageContent() {
                 <div className="w-full border rounded px-3 py-2 bg-gray-50 text-sm text-gray-700">
                   {loadingTeam ? 'Loading team recipients...' : `${recipientCount} recipient(s)`}
                 </div>
-                {!loadingTeam && recipientCount > 0 && (
-                  <textarea
-                    value={teamEmails.join('\n')}
-                    readOnly
-                    className="mt-2 w-full border rounded px-3 py-2 h-28 font-mono text-sm bg-gray-50"
-                  />
-                )}
               </div>
 
               <div>

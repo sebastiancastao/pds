@@ -11,6 +11,112 @@ const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor
   loading: () => <div style={{ padding: '20px', textAlign: 'center' }}>Loading PDF editor...</div>
 });
 
+type BackgroundFormId = 'background-disclosure' | 'background-waiver' | 'background-addon';
+
+type RequiredFieldConfig = {
+  friendly: string;
+  name: string;
+  type?: 'checkbox' | 'text';
+};
+
+type MissingRequiredFields = Record<BackgroundFormId, string[]>;
+
+type RequiredFieldGroup = {
+  fields: RequiredFieldConfig[];
+  friendly: string;
+};
+
+const getEmptyMissingRequiredFields = (): MissingRequiredFields => ({
+  'background-disclosure': [],
+  'background-waiver': [],
+  'background-addon': [],
+});
+
+const REQUIRED_DISCLOSURE_FIELDS: RequiredFieldConfig[] = [
+  { name: 'name', friendly: 'Full Name' },
+  { name: 'address', friendly: 'Address' },
+  { name: 'city', friendly: 'City' },
+  { name: 'state', friendly: 'State' },
+  { name: 'zip', friendly: 'ZIP Code' },
+  { name: 'cellPhone', friendly: 'Cell Phone' },
+  { name: 'ssn', friendly: 'Social Security Number' },
+  { name: 'dateOfBirth', friendly: 'Date of Birth' },
+  { name: 'driversLicense', friendly: "Driver's License Number" },
+  { name: 'dlState', friendly: "Driver's License State" },
+  { name: 'signatureDate', friendly: 'Date' },
+];
+
+const REQUIRED_WAIVER_FIELDS: RequiredFieldConfig[] = [
+  { name: 'checkbox', friendly: 'Authorization Checkbox', type: 'checkbox' },
+  { name: 'fullName', friendly: 'Full Name' },
+  { name: 'date', friendly: 'Date' },
+  { name: 'dateOfBirth', friendly: 'Date of Birth' },
+  { name: 'ssn', friendly: 'Social Security Number' },
+  { name: 'driversLicense', friendly: "Driver's License Number" },
+  { name: 'state', friendly: 'State' },
+  { name: 'full name', friendly: 'Current Full Name' },
+  { name: 'adress', friendly: 'Current Address' },
+  { name: 'cityStateZip', friendly: 'Current City / State / ZIP' },
+  { name: 'phone', friendly: 'Current Phone Number' },
+  { name: 'reference1Name', friendly: 'Reference Name' },
+  { name: 'reference1Phone', friendly: 'Reference Phone' },
+  { name: 'ref1cityStateZip', friendly: 'Reference City / State / ZIP' },
+];
+
+const WAIVER_PREVIOUS_ADDRESS_GROUPS: RequiredFieldGroup[] = [
+  {
+    friendly: 'Previous Address Row 1',
+    fields: [
+      { name: 'previousEmployer1', friendly: 'Previous Address' },
+      { name: 'datefrom1', friendly: 'From Date' },
+      { name: 'datefto1', friendly: 'To Date' },
+    ],
+  },
+  {
+    friendly: 'Previous Address Row 2',
+    fields: [
+      { name: 'previousEmployer2', friendly: 'Previous Address' },
+      { name: 'datefrom2', friendly: 'From Date' },
+      { name: 'datefto2', friendly: 'To Date' },
+    ],
+  },
+  {
+    friendly: 'Previous Address Row 3',
+    fields: [
+      { name: 'previousEmployer3', friendly: 'Previous Address' },
+      { name: 'datefrom3', friendly: 'From Date' },
+      { name: 'datefto3', friendly: 'To Date' },
+    ],
+  },
+];
+
+const WAIVER_PREVIOUS_EMPLOYMENT_GROUPS: RequiredFieldGroup[] = [
+  {
+    friendly: 'Previous Employment Row 1',
+    fields: [
+      { name: 'previousPosition1', friendly: 'Previous Employment' },
+      { name: 'pdatefrom1', friendly: 'From Date' },
+      { name: 'pdatefto1', friendly: 'To Date' },
+    ],
+  },
+  {
+    friendly: 'Previous Employment Row 2',
+    fields: [
+      { name: 'previousPosition2', friendly: 'Previous Employment' },
+      { name: 'pdatefrom2', friendly: 'From Date' },
+      { name: 'pdatefto2', friendly: 'To Date' },
+    ],
+  },
+  {
+    friendly: 'Previous Employment Row 3',
+    fields: [
+      { name: 'previousPosition3', friendly: 'Previous Employment' },
+      { name: 'pdatefrom3', friendly: 'From Date' },
+      { name: 'pdatefto3', friendly: 'To Date' },
+    ],
+  },
+];
+
 export default function BackgroundChecksForm() {
   const router = useRouter();
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -33,6 +139,15 @@ export default function BackgroundChecksForm() {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isApproved, setIsApproved] = useState(false);
   const [checkingApproval, setCheckingApproval] = useState(false);
+  const disclosureSectionRef = useRef<HTMLDivElement | null>(null);
+  const waiverSectionRef = useRef<HTMLDivElement | null>(null);
+  const addonSectionRef = useRef<HTMLDivElement | null>(null);
+  const signatureSectionRef = useRef<HTMLDivElement | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<MissingRequiredFields>(() =>
+    getEmptyMissingRequiredFields()
+  );
 
   const getPostOnboardingRoute = (role?: string) => {
     const normalized = (role ?? '').toString().trim().toLowerCase();
@@ -54,13 +169,230 @@ export default function BackgroundChecksForm() {
     return '/dashboard';
   };
 
-  // Compute what's missing for submit and whether continue should be disabled
-  const incompleteRequirements = [
-    waiverProgress < 0.4 ? `Waiver ${Math.round(waiverProgress * 100)}% (need to complete)` : null,
-    disclosureProgress < 0.4 ? `Disclosure ${Math.round(disclosureProgress * 100)}% (need to complete)` : null,
-    !currentSignature ? 'Signature missing' : null,
-  ].filter(Boolean) as string[];
-  const continueDisabled = saveStatus === 'saving' || incompleteRequirements.length > 0;
+  const continueDisabled = saveStatus === 'saving';
+
+  const clearValidation = () => {
+    setValidationError(null);
+    setEmptyFieldPage(null);
+    setMissingRequiredFields(getEmptyMissingRequiredFields());
+  };
+
+  const getFormSectionRef = (formId: BackgroundFormId) => {
+    if (formId === 'background-disclosure') return disclosureSectionRef;
+    if (formId === 'background-waiver') return waiverSectionRef;
+    return addonSectionRef;
+  };
+
+  const scrollToValidationTarget = (formId: BackgroundFormId | 'signature', page?: number | null) => {
+    if (formId === 'signature') {
+      signatureSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+
+    const section = getFormSectionRef(formId).current;
+    if (!section) {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
+
+    const target =
+      page != null
+        ? section.querySelector(`canvas[data-page-number="${page}"]`)
+        : section;
+
+    if (target instanceof HTMLElement) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
+
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const showValidationError = ({
+    formId,
+    message,
+    missingFields = [],
+    page = null,
+  }: {
+    formId: BackgroundFormId | 'signature';
+    message: string;
+    missingFields?: string[];
+    page?: number | null;
+  }) => {
+    const nextMissingFields = getEmptyMissingRequiredFields();
+    if (formId !== 'signature') {
+      nextMissingFields[formId] = missingFields;
+    }
+
+    setValidationError(message);
+    setEmptyFieldPage(page);
+    setMissingRequiredFields(nextMissingFields);
+
+    window.setTimeout(() => {
+      scrollToValidationTarget(formId, page);
+    }, 100);
+  };
+
+  const getFieldPage = (pdfDoc: any, field: any) => {
+    try {
+      const widgets = field?.acroField?.getWidgets?.() || [];
+      if (!widgets.length) return 1;
+      const pageRef = widgets[0]?.P?.();
+      if (!pageRef) return 1;
+      const pages = pdfDoc.getPages();
+      const pageIndex = pages.findIndex((page: any) => page.ref === pageRef);
+      return pageIndex >= 0 ? pageIndex + 1 : 1;
+    } catch {
+      return 1;
+    }
+  };
+
+  const validateFormFields = async (
+    formId: BackgroundFormId,
+    pdfBytes: Uint8Array | null,
+    requiredFields: RequiredFieldConfig[],
+  ) => {
+    if (!pdfBytes) return null;
+
+    const { PDFDocument } = await import('pdf-lib');
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const form = pdfDoc.getForm();
+    const formLabel =
+      formId === 'background-disclosure'
+        ? 'Background Check Disclosure and Authorization'
+        : 'Background Check Waiver';
+
+    for (const fieldInfo of requiredFields) {
+      try {
+        if (fieldInfo.type === 'checkbox') {
+          const field = form.getCheckBox(fieldInfo.name);
+          if (!field.isChecked()) {
+            const page = getFieldPage(pdfDoc, field);
+            return {
+              formId,
+              page,
+              message: `Please complete "${fieldInfo.friendly}" in the ${formLabel} form before submitting.`,
+              missingFields: [fieldInfo.name],
+            };
+          }
+          continue;
+        }
+
+        const field = form.getTextField(fieldInfo.name);
+        const value = field.getText();
+        if (!value || value.trim() === '') {
+          const page = getFieldPage(pdfDoc, field);
+          return {
+            formId,
+            page,
+            message: `Please fill in "${fieldInfo.friendly}" in the ${formLabel} form before submitting.`,
+            missingFields: [fieldInfo.name],
+          };
+        }
+      } catch (error) {
+        console.warn(`[BACKGROUND CHECK] Validation skipped for field "${fieldInfo.name}"`, error);
+      }
+    }
+
+    if (formId === 'background-waiver') {
+      const validateGroupedRowRequirement = (
+        groups: RequiredFieldGroup[],
+        message: string,
+      ) => {
+        const rows = groups.map((group, index) => {
+          const fields = group.fields.map((fieldInfo) => {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
+            return {
+              ...fieldInfo,
+              filled: Boolean(value && value.trim() !== ''),
+              page: getFieldPage(pdfDoc, field),
+            };
+          });
+
+          return {
+            ...group,
+            fields,
+            index,
+            filledCount: fields.filter((field) => field.filled).length,
+          };
+        });
+
+        const totalFieldsFilled = rows.reduce(
+          (total, row) => total + row.filledCount,
+          0,
+        );
+
+        if (totalFieldsFilled >= 3) {
+          return null;
+        }
+
+        const preferredRow = rows.reduce((best, current) => {
+            if (!best) return current;
+            if (current.filledCount > best.filledCount) return current;
+            if (current.filledCount === best.filledCount && current.index < best.index) return current;
+            return best;
+          }, rows[0]);
+
+        const missingFields = preferredRow.fields
+          .filter((field) => !field.filled)
+          .map((field) => field.name);
+
+        return {
+          formId,
+          page: preferredRow.fields[0]?.page ?? 1,
+          message,
+          missingFields: missingFields.length > 0 ? missingFields : preferredRow.fields.map((field) => field.name),
+        };
+      };
+
+      try {
+        const previousAddressValidation = validateGroupedRowRequirement(
+          WAIVER_PREVIOUS_ADDRESS_GROUPS,
+          'Please fill at least 3 of the 9 previous address fields in the Background Check Waiver. Completing one row is preferred.',
+        );
+
+        if (previousAddressValidation) {
+          return previousAddressValidation;
+        }
+      } catch (error) {
+        console.warn('[BACKGROUND CHECK] Validation skipped for previous address fields', error);
+      }
+
+      try {
+        const previousEmploymentValidation = validateGroupedRowRequirement(
+          WAIVER_PREVIOUS_EMPLOYMENT_GROUPS,
+          'Please fill at least 3 of the 9 previous employment fields in the Background Check Waiver. Completing one row is preferred.',
+        );
+
+        if (previousEmploymentValidation) {
+          return previousEmploymentValidation;
+        }
+      } catch (error) {
+        console.warn('[BACKGROUND CHECK] Validation skipped for previous employment fields', error);
+      }
+
+      try {
+        const yesCrimeField = form.getCheckBox('yesCrime');
+        const noCrimeField = form.getCheckBox('noCrime');
+        const hasCrimeSelection = yesCrimeField.isChecked() || noCrimeField.isChecked();
+
+        if (!hasCrimeSelection) {
+          const page = getFieldPage(pdfDoc, yesCrimeField);
+          return {
+            formId,
+            page,
+            message: 'Please answer the criminal history question in the Background Check Waiver before submitting.',
+            missingFields: ['yesCrime', 'noCrime'],
+          };
+        }
+      } catch (error) {
+        console.warn('[BACKGROUND CHECK] Validation skipped for criminal history selection', error);
+      }
+    }
+
+    return null;
+  };
 
   const scheduleAutoSave = () => {
     autoSavePendingRef.current = true;
@@ -173,6 +505,7 @@ export default function BackgroundChecksForm() {
 
   // Handle field change - schedule auto-save every 30 seconds while editing
   const handleFieldChange = () => {
+    clearValidation();
     scheduleAutoSave();
   };
 
@@ -462,20 +795,37 @@ export default function BackgroundChecksForm() {
   // Continue to next step (dashboard or next form)
   const handleContinue = async () => {
     console.log('Continue clicked');
+    clearValidation();
 
-    // Enforce 40% completion on waiver and disclosure forms before submit
-    const waiverOk = waiverProgress >= 0.4;
-    const disclosureOk = disclosureProgress >= 0.4;
-    if (!waiverOk || !disclosureOk) {
-      const waiverPct = Math.round(waiverProgress * 100);
-      const disclosurePct = Math.round(disclosureProgress * 100);
-      alert(`Please complete the required forms before submitting.\n\nDisclosure: ${disclosurePct}%\nWaiver: ${waiverPct}%`);
+    const disclosureValidation = await validateFormFields(
+      'background-disclosure',
+      disclosureBytesRef.current,
+      REQUIRED_DISCLOSURE_FIELDS,
+    );
+    if (disclosureValidation) {
+      showValidationError(disclosureValidation);
+      void handleManualSave();
+      return;
+    }
+
+    const waiverValidation = await validateFormFields(
+      'background-waiver',
+      waiverBytesRef.current,
+      REQUIRED_WAIVER_FIELDS,
+    );
+    if (waiverValidation) {
+      showValidationError(waiverValidation);
+      void handleManualSave();
       return;
     }
 
     // Check if signature is required but not provided
     if (!currentSignature) {
-      alert('Please provide your signature before continuing.');
+      showValidationError({
+        formId: 'signature',
+        message: 'Please provide your signature before submitting the background check forms.',
+      });
+      void handleManualSave();
       return;
     }
 
@@ -605,6 +955,7 @@ export default function BackgroundChecksForm() {
       const dataUrl = canvas.toDataURL();
       setCurrentSignature(dataUrl);
     }
+    clearValidation();
   };
 
   const clearSignature = () => {
@@ -618,6 +969,7 @@ export default function BackgroundChecksForm() {
       }
     }
     setCurrentSignature('');
+    clearValidation();
   };
 
   // Initialize canvas
@@ -788,8 +1140,30 @@ export default function BackgroundChecksForm() {
         display: 'flex',
         flexDirection: 'column'
       }}>
+        {validationError && (
+          <div style={{
+            backgroundColor: '#ffebee',
+            border: '2px solid #d32f2f',
+            borderRadius: '8px',
+            padding: '16px 20px',
+            marginBottom: '20px',
+            color: '#b71c1c',
+            boxShadow: '0 2px 8px rgba(211,47,47,0.15)'
+          }}>
+            <div style={{ fontWeight: 'bold', marginBottom: '6px', fontSize: '16px' }}>
+              Required information is missing
+            </div>
+            <div style={{ fontSize: '14px' }}>{validationError}</div>
+            {emptyFieldPage != null && (
+              <div style={{ marginTop: '8px', fontSize: '13px' }}>
+                Please review page {emptyFieldPage} in the highlighted form section.
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Form 1: Background Disclosure */}
-        <div style={{ marginBottom: '32px' }}>
+        <div ref={disclosureSectionRef} style={{ marginBottom: '32px' }}>
           <h2 style={{
             margin: '0 0 16px 0',
             fontSize: '20px',
@@ -810,6 +1184,8 @@ export default function BackgroundChecksForm() {
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
               onProgress={setDisclosureProgress}
+              requiredFieldNames={missingRequiredFields['background-disclosure']}
+              showRequiredFieldErrors={missingRequiredFields['background-disclosure'].length > 0}
             />
           </div>
           {/* Garbled rendering advisory for Disclosure form */}
@@ -841,7 +1217,7 @@ export default function BackgroundChecksForm() {
         </div>
 
         {/* Form 2: Background Waiver */}
-        <div style={{ marginBottom: '32px' }}>
+        <div ref={waiverSectionRef} style={{ marginBottom: '32px' }}>
           <h2 style={{
             margin: '0 0 16px 0',
             fontSize: '20px',
@@ -862,12 +1238,14 @@ export default function BackgroundChecksForm() {
               onFieldChange={handleFieldChange}
               onContinue={handleContinue}
               onProgress={setWaiverProgress}
+              requiredFieldNames={missingRequiredFields['background-waiver']}
+              showRequiredFieldErrors={missingRequiredFields['background-waiver'].length > 0}
             />
           </div>
         </div>
 
         {/* Form 3: Background Add-on */}
-        <div style={{ marginBottom: '32px' }}>
+        <div ref={addonSectionRef} style={{ marginBottom: '32px' }}>
           <h2 style={{
             margin: '0 0 16px 0',
             fontSize: '20px',
@@ -893,7 +1271,7 @@ export default function BackgroundChecksForm() {
         </div>
 
         {/* Signature Section */}
-        <div style={{
+        <div ref={signatureSectionRef} style={{
           backgroundColor: 'white',
           borderRadius: '8px',
           padding: '24px',
@@ -1036,25 +1414,25 @@ export default function BackgroundChecksForm() {
 
             <button
               onClick={handleContinue}
-              disabled={saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature}
-              title={(saveStatus === 'saving' || incompleteRequirements.length > 0) ? `Complete before continuing: ${incompleteRequirements.join(' • ')}` : 'Continue'}
+              disabled={continueDisabled}
+              title={continueDisabled ? 'Saving...' : 'Submit'}
               style={{
                 padding: '12px 24px',
-                backgroundColor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) ? '#ccc' : '#1976d2',
+                backgroundColor: continueDisabled ? '#ccc' : '#1976d2',
                 color: 'white',
                 border: 'none',
                 borderRadius: '6px',
                 fontWeight: 'bold',
-                cursor: (saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) ? 'not-allowed' : 'pointer',
+                cursor: continueDisabled ? 'not-allowed' : 'pointer',
                 fontSize: '16px'
               }}
               onMouseOver={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature)) {
+                if (!continueDisabled) {
                   e.currentTarget.style.backgroundColor = '#1565c0';
                 }
               }}
               onMouseOut={(e) => {
-                if (!(saveStatus === 'saving' || waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature)) {
+                if (!continueDisabled) {
                   e.currentTarget.style.backgroundColor = '#1976d2';
                 }
               }}
@@ -1063,21 +1441,6 @@ export default function BackgroundChecksForm() {
             </button>
           </div>
         </div>
-
-        {/* Submit gating hint */}
-        {(waiverProgress < 0.4 || disclosureProgress < 0.4 || !currentSignature) && (
-          <div style={{
-            marginTop: '12px',
-            color: '#d32f2f',
-            fontSize: '13px',
-            backgroundColor: '#fdecea',
-            border: '1px solid #f5c2c0',
-            borderRadius: '6px',
-            padding: '10px 12px'
-          }}>
-            To continue, please complete: {incompleteRequirements.join(' • ')}
-          </div>
-        )}
       </div>
     </div>
   );

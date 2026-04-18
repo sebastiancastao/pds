@@ -2445,6 +2445,7 @@ export default function EventDashboardPage() {
 
   const GATE_PHONE_OFFSET_MINUTES = 30;
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
+  const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 
   const getDisplayedWorkedMs = (uid: string): number => {
     const span = timesheetSpans[uid];
@@ -2530,7 +2531,7 @@ export default function EventDashboardPage() {
       const division = (member?.users?.division || "").toString();
       const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
       const totalMs = getDisplayedWorkedMs(uid);
-      const actualHours = totalMs / (1000 * 60 * 60);
+      const actualHours = addLongShiftBonus(totalMs / (1000 * 60 * 60));
       const hoursHHMM = formatHoursFromMs(totalMs);
       const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
       const isTrailersDivision = division === "trailers";
@@ -3395,7 +3396,7 @@ export default function EventDashboardPage() {
   };
 
   const getRestBreakAmount = (actualHours: number, state: string): number => {
-    return actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
+    return actualHours >= 14 ? 17 : actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
   };
   const roundPayrollAmount = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -3465,7 +3466,7 @@ export default function EventDashboardPage() {
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getDisplayedWorkedMs(uid);
-        const actualHours = Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100;
+        const actualHours = addLongShiftBonus(Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100);
         const memberDivision = member.users?.division;
 
         // No OT/DT logic in Payment tab
@@ -3599,7 +3600,7 @@ export default function EventDashboardPage() {
         const profile = member.users?.profiles;
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getMealDeductedMsForSave(uid);
-        const actualHours = totalMs / (1000 * 60 * 60);
+        const actualHours = addLongShiftBonus(totalMs / (1000 * 60 * 60));
         const memberDivision = member.users?.division;
 
         // Calculate pay
@@ -6312,7 +6313,7 @@ export default function EventDashboardPage() {
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
-                          const actualHours = Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100;
+                          const actualHours = addLongShiftBonus(Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100);
                           const hoursHHMM = formatHoursFromMs(totalMs);
 
                           // Use rates from database based on venue state

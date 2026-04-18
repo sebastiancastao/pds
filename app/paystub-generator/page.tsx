@@ -220,6 +220,7 @@ export default function PaystubGenerator() {
     Number((Number.isFinite(value) ? value : 0).toFixed(2));
   const roundHours = (value: number) =>
     Number((Number.isFinite(value) ? value : 0).toFixed(2));
+  const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
   const formatCommissionReportDate = (rawValue: string) => {
     const raw = (rawValue || '').toString();
     const dateOnly = raw.split('T')[0];
@@ -237,21 +238,21 @@ export default function PaystubGenerator() {
     if (!worker) return 0;
     const effective = Number(worker.payment_data?.effective_hours ?? 0);
     if (Number.isFinite(effective) && effective > 0) {
-      return roundHours(effective + 0.5);
+      return roundHours(addLongShiftBonus(effective + 0.5));
     }
     const actual = Number(worker.payment_data?.actual_hours ?? 0);
     if (Number.isFinite(actual) && actual > 0) {
-      return roundHours(actual);
+      return roundHours(addLongShiftBonus(actual));
     }
     const workedHours = Number(worker.worked_hours ?? 0);
     if (Number.isFinite(workedHours) && workedHours > 0) {
-      return roundHours(workedHours);
+      return roundHours(addLongShiftBonus(workedHours));
     }
     const regularHours = Number(worker.payment_data?.regular_hours ?? 0);
     const overtimeHours = Number(worker.payment_data?.overtime_hours ?? 0);
     const doubletimeHours = Number(worker.payment_data?.doubletime_hours ?? 0);
     const summed = regularHours + overtimeHours + doubletimeHours;
-    return summed > 0 ? roundHours(summed) : 0;
+    return summed > 0 ? roundHours(addLongShiftBonus(summed)) : 0;
   };
   const getAdjustedGrossForEvent = (event: Event): number => {
     const eventPaymentSummary = event.event_payment || null;
