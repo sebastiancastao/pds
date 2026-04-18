@@ -130,6 +130,7 @@ export default function RegisterPage() {
     city: '',
     state: '',
     zipCode: '',
+    caRegion: '',
   });
   const [validationErrors, setValidationErrors] = useState<ValidationErrors>({});
   const [touchedFields, setTouchedFields] = useState<Set<string>>(new Set());
@@ -644,6 +645,27 @@ export default function RegisterPage() {
                   </p>
                 )}
               </div>
+
+              {/* CA Region (shown only when state is California) */}
+              {formData.state === 'CA' && (
+                <div>
+                  <label htmlFor="caRegion" className="block text-sm font-medium text-gray-700 mb-2">
+                    California Region <span className="text-red-500">*</span>
+                  </label>
+                  <select
+                    id="caRegion"
+                    name="caRegion"
+                    value={formData.caRegion}
+                    onChange={handleInputChange}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all bg-white"
+                    required
+                  >
+                    <option value="">Select your region</option>
+                    <option value="san-diego">San Diego</option>
+                    <option value="la-norcal">LA Region / NorCal</option>
+                  </select>
+                </div>
+              )}
 
               {/* Privacy Notice */}
               <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 flex items-start gap-3">

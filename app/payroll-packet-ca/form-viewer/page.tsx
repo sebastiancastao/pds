@@ -131,7 +131,8 @@ function FormViewerContent() {
     'discrimination-law': { display: 'Discrimination Law', api: '/api/payroll-packet-ca/discrimination-law', formId: 'discrimination-law', next: 'immigration-rights' },
     'immigration-rights': { display: 'Immigration Rights', api: '/api/payroll-packet-ca/immigration-rights', formId: 'immigration-rights', next: 'military-rights' },
     'military-rights': { display: 'Military Rights', api: '/api/payroll-packet-ca/military-rights', formId: 'military-rights', next: 'lgbtq-rights' },
-    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'attestation' },
+    'lgbtq-rights': { display: 'LGBTQ Rights', api: '/api/payroll-packet-ca/lgbtq-rights', formId: 'lgbtq-rights', next: 'temp-employment-agreement' },
+    'temp-employment-agreement': { display: 'Temporary Employment Agreement', api: '/api/payroll-packet-ca/temp-employment-agreement', formId: 'temp-employment-agreement', next: 'attestation', requiresSignature: true },
     'attestation': { display: 'Timekeeping / Meal Period Attestation', api: '/api/payroll-packet-common/attestation?state=ca', formId: 'attestation', next: 'meal-waiver-6hour', requiresSignature: true },
   };
 

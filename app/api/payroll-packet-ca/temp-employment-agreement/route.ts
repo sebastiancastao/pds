@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, rgb, PDFName, PDFString, StandardFonts, PDFArray } from 'pdf-lib';
+import { PDFDocument, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { createClient } from '@supabase/supabase-js';
@@ -49,23 +49,44 @@ export async function GET(request: Request) {
     }
 
     let userName = '';
+    let regionName = '';
+    let homeVenueName = '';
     if (user) {
-      const { data: profile, error } = await supabaseAdmin
-        .from('profiles')
-        .select('official_name')
-        .eq('user_id', user.id)
-        .maybeSingle();
+      const [profileResult, venueResult] = await Promise.all([
+        supabaseAdmin
+          .from('profiles')
+          .select('official_name, regions(name)')
+          .eq('user_id', user.id)
+          .maybeSingle(),
+        supabaseAdmin
+          .from('vendor_venue_assignments')
+          .select('venue:venue_reference(venue_name)')
+          .eq('vendor_id', user.id)
+          .limit(1)
+          .maybeSingle(),
+      ]);
 
-      console.log('[CA] Profile query result:', { profile, error });
+      console.log('[CA] Profile query result:', profileResult);
+      console.log('[CA] Venue query result:', venueResult);
 
-      if (profile && profile.official_name) {
-        userName = profile.official_name;
+      if (profileResult.data?.official_name) {
+        userName = profileResult.data.official_name;
+      }
+      if ((profileResult.data as any)?.regions?.name) {
+        regionName = (profileResult.data as any).regions.name;
+      }
+      if ((venueResult.data as any)?.venue?.venue_name) {
+        homeVenueName = (venueResult.data as any).venue.venue_name;
       }
     }
 
     console.log('[CA] Final user name:', userName);
+    console.log('[CA] Region name:', regionName);
 
-    const pdfPath = join(process.cwd(), 'TEMPORARY EMPLOYMENT COMMISSION AGREEMENT letter CA only (Final) 12.31.25(2508529.13).docx.pdf');
+    const pdfFileName = regionName === 'San Diego'
+      ? 'San Diego final Temp Employment agreement 4.17.2026.pdf'
+      : 'LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf';
+    const pdfPath = join(process.cwd(), pdfFileName);
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     const pages = pdfDoc.getPages();
@@ -74,20 +95,20 @@ export async function GET(request: Request) {
     const lastPageSize = lastPage.getSize();
     console.log('CA - Page size:', lastPageSize);
     console.log('CA - Total pages:', pages.length);
-    const helveticaFont = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-    const helveticaRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const form = pdfDoc.getForm();
 
-    // Draw the user name on the FIRST page at a position equivalent to y=1000 on coordinate system
-    if (userName) {
-      firstPage.drawText(userName, {
-        x: 100,
-        y: 570,
-        size: 9,
-        font: helveticaRegular,
-        color: rgb(0, 0, 0),
-      });
-      console.log('[CA] Drawing user name on first page at position (100, 570) size 9');
-    }
+    // Printed name input on the first page (replaces drawn text)
+    const printedNameField = form.createTextField('printed_name');
+    printedNameField.enableRequired();
+    if (userName) printedNameField.setText(userName);
+    printedNameField.addToPage(firstPage, {
+      x: 130,
+      y: 632,
+      width: 200,
+      height: 18,
+      borderColor: rgb(0, 0, 0),
+      borderWidth: 1,
+    });
 
     // BACK BUTTON
     const backButtonX = 50, backButtonY = 100, backButtonWidth = 100, backButtonHeight = 32;
@@ -101,16 +122,38 @@ export async function GET(request: Request) {
     if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(continueLinkAnnot)])); }
 
-    // Add signature fields to the last page
-    const form = pdfDoc.getForm();
+    // Home venue field on the last page
+    const homeVenueField = form.createTextField('home_venue');
+    if (homeVenueName) homeVenueField.setText(homeVenueName);
+    homeVenueField.addToPage(lastPage, {
+      x: 190,
+      y: 1290,
+      width: 100,
+      height: 13,
+      borderColor: rgb(0, 0, 0),
+      borderWidth: 1,
+    });
 
     // Employee signature date field
     const employeeSignatureDateField = form.createTextField('employee_signature_date');
     employeeSignatureDateField.enableRequired();
     employeeSignatureDateField.addToPage(lastPage, {
-      x: 250,
-      y: 420,
+      x: 370,
+      y: 125,
       width: 80,
+      height: 18,
+      borderColor: rgb(0, 0, 0),
+      borderWidth: 1,
+    });
+
+    // Second input at the bottom of the last page
+    const bottomNameField = form.createTextField('printed_name_bottom');
+    bottomNameField.enableRequired();
+    if (userName) bottomNameField.setText(userName);
+    bottomNameField.addToPage(lastPage, {
+      x: 80,
+      y: 90,
+      width: 200,
       height: 18,
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,

@@ -187,6 +187,24 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // For CA San Diego users: explicitly set region_id to the San Diego region.
+    // The geocoding trigger sets region_id automatically, but we override it here
+    // for 'san-diego' to ensure accuracy regardless of geocoding results.
+    // For 'la-norcal' we rely on geocoding (any non-San Diego region serves the correct PDF).
+    if (parsedProfileData.state === 'CA' && parsedProfileData.caRegion === 'san-diego') {
+      const { data: sdRegion } = await supabaseAdmin
+        .from('regions')
+        .select('id')
+        .eq('name', 'San Diego')
+        .single();
+      if (sdRegion) {
+        await supabaseAdmin
+          .from('profiles')
+          .update({ region_id: sdRegion.id })
+          .eq('user_id', user.id);
+      }
+    }
+
     // Return success response
     return NextResponse.json({
       success: true,
