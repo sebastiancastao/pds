@@ -764,8 +764,7 @@ export default function EmployeeProfilePage() {
 
     if (
       normalizedName.endsWith('employee-information') ||
-      normalizedName.endsWith('notice-to-employee') ||
-      normalizedName.endsWith('home-venue-assignment')
+      normalizedName.endsWith('notice-to-employee')
     ) {
       return venueName;
     }
@@ -1957,7 +1956,7 @@ export default function EmployeeProfilePage() {
                     {customFormsList.map((form) => {
                       const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
                       const submitted = pdfForms.find((p) => titlePattern.test(p.form_name));
-                      const venueForForm = employeeHomeVenue ? employeeHomeVenue.venue_name : undefined;
+                      const venueForForm = (!submitted?.form_name.includes('home-venue-assignment') && employeeHomeVenue) ? employeeHomeVenue.venue_name : undefined;
                       return (
                         <div
                           key={form.id}
