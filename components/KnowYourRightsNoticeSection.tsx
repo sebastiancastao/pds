@@ -12,7 +12,7 @@ const KNOW_YOUR_RIGHTS_PDF_URL = "/api/know-your-rights-notice";
 const PDF_JS_SCRIPT_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
 const PDF_JS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
 
-export function KnowYourRightsNoticeSection() {
+function KnowYourRightsNoticeSectionInner() {
   const viewerRef = useRef<HTMLDivElement | null>(null);
   const canvasRefs = useRef<Array<HTMLCanvasElement | null>>([]);
   const pdfDocumentRef = useRef<any>(null);
@@ -235,4 +235,9 @@ export function KnowYourRightsNoticeSection() {
       </div>
     </section>
   );
+}
+
+export function KnowYourRightsNoticeSection({ state }: { state?: string }) {
+  if (!state || state.toUpperCase() !== "CA") return null;
+  return <KnowYourRightsNoticeSectionInner />;
 }

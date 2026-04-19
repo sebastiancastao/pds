@@ -234,6 +234,9 @@ export default function AdminPdfFormsPage() {
   const [venueFormIds, setVenueFormIds] = useState<Set<string> | null>(null);
   const [venueFormsRefreshKey, setVenueFormsRefreshKey] = useState(0);
 
+  // Duplicate-title warning modal
+  const [duplicateTitleModal, setDuplicateTitleModal] = useState(false);
+
   // Send-to-users modal state
   const [sendModalForm, setSendModalForm] = useState<CustomForm | null>(null);
   const [employeeSearch, setEmployeeSearch] = useState('');
@@ -815,10 +818,14 @@ export default function AdminPdfFormsPage() {
     setSuccessMsg('');
   };
 
+  const isDuplicateTitle = () =>
+    forms.some(f => f.title.trim().toLowerCase() === title.trim().toLowerCase());
+
   const handleRegisterStateForm = async () => {
     setError('');
     setSuccessMsg('');
     if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
     const preset = STATE_FORM_PRESETS.find(p => p.code === selectedStatePreset);
     if (!preset) { setError('No state form selected.'); return; }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
@@ -897,6 +904,7 @@ export default function AdminPdfFormsPage() {
     setError('');
     setSuccessMsg('');
     if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
     const preset = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
     if (!preset) { setError('No packet form selected.'); return; }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
@@ -976,6 +984,7 @@ export default function AdminPdfFormsPage() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
 
     setUploading(true);
@@ -1047,6 +1056,7 @@ export default function AdminPdfFormsPage() {
     const file = homeVenueFileRef.current?.files?.[0];
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
+    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
     if (!pageVenueId) { setError('Please select a venue.'); return; }
     if (pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first.'); return; }
 
@@ -1185,6 +1195,34 @@ export default function AdminPdfFormsPage() {
 
   return (
     <>
+    {/* Duplicate-title warning modal */}
+    {duplicateTitleModal && (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+        <div className="bg-white rounded-2xl shadow-xl p-6 w-full max-w-sm mx-4">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0">
+              <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+            </div>
+            <h2 className="text-base font-semibold text-gray-900">Duplicate Form Name</h2>
+          </div>
+          <p className="text-sm text-gray-600 mb-2">
+            A form named <span className="font-semibold text-gray-900">&ldquo;{title.trim()}&rdquo;</span> already exists.
+          </p>
+          <p className="text-sm text-gray-600 mb-5">
+            Please add a date after the form name to keep forms distinct, for example:<br />
+            <span className="font-medium text-gray-800">&ldquo;{title.trim()} {new Date().getFullYear()}&rdquo;</span>
+          </p>
+          <button
+            onClick={() => setDuplicateTitleModal(false)}
+            className="w-full py-2 px-4 bg-amber-500 hover:bg-amber-600 text-white font-medium rounded-lg transition-colors text-sm"
+          >
+            OK, I&apos;ll update the name
+          </button>
+        </div>
+      </div>
+    )}
     <div className="min-h-screen bg-gray-50 py-10 px-4">
       <div className="max-w-3xl mx-auto">
         <div className="flex items-center justify-between mb-8">

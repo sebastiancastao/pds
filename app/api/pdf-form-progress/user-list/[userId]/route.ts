@@ -87,7 +87,7 @@ export async function GET(
 
     const { data: allForms, error } = await supabaseAdmin
       .from("pdf_form_progress")
-      .select("form_name, form_data, updated_at, form_date")
+      .select("id, form_name, form_data, updated_at, form_date")
       .eq("user_id", userId)
       .order("updated_at", { ascending: false });
 
@@ -101,7 +101,6 @@ export async function GET(
     }
 
     const MIN_FORM_DATA_LENGTH = 1000;
-    const seen = new Set<string>();
     const forms = [];
 
     for (const form of allForms) {
@@ -111,19 +110,14 @@ export async function GET(
       const isCustomForm = formName.startsWith("custom-form-");
       if (!isCustomForm && base64Data.length < MIN_FORM_DATA_LENGTH) continue;
 
-      // Deduplicate by normalized key (custom forms use their full name as the key)
-      const normalizedKey = isCustomForm
-        ? formName.toLowerCase()
-        : formName.toLowerCase().replace(/^(ca|ny|wi|az|tx|fl|il|oh|pa|nj)-/, "");
-      if (seen.has(normalizedKey)) continue;
-      seen.add(normalizedKey);
-
+      // Each record is a distinct form — no deduplication by name.
+      // Two forms with the same name for the same user are intentionally kept separate.
       forms.push({
+        id: form.id,
         form_name: formName,
         display_name: getDisplayName(formName),
         form_data: base64Data,
         updated_at: form.updated_at || "",
-        // Compatibility field for UIs expecting created_at.
         created_at: form.updated_at || "",
         form_date: form.form_date || null,
       });

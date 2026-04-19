@@ -64,20 +64,21 @@ export async function POST(request: NextRequest) {
       saveUserId = targetUserId;
     }
 
-    console.log('[SAVE API] Upserting form:', formName, 'for user:', saveUserId);
+    const resolvedFormName = formName;
 
-    // Use service-role client so RLS never blocks a valid submission.
+    console.log('[SAVE API] Upserting form:', resolvedFormName, 'for user:', saveUserId);
+
+    // Upsert on (user_id, form_name). Custom forms use "custom-form-{uuid}" as the
+    // form_name, so each distinct template has its own unique key regardless of title.
     const { error } = await supabaseAdmin
       .from('pdf_form_progress')
       .upsert({
         user_id: saveUserId,
-        form_name: formName,
+        form_name: resolvedFormName,
         form_data: formData,
         updated_at: new Date().toISOString(),
         ...(formDate ? { form_date: formDate } : {}),
-      }, {
-        onConflict: 'user_id,form_name',
-      });
+      }, { onConflict: 'user_id,form_name' });
 
     if (error) {
       console.error('[SAVE API] DB upsert error:', error);

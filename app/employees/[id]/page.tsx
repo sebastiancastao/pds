@@ -4,7 +4,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -111,6 +110,7 @@ type I9Documents = {
 };
 
 type PDFForm = {
+  id?: string;
   form_name: string;
   display_name: string;
   form_data: string; // base64
@@ -1101,8 +1101,6 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
-            <KnowYourRightsNoticeSection />
-
             {/* Personal Calendar */}
             {(() => {
               const today = new Date();
@@ -1736,7 +1734,7 @@ export default function WorkerProfilePage() {
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {pdfForms.map((form) => (
                             <div
-                              key={form.form_name}
+                              key={form.id || form.form_name}
                               className="border border-green-200 bg-green-50 rounded-xl p-4 hover:border-green-300 hover:shadow-md transition-all"
                             >
                               <div className="flex items-start justify-between mb-3">
@@ -1815,8 +1813,12 @@ export default function WorkerProfilePage() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
-                      const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
-                      const submitted = pdfForms.find(p => titlePattern.test(p.form_name));
+                      const submitted = pdfForms.find((p) => {
+                        if (p.form_name === `custom-form-${form.id}`) return true;
+                        // Backward compat: old submissions were saved as "Title Year"
+                        const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+                        return titlePattern.test(p.form_name);
+                      });
                       const isDirectlyAssigned = assignedFormIds.has(form.id);
                       const venueForForm = (!submitted?.form_name.includes('home-venue-assignment') && employeeHomeVenue) ? employeeHomeVenue.venue_name : undefined;
                       return (
