@@ -7,6 +7,7 @@ import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
+import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { getVenueAbbreviation } from "@/lib/utils";
 import "./dashboard-styles.css";
 
@@ -547,6 +548,36 @@ export default function DashboardPage() {
         console.log('[PAYMENTS] â Found', vendorPayments.length, 'vendor payments for event', event.event_name);
 
         const baseRate = eventPaymentSummary?.base_rate || 17.28;
+        const normalizeDivision = (division?: string | null) => (division || "").toString().toLowerCase().trim();
+        const isTrailersDivision = (division?: string | null) => normalizeDivision(division) === "trailers";
+        const isVendorDivision = (division?: string | null) => {
+          const normalized = normalizeDivision(division);
+          return normalized === "vendor" || normalized === "both";
+        };
+        const commissionPoolDollars =
+          Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
+          (Number(eventPaymentSummary?.net_sales || 0) * Number(eventPaymentSummary?.commission_pool_percent || 0)) ||
+          Number(eventPaymentSummary?.total_commissions || 0) ||
+          0;
+        const totalTips = Number(eventPaymentSummary?.total_tips || 0);
+        const commissionSharesByUser = distributePoolByHoursRule({
+          totalAmount: commissionPoolDollars,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || "").toString();
+            const actualHours = Number(payment.actual_hours || payment.actualHours || 0);
+            if (!paymentUserId || !isVendorDivision(payment?.users?.division) || actualHours <= 0) return [];
+            return [{ id: paymentUserId, hours: actualHours }];
+          }),
+        }).amountsById;
+        const tipsSharesByUser = distributePoolByHoursRule({
+          totalAmount: totalTips,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || "").toString();
+            const actualHours = Number(payment.actual_hours || payment.actualHours || 0);
+            if (!paymentUserId || isTrailersDivision(payment?.users?.division) || payment?.tips_deleted === true || actualHours <= 0) return [];
+            return [{ id: paymentUserId, hours: actualHours }];
+          }),
+        }).amountsById;
 
         // Initialize venue if not exists
         if (!paymentsByVenue[event.venue]) {
@@ -587,21 +618,36 @@ export default function DashboardPage() {
           });
 
           const adjustmentAmount = Number(payment.adjustment_amount || 0);
+          const actualHours = Number(payment.actual_hours || 0);
+          const regularPay = Number(payment.regular_pay || 0);
+          const totalFinalCommission = regularPay + Number(payment.commissions || 0);
+          const distributedCommissionShare = Number(commissionSharesByUser[payment.user_id] || 0);
+          const commissionDisplay =
+            !isTrailersDivision(user?.division) && actualHours > 0 && distributedCommissionShare > 0
+              ? distributedCommissionShare
+              : totalFinalCommission;
+          const tipDisplay = payment.tips_override != null
+            ? Number(payment.tips_override)
+            : payment.tips_deleted === true
+            ? 0
+            : Number(tipsSharesByUser[payment.user_id] || payment.tips || 0);
 
           return {
             userId: payment.user_id,
             firstName,
             lastName,
             email: user?.email || "N/A",
-            actualHours: Number(payment.actual_hours || 0),
+            actualHours,
             regularHours: Number(payment.regular_hours || 0),
-            regularPay: Number(payment.regular_pay || 0),
+            regularPay,
             overtimeHours: Number(payment.overtime_hours || 0),
             overtimePay: Number(payment.overtime_pay || 0),
             doubletimeHours: Number(payment.doubletime_hours || 0),
             doubletimePay: Number(payment.doubletime_pay || 0),
             commissions: Number(payment.commissions || 0),
+            commissionDisplay,
             tips: Number(payment.tips || 0),
+            tipDisplay,
             totalPay: Number(payment.total_pay || 0),
             adjustmentAmount,
             finalPay: Number(payment.total_pay || 0) + adjustmentAmount,
@@ -2950,10 +2996,10 @@ export default function DashboardPage() {
                                       <div className="text-sm font-medium text-green-600">${payment.doubletimePay.toFixed(2)}</div>
                                     </td>
                                     <td className="p-3">
-                                      <div className="text-sm font-medium text-purple-600">${payment.commissions.toFixed(2)}</div>
+                                      <div className="text-sm font-medium text-purple-600">${Number(payment.commissionDisplay ?? payment.commissions).toFixed(2)}</div>
                                     </td>
                                     <td className="p-3">
-                                      <div className="text-sm font-medium text-orange-600">${payment.tips.toFixed(2)}</div>
+                                      <div className="text-sm font-medium text-orange-600">${Number(payment.tipDisplay ?? payment.tips).toFixed(2)}</div>
                                     </td>
                                     <td className="p-3 text-right">
                                       <div className="text-sm font-bold text-gray-900">${payment.totalPay.toFixed(2)}</div>

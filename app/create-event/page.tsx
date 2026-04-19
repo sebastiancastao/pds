@@ -250,8 +250,8 @@ function CreateEventPageInner() {
                   required
                   className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300 bg-white"
                 >
-                  <option value="normal">Normal</option>
-                  <option value="special">Special</option>
+                  <option value="normal">Event Time Keeping</option>
+                  <option value="special">Non Event Time Sheet</option>
                 </select>
               </div>
             </div>
