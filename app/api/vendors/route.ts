@@ -37,6 +37,10 @@ function calculateDistance(
   return distance;
 }
 
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = createRouteHandlerClient({ cookies });
@@ -70,13 +74,12 @@ export async function GET(req: NextRequest) {
     }
 
     // Get venue coordinates and region from venue_reference table
-    const { data: venueData, error: venueError } = await supabaseAdmin
+    const { data: venueMatches, error: venueError } = await supabaseAdmin
       .from('venue_reference')
-      .select('latitude, longitude, city, state, region_id')
-      .eq('venue_name', venueName)
-      .single();
+      .select('id, venue_name, latitude, longitude, city, state, region_id')
+      .eq('venue_name', venueName);
 
-    if (venueError || !venueData) {
+    if (venueError || !Array.isArray(venueMatches) || venueMatches.length === 0) {
       console.error('Venue not found in venue_reference:', venueName, venueError);
       return NextResponse.json({
         error: 'Venue not found in venue_reference table. Please ensure the venue exists with coordinates.',
@@ -84,6 +87,10 @@ export async function GET(req: NextRequest) {
         details: venueError
       }, { status: 404 });
     }
+
+    const venueData =
+      venueMatches.find((candidate: any) => normalizeText(candidate?.venue_name) === normalizeText(venueName)) ||
+      venueMatches[0];
 
     const { latitude: venueLat, longitude: venueLon, region_id: venueRegionId } = venueData;
 
@@ -149,6 +156,27 @@ export async function GET(req: NextRequest) {
     if (error) {
       console.error('SUPABASE SELECT ERROR:', error);
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
+    }
+
+    const vendorIds = (vendors || []).map((vendor: any) => String(vendor?.id || '')).filter(Boolean);
+    const assignedToVenueIds = new Set<string>();
+
+    const venueId = String((venueData as any)?.id || '').trim();
+    if (venueId && vendorIds.length > 0) {
+      const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .select('vendor_id')
+        .eq('venue_id', venueId)
+        .in('vendor_id', vendorIds);
+
+      if (venueAssignmentsError) {
+        console.error('Error loading vendor venue assignments:', venueAssignmentsError);
+      } else {
+        (venueAssignments || []).forEach((assignment: any) => {
+          const vendorId = String(assignment?.vendor_id || '').trim();
+          if (vendorId) assignedToVenueIds.add(vendorId);
+        });
+      }
     }
 
     // Calculate distance for vendors with coordinates, and sort by proximity (closest first)
@@ -250,6 +278,7 @@ export async function GET(req: NextRequest) {
             profile_photo_url: profilePhotoUrl
           },
           region_id: vendor.profiles.region_id || null,
+          isOutOfVenue: !assignedToVenueIds.has(String(vendor.id || '')),
           distance: distance !== null ? Math.round(distance * 10) / 10 : null, // Round to 1 decimal place or null
           hasCoordinates: hasCoordinates
         };
