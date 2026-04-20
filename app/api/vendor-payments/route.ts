@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decrypt } from '@/lib/encryption';
+import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -392,15 +393,24 @@ export async function GET(req: NextRequest) {
       }, 0);
       const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : vendorIds.length;
 
-      // Equal split of commission pool among eligible vendors (same as event-dashboard)
-      const perVendorCommissionShare = vendorCountForCommission > 0 ? commissionPool / vendorCountForCommission : 0;
-
-      // Total eligible hours for tips proration (exclude trailers)
-      const totalEligibleHours = vendorIds.reduce((sum, uid) => {
-        const div = divisionById[uid] || '';
-        if (div === 'trailers') return sum;
-        return sum + Number(totalsHours[uid] || 0);
-      }, 0);
+      const commissionSharesByUser = distributePoolByHoursRule({
+        totalAmount: commissionPool,
+        members: vendorIds.flatMap((uid) => {
+          const div = divisionById[uid] || '';
+          const hours = Number(totalsHours[uid] || 0);
+          if (div === 'trailers' || hours <= 0) return [];
+          return [{ id: uid, hours }];
+        }),
+      }).amountsById;
+      const tipsSharesByUser = distributePoolByHoursRule({
+        totalAmount: totalTips,
+        members: vendorIds.flatMap((uid) => {
+          const div = divisionById[uid] || '';
+          const hours = Number(totalsHours[uid] || 0);
+          if (div === 'trailers' || hours <= 0) return [];
+          return [{ id: uid, hours }];
+        }),
+      }).amountsById;
 
       // Rest break helper (matches event-dashboard)
       const getRestBreak = (hours: number, st: string) => {
@@ -416,24 +426,22 @@ export async function GET(req: NextRequest) {
         const hours = Number(totalsHours[uid] || 0);
         const memberDivision = divisionById[uid] || '';
         const isTrailers = memberDivision === 'trailers';
+        const commissionShare = isTrailers ? 0 : Number(commissionSharesByUser[uid] || 0);
 
 
         // Ext Amt on Reg Rate: always baseRate * hours * 1.5 for all states
         const extAmtOnRegRate = hours * baseRate * 1.5;
 
-        const commissions = !isTrailers && vendorCountForCommission > 0 && hours > 0
-          ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+        const commissions = !isTrailers && commissionShare > 0 && hours > 0
+          ? Math.max(0, Math.max(extAmtOnRegRate, commissionShare) - extAmtOnRegRate)
           : 0;
 
-        // Total Final Commission = Ext Amt + Commission; minimum $150
+        // Total Final Commission matches the event dashboard: max(ext @ rate, distributed pool share)
         const totalFinalCommission = hours > 0
-          ? Math.max(150, extAmtOnRegRate + commissions)
+          ? (isTrailers ? extAmtOnRegRate : Math.max(extAmtOnRegRate, commissionShare))
           : 0;
 
-        // Tips prorated by hours, excluding trailers (same as event-dashboard)
-        const tips = !isTrailers && totalEligibleHours > 0
-          ? (totalTips * hours) / totalEligibleHours
-          : 0;
+        const tips = !isTrailers ? Number(tipsSharesByUser[uid] || 0) : 0;
 
         const restBreak = getRestBreak(hours, eventState);
         const totalPay = totalFinalCommission + tips + restBreak;
@@ -448,6 +456,7 @@ export async function GET(req: NextRequest) {
           regular_pay: extAmtOnRegRate,
           overtime_pay: 0,
           doubletime_pay: 0,
+          commission_share: commissionShare,
           commissions,
           tips,
           total_pay: totalPay,

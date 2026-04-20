@@ -188,10 +188,16 @@ export async function POST(
 
               <div class="pay-section">
                 <h3 style="margin-top: 0; color: #111827;">Additional Earnings</h3>
-                ${Number(member.commission) > 0 ? `
+                ${Number(member.commissionPay) > 0 ? `
                 <div class="pay-item">
-                  <span class="pay-label">Commission</span>
-                  <span class="pay-value positive">$${member.commission}</span>
+                  <span class="pay-label">Commission Pay</span>
+                  <span class="pay-value positive">$${member.commissionPay}</span>
+                </div>
+                ` : ''}
+                ${Number(member.variableIncentive) > 0 ? `
+                <div class="pay-item">
+                  <span class="pay-label">Variable Incentive</span>
+                  <span class="pay-value positive">$${member.variableIncentive}</span>
                 </div>
                 ` : ''}
                 ${Number(member.tips) > 0 ? `

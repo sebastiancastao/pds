@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -19,6 +20,8 @@ const addGatePhoneLeadHours = (hours: number): number =>
 const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 const roundHoursForDebug = (value: number): number =>
   Number((Number.isFinite(value) ? value : 0).toFixed(6));
+const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
+const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
 
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
@@ -154,25 +157,38 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: vpError.message }, { status: 500 });
     }
 
-    // Fetch vendor counts per event (to compute commission = adj_gross / num_vendors)
+    // Fetch all vendor payments in those events so we can distribute pools with the short-shift rule.
     const { data: allVendorPayments, error: allVpError } = await supabaseAdmin
       .from('event_vendor_payments')
-      .select('event_id, user_id')
+      .select(`
+        event_id,
+        user_id,
+        effective_hours,
+        actual_hours,
+        worked_hours,
+        regular_hours,
+        overtime_hours,
+        doubletime_hours,
+        users:user_id (
+          division
+        )
+      `)
       .in('event_id', eventIds);
 
     if (allVpError) {
       return NextResponse.json({ error: allVpError.message }, { status: 500 });
     }
 
-    const vendorCountByEvent: Record<string, number> = {};
+    const allVendorPaymentsByEvent: Record<string, any[]> = {};
     for (const vp of allVendorPayments || []) {
-      vendorCountByEvent[vp.event_id] = (vendorCountByEvent[vp.event_id] || 0) + 1;
+      if (!allVendorPaymentsByEvent[vp.event_id]) allVendorPaymentsByEvent[vp.event_id] = [];
+      allVendorPaymentsByEvent[vp.event_id].push(vp);
     }
 
     // Fetch event-level payment summaries (for net_sales, commission pool dollars)
     const { data: eventPayments, error: epError } = await supabaseAdmin
       .from('event_payments')
-      .select('event_id, net_sales, commission_pool_dollars, commission_pool_percent')
+      .select('event_id, net_sales, commission_pool_dollars, commission_pool_percent, total_tips')
       .in('event_id', eventIds);
 
     if (epError) {
@@ -201,6 +217,36 @@ export async function GET(req: NextRequest) {
       epByEvent[ep.event_id] = ep;
     }
 
+    const distributionByEvent: Record<string, {
+      commissionSharesByUser: Record<string, number>;
+      tipsSharesByUser: Record<string, number>;
+    }> = {};
+    for (const ev of events || []) {
+      const eventRows = allVendorPaymentsByEvent[ev.id] || [];
+      const ep = epByEvent[ev.id] || {};
+      const netSales = Number(ep.net_sales || 0);
+      const commissionPoolDollars = Number(ep.commission_pool_dollars || 0) > 0
+        ? Number(ep.commission_pool_dollars || 0)
+        : netSales * Number(ev.commission_pool || 0);
+      const totalTipsEvent = Number(ep.total_tips || 0) || Number(ev.tips || 0);
+      const eligibleMembers = eventRows.flatMap((row: any) => {
+        const paymentUserId = (row.user_id || '').toString();
+        const actualHours = getEffectiveHours(row);
+        if (!paymentUserId || isTrailersDivision(row?.users?.division) || actualHours <= 0) return [];
+        return [{ id: paymentUserId, hours: actualHours }];
+      });
+      distributionByEvent[ev.id] = {
+        commissionSharesByUser: distributePoolByHoursRule({
+          totalAmount: commissionPoolDollars,
+          members: eligibleMembers,
+        }).amountsById,
+        tipsSharesByUser: distributePoolByHoursRule({
+          totalAmount: totalTipsEvent,
+          members: eligibleMembers,
+        }).amountsById,
+      };
+    }
+
     const adjByEvent: Record<string, any> = {};
     for (const adj of adjustments || []) {
       adjByEvent[adj.event_id] = adj;
@@ -225,21 +271,16 @@ export async function GET(req: NextRequest) {
           });
         }
 
-        const tips = Number(vp.tips || 0);
+        const storedTips = Number(vp.tips || 0);
         const totalPay = Number(vp.total_pay || 0);
         const adjustmentAmount = Number(adj.adjustment_amount || 0);
         const finalPay = totalPay + adjustmentAmount;
-
-        // Commission = (Adj. Gross * commission_pool%) / # of vendors
-        // Use commission_pool_dollars if available; otherwise recalculate using the
-        // authoritative rate from events.commission_pool (fraction, e.g. 0.03 for 3%)
         const netSales = Number(ep.net_sales || 0);
         const commissionPoolDollars = Number(ep.commission_pool_dollars || 0);
-        const adjGrossPool = commissionPoolDollars > 0
-          ? commissionPoolDollars
-          : netSales * Number(ev.commission_pool || 0);
-        const numVendors = vendorCountByEvent[ev.id] || 1;
-        const commissions = numVendors > 0 ? adjGrossPool / numVendors : 0;
+        const distributedCommission = Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0);
+        const distributedTips = Number(distributionByEvent[ev.id]?.tipsSharesByUser?.[userId] || 0);
+        const commissions = distributedCommission;
+        const resolvedTips = distributedTips > 0 ? distributedTips : storedTips;
 
         return {
           eventId: ev.id,
@@ -253,7 +294,7 @@ export async function GET(req: NextRequest) {
           overtimePay: Number(vp.overtime_pay || 0),
           doubletimePay: Number(vp.doubletime_pay || 0),
           commissions,
-          tips,
+          tips: resolvedTips,
           totalPay,
           adjustmentAmount,
           adjustmentType: adj.adjustment_type || null,

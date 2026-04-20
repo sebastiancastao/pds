@@ -531,6 +531,9 @@ export async function GET(
           first_name,
           last_name,
           phone,
+          city,
+          state,
+          region_id,
           latitude,
           longitude
         )
@@ -553,6 +556,52 @@ export async function GET(
     const teamUserIds = (teamMembers || [])
       .map((member: any) => (member?.vendor_id || member?.users?.id || '').toString())
       .filter((id: string) => id.length > 0);
+
+    const outOfVenueVendorIds = new Set<string>();
+    if (eventData?.venue && teamUserIds.length > 0) {
+      const { data: venueMatches, error: venueError } = await supabaseAdmin
+        .from('venue_reference')
+        .select('id, city, state')
+        .eq('venue_name', eventData.venue);
+
+      if (venueError) {
+        console.error('Error loading venue assignment reference for team members:', venueError);
+      } else if (Array.isArray(venueMatches) && venueMatches.length > 0) {
+        const eventCity = normalizeText(eventData.city);
+        const eventState = normalizeText(eventData.state);
+        const matchedVenue =
+          venueMatches.find((candidate: any) => {
+            const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+            const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
+            return cityMatches && stateMatches;
+          }) || venueMatches[0];
+
+        const venueId = String((matchedVenue as any)?.id || '').trim();
+        if (venueId) {
+          const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
+            .from('vendor_venue_assignments')
+            .select('vendor_id')
+            .eq('venue_id', venueId)
+            .in('vendor_id', teamUserIds);
+
+          if (venueAssignmentsError) {
+            console.error('Error loading vendor venue assignments for team members:', venueAssignmentsError);
+          } else {
+            const assignedToVenueIds = new Set(
+              (venueAssignments || [])
+                .map((assignment: any) => String(assignment?.vendor_id || '').trim())
+                .filter(Boolean)
+            );
+
+            for (const vendorId of teamUserIds) {
+              if (!assignedToVenueIds.has(vendorId)) {
+                outOfVenueVendorIds.add(vendorId);
+              }
+            }
+          }
+        }
+      }
+    }
 
     let hasAttestationByUserId = new Map<string, boolean>();
     let latestClockOutByUserId = new Map<
@@ -731,6 +780,7 @@ export async function GET(
       return {
         ...member,
         distance,
+        isOutOfVenue: memberUserId ? outOfVenueVendorIds.has(memberUserId) : false,
         has_attestation: hasSubmittedAttestation,
         attestation_status: attestationStatus,
         users: {

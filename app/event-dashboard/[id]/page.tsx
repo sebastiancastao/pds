@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
+import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 
@@ -331,6 +332,7 @@ export default function EventDashboardPage() {
   const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
   const [tipsOverridesLoaded, setTipsOverridesLoaded] = useState(false);
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
+  const [savedEventPaymentSummary, setSavedEventPaymentSummary] = useState<any | null>(null);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
   const [locationLeaders, setLocationLeaders] = useState<Record<string, string>>({});
@@ -413,6 +415,7 @@ export default function EventDashboardPage() {
   const [pendingTimesheetEditUid, setPendingTimesheetEditUid] = useState<string | null>(null);
   const [timesheetEditNote, setTimesheetEditNote] = useState("");
   const [timesheetEditSignature, setTimesheetEditSignature] = useState("");
+  const [exportingTimesheetPdf, setExportingTimesheetPdf] = useState(false);
   const [signatureIsEmpty, setSignatureIsEmpty] = useState(true);
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
@@ -617,14 +620,17 @@ export default function EventDashboardPage() {
         id,
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
-        distance: null,
+        distance: member?.distance ?? null,
         status: String(member?.status || ""),
         isExistingMember: true,
+        isOutOfVenue: Boolean(member?.isOutOfVenue),
         profiles: {
           first_name: String(member?.users?.profiles?.first_name || ""),
           last_name: String(member?.users?.profiles?.last_name || ""),
           phone: String(member?.users?.profiles?.phone || ""),
           city: member?.users?.profiles?.city || null,
+          state: member?.users?.profiles?.state || null,
+          region_id: member?.users?.profiles?.region_id || null,
         },
       });
     }
@@ -734,6 +740,10 @@ export default function EventDashboardPage() {
   const isVendorDivision = (division?: string | null) => {
     const normalized = (division || '').toString().toLowerCase();
     return normalized === 'vendor' || normalized === 'both';
+  };
+  const isTrailersDivision = (division?: string | null) => {
+    const normalized = (division || '').toString().toLowerCase();
+    return normalized === 'trailers';
   };
 
   const hasTimesheetForMember = (member: any) => {
@@ -1209,13 +1219,17 @@ export default function EventDashboardPage() {
         id: String(member?.vendor_id || ""),
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
-        distance: null,
+        distance: member?.distance ?? null,
         status: String(member?.status || ""),
         isExistingMember: true,
+        isOutOfVenue: Boolean(member?.isOutOfVenue),
         profiles: {
           first_name: String(member?.users?.profiles?.first_name || ""),
           last_name: String(member?.users?.profiles?.last_name || ""),
           phone: String(member?.users?.profiles?.phone || ""),
+          city: member?.users?.profiles?.city || null,
+          state: member?.users?.profiles?.state || null,
+          region_id: member?.users?.profiles?.region_id || null,
         },
       }));
 
@@ -2508,20 +2522,15 @@ export default function EventDashboardPage() {
   const buildPaymentExportRows = (): Record<string, string | number>[] => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
     const baseRate = getBaseRateForState(eventState);
-    const netSales = sharesData?.netSales || 0;
-    const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-    const totalCommissionPool = netSales * poolPercent;
-    const perVendorCommissionShare = vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
+    const totalCommissionPool = resolvedCommissionPoolDollars;
     const totalTips = Number(tips) || 0;
 
-    const useEqualTipsExport = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
-    const tipsEligiblePoolExport = teamMembers.reduce((acc: number, member: any) => {
-      if (member?.users?.division === "trailers") return acc;
-      const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
-      if (!uid) return acc;
-      if (useEqualTipsExport) return acc + 1;
-      return acc + getDisplayedWorkedMs(uid) / (1000 * 60 * 60);
-    }, 0);
+    const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid))
+    );
+    const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid))
+    );
 
     return filteredTeamMembers.map((member: any) => {
       const profile = member?.users?.profiles;
@@ -2531,23 +2540,27 @@ export default function EventDashboardPage() {
       const division = (member?.users?.division || "").toString();
       const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
       const totalMs = getDisplayedWorkedMs(uid);
-      const actualHours = addLongShiftBonus(totalMs / (1000 * 60 * 60));
+      const actualHours = getActualHoursFromWorkedMs(totalMs);
       const hoursHHMM = formatHoursFromMs(totalMs);
       const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
-      const isTrailersDivision = division === "trailers";
-      const totalFinalCommission = isTrailersDivision
-        ? extAmtOnRegRate
-        : Math.max(extAmtOnRegRate, perVendorCommissionShare);
-      const commissionAmount =
-        !isTrailersDivision && actualHours > 0 && vendorCount > 0
-          ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
-          : 0;
+      const trailersDivision = isTrailersDivision(division);
+      const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+      const {
+        commissionAmount,
+        displayedCommissionPay,
+        totalFinalCommission,
+        variableIncentive,
+      } = getCommissionBreakdown({
+        uid,
+        division,
+        actualHours,
+        extAmtOnRegRate,
+        distributedCommissionShare,
+      });
       const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
       const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
       const proratedTips =
-        !isTrailersDivision && tipsEligiblePoolExport > 0
-          ? (useEqualTipsExport ? totalTips / tipsEligiblePoolExport : (totalTips * actualHours) / tipsEligiblePoolExport)
-          : 0;
+        !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
       const restBreak = getRestBreakAmount(actualHours, eventState);
       const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
       const totalGrossPay = totalFinalCommission + proratedTips + restBreak + otherAmount;
@@ -2560,8 +2573,8 @@ export default function EventDashboardPage() {
         "Loaded Rate": money(finalCommissionRate),
         "Hours (HH:MM)": actualHours > 0 ? hoursHHMM : "0:00",
         "Hours (Decimal)": Number(actualHours.toFixed(2)),
-        "Commission Pay": money(perVendorCommissionShare),
-        "Variable Incentive": money(Math.max(0, extAmtOnRegRate - perVendorCommissionShare)),
+        "Commission Pay": money(displayedCommissionPay),
+        "Variable Incentive": money(variableIncentive),
         "Ext Amt on Reg Rate": money(extAmtOnRegRate),
         "Commission Amt": money(commissionAmount),
         "Total Final Commission": money(totalFinalCommission),
@@ -2714,8 +2727,10 @@ export default function EventDashboardPage() {
       if (!res.ok) return;
       const json = await res.json();
       const eventData = json.paymentsByEvent?.[eventId];
+      if (eventData?.eventPayment) {
+        setSavedEventPaymentSummary(eventData.eventPayment);
+      }
       const vendorRows: any[] = eventData?.vendorPayments || [];
-      if (vendorRows.length === 0) return;
       const overrides: Record<string, number | null> = {};
       for (const row of vendorRows) {
         const uid = (row.user_id || '').toString();
@@ -2746,6 +2761,9 @@ export default function EventDashboardPage() {
       if (!res.ok) return;
       const json = await res.json();
       const eventData = json.paymentsByEvent?.[eventId];
+      if (eventData?.eventPayment) {
+        setSavedEventPaymentSummary(eventData.eventPayment);
+      }
       const vendorRows: any[] = eventData?.vendorPayments || [];
       const overrides: Record<string, number | null> = {};
       for (const row of vendorRows) {
@@ -3094,14 +3112,40 @@ export default function EventDashboardPage() {
     return formatTaxAmountInput(totalSales, getDerivedTaxAmount(totalSales, Number(stateTaxRate) || 0));
   }, [ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
-  // Calculate commission amount - updates reactively when inputs change
-  const calculatedCommission = useMemo(() => {
-    if (!sharesData) return 0;
-    const pool = commissionPool !== ""
+  const resolvedCommissionNetSales = useMemo(() => {
+    const liveNetSales = Number(sharesData?.netSales || 0);
+    if (liveNetSales > 0) return liveNetSales;
+    return Number(savedEventPaymentSummary?.net_sales || 0);
+  }, [sharesData, savedEventPaymentSummary?.net_sales]);
+
+  const resolvedCommissionPoolPercent = useMemo(() => {
+    const configuredPoolPercent = commissionPool !== ""
       ? Number(commissionPool)
-      : (event?.commission_pool || 0);
-    return sharesData.netSales * pool;
-  }, [sharesData, commissionPool, event?.commission_pool]);
+      : Number(event?.commission_pool || 0);
+    if (configuredPoolPercent > 0) return configuredPoolPercent;
+    return Number(savedEventPaymentSummary?.commission_pool_percent || 0) || 0;
+  }, [commissionPool, event?.commission_pool, savedEventPaymentSummary?.commission_pool_percent]);
+
+  const resolvedCommissionPoolDollars = useMemo(() => {
+    const liveCommissionPool = resolvedCommissionNetSales * resolvedCommissionPoolPercent;
+    if (liveCommissionPool > 0) return liveCommissionPool;
+
+    const savedPoolDollars = Number(savedEventPaymentSummary?.commission_pool_dollars || 0);
+    if (savedPoolDollars > 0) return savedPoolDollars;
+
+    const savedNetSales = Number(savedEventPaymentSummary?.net_sales || 0);
+    const savedPoolPercent = Number(savedEventPaymentSummary?.commission_pool_percent || 0) || 0;
+    return savedNetSales > 0 && savedPoolPercent > 0 ? savedNetSales * savedPoolPercent : 0;
+  }, [
+    resolvedCommissionNetSales,
+    resolvedCommissionPoolPercent,
+    savedEventPaymentSummary?.commission_pool_dollars,
+    savedEventPaymentSummary?.net_sales,
+    savedEventPaymentSummary?.commission_pool_percent,
+  ]);
+
+  // Calculate commission amount - updates reactively when inputs change
+  const calculatedCommission = useMemo(() => resolvedCommissionPoolDollars, [resolvedCommissionPoolDollars]);
 
   const commissionPerVendor = useMemo(() => {
     return vendorCount > 0 ? (calculatedCommission / vendorCount) : 0;
@@ -3423,6 +3467,92 @@ export default function EventDashboardPage() {
     return getDisplayedWorkedMs(uid);
   };
 
+  const getActualHoursFromWorkedMs = (totalMs: number, roundToHundredths = false): number => {
+    const rawHours = totalMs / (1000 * 60 * 60);
+    const normalizedHours = roundToHundredths ? Math.round(rawHours * 100) / 100 : rawHours;
+    return addLongShiftBonus(normalizedHours);
+  };
+
+  const buildCommissionSharesByUser = (
+    totalAmount: number,
+    getHoursForUser: (uid: string) => number
+  ): Record<string, number> => {
+    return distributePoolByHoursRule({
+      totalAmount,
+      members: teamMembers.flatMap((member: any) => {
+        const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+        const actualHours = getHoursForUser(uid);
+        if (!uid || isTrailersDivision(member?.users?.division) || commissionsOverrides[uid] === null || actualHours <= 0) return [];
+        return [{ id: uid, hours: actualHours }];
+      }),
+    }).amountsById;
+  };
+
+  const buildTipsSharesByUser = (
+    totalAmount: number,
+    getHoursForUser: (uid: string) => number
+  ): Record<string, number> => {
+    return distributePoolByHoursRule({
+      totalAmount,
+      members: teamMembers.flatMap((member: any) => {
+        const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+        const actualHours = getHoursForUser(uid);
+        if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
+        return [{ id: uid, hours: actualHours }];
+      }),
+    }).amountsById;
+  };
+
+  const getCommissionBreakdown = ({
+    uid,
+    division,
+    actualHours,
+    extAmtOnRegRate,
+    distributedCommissionShare,
+  }: {
+    uid: string;
+    division?: string | null;
+    actualHours: number;
+    extAmtOnRegRate: number;
+    distributedCommissionShare: number;
+  }) => {
+    const trailersDivision = isTrailersDivision(division);
+    const commissionOverride = commissionsOverrides[uid];
+    const rawTotalFinalCommission = trailersDivision
+      ? extAmtOnRegRate
+      : Math.max(extAmtOnRegRate, distributedCommissionShare);
+    const rawCommissionAmount =
+      !trailersDivision && actualHours > 0 && distributedCommissionShare > 0
+        ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
+        : 0;
+    const commissionAmount = commissionOverride === null
+      ? 0
+      : commissionOverride !== undefined
+      ? commissionOverride
+      : rawCommissionAmount;
+    const totalFinalCommission = extAmtOnRegRate + commissionAmount;
+    const displayedCommissionPay =
+      !trailersDivision && commissionOverride !== null && actualHours > 0
+        ? Number(distributedCommissionShare || 0)
+        : 0;
+    const usesPoolShareBreakdown =
+      !trailersDivision &&
+      commissionOverride !== null &&
+      actualHours > 0;
+    const variableIncentive = usesPoolShareBreakdown
+      ? Math.max(0, totalFinalCommission - displayedCommissionPay)
+      : 0;
+
+    return {
+      commissionAmount,
+      commissionOverride,
+      displayedCommissionPay,
+      totalFinalCommission,
+      trailersDivision,
+      variableIncentive,
+    };
+  };
+
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -3441,32 +3571,22 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const currentShares = sharesData;
-      const netSales = sharesData?.netSales || 0;
-      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-      const totalCommissionPool = netSales * poolPercent;
+      const netSales = resolvedCommissionNetSales;
+      const poolPercent = resolvedCommissionPoolPercent;
+      const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
-      const useEqualTips = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
-
-      // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
-      const tipsEligiblePool = teamMembers.reduce((acc: number, member: any) => {
-        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const memberDivision = member.users?.division;
-        if (memberDivision === 'trailers') return acc;
-        if (tipsOverrides[uid] === null) return acc; // tips deleted for this user
-        if (useEqualTips) return acc + 1;
-        const ms = getDisplayedWorkedMs(uid);
-        return acc + (Math.round((ms / (1000 * 60 * 60)) * 100) / 100);
-      }, 0);
-
-      const perVendorCommissionShare =
-        vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
+      const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
+        getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+      );
+      const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
+        getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+      );
 
       // Build vendor payments array using the same UI hour calculation.
       const vendorPayments = teamMembers.map((member: any) => {
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getDisplayedWorkedMs(uid);
-        const actualHours = addLongShiftBonus(Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100);
+        const actualHours = getActualHoursFromWorkedMs(totalMs, true);
         const memberDivision = member.users?.division;
 
         // No OT/DT logic in Payment tab
@@ -3475,33 +3595,31 @@ export default function EventDashboardPage() {
         const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
-        const isTrailersDivision = memberDivision === 'trailers';
+        const trailersDivision = isTrailersDivision(memberDivision);
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
         const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
+        const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const rawTotalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
-        const rawCommissionAmount =
-          !isTrailersDivision && actualHours > 0 && vendorCount > 0
-            ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
-            : 0;
-        const commissionOverride = commissionsOverrides[uid];
-        const commissionAmount = commissionOverride === null
-          ? 0
-          : commissionOverride !== undefined
-          ? commissionOverride
-          : rawCommissionAmount;
+        const {
+          commissionAmount,
+          commissionOverride,
+        } = getCommissionBreakdown({
+          uid,
+          division: memberDivision,
+          actualHours,
+          extAmtOnRegRate,
+          distributedCommissionShare,
+        });
         const tipsOverride = tipsOverrides[uid];
         const proratedTips = tipsOverride === null
           ? 0 // tips deleted for this user
           : tipsOverride !== undefined
           ? tipsOverride // manual override
-          : (!isTrailersDivision && tipsEligiblePool > 0
-            ? (useEqualTips ? totalTips / tipsEligiblePool : (totalTips * actualHours) / tipsEligiblePool)
-            : 0);
+          : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
 
@@ -3577,30 +3695,20 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const currentShares = sharesData;
-      const netSales = sharesData?.netSales || 0;
-      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-      const totalCommissionPool = netSales * poolPercent;
+      const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
-
-      const useEqualTipsEmail = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
-      const tipsEligiblePoolEmail = teamMembers.reduce((acc: number, member: any) => {
-        const memberDivision = member.users?.division;
-        if (memberDivision === 'trailers') return acc;
-        if (useEqualTipsEmail) return acc + 1;
-        const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
-        const ms = getMealDeductedMsForSave(uid);
-        return acc + (ms / (1000 * 60 * 60));
-      }, 0);
-
-      const perVendorCommissionShare =
-        vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
+      const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
+        getActualHoursFromWorkedMs(getMealDeductedMsForSave(uid))
+      );
+      const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
+        getActualHoursFromWorkedMs(getMealDeductedMsForSave(uid))
+      );
 
       const payrollData = teamMembers.map((member: any) => {
         const profile = member.users?.profiles;
         const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
         const totalMs = getMealDeductedMsForSave(uid);
-        const actualHours = addLongShiftBonus(totalMs / (1000 * 60 * 60));
+        const actualHours = getActualHoursFromWorkedMs(totalMs);
         const memberDivision = member.users?.division;
 
         // Calculate pay
@@ -3609,22 +3717,28 @@ export default function EventDashboardPage() {
         const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
-        const isTrailersDivision = memberDivision === 'trailers';
+        const trailersDivision = isTrailersDivision(memberDivision);
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
         const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
+        const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare);
-        const commissionAmount =
-          !isTrailersDivision && actualHours > 0 && vendorCount > 0
-            ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
-            : 0;
-        const proratedTips = !isTrailersDivision && tipsEligiblePoolEmail > 0
-          ? (useEqualTipsEmail ? totalTips / tipsEligiblePoolEmail : (totalTips * actualHours) / tipsEligiblePoolEmail)
-          : 0;
+        const {
+          commissionAmount,
+          displayedCommissionPay,
+          totalFinalCommission,
+          variableIncentive,
+        } = getCommissionBreakdown({
+          uid,
+          division: memberDivision,
+          actualHours,
+          extAmtOnRegRate,
+          distributedCommissionShare,
+        });
+        const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
         const adjustment = adjustments[uid] || 0;
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak + adjustment;
@@ -3639,7 +3753,8 @@ export default function EventDashboardPage() {
           overtimePay: formatPayrollMoney(overtimePay),
           doubletimeHours: doubletimeHours.toFixed(2),
           doubletimePay: formatPayrollMoney(doubletimePay),
-          commission: formatPayrollMoney(commissionAmount),
+          commissionPay: formatPayrollMoney(displayedCommissionPay),
+          variableIncentive: formatPayrollMoney(variableIncentive),
           tips: formatPayrollMoney(proratedTips),
           restBreak: formatPayrollMoney(restBreak),
           adjustment: formatPayrollMoney(adjustment),
@@ -5786,7 +5901,59 @@ export default function EventDashboardPage() {
 
   <div className="space-y-6">
     <div className="flex items-center justify-between">
-      <h2 className="text-2xl font-bold">TimeSheet</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-2xl font-bold">TimeSheet</h2>
+        {userRole === "exec" && (
+          <button
+            onClick={async () => {
+              if (exportingTimesheetPdf) return;
+              setExportingTimesheetPdf(true);
+              try {
+                const token = await getSessionToken();
+                const res = await fetch(`/api/events/${eventId}/timesheet-pdf`, {
+                  headers: {
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                  },
+                });
+                if (!res.ok) {
+                  const data = await res.json().catch(() => ({}));
+                  setMessage(data?.error || "Failed to export PDF.");
+                  return;
+                }
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                const cd = res.headers.get("content-disposition") || "";
+                const match = cd.match(/filename="([^"]+)"/);
+                a.download = match ? match[1] : "timesheet.pdf";
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                setMessage("Network error exporting PDF.");
+              } finally {
+                setExportingTimesheetPdf(false);
+              }
+            }}
+            disabled={exportingTimesheetPdf}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg transition-colors"
+          >
+            {exportingTimesheetPdf ? (
+              <>
+                <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Exporting…
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                </svg>
+                Export PDF
+              </>
+            )}
+          </button>
+        )}
+      </div>
       <div className="text-sm text-gray-500 text-right">
         <div className="font-medium text-gray-700">
           Vendors: {assignedVendorCount}
@@ -6218,7 +6385,19 @@ export default function EventDashboardPage() {
                     </svg>
                   </div>
                   <div className="text-3xl font-bold text-indigo-900">
-                    ${formatPayrollMoney(commissionPerVendor)}
+                    {(() => {
+                      const totalPool = resolvedCommissionPoolDollars;
+                      if (totalPool <= 0 || vendorCount === 0) return `$${formatPayrollMoney(commissionPerVendor)}`;
+                      const commShares = buildCommissionSharesByUser(totalPool, (uid) =>
+                        getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+                      );
+                      let fullShiftAmount = 0;
+                      for (const [uid, amount] of Object.entries(commShares)) {
+                        const hrs = getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true);
+                        if (hrs >= 8) { fullShiftAmount = amount; break; }
+                      }
+                      return `$${formatPayrollMoney(fullShiftAmount || commissionPerVendor)}`;
+                    })()}
                   </div>
                   <div className="text-xs text-indigo-600 mt-1">
                     {vendorCount} vendor{vendorCount === 1 ? '' : 's'} with timesheets
@@ -6275,8 +6454,8 @@ export default function EventDashboardPage() {
                         <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Regular Rate">Reg</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Per Vendor">Commission Pay</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Commission Pay - Ext @ Reg)">Variable Incentive</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Pay">Commission Pay</th>
+                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Ext @ Reg above Commission Pay)">Variable Incentive</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
                         {!hideRestBreakColumn && (
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
@@ -6294,16 +6473,14 @@ export default function EventDashboardPage() {
                           </td>
                         </tr>
                       ) : (() => {
-                        const useEqualTipsUI = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
-                        // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
-                        const tipsEligiblePoolUI = teamMembers.reduce((acc: number, m: any) => {
-                          const mDivision = m.users?.division;
-                          if (mDivision === 'trailers') return acc;
-                          const mUid = (m.user_id || m.vendor_id || m.users?.id || '').toString();
-                          if (tipsOverrides[mUid] === null) return acc; // tips deleted
-                          if (useEqualTipsUI) return acc + 1;
-                          return acc + (Math.round((getDisplayedWorkedMs(mUid) / (1000 * 60 * 60)) * 100) / 100);
-                        }, 0);
+                        const totalTips = Number(tips) || 0;
+                        const totalCommissionPool = resolvedCommissionPoolDollars;
+                        const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
+                          getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+                        );
+                        const tipsSharesByUser = buildTipsSharesByUser(totalTips, (uid) =>
+                          getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+                        );
                         return filteredTeamMembers.map((member: any) => {
                           const profile = member.users?.profiles;
                           const firstName = profile?.first_name || "N/A";
@@ -6313,7 +6490,7 @@ export default function EventDashboardPage() {
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
-                          const actualHours = addLongShiftBonus(Math.round((totalMs / (1000 * 60 * 60)) * 100) / 100);
+                          const actualHours = getActualHoursFromWorkedMs(totalMs, true);
                           const hoursHHMM = formatHoursFromMs(totalMs);
 
                           // Use rates from database based on venue state
@@ -6328,47 +6505,30 @@ export default function EventDashboardPage() {
                           const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
 
                           // Commission pool (Net Sales × pool fraction)
-                          const currentShares = sharesData;
-                          const netSales = sharesData?.netSales || 0;
-
-                          // Prefer current input value; fallback to event.commission_pool
-                          const poolPercent =
-                            Number(commissionPool || event?.commission_pool || 0) || 0; // fraction 0.04
-
-                          const totalCommissionPool = netSales * poolPercent;
-
-                          const perVendorCommissionShare =
-                            vendorCount > 0 ? totalCommissionPool / vendorCount : 0;
-
-                          const isTrailersDivision = member.users?.division === 'trailers';
-                          const rawTotalFinalCommission = isTrailersDivision
-                            ? extAmtOnRegRate
-                            : Math.max(extAmtOnRegRate, perVendorCommissionShare);
-                          const rawCommissionAmount =
-                            !isTrailersDivision && actualHours > 0 && vendorCount > 0
-                              ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
-                              : 0;
-                          const commissionOverrideVal = commissionsOverrides[uid];
-                          const commissionAmount = commissionOverrideVal === null
-                            ? 0
-                            : commissionOverrideVal !== undefined
-                            ? commissionOverrideVal
-                            : rawCommissionAmount;
-                          const totalFinalCommission = extAmtOnRegRate + commissionAmount;
+                          const trailersDivision = isTrailersDivision(member.users?.division);
+                          const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+                          const {
+                            commissionOverride: commissionOverrideVal,
+                            displayedCommissionPay,
+                            totalFinalCommission,
+                            variableIncentive,
+                          } = getCommissionBreakdown({
+                            uid,
+                            division: member.users?.division,
+                            actualHours,
+                            extAmtOnRegRate,
+                            distributedCommissionShare,
+                          });
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
                           const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
                           const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
 
-                          // Tips: equal per vendor (>= 2026-03-30) or prorated by hours (< 2026-03-30)
-                          const totalTips = Number(tips) || 0;
                           const tipsOverride = tipsOverrides[uid];
                           const proratedTips = tipsOverride === null
                             ? 0 // tips deleted for this user
                             : tipsOverride !== undefined
                             ? tipsOverride // manual override
-                            : (!isTrailersDivision && tipsEligiblePoolUI > 0
-                              ? (useEqualTipsUI ? totalTips / tipsEligiblePoolUI : (totalTips * actualHours) / tipsEligiblePoolUI)
-                              : 0);
+                            : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
                           // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
                           const totalBasePay = totalFinalCommission;
@@ -6421,15 +6581,34 @@ export default function EventDashboardPage() {
 
                               {/* Commission Per Vendor */}
                               <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-blue-600">
-                                  ${formatPayrollMoney(perVendorCommissionShare)}
-                                </div>
+                                {commissionOverrideVal === null ? (
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-red-500 line-through">$0.00</span>
+                                    <span className="text-[10px] text-red-400">Excluded</span>
+                                    {canEditTimesheets && (
+                                      <button
+                                        onClick={() => setCommissionsOverrides(prev => {
+                                          const next = { ...prev };
+                                          delete next[uid];
+                                          return next;
+                                        })}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="text-sm font-medium text-blue-600">
+                                    ${formatPayrollMoney(displayedCommissionPay)}
+                                  </div>
+                                )}
                               </td>
 
                               {/* Variable Incentive */}
                               <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-purple-600">
-                                  ${formatPayrollMoney(Math.max(0, extAmtOnRegRate - perVendorCommissionShare))}
+                                  ${formatPayrollMoney(variableIncentive)}
                                 </div>
                               </td>
 

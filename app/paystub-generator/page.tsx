@@ -5,6 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
+import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -303,13 +304,44 @@ export default function PaystubGenerator() {
   };
   const getCommissionVendorCountForEvent = (event: Event) => {
     const workers = Array.isArray(event.workers) ? event.workers : [];
-    const workersWithHours = workers.filter((worker) => getCommissionReportHours(worker) > 0);
-    const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
-    const eligibleVendorCount = workersWithHours.reduce((count, worker) => {
-      return isVendorDivision(worker.division) ? count + 1 : count;
-    }, 0);
+    return workers.filter((worker) => {
+      const workerId = (worker?.user_id || '').toString();
+      return !!workerId && !isTrailersDivision(worker.division) && getCommissionReportHours(worker) > 0;
+    }).length;
+  };
+  const getDistributedSharesForEvent = (event: Event) => {
+    const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
+    const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
+    const adjustedGrossPercent = getCommissionPoolPercentForEvent(
+      event,
+      adjustedGross,
+      persistedGrossCommission
+    );
+    const rawGrossCommission =
+      persistedGrossCommission || adjustedGross * adjustedGrossPercent;
+    const eligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
+      const workerId = (worker?.user_id || '').toString();
+      const hoursWorked = getCommissionReportHours(worker);
+      if (!workerId || isTrailersDivision(worker.division) || hoursWorked <= 0) return [];
+      return [{ id: workerId, hours: hoursWorked }];
+    });
+    const commissionDistribution = distributePoolByHoursRule({
+      totalAmount: rawGrossCommission,
+      members: eligibleMembers,
+    });
+    const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
+    const tipsDistribution = distributePoolByHoursRule({
+      totalAmount: totalTips,
+      members: eligibleMembers,
+    });
 
-    return eligibleVendorCount > 0 ? eligibleVendorCount : memberCount;
+    return {
+      adjustedGrossPercent,
+      employeeCount: commissionDistribution.eligibleCount,
+      grossCommission: roundMoney(rawGrossCommission),
+      commissionSharesByUser: commissionDistribution.amountsById,
+      tipsSharesByUser: tipsDistribution.amountsById,
+    };
   };
   const getRestPayForReport = (actualHours: number, stateCode: string | null | undefined) => {
     const normalizedState = normalizeStateCode(stateCode);
@@ -1043,20 +1075,15 @@ export default function PaystubGenerator() {
             Number(finalPayData?.actualHours ?? getCommissionReportHours(worker))
           );
           const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
-
-          const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
-          const adjustedGrossPercent = getCommissionPoolPercentForEvent(
-            event,
-            adjustedGross,
-            persistedGrossCommission
-          );
-          const grossCommission = roundMoney(
-            persistedGrossCommission || adjustedGross * adjustedGrossPercent
-          );
-          const employeeCount = getCommissionVendorCountForEvent(event);
-          const commission = employeeCount > 0
-            ? roundMoney(grossCommission / Number(employeeCount))
-            : 0;
+          const {
+            adjustedGrossPercent,
+            employeeCount: distributedEmployeeCount,
+            grossCommission,
+            commissionSharesByUser,
+            tipsSharesByUser,
+          } = getDistributedSharesForEvent(event);
+          const employeeCount = distributedEmployeeCount || getCommissionVendorCountForEvent(event);
+          const commission = roundMoney(Number(commissionSharesByUser[reportUserId] || 0));
 
           const restPayRaw =
             Number(worker.payment_data?.rest_break_pay ?? 0) ||
@@ -1065,7 +1092,7 @@ export default function PaystubGenerator() {
               formData.state || event.state
             );
           const restPay = roundMoney(restPayRaw);
-          const tips = roundMoney(Number(finalPayData?.tips ?? worker.payment_data?.tips ?? 0));
+          const tips = roundMoney(Number(tipsSharesByUser[reportUserId] || 0));
           const totalPayRaw =
             Number(finalPayData?.totalPay ?? worker.payment_data?.total_pay ?? 0);
           const persistedCommissionPay =

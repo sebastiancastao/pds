@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -723,8 +724,10 @@ function HRDashboardContent() {
         // Total team members on this event
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
-        // Commission pool in dollars — try event_payments first, then compute from events table
-        const commissionPoolDollars = eventCommissionDollars;
+        // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
+        const commissionPoolDollars = eventCommissionDollars > 0
+          ? eventCommissionDollars
+          : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
         const isAZorNY = eventState === "AZ" || eventState === "NY";
 
         // Vendor count for commission allocation
@@ -740,16 +743,29 @@ function HRDashboardContent() {
 
         // Tips: try event_payments summary first, then fall back to events table
         const totalTips = eventTotalTips;
-        const useEqualTips = eventInfo?.event_date ? String(eventInfo.event_date).slice(0, 10) >= '2026-03-30' : true;
-        // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
-        const tipsEligiblePool = vendorPayments.reduce((acc: number, p: any) => {
-          if (p.tips_deleted === true) return acc;
-          if (useEqualTips) return acc + 1;
-          return acc + roundHoursToTwoDecimals(getEffectiveHours(p));
-        }, 0);
+        const commissionSharesByUser = distributePoolByHoursRule({
+          totalAmount: commissionPoolDollars,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
+            const _divComm = normalizeDivision(payment?.users?.division);
+            const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
+            if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
+            return [{ id: paymentUserId, hours: payrollHours }];
+          }),
+        }).amountsById;
+        const tipsSharesByUser = distributePoolByHoursRule({
+          totalAmount: totalTips,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
+            if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
+            return [{ id: paymentUserId, hours: payrollHours }];
+          }),
+        }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
-          commissionPoolDollars, perVendorCommissionShare, totalTips, tipsEligiblePool, memberCount, vendorCountForCommission,
+          commissionPoolDollars, perVendorCommissionShare, totalTips, memberCount, vendorCountForCommission,
           summaryPool: eventPaymentSummary.commission_pool_dollars,
           eventCommissionPool: eventInfo.commission_pool,
           summaryTips: eventPaymentSummary.total_tips,
@@ -773,6 +789,9 @@ function HRDashboardContent() {
 
             const memberDivision = payment?.users?.division;
             const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
+            const _divDisplay = normalizeDivision(memberDivision);
+            const _isExplicitNonVendorDisplay = _divDisplay !== '' && !isVendorDivision(_divDisplay);
+            const commissionShare = _isExplicitNonVendorDisplay ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
             const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
@@ -788,8 +807,8 @@ function HRDashboardContent() {
 
             if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
-              const prelimCommission = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
-                ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+              const prelimCommission = (!isTrailers && roundedPayrollHours > 0 && commissionShare > 0)
+                ? Math.max(0, commissionShare - extAmtOnRegRateNonAzNy)
                 : 0;
               const totalFinalCommissionBase = roundedPayrollHours > 0
                 ? Math.max(150, extAmtRegular + prelimCommission)
@@ -800,8 +819,8 @@ function HRDashboardContent() {
               otRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
               extAmtOnRegRate = isWeeklyOT ? Math.round(otRate * roundedPayrollHours * 100) / 100 : extAmtOnRegRateNonAzNy;
               // Final commission uses CA formula against the resolved extAmtOnRegRate
-              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
-                ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && commissionShare > 0)
+                ? Math.max(0, commissionShare - extAmtOnRegRate)
                 : 0;
               commissionAmt = payment.commission_deleted === true
                 ? 0
@@ -815,8 +834,8 @@ function HRDashboardContent() {
             } else {
               const rawTotalFinalCommission = isTrailers
                 ? extAmtOnRegRateNonAzNy
-                : Math.max(extAmtOnRegRateNonAzNy, perVendorCommissionShare);
-              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && vendorCountForCommission > 0)
+                : Math.max(extAmtOnRegRateNonAzNy, commissionShare);
+              const rawCommissionAmt = (!isTrailers && roundedPayrollHours > 0 && commissionShare > 0)
                 ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRateNonAzNy)
                 : 0;
               commissionAmt = payment.commission_deleted === true
@@ -842,8 +861,8 @@ function HRDashboardContent() {
               ? 0
               : payment.tips_override != null
               ? Number(payment.tips_override)
-              : (tipsEligiblePool > 0 && totalTips > 0)
-              ? (useEqualTips ? totalTips / tipsEligiblePool : totalTips * (roundedPayrollHours / tipsEligiblePool))
+              : totalTips > 0
+              ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
             const restBreak = getRestBreakAmount(actualHours, eventState);
@@ -857,6 +876,7 @@ function HRDashboardContent() {
               division: memberDivision,
               actualHours,
               regularHours: roundedPayrollHours,
+              commissionShare,
               regularPay: extAmtOnRegRate,
               overtimeHours: 0,
               overtimePay: 0,
@@ -1206,9 +1226,15 @@ function HRDashboardContent() {
             const hours = Number(p.actualHours || 0);
             const hoursHHMM = formatHoursHHMM(hours);
             const hoursInDecimal = roundHoursToTwoDecimals(hours);
+            const commissionPay = Number(p.commissionShare ?? event.commissionPerVendor ?? 0);
             const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
             const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
             const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
+            const isTrailersExport = (p.division || '').toString().toLowerCase().trim() === 'trailers';
+            const displayedCommissionPay = hours > 0 ? commissionPay : 0;
+            const variableIncentive = hours > 0 && !isTrailersExport
+              ? Math.max(0, totalFinalCommissionAmt - commissionPay)
+              : 0;
             const other = Number(p.adjustmentAmount || 0);
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
@@ -1235,8 +1261,8 @@ function HRDashboardContent() {
               'Rate in Effect': formatPayrollMoney(loadedRate),
               'Hours': hoursHHMM,
               'Hours in Decimal': hoursInDecimal,
-              'Commission Pay': Number(Number(event.commissionPerVendor || 0).toFixed(2)),
-              'Variable Incentive': Number(Math.max(0, extAmtOnRegRate - Number(event.commissionPerVendor || 0)).toFixed(2)),
+              'Commission Pay': Number(displayedCommissionPay.toFixed(2)),
+              'Variable Incentive': Number(variableIncentive.toFixed(2)),
               'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
               'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
               'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -2370,6 +2396,12 @@ function HRDashboardContent() {
                                                 const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
                                                 const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
                                                 const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
+                                                const commissionPay = Number(p.commissionShare ?? ev.commissionPerVendor ?? 0);
+                                                const isTrailersUI = (p.division || '').toString().toLowerCase().trim() === 'trailers';
+                                                const displayedCommissionPay = hours > 0 ? commissionPay : 0;
+                                                const variableIncentive = hours > 0 && !isTrailersUI
+                                                  ? Math.max(0, totalFinalCommissionAmt - commissionPay)
+                                                  : 0;
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
@@ -2393,8 +2425,8 @@ function HRDashboardContent() {
                                                     {showOT && (
                                                       <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                     )}
-                                                    <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</td>
-                                                    <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(Math.max(0, extAmtOnRegRate - Number(ev.commissionPerVendor || 0)))}</td>
+                                                    <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
+                                                    <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(variableIncentive)}</td>
                                                     <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
@@ -2900,7 +2932,7 @@ function HRDashboardContent() {
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Year to Date</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Worked</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Earned</th>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Used</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Requested</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Balance</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Requests</th>
                       <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
@@ -2982,7 +3014,7 @@ function HRDashboardContent() {
                               disabled={addingUsedHoursUserId === record.user_id}
                               className="px-2 py-1 text-xs rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
                             >
-                              {addingUsedHoursUserId === record.user_id ? "Adding..." : "Add Used Hours"}
+                              {addingUsedHoursUserId === record.user_id ? "Adding..." : "Add Requested Hours"}
                             </button>
                             <button
                               onClick={() =>
@@ -2994,7 +3026,7 @@ function HRDashboardContent() {
                               }
                               className="px-2 py-1 text-xs rounded bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50"
                             >
-                              {removingUsedHoursUserId === record.user_id ? "Removing..." : "Take Away Used Hours"}
+                              {removingUsedHoursUserId === record.user_id ? "Removing..." : "Take Away Requested Hours"}
                             </button>
                             <Link
                               href={`/hr/employees/${record.user_id}`}

@@ -3,6 +3,7 @@ import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
+import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -177,16 +178,11 @@ export async function POST(req: NextRequest) {
       const baseRate = Number(eventPaymentSummary?.base_rate || stateBaseRate);
 
       const workers = Array.isArray(event?.workers) ? event.workers : [];
-      // Mirror event-dashboard payment tab vendor-hour eligibility.
       const workersWithHours = workers.filter((w: any) => {
         const workerHours = getActualHoursForWorker(event, w);
         return workerHours > 0;
       });
       const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
-      const vendorCountEligible = workersWithHours.reduce((count: number, w: any) => {
-        return isVendorDivision(w?.division) ? count + 1 : count;
-      }, 0);
-      const vendorCountForCommission = vendorCountEligible > 0 ? vendorCountEligible : memberCount;
 
       // Commission pool in dollars: event_payments first, then compute from events table.
       let commissionPoolDollars =
@@ -206,29 +202,34 @@ export async function POST(req: NextRequest) {
         commissionPoolDollars = netSales * Number(event?.commission_pool || 0);
       }
 
-      const perVendorCommissionShare =
-        vendorCountForCommission > 0 ? commissionPoolDollars / vendorCountForCommission : 0;
-
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
-      const useEqualTips = event?.event_date ? String(event.event_date).slice(0, 10) >= '2026-03-30' : true;
-      // Equal tips (>= 2026-03-30): count eligible vendors. Prorated (< 2026-03-30): sum eligible hours.
-      const totalEligibleVendors = workers.reduce((acc: number, w: any) => {
-        if (isTrailersDivision(w?.division)) return acc;
-        if (useEqualTips) return acc + 1;
-        return acc + getActualHoursForWorker(event, w);
-      }, 0);
+      const eligibleMembers = workers.flatMap((w: any) => {
+        const workerId = (w?.user_id || "").toString();
+        const workerHours = getActualHoursForWorker(event, w);
+        if (!workerId || isTrailersDivision(w?.division) || workerHours <= 0) return [];
+        return [{ id: workerId, hours: workerHours }];
+      });
+      const commissionDistribution = distributePoolByHoursRule({
+        totalAmount: commissionPoolDollars,
+        members: eligibleMembers,
+      });
+      const tipsDistribution = distributePoolByHoursRule({
+        totalAmount: totalTipsEvent,
+        members: eligibleMembers,
+      });
+      const commissionEligibleCount =
+        commissionDistribution.eligibleCount > 0 ? commissionDistribution.eligibleCount : memberCount;
 
       return {
         eventState,
         baseRate,
         memberCount,
-        vendorCountForCommission,
-        perVendorCommissionShare,
+        commissionEligibleCount,
         commissionPoolDollars,
         workers,
         totalTipsEvent,
-        totalEligibleVendors,
-        useEqualTips,
+        commissionSharesByUser: commissionDistribution.amountsById,
+        tipsSharesByUser: tipsDistribution.amountsById,
       };
     };
 
@@ -1293,13 +1294,12 @@ export async function POST(req: NextRequest) {
         const {
           eventState,
           baseRate,
-          vendorCountForCommission,
-          perVendorCommissionShare,
+          commissionEligibleCount,
           commissionPoolDollars,
           workers: eventWorkers,
           totalTipsEvent,
-          totalEligibleVendors,
-          useEqualTips
+          commissionSharesByUser,
+          tipsSharesByUser,
         } = getPayrollInputsForEvent(event);
 
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
@@ -1325,6 +1325,15 @@ export async function POST(req: NextRequest) {
         );
         const priorWeeklyHours = azNyMode ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
+        const workerUserId = (worker?.user_id || "").toString();
+        const distributedCommissionShare =
+          !isTrailersDivision(worker?.division) && workerUserId
+            ? Number(commissionSharesByUser[workerUserId] || 0)
+            : 0;
+        const distributedTipsShare =
+          !isTrailersDivision(worker?.division) && workerUserId
+            ? Number(tipsSharesByUser[workerUserId] || 0)
+            : 0;
 
         const extAmtRegular = actualHours * baseRate;
         const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
@@ -1339,43 +1348,32 @@ export async function POST(req: NextRequest) {
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
-            (isVendorDivision(worker?.division) || normalizeDivision(worker?.division) === "") &&
             actualHours > 0;
           const prelimCommission = isEligibleThisWorker
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
             : 0;
           const totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
           extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
           commissionAmt = isEligibleThisWorker
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
             : 0;
           totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =
-            !isTrailersDivision(worker?.division) && actualHours > 0 && vendorCountForCommission > 0
-              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            !isTrailersDivision(worker?.division) && actualHours > 0 && commissionEligibleCount > 0
+              ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
-          // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare)
+          // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare)
           // extAmtOnRegRateNonAzNy + commissionAmt already equals that; no $150 minimum here.
           totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
         }
 
-        const tipsFromPayment = Number(paymentData?.tips || 0);
-        const fallbackTips =
-          totalEligibleVendors > 0 && totalTipsEvent > 0
-            ? (useEqualTips ? totalTipsEvent / totalEligibleVendors : totalTipsEvent * (actualHours / totalEligibleVendors))
-            : 0;
-        // For paystub display/pay, use the persisted vendor tip when available;
-        // fall back to equal or prorated event tips depending on event date.
-        const tips = tipsFromPayment > 0 ? tipsFromPayment : fallbackTips;
-        // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
-        // Falls back to recomputed value if payment data has not been saved yet.
-        const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);
-        const commission = storedFinalCommission > 0 ? storedFinalCommission : totalFinalCommissionAmt;
+        const tips = distributedTipsShare;
+        const commission = totalFinalCommissionAmt;
         // Commission report "Final Pay" should mirror HR Dashboard's
         // "Total Final Commission Amt" (formula-based, not persisted split columns).
         const reportFinalCommissionAmt = totalFinalCommissionAmt;
@@ -1391,19 +1389,18 @@ export async function POST(req: NextRequest) {
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
-        if ((adjustedGrossForReport > 0 && vendorCountForCommission > 0) || reportFinalCommissionAmt > 0) {
+        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalCommissionAmt > 0) {
           // Match HR dashboard payroll logic:
-          // Commission Paid = perVendorCommissionShare (actual event pool / vendor count)
-          // Variable Incentive = Max(0, extAmtOnRegRate - perVendorCommissionShare)
-          const caRowVarIncentive = Math.max(0, extAmtOnRegRate - perVendorCommissionShare);
+          // Commission Pay = distributed share, Variable Incentive = excess above that share.
+          const caRowVarIncentive = Math.max(0, reportFinalCommissionAmt - distributedCommissionShare);
           caCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
-            numEmployees: vendorCountForCommission,
-            commissionPerEmployee: perVendorCommissionShare,
+            numEmployees: commissionEligibleCount,
+            commissionPerEmployee: distributedCommissionShare,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
             variableIncentive: caRowVarIncentive,
@@ -1424,10 +1421,10 @@ export async function POST(req: NextRequest) {
         const isEligibleForPool =
           !isTrailersDivision(worker?.division) &&
           actualHours > 0 &&
-          vendorCountForCommission > 0 &&
-          perVendorCommissionShare > 0;
-        const pdfCommissionShare = isEligibleForPool ? perVendorCommissionShare : reportFinalCommissionAmt;
-        const pdfVariableIncentive = isEligibleForPool ? Math.max(0, reportFinalCommissionAmt - perVendorCommissionShare) : 0;
+          commissionEligibleCount > 0 &&
+          distributedCommissionShare > 0;
+        const pdfCommissionShare = isEligibleForPool ? distributedCommissionShare : reportFinalCommissionAmt;
+        const pdfVariableIncentive = isEligibleForPool ? Math.max(0, reportFinalCommissionAmt - distributedCommissionShare) : 0;
         totalCommission += pdfCommissionShare;
         totalVariableIncentive += pdfVariableIncentive;
         totalFinalCommission += reportFinalCommissionAmt;
@@ -1890,7 +1887,16 @@ export async function POST(req: NextRequest) {
         : !!paymentData;
 
       if (shouldRenderRow) {
-        const { eventState, baseRate, vendorCountForCommission, perVendorCommissionShare, commissionPoolDollars, workers: eventWorkers, totalTipsEvent, totalEligibleVendors, useEqualTips } = getPayrollInputsForEvent(event);
+        const {
+          eventState,
+          baseRate,
+          commissionEligibleCount,
+          commissionPoolDollars,
+          workers: eventWorkers,
+          totalTipsEvent,
+          commissionSharesByUser,
+          tipsSharesByUser,
+        } = getPayrollInputsForEvent(event);
         const adjustedGrossForReport = getAdjustedGrossForEvent(event);
 
         const regHours = Number(paymentData?.regular_hours || 0);
@@ -1900,6 +1906,15 @@ export async function POST(req: NextRequest) {
         const actualHours = getActualHoursForWorker(event, worker);
         const displayHours = getDisplayHoursForWorker(event, worker);
         const hoursComparison = getHoursComparison(event, worker, actualHours, displayHours);
+        const workerUserId = (worker?.user_id || "").toString();
+        const distributedCommissionShare =
+          !isTrailersDivision(worker?.division) && workerUserId
+            ? Number(commissionSharesByUser[workerUserId] || 0)
+            : 0;
+        const distributedTipsShare =
+          !isTrailersDivision(worker?.division) && workerUserId
+            ? Number(tipsSharesByUser[workerUserId] || 0)
+            : 0;
 
         const isAZorNY = azNyMode;
 
@@ -1932,44 +1947,33 @@ export async function POST(req: NextRequest) {
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
-            (isVendorDivision(worker?.division) || normalizeDivision(worker?.division) === "") &&
             actualHours > 0;
           const prelimCommission = isEligibleThisWorker
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
             : 0;
           totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
           extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
           commissionAmt = isEligibleThisWorker
-            ? Math.max(0, perVendorCommissionShare - extAmtOnRegRate)
+            ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
             : 0;
           totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =
-            !isTrailersDivision(worker?.division) && actualHours > 0 && vendorCountForCommission > 0
-              ? Math.max(0, perVendorCommissionShare - extAmtOnRegRateNonAzNy)
+            !isTrailersDivision(worker?.division) && actualHours > 0 && commissionEligibleCount > 0
+              ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
-          // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, perVendorCommissionShare)
+          // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare)
           // extAmtOnRegRateNonAzNy + commissionAmt already equals that; no $150 minimum here.
           totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
           loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
           computedOtRate = 0;
         }
 
-        const tipsFromPayment = Number(paymentData?.tips || 0);
-        const fallbackTips =
-          totalEligibleVendors > 0 && totalTipsEvent > 0
-            ? (useEqualTips ? totalTipsEvent / totalEligibleVendors : totalTipsEvent * (actualHours / totalEligibleVendors))
-            : 0;
-        // For paystub display/pay, use the persisted vendor tip when available;
-        // fall back to equal or prorated event tips depending on event date.
-        const tips = tipsFromPayment > 0 ? tipsFromPayment : fallbackTips;
-        // Use stored Total Final Commission from event-dashboard payment tab (regular_pay + commissions).
-        // Falls back to recomputed value if payment data has not been saved yet.
-        const storedFinalCommission = Number(paymentData?.regular_pay || 0) + Number(paymentData?.commissions || 0);
-        const commission = storedFinalCommission > 0 ? storedFinalCommission : totalFinalCommissionAmt;
+        const tips = distributedTipsShare;
+        const commission = totalFinalCommissionAmt;
         // Commission report "Final Pay" should mirror HR Dashboard's
         // "Total Final Commission Amt" (formula-based, not persisted split columns).
         const reportFinalCommissionAmt = totalFinalCommissionAmt;
@@ -2000,19 +2004,18 @@ export async function POST(req: NextRequest) {
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
-        if ((adjustedGrossForReport > 0 && vendorCountForCommission > 0) || reportFinalCommissionAmt > 0) {
+        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalCommissionAmt > 0) {
           // Match HR dashboard payroll logic:
-          // Commission Paid = perVendorCommissionShare (actual event pool / vendor count)
-          // Variable Incentive = Max(0, extAmtOnRegRate - perVendorCommissionShare)
-          const ncRowVarIncentive = Math.max(0, extAmtOnRegRate - perVendorCommissionShare);
+          // Commission Pay = distributed share, Variable Incentive = excess above that share.
+          const ncRowVarIncentive = Math.max(0, reportFinalCommissionAmt - distributedCommissionShare);
           nonCaCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
-            numEmployees: vendorCountForCommission,
-            commissionPerEmployee: perVendorCommissionShare,
+            numEmployees: commissionEligibleCount,
+            commissionPerEmployee: distributedCommissionShare,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
             variableIncentive: ncRowVarIncentive,
@@ -2027,8 +2030,12 @@ export async function POST(req: NextRequest) {
         totalDtHours += dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        // Keep "This Period" commission aligned with the commission report's pay-period final pay total.
-        totalCommission += reportFinalCommissionAmt;
+        const isEligibleForPool =
+          !isTrailersDivision(worker?.division) &&
+          actualHours > 0 &&
+          commissionEligibleCount > 0 &&
+          distributedCommissionShare > 0;
+        totalCommission += isEligibleForPool ? distributedCommissionShare : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += total;
@@ -2059,7 +2066,7 @@ export async function POST(req: NextRequest) {
             paystubState,
             azNyMode,
             baseRate,
-            perVendorCommissionShare,
+            distributedCommissionShare,
             extAmtOnRegRate,
             commissionAmt,
             totalFinalCommissionAmt,
