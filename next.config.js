@@ -7,6 +7,16 @@ const nextConfig = {
   // paths that break when the package is bundled by webpack.
   experimental: {
     serverComponentsExternalPackages: ['tesseract.js'],
+    outputFileTracingIncludes: {
+      '/api/payroll-packet-ca/temp-employment-agreement': [
+        './San Diego final Temp Employment agreement 4.17.2026.pdf',
+        './LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf',
+      ],
+      '/app/api/payroll-packet-ca/temp-employment-agreement': [
+        './San Diego final Temp Employment agreement 4.17.2026.pdf',
+        './LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf',
+      ],
+    },
   },
 
   // Webpack optimization for PDF libraries

@@ -2393,9 +2393,9 @@ export async function GET(
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
           const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
-          // WI and NV use different Y position for temp-employment-agreement (y: 470 vs y: 420)
-          const isWINVState = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin' ||
-            normalizedUserState === 'nv' || normalizedUserState === 'nevada';
+          const isCaliforniaTempEmploymentAgreement =
+            isTempEmploymentAgreement &&
+            (normalizedUserState === 'ca' || normalizedUserState === 'california');
 
           let attestationSignaturePlacement:
             | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
@@ -2483,9 +2483,6 @@ export async function GET(
               const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
               const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
               const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-              // temp-employment-agreement: signature on last page, position near date field
-              // CA/NY/AZ: y=420, WI/NV: y=470 - place signature to the left of date field (x ~100)
-              const tempEmploymentOffsetY = isTempEmploymentAgreement ? (isWINVState ? 420 : 370) : 0;
               // For temp-employment-agreement, use fixed x position (50) to place signature on the left
               const x = isTempEmploymentAgreement
                 ? 50
@@ -2493,11 +2490,15 @@ export async function GET(
                     0,
                     baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
                   );
-              const y = isI9Form
+              // CA temp-employment-agreement uses a dedicated lower signature position
+              // that aligns with the generated PDF's `employee_signature_date` field at y=125.
+              const y = isCaliforniaTempEmploymentAgreement
+                ? 120
+                : isI9Form
                 ? Math.max(0, i9DateFieldY - 185)
                 : Math.min(
                     height - signatureHeight,
-                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY + tempEmploymentOffsetY
+                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
                   );
 
               if (isTyped && !isDataUrl) {

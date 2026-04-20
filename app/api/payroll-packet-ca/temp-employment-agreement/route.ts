@@ -1,15 +1,40 @@
 import { NextResponse } from 'next/server';
 import { PDFDocument, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
+const SAN_DIEGO_TEMP_EMPLOYMENT_FILE = 'San Diego final Temp Employment agreement 4.17.2026.pdf';
+const LA_NORCAL_TEMP_EMPLOYMENT_FILE = 'LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+function resolveSourcePdfPath(regionName: string) {
+  const fileName =
+    regionName === 'San Diego'
+      ? SAN_DIEGO_TEMP_EMPLOYMENT_FILE
+      : LA_NORCAL_TEMP_EMPLOYMENT_FILE;
+
+  const candidatePaths = [
+    join(process.cwd(), fileName),
+    join(process.cwd(), 'pdfs', fileName),
+  ];
+
+  const pdfPath = candidatePaths.find((candidate) => existsSync(candidate));
+
+  if (!pdfPath) {
+    throw new Error(
+      `Source PDF not found for region "${regionName || 'default'}". Checked: ${candidatePaths.join(', ')}`
+    );
+  }
+
+  return pdfPath;
+}
 
 export async function GET(request: Request) {
   try {
@@ -83,10 +108,7 @@ export async function GET(request: Request) {
     console.log('[CA] Final user name:', userName);
     console.log('[CA] Region name:', regionName);
 
-    const pdfFileName = regionName === 'San Diego'
-      ? 'San Diego final Temp Employment agreement 4.17.2026.pdf'
-      : 'LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf';
-    const pdfPath = join(process.cwd(), pdfFileName);
+    const pdfPath = resolveSourcePdfPath(regionName);
     const existingPdfBytes = readFileSync(pdfPath);
     const pdfDoc = await PDFDocument.load(existingPdfBytes);
     const pages = pdfDoc.getPages();
