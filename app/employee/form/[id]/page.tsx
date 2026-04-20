@@ -297,7 +297,7 @@ export default function EmployeeFormPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
-          formName: `${meta!.title} ${new Date().getFullYear()}`,
+          formName: `custom-form-${formId}`,
           formData: base64,
           ...(asUserId ? { targetUserId: asUserId } : {}),
           ...(docSummary ? { notes: docSummary } : {}),

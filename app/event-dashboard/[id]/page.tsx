@@ -3552,7 +3552,6 @@ export default function EventDashboardPage() {
       variableIncentive,
     };
   };
-
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;

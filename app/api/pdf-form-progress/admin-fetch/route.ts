@@ -89,7 +89,9 @@ export async function GET(request: NextRequest) {
       .select('form_data, updated_at')
       .eq('user_id', userIdParam.trim())
       .eq('form_name', formName.trim())
-      .single();
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error) {
       if (error.code === 'PGRST116') {

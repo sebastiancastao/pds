@@ -4,7 +4,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -111,6 +110,7 @@ type I9Documents = {
 };
 
 type PDFForm = {
+  id?: string;
   form_name: string;
   display_name: string;
   form_data: string; // base64
@@ -885,7 +885,7 @@ export default function WorkerProfilePage() {
     try {
       // Download all PDF forms
       for (const form of pdfForms) {
-        await downloadPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined);
+        await downloadPDFForm(form);
         // Small delay between downloads to avoid browser blocking
         await new Promise(resolve => setTimeout(resolve, 500));
       }
@@ -1100,8 +1100,6 @@ export default function WorkerProfilePage() {
                 </div>
               </div>
             </section>
-
-            <KnowYourRightsNoticeSection />
 
             {/* Personal Calendar */}
             {(() => {
@@ -1736,7 +1734,7 @@ export default function WorkerProfilePage() {
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {pdfForms.map((form) => (
                             <div
-                              key={form.form_name}
+                              key={form.id || form.form_name}
                               className="border border-green-200 bg-green-50 rounded-xl p-4 hover:border-green-300 hover:shadow-md transition-all"
                             >
                               <div className="flex items-start justify-between mb-3">
@@ -1761,7 +1759,7 @@ export default function WorkerProfilePage() {
                                 </div>
                                 <div className="flex gap-2">
                                   <button
-                                    onClick={() => viewPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined)}
+                                    onClick={() => viewPDFForm(form)}
                                     className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors text-sm font-medium"
                                   >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1771,7 +1769,7 @@ export default function WorkerProfilePage() {
                                     View
                                   </button>
                                   <button
-                                    onClick={() => downloadPDFForm(form, form.form_name.includes('home-venue-assignment') ? employeeHomeVenue?.venue_name : undefined)}
+                                    onClick={() => downloadPDFForm(form)}
                                     className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
                                   >
                                     <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1815,10 +1813,14 @@ export default function WorkerProfilePage() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
-                      const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
-                      const submitted = pdfForms.find(p => titlePattern.test(p.form_name));
+                      const submitted = pdfForms.find((p) => {
+                        if (p.form_name === `custom-form-${form.id}`) return true;
+                        // Backward compat: old submissions were saved as "Title Year"
+                        const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
+                        return titlePattern.test(p.form_name);
+                      });
                       const isDirectlyAssigned = assignedFormIds.has(form.id);
-                      const venueForForm = employeeHomeVenue ? employeeHomeVenue.venue_name : undefined;
+                      const venueForForm = (!submitted?.form_name.includes('home-venue-assignment') && employeeHomeVenue) ? employeeHomeVenue.venue_name : undefined;
                       return (
                         <div
                           key={form.id}

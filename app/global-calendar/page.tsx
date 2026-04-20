@@ -565,7 +565,7 @@ export default function DashboardPage() {
           members: vendorPayments.flatMap((payment: any) => {
             const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || "").toString();
             const actualHours = Number(payment.actual_hours || payment.actualHours || 0);
-            if (!paymentUserId || isTrailersDivision(payment?.users?.division) || actualHours <= 0) return [];
+            if (!paymentUserId || !isVendorDivision(payment?.users?.division) || actualHours <= 0) return [];
             return [{ id: paymentUserId, hours: actualHours }];
           }),
         }).amountsById;

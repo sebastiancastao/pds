@@ -585,24 +585,48 @@ export async function GET(
     const outOfVenueIds = new Set<string>();
     if (event.venue && vendorsWithDistance.length > 0) {
       try {
-        const { data: venueRef } = await supabaseAdmin
+        const { data: venueMatches, error: venueError } = await supabaseAdmin
           .from('venue_reference')
-          .select('id')
-          .eq('venue_name', event.venue)
-          .maybeSingle();
+          .select('id, city, state')
+          .eq('venue_name', event.venue);
 
-        if (venueRef?.id) {
-          const vendorIds = vendorsWithDistance.map((v: any) => v.id);
-          const { data: venueAssignments } = await supabaseAdmin
-            .from('vendor_venue_assignments')
-            .select('vendor_id')
-            .eq('venue_id', venueRef.id)
-            .in('vendor_id', vendorIds);
+        if (venueError) {
+          throw venueError;
+        }
 
-          const assignedToVenue = new Set((venueAssignments || []).map((a: any) => a.vendor_id));
-          for (const v of vendorsWithDistance) {
-            if (!assignedToVenue.has(v.id)) {
-              outOfVenueIds.add(v.id);
+        if (Array.isArray(venueMatches) && venueMatches.length > 0) {
+          const eventCity = normalizeText(event.city);
+          const eventState = normalizeText(event.state);
+          const matchedVenue =
+            venueMatches.find((candidate: any) => {
+              const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+              const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
+              return cityMatches && stateMatches;
+            }) || venueMatches[0];
+
+          const venueId = String((matchedVenue as any)?.id || '').trim();
+          if (venueId) {
+            const vendorIds = vendorsWithDistance.map((v: any) => v.id);
+            const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
+              .from('vendor_venue_assignments')
+              .select('vendor_id')
+              .eq('venue_id', venueId)
+              .in('vendor_id', vendorIds);
+
+            if (venueAssignmentsError) {
+              throw venueAssignmentsError;
+            }
+
+            const assignedToVenue = new Set(
+              (venueAssignments || [])
+                .map((assignment: any) => String(assignment?.vendor_id || '').trim())
+                .filter(Boolean)
+            );
+
+            for (const v of vendorsWithDistance) {
+              if (!assignedToVenue.has(v.id)) {
+                outOfVenueIds.add(v.id);
+              }
             }
           }
         }

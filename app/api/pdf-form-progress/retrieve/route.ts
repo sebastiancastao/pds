@@ -81,13 +81,17 @@ export async function GET(request: NextRequest) {
       retrieveUserId = targetUserIdParam;
     }
 
-    // Use service-role client so RLS never blocks the read
+    // Use service-role client so RLS never blocks the read.
+    // Order by updated_at descending so that when multiple records share the same
+    // form_name (different submissions), the most recent one is returned.
     const { data, error } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('form_data, updated_at')
       .eq('user_id', retrieveUserId)
       .eq('form_name', formName)
-      .single();
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
     if (error) {
       if (error.code === 'PGRST116') {

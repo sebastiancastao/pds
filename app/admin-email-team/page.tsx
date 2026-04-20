@@ -165,11 +165,23 @@ function TeamEmailPageContent() {
       const { data: { session } } = await supabase.auth.getSession();
       const form = new FormData();
       form.set('audience', 'manual');
-      form.set('to', teamEmails.join(', '));
+
+      const mergedBcc = [
+        ...teamEmails,
+        ...bcc.split(',').map((e) => e.trim()).filter(Boolean),
+      ];
+
+      if (eventId) {
+        form.set('to', 'service@pdsportal.site');
+        form.set('bcc', mergedBcc.join(', '));
+      } else {
+        form.set('to', teamEmails.join(', '));
+        if (bcc.trim()) form.set('bcc', bcc);
+      }
+
       form.set('subject', subject.trim());
       form.set('body', body);
       form.set('bodyFormat', bodyFormat);
-      if (bcc.trim()) form.set('bcc', bcc);
       if (bulkMode) form.set('confirm', 'true');
       for (const file of attachments) {
         form.append('attachments', file, file.name);
@@ -255,10 +267,10 @@ function TeamEmailPageContent() {
 
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Team Recipients
+                  Team Recipients (BCC)
                 </label>
                 <div className="w-full border rounded px-3 py-2 bg-gray-50 text-sm text-gray-700">
-                  {loadingTeam ? 'Loading team recipients...' : `${recipientCount} recipient(s)`}
+                  {loadingTeam ? 'Loading team recipients...' : `${recipientCount} recipient(s) — will be BCC'd`}
                 </div>
               </div>
 
@@ -306,7 +318,7 @@ function TeamEmailPageContent() {
 
               <div>
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  BCC (optional)
+                  Additional BCC (optional)
                 </label>
                 <input
                   value={bcc}
@@ -348,7 +360,7 @@ function TeamEmailPageContent() {
                 disabled={sending || loadingTeam || recipientCount === 0}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {sending ? 'Sending...' : `Send to Team (${recipientCount})`}
+                {sending ? 'Sending...' : `BCC Team (${recipientCount})`}
               </button>
             </form>
           )}

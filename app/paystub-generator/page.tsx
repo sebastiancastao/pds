@@ -1360,10 +1360,10 @@ export default function PaystubGenerator() {
 
     try {
       const data = await file.arrayBuffer();
-      const workbook = XLSX.read(data);
+      const workbook = XLSX.read(new Uint8Array(data), { type: 'array' });
       const sheetName = workbook.SheetNames[0];
       const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' }) as any[][];
 
       // Expected format: first row is headers, following rows are one employee per row.
       if (jsonData.length < 2) {
@@ -1371,20 +1371,45 @@ export default function PaystubGenerator() {
         return;
       }
 
-      const headers = jsonData[0].map((h: any) => String(h).toLowerCase().trim());
+      const normalizeHeaderText = (value: any) =>
+        String(value ?? '')
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, ' ')
+          .trim();
+
+      const normalizedHeaders = jsonData[0].map((h: any) => normalizeHeaderText(h));
+
+      const findHeaderIndex = (possibleNames: string[]) => {
+        for (const name of possibleNames) {
+          const normalizedName = normalizeHeaderText(name);
+          const exactIndex = normalizedHeaders.findIndex((header) => header === normalizedName);
+          if (exactIndex !== -1) return exactIndex;
+        }
+
+        for (const name of possibleNames) {
+          const normalizedName = normalizeHeaderText(name);
+          if (!normalizedName || normalizedName.length < 5) continue;
+          const nameTokens = normalizedName.split(' ').filter(Boolean);
+          const tokenMatchIndex = normalizedHeaders.findIndex((header) => {
+            const headerTokens = new Set(header.split(' ').filter(Boolean));
+            return nameTokens.every((token) => headerTokens.has(token));
+          });
+          if (tokenMatchIndex !== -1) return tokenMatchIndex;
+        }
+
+        return -1;
+      };
 
       const getValueByHeader = (valuesRow: any[], possibleNames: string[]) => {
-        for (const name of possibleNames) {
-          const index = headers.findIndex((h: string) => h.includes(name));
-          if (index !== -1 && valuesRow[index] != null && valuesRow[index] !== '') {
-            const val = valuesRow[index];
-            // Skip if value is 0 for deductions (means not applicable)
-            if (typeof val === 'number' && val === 0 &&
-                (possibleNames.some(n => n.includes('deduction') || n.includes('tax') || n.includes('income') || n.includes('medicare') || n.includes('security')))) {
-              return '';
-            }
-            return String(val).trim();
+        const index = findHeaderIndex(possibleNames);
+        if (index !== -1 && valuesRow[index] != null && valuesRow[index] !== '') {
+          const val = valuesRow[index];
+          // Skip if value is 0 for deductions (means not applicable)
+          if (typeof val === 'number' && val === 0 &&
+              (possibleNames.some(n => n.includes('deduction') || n.includes('tax') || n.includes('income') || n.includes('medicare') || n.includes('security')))) {
+            return '';
           }
+          return String(val).trim();
         }
         return '';
       };
@@ -1473,10 +1498,10 @@ export default function PaystubGenerator() {
 
         return {
           rowIndex,
-          employeeName: getValueByHeader(valuesRow, ['employee name', 'name', 'employee']),
-          ssn: getValueByHeader(valuesRow, ['ssn', 'social security']),
+          employeeName: getValueByHeader(valuesRow, ['employee name', 'employee full name', 'full name', 'name', 'employee']),
+          ssn: getValueByHeader(valuesRow, ['ssn', 'social security number', 'social security #', 'ss number']),
           address: getValueByHeader(valuesRow, ['address']),
-          employeeId: getValueByHeader(valuesRow, ['employee id', 'emp id', 'id', 'page']),
+          employeeId: getValueByHeader(valuesRow, ['employee id', 'emp id', 'employee number', 'account number']),
 
           payPeriodStart: formatDate(getValueByHeader(valuesRow, ['pay period start', 'period start', 'start date'])),
           payPeriodEnd: formatDate(getValueByHeader(valuesRow, ['pay period end', 'period end', 'end date'])),

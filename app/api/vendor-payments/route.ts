@@ -398,7 +398,7 @@ export async function GET(req: NextRequest) {
         members: vendorIds.flatMap((uid) => {
           const div = divisionById[uid] || '';
           const hours = Number(totalsHours[uid] || 0);
-          if (div === 'trailers' || hours <= 0) return [];
+          if (!(div === 'vendor' || div === 'both') || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
       }).amountsById;
