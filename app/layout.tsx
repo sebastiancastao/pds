@@ -6,6 +6,7 @@ export const metadata: Metadata = {
   description: 'Employee Time Keeping and worker availability management system for PDS',
 };
 
+
 export default function RootLayout({
   children,
 }: {
