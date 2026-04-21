@@ -17,6 +17,7 @@ const supabaseAdmin = createClient(
 const NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME = 'Dawn M. Kaplan Lister';
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'image001.png';
 // PDF coordinates: larger Y is higher on page. Negative values move content down.
+const SIGNATURE_Y_SHIFT = 80;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA = 0;
 // Positive values move content right.
@@ -1926,6 +1927,9 @@ export async function GET(
 
         const normalizedFormName = normalizedFormKey;
         const formNameLower = (form.form_name || '').toLowerCase();
+        const isCaliforniaTempEmploymentAgreement =
+          normalizedFormName === 'temp-employment-agreement' &&
+          (normalizedUserState === 'ca' || normalizedUserState === 'california');
         const directFormKey = form.form_name || normalizedFormName || 'unknown-form';
         let signatureForForm: SignatureEntry | null = null;
         let signatureSourceForm = directFormKey;
@@ -2250,6 +2254,35 @@ export async function GET(
           }
         }
 
+        if (isCaliforniaTempEmploymentAgreement && targetUserHomeVenueName) {
+          try {
+            const font = await formPdf.embedFont(StandardFonts.Helvetica);
+            const firstPage = formPdf.getPages()[0];
+            let fontSize = 10;
+            while (
+              fontSize > 7 &&
+              font.widthOfTextAtSize(targetUserHomeVenueName, fontSize) > 196
+            ) {
+              fontSize -= 0.5;
+            }
+
+            firstPage.drawText(targetUserHomeVenueName, {
+              x: 174,
+              y: 485,
+              size: fontSize,
+              font,
+              color: rgb(0, 0, 0),
+            });
+            console.log('[PDF_FORMS] Stamped CA temp-employment home venue onto:', form.form_name);
+          } catch (stampError) {
+            console.warn(
+              '[PDF_FORMS] Failed to stamp CA temp-employment home venue onto:',
+              form.form_name,
+              (stampError as Error).message
+            );
+          }
+        }
+
         const formPageCount = formPdf.getPageCount();
 
         if (isHandbook && useFormSignatures && signatureByForm.size > 0 && !isValidSignature(signatureForForm)) {
@@ -2393,9 +2426,6 @@ export async function GET(
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
           const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
-          const isCaliforniaTempEmploymentAgreement =
-            isTempEmploymentAgreement &&
-            (normalizedUserState === 'ca' || normalizedUserState === 'california');
 
           let attestationSignaturePlacement:
             | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
@@ -2492,14 +2522,15 @@ export async function GET(
                   );
               // CA temp-employment-agreement uses a dedicated lower signature position
               // that aligns with the generated PDF's `employee_signature_date` field at y=125.
-              const y = isCaliforniaTempEmploymentAgreement
-                ? 120
+              const rawY = isCaliforniaTempEmploymentAgreement
+                ? 125
                 : isI9Form
                 ? Math.max(0, i9DateFieldY - 185)
                 : Math.min(
                     height - signatureHeight,
                     baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
                   );
+              const y = Math.min(height - signatureHeight, rawY + SIGNATURE_Y_SHIFT);
 
               if (isTyped && !isDataUrl) {
                 page.drawText(signatureValue, {

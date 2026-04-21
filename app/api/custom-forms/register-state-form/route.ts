@@ -49,6 +49,7 @@ export async function POST(request: NextRequest) {
       allowDateInput,
       allowPrintName,
       targetState,
+      targetRegion,
       packetState,
       formType,
       venueId,
@@ -56,6 +57,7 @@ export async function POST(request: NextRequest) {
 
     const sourceState = String(packetState || targetState || '').trim().toUpperCase();
     const visibilityState = String(targetState || '').trim().toUpperCase() || null;
+    const visibilityRegion = String(targetRegion || '').trim() || null;
 
     if (!title?.trim() || !sourceState) {
       return NextResponse.json({ error: 'Missing title or source state' }, { status: 400 });
@@ -76,6 +78,7 @@ export async function POST(request: NextRequest) {
       .from('custom_pdf_forms')
       .select('id, title')
       .eq('storage_path', storagePath)
+      .eq('title', title.trim())
       .eq('is_active', true)
       .maybeSingle();
 
@@ -118,7 +121,7 @@ export async function POST(request: NextRequest) {
         allow_date_input: allowDateInput ?? false,
         allow_print_name: allowPrintName ?? false,
         target_state: visibilityState,
-        target_region: null,
+        target_region: visibilityRegion,
         created_by: user.id,
         is_active: true,
       })

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 
 const supabaseAdmin = createClient(
@@ -11,6 +11,25 @@ const supabaseAdmin = createClient(
 const STATE_CODE_PREFIXES = ['ca', 'ny', 'wi', 'az', 'nv', 'tx', 'fl', 'il', 'oh', 'pa', 'nj'] as const;
 const STATE_CODE_PREFIX_SET = new Set(STATE_CODE_PREFIXES);
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+const SIGNATURE_Y_SHIFT = 80;
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
+const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9', 'ca-de4', 'de4', 'wi-state-tax', 'state-tax']);
+const SIGNATURE_FALLBACK_PRIORITY = [
+  'employee-handbook',
+  'adp-deposit',
+  'fw4',
+  'i9',
+  'ca-de4',
+  'state-tax',
+  'ny-state-tax',
+  'wi-state-tax',
+  'az-state-tax',
+  'notice-to-employee',
+  'temp-employment-agreement',
+  'meal-waiver-6hour',
+  'meal-waiver-10-12',
+];
 
 type SignatureEntry = {
   form_id?: string | null;
@@ -269,6 +288,7 @@ export async function GET(request: NextRequest) {
       .maybeSingle();
 
     const preferredState = normalizeStateCode(profileData?.state);
+    const normalizedUserState = (employeeInfo?.state || profileData?.state || '').toString().toLowerCase().trim();
     const normalizedName = normalizeFormKey(formName);
     const formIdsToTry = buildFormIdCandidates(formName, preferredState);
     const signatureByForm = new Map<string, SignatureEntry>();
@@ -309,6 +329,7 @@ export async function GET(request: NextRequest) {
     }
 
     let selectedSignature: SignatureEntry | null = null;
+    const isEmployeeHandbook = normalizedName.includes('handbook');
 
     for (const key of formIdsToTry) {
       const candidate = signatureByForm.get(key);
@@ -327,6 +348,57 @@ export async function GET(request: NextRequest) {
       selectedSignature = fallbackEntries[0];
     }
 
+    if (!selectedSignature && isEmployeeHandbook) {
+      const handbookPriorityKeys = Array.from(new Set(
+        SIGNATURE_FALLBACK_PRIORITY.flatMap((key) => buildFormIdCandidates(key, preferredState))
+      ));
+
+      for (const tableName of ['forms_signature', 'form_signatures']) {
+        const { data: sigs, error: sigError } = await supabaseAdmin
+          .from(tableName)
+          .select('form_id, signature_data, signature_type, signed_at')
+          .eq('user_id', userId)
+          .eq('signature_role', 'employee')
+          .in('form_id', handbookPriorityKeys)
+          .order('signed_at', { ascending: false });
+
+        if (sigError || !sigs?.length) {
+          continue;
+        }
+
+        for (const sig of sigs) {
+          const rawFormId = (sig.form_id || '').toString().toLowerCase().trim();
+          if (!rawFormId || !sig.signature_data) continue;
+          const entry: SignatureEntry = {
+            form_id: rawFormId,
+            signature_data: sig.signature_data,
+            signature_type: sig.signature_type || null,
+            signed_at: sig.signed_at || null,
+          };
+
+          if (!isValidSignature(entry)) continue;
+
+          upsertSignatureEntry(signatureByForm, rawFormId, entry);
+          const normalizedFormId = normalizeFormKey(rawFormId);
+          if (normalizedFormId !== rawFormId) {
+            upsertSignatureEntry(signatureByForm, normalizedFormId, entry);
+          }
+        }
+
+        for (const fallbackKey of SIGNATURE_FALLBACK_PRIORITY) {
+          const candidate = signatureByForm.get(fallbackKey);
+          if (isValidSignature(candidate)) {
+            selectedSignature = candidate || null;
+            break;
+          }
+        }
+
+        if (selectedSignature) {
+          break;
+        }
+      }
+    }
+
     const signatureData = selectedSignature?.signature_data || null;
     const signatureType = selectedSignature?.signature_type || null;
 
@@ -339,6 +411,18 @@ export async function GET(request: NextRequest) {
     const pages = pdfDoc.getPages();
 
     const isI9 = normalizedName === 'i9';
+    const isFW4Form = normalizedName === 'fw4';
+    const isNoticeToEmployee = normalizedName === 'notice-to-employee';
+    const isCaDE4Form = normalizedName === 'ca-de4' || normalizedName === 'de4';
+    const isWIStateTax =
+      normalizedName === 'wi-state-tax' ||
+      (normalizedName === 'state-tax' && preferredState === 'wi') ||
+      formName.toLowerCase() === 'wi-state-tax';
+    const isStateTaxForm = normalizedName === 'state-tax';
+    const isTempEmploymentAgreement = normalizedName === 'temp-employment-agreement';
+    const isCaliforniaTempEmploymentAgreement =
+      isTempEmploymentAgreement &&
+      (normalizedUserState === 'ca' || normalizedUserState === 'california');
 
     // For I9: draw the state directly on the page and remove the form field,
     // so it renders correctly in every viewer without depending on appearance streams.
@@ -394,30 +478,28 @@ export async function GET(request: NextRequest) {
       }
     }
     const isAttestation = normalizedName === 'attestation';
-    const pageIdx = isI9 ? 0 : Math.max(pages.length - 1, 0);
-    const page = pages[pageIdx];
-    const { width, height } = page.getSize();
-
     const signatureWidth = 150;
     const signatureHeight = isI9 ? 30 : 15;
-
-    let x: number;
-    let y: number;
-
-    if (isI9) {
-      const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
-      x = Math.max(0, width - 490);
-      y = Math.max(0, i9DateFieldY - 180);
-    } else {
-      x = Math.max(0, width - signatureWidth - 50);
-      y = 50;
-    }
 
     const signatureKind = (signatureType || '').toLowerCase();
     const isImageDataUrl = signatureData.trim().toLowerCase().startsWith('data:image/');
     const isTyped = signatureKind === 'typed' || signatureKind === 'type' || !isImageDataUrl;
 
+    let signatureImage: PDFImage | null = null;
+    if (!isTyped) {
+      const { format, base64 } = normalizeSignatureImage(signatureData);
+      const imageBytes = Buffer.from(base64, 'base64');
+      signatureImage =
+        format === 'jpg' || format === 'jpeg'
+          ? await pdfDoc.embedJpg(imageBytes)
+          : await pdfDoc.embedPng(imageBytes);
+    }
+
     if (isAttestation) {
+      const fallbackPage = pages[Math.max(pages.length - 1, 0)];
+      const { width, height } = fallbackPage.getSize();
+      const fallbackX = Math.max(0, width - signatureWidth - 50);
+      const fallbackY = Math.min(height - signatureHeight, 50 + SIGNATURE_Y_SHIFT);
       let placedAttestationSignature = false;
       try {
         const attestationField = pdfDoc.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
@@ -428,7 +510,7 @@ export async function GET(request: NextRequest) {
           const pageRef = widget.P?.();
           const targetPage = pageRef
             ? pages.find((candidate: any) => candidate.ref === pageRef)
-            : page;
+            : fallbackPage;
 
           if (targetPage) {
             targetPage.drawRectangle({
@@ -448,13 +530,7 @@ export async function GET(request: NextRequest) {
                 size: 10,
                 font,
               });
-            } else {
-              const { format, base64 } = normalizeSignatureImage(signatureData);
-              const imageBytes = Buffer.from(base64, 'base64');
-              const signatureImage =
-                format === 'jpg' || format === 'jpeg'
-                  ? await pdfDoc.embedJpg(imageBytes)
-                  : await pdfDoc.embedPng(imageBytes);
+            } else if (signatureImage) {
               const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
               const drawWidth = signatureImage.width * scale;
               const drawHeight = signatureImage.height * scale;
@@ -478,30 +554,86 @@ export async function GET(request: NextRequest) {
         if (isTyped) {
           const { StandardFonts } = await import('pdf-lib');
           const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+          fallbackPage.drawText(signatureData, { x: fallbackX, y: fallbackY + signatureHeight / 2, size: 10, font });
+        } else if (signatureImage) {
+          fallbackPage.drawImage(signatureImage, {
+            x: fallbackX,
+            y: fallbackY,
+            width: signatureWidth,
+            height: signatureHeight,
+          });
+        }
+      }
+    } else {
+      const defaultPageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedName)
+        ? 0
+        : Math.max(pages.length - 1, 0);
+      const handbookPageCount = Math.min(10, pages.length);
+      const handbookStartIndex = Math.max(0, pages.length - handbookPageCount);
+      const stateTaxPageIndex = Math.max(pages.length - 2, 0);
+      const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
+        ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
+        : isStateTaxForm
+          ? [stateTaxPageIndex]
+          : [defaultPageIndex];
+
+      let font: PDFFont | null = null;
+      if (isTyped) {
+        const { StandardFonts } = await import('pdf-lib');
+        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      }
+
+      for (const pageIdx of signaturePageIndexes) {
+        const page = pages[pageIdx];
+        const { width, height } = page.getSize();
+        const baseX = width - signatureWidth - 50;
+        const baseY = isI9 ? 100 : 50;
+        const fw4OffsetX = isFW4Form ? -200 : 0;
+        const fw4OffsetY = isFW4Form ? 70 : 0;
+        const caDE4OffsetX = isCaDE4Form ? -300 : 0;
+        const caDE4OffsetY = isCaDE4Form ? 320 : 0;
+        const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
+        const i9OffsetX = isI9 ? -400 : 0;
+        const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
+        const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
+        const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
+        const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
+        const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
+        const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
+        const x = isTempEmploymentAgreement
+          ? 50
+          : Math.max(
+              0,
+              baseX +
+                fw4OffsetX +
+                i9OffsetX +
+                30 +
+                noticeToEmployeeOffsetX +
+                wiStateTaxOffsetX +
+                caDE4OffsetX +
+                stateTaxOffsetX
+            );
+        const rawY = isCaliforniaTempEmploymentAgreement
+          ? 125
+          : isI9
+            ? Math.max(0, i9DateFieldY - 185)
+            : Math.min(
+                height - signatureHeight,
+                baseY +
+                  fw4OffsetY +
+                  noticeToEmployeeOffsetY +
+                  wiStateTaxOffsetY +
+                  caDE4OffsetY +
+                  stateTaxOffsetY
+              );
+        const y = Math.min(height - signatureHeight, rawY + SIGNATURE_Y_SHIFT);
+
+        if (isTyped && font) {
           page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });
-        } else {
-          const { format, base64 } = normalizeSignatureImage(signatureData);
-          const imageBytes = Buffer.from(base64, 'base64');
-          const signatureImage =
-            format === 'jpg' || format === 'jpeg'
-              ? await pdfDoc.embedJpg(imageBytes)
-              : await pdfDoc.embedPng(imageBytes);
+        } else if (signatureImage) {
           page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
         }
       }
-    } else if (isTyped) {
-      const { StandardFonts } = await import('pdf-lib');
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });
-    } else {
-      const { format, base64 } = normalizeSignatureImage(signatureData);
-      const imageBytes = Buffer.from(base64, 'base64');
-      const signatureImage =
-        format === 'jpg' || format === 'jpeg'
-          ? await pdfDoc.embedJpg(imageBytes)
-          : await pdfDoc.embedPng(imageBytes);
-
-      page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
     }
 
     const resultBytes = await pdfDoc.save();

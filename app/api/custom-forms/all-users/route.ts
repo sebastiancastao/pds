@@ -36,7 +36,7 @@ export async function GET(request: NextRequest) {
     while (true) {
       const { data: users, error } = await supabase
         .from('users')
-        .select('id, email, role, profiles(first_name, last_name, city, state)')
+        .select('id, email, role, profiles(first_name, last_name, city, state, region_id)')
         .eq('is_active', true)
         .order('email', { ascending: true })
         .range(offset, offset + pageSize - 1);
@@ -68,6 +68,7 @@ export async function GET(request: NextRequest) {
         last_name: safeDecrypt(profile?.last_name || ''),
         city: profile?.city || null,
         state: profile?.state || null,
+        region_id: profile?.region_id || null,
       };
     });
 

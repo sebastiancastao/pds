@@ -20,6 +20,7 @@ type Employee = {
   profile_photo_url?: string | null;
   state: string | null;
   city: string | null;
+  region_id?: string | null;
   performance_score?: number | null;
   projects_completed?: number | null;
   attendance_rate?: number | null;
@@ -297,7 +298,7 @@ export default function EmployeeProfilePage() {
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
 
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; target_region: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
@@ -498,8 +499,9 @@ export default function EmployeeProfilePage() {
         if (formsRes.ok) {
           const data = await formsRes.json();
           const allForms = data.forms || [];
-          stateForms = allForms.filter((f: { target_state: string | null; assignment_count?: number }) =>
+          stateForms = allForms.filter((f: { target_state: string | null; target_region: string | null; assignment_count?: number }) =>
             (!f.target_state || !employee.state || f.target_state === employee.state) &&
+            (!f.target_region || !!employee.region_id && f.target_region === employee.region_id) &&
             (f.assignment_count === 0 || f.assignment_count == null)
           );
         }
@@ -509,7 +511,7 @@ export default function EmployeeProfilePage() {
         let specificForms: typeof customFormsList = [];
         if (assignmentsRes.ok) {
           const data = await assignmentsRes.json();
-          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
+          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; target_region: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
           specificIds = new Set(assigned.map((f) => f.id));
           assignedAtMap = Object.fromEntries(assigned.map((f) => [f.id, f.assigned_at ?? null]));
           specificForms = assigned.filter((f) => !stateForms.find((sf) => sf.id === f.id));
@@ -778,8 +780,7 @@ export default function EmployeeProfilePage() {
   };
 
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
-    const isI9 = form.form_name === 'i9' || /^[a-z]+-i9$/.test(form.form_name);
-    if (!isI9) return form.form_data;
+    if (!employeeId) return form.form_data;
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(
@@ -1989,6 +1990,11 @@ export default function EmployeeProfilePage() {
                                 <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
                                   {form.target_state ? `State: ${form.target_state}` : "All States"}
                                 </span>
+                                {form.target_region && (
+                                  <span className="text-xs font-medium text-teal-700 bg-teal-100 border border-teal-200 rounded-full px-2 py-0.5">
+                                    Region restricted
+                                  </span>
+                                )}
                                 {form.requires_signature && (
                                   <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
                                     Sig. required

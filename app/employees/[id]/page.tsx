@@ -253,7 +253,7 @@ export default function WorkerProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
-  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
+  const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; target_region: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
   const [assignedFormIds, setAssignedFormIds] = useState<Set<string>>(new Set());
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
@@ -452,9 +452,11 @@ export default function WorkerProfilePage() {
         if (formsRes.ok) {
           const data = await formsRes.json();
           const allForms = data.forms || [];
-          stateForms = allForms.filter((f: { target_state: string | null; assignment_count?: number }) =>
+          stateForms = allForms.filter((f: { target_state: string | null; target_region: string | null; assignment_count?: number }) =>
             // State filter
             (!f.target_state || f.target_state === employee.state) &&
+            // Region filter
+            (!f.target_region || f.target_region === (employee.region_id || null)) &&
             // Only include forms that are unrestricted (no specific user assignments).
             // Forms with assignment_count > 0 are restricted to specific users —
             // those will only appear via specificForms (user-assignments route).
@@ -467,7 +469,7 @@ export default function WorkerProfilePage() {
         let specificForms: typeof customFormsList = [];
         if (assignmentsRes.ok) {
           const data = await assignmentsRes.json();
-          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
+          const assigned: { id: string; title: string; requires_signature: boolean; target_state: string | null; target_region: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[] = data.assignedForms || [];
           specificIds = new Set(assigned.map(f => f.id));
           assignedAtMap = Object.fromEntries(assigned.map(f => [f.id, f.assigned_at ?? null]));
           // Add assigned forms not already in the state list
@@ -827,12 +829,29 @@ export default function WorkerProfilePage() {
     setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
   };
 
+  const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
+    if (!employeeId) return form.form_data;
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}`,
+        { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        if (json.formData) return json.formData;
+      }
+    } catch (e) {
+      console.warn('Failed to fetch form with signature, falling back to raw data', e);
+    }
+    return form.form_data;
+  };
+
   // Download a single PDF form
   const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = form.form_date
-        ? await withDateEmbedded(form.form_data, form.form_date)
-        : form.form_data;
+      let data = await getFormDataWithSignature(form);
+      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
       if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
@@ -850,9 +869,8 @@ export default function WorkerProfilePage() {
 
   const viewPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = form.form_date
-        ? await withDateEmbedded(form.form_data, form.form_date)
-        : form.form_data;
+      let data = await getFormDataWithSignature(form);
+      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
       if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       openPdfInNewTab(data);
     } catch (error) {
@@ -1858,6 +1876,11 @@ export default function WorkerProfilePage() {
                                 {form.requires_signature && (
                                   <span className="text-xs font-medium text-amber-700 bg-amber-100 border border-amber-200 rounded-full px-2 py-0.5">
                                     Sig. required
+                                  </span>
+                                )}
+                                {form.target_region && (
+                                  <span className="text-xs font-medium text-teal-700 bg-teal-100 border border-teal-200 rounded-full px-2 py-0.5">
+                                    Region restricted
                                   </span>
                                 )}
                                 <span className={`text-xs font-medium rounded-full px-2 py-0.5 border ${

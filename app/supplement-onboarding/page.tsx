@@ -11,6 +11,7 @@ type CustomForm = {
   title: string;
   requires_signature: boolean;
   target_state: string | null;
+  target_region: string | null;
   assignment_count?: number;
 };
 
@@ -21,6 +22,7 @@ type Employee = {
   email: string;
   status: string;
   state: string;
+  region_id?: string | null;
 };
 
 type Completion = {
@@ -219,7 +221,10 @@ export default function SupplementOnboardingPage() {
       // If assignments haven't loaded yet, or form is unrestricted, apply by state
       const isRestricted = assignmentsLoaded && (f.assignment_count ?? 0) > 0;
       if (!isRestricted) {
-        return !f.target_state || f.target_state === emp.state;
+        return (
+          (!f.target_state || f.target_state === emp.state) &&
+          (!f.target_region || f.target_region === (emp.region_id || null))
+        );
       }
       return false;
     });
@@ -495,8 +500,8 @@ export default function SupplementOnboardingPage() {
                               <div className="min-w-[180px] space-y-2">
                                 {(() => {
                                   const personal = applicable.filter(f => isPersonallyAssigned(emp, f));
-                                  const universal = applicable.filter(f => !isPersonallyAssigned(emp, f) && !f.target_state);
-                                  const stateSpecific = applicable.filter(f => !isPersonallyAssigned(emp, f) && !!f.target_state);
+                                  const universal = applicable.filter(f => !isPersonallyAssigned(emp, f) && !f.target_state && !f.target_region);
+                                  const targeted = applicable.filter(f => !isPersonallyAssigned(emp, f) && (!!f.target_state || !!f.target_region));
                                   return (
                                     <>
                                       {personal.length > 0 && (
@@ -523,14 +528,18 @@ export default function SupplementOnboardingPage() {
                                           </ul>
                                         </div>
                                       )}
-                                      {stateSpecific.length > 0 && (
+                                      {targeted.length > 0 && (
                                         <div>
                                           <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-800 mb-1">
-                                            {emp.state} Only
+                                            Targeted
                                           </span>
                                           <ul className="text-xs text-gray-600 pl-1 space-y-0.5">
-                                            {stateSpecific.map(f => (
-                                              <li key={f.id} className="truncate" title={f.title}>• {f.title}</li>
+                                            {targeted.map(f => (
+                                              <li key={f.id} className="truncate" title={f.title}>
+                                                • {f.title}
+                                                {f.target_state ? ` (${f.target_state})` : ''}
+                                                {f.target_region ? ' [region]' : ''}
+                                              </li>
                                             ))}
                                           </ul>
                                         </div>

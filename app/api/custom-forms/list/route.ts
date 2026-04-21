@@ -61,7 +61,7 @@ export async function GET(request: NextRequest) {
     // Execs, admins, and HR always see all forms regardless of assignments
     const { data: userRecord } = await adminClient
       .from('users')
-      .select('role')
+      .select('role, profiles(state, region_id)')
       .eq('id', user.id)
       .single();
 
@@ -90,6 +90,18 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ forms: formsWithCounts });
     }
 
+    const userProfile = Array.isArray((userRecord as any)?.profiles)
+      ? (userRecord as any).profiles[0]
+      : (userRecord as any)?.profiles;
+    const userState = typeof userProfile?.state === 'string' ? userProfile.state : null;
+    const userRegionId = typeof userProfile?.region_id === 'string' ? userProfile.region_id : null;
+
+    const matchesTargeting = (form: any) => {
+      const stateMatches = !form.target_state || (!!userState && form.target_state === userState);
+      const regionMatches = !form.target_region || (!!userRegionId && form.target_region === userRegionId);
+      return stateMatches && regionMatches;
+    };
+
     // For employees/workers: filter by user-specific assignments.
     // Forms with at least one assignment are restricted — only assigned users can see them.
     // Forms with no assignments are visible to everyone.
@@ -100,8 +112,8 @@ export async function GET(request: NextRequest) {
 
     if (assignErr) {
       if ((assignErr as any).code === '42P01') {
-        // Table doesn't exist yet — show all forms
-        return NextResponse.json({ forms: allForms });
+        // Table doesn't exist yet — show unrestricted forms filtered by the user's own state/region
+        return NextResponse.json({ forms: allForms.filter(matchesTargeting) });
       }
       console.error('[CUSTOM-FORMS LIST] Assignments error:', assignErr);
       return NextResponse.json(
@@ -113,8 +125,8 @@ export async function GET(request: NextRequest) {
     const assignments = allAssignments ?? [];
 
     if (assignments.length === 0) {
-      // No assignments exist at all — show everything
-      return NextResponse.json({ forms: allForms });
+      // No assignments exist at all — show unrestricted forms filtered by the user's own state/region
+      return NextResponse.json({ forms: allForms.filter(matchesTargeting) });
     }
 
     // Build sets: which forms are restricted, and which are assigned to this user
@@ -123,9 +135,11 @@ export async function GET(request: NextRequest) {
       assignments.filter((a: any) => a.user_id === user.id).map((a: any) => a.form_id)
     );
 
-    const visibleForms = allForms.filter(
-      (f: any) => !restrictedFormIds.has(f.id) || userAssignedFormIds.has(f.id)
-    );
+    const visibleForms = allForms.filter((f: any) => {
+      if (userAssignedFormIds.has(f.id)) return true;
+      if (restrictedFormIds.has(f.id)) return false;
+      return matchesTargeting(f);
+    });
 
     return NextResponse.json({ forms: visibleForms });
   } catch (err: any) {

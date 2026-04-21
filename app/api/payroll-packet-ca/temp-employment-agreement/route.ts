@@ -144,14 +144,14 @@ export async function GET(request: Request) {
     if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(continueLinkAnnot)])); }
 
-    // Home venue field on the last page
+    // Home venue field on the first page, below the printed name field
     const homeVenueField = form.createTextField('home_venue');
     if (homeVenueName) homeVenueField.setText(homeVenueName);
-    homeVenueField.addToPage(lastPage, {
-      x: 190,
-      y: 1290,
-      width: 100,
-      height: 13,
+    homeVenueField.addToPage(firstPage, {
+      x: 180,
+      y: 470,
+      width: 200,
+      height: 18,
       borderColor: rgb(0, 0, 0),
       borderWidth: 1,
     });

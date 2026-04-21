@@ -27,6 +27,7 @@ type EmployeeResult = {
   city: string | null;
   state: string | null;
   role?: string;
+  region_id?: string | null;
 };
 
 type Assignee = {
@@ -62,6 +63,11 @@ type VenueRecipient = {
   email: string;
   first_name: string;
   last_name: string;
+};
+
+type RegionOption = {
+  id: string;
+  name: string;
 };
 
 const US_STATES = [
@@ -211,6 +217,7 @@ export default function AdminPdfFormsPage() {
   const [allowPrintName, setAllowPrintName] = useState(false);
   const [allowVenueDisplay, setAllowVenueDisplay] = useState(false);
   const [targetState, setTargetState] = useState('');
+  const [targetRegion, setTargetRegion] = useState('');
   const [targetUsers, setTargetUsers] = useState<EmployeeResult[]>([]);
   const [showUserPickerModal, setShowUserPickerModal] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
@@ -247,17 +254,24 @@ export default function AdminPdfFormsPage() {
   const [selectedUsers, setSelectedUsers] = useState<EmployeeResult[]>([]);
   const [assignees, setAssignees] = useState<Assignee[]>([]);
   const [assigneesLoading, setAssigneesLoading] = useState(false);
-  const [sendTab, setSendTab] = useState<'users' | 'venue'>('users');
+  const [sendTab, setSendTab] = useState<'users' | 'venue' | 'region'>('users');
+  const [regions, setRegions] = useState<RegionOption[]>([]);
+  const [regionsLoading, setRegionsLoading] = useState(false);
   const [venues, setVenues] = useState<VenueOption[]>([]);
   const [vendorVenueAssignments, setVendorVenueAssignments] = useState<VendorVenueAssignment[]>([]);
   const [venueVendors, setVenueVendors] = useState<VenueAssignmentVendor[]>([]);
   const [venuesLoading, setVenuesLoading] = useState(false);
   const [selectedVenueId, setSelectedVenueId] = useState('');
+  const [selectedSendRegionId, setSelectedSendRegionId] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
   const [sendSuccess, setSendSuccess] = useState('');
 
   const currentYear = new Date().getFullYear();
+  const regionNameById = useMemo(
+    () => new Map(regions.map((region) => [region.id, region.name])),
+    [regions]
+  );
 
   const sortUsersByDisplayName = useCallback((a: EmployeeResult, b: EmployeeResult) => {
     const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim() || a.email;
@@ -438,6 +452,11 @@ export default function AdminPdfFormsPage() {
     [venuesWithVendors, selectedVenueId]
   );
 
+  const selectedSendRegion = useMemo(
+    () => regions.find((region) => region.id === selectedSendRegionId) || null,
+    [regions, selectedSendRegionId]
+  );
+
   const venueVendorsById = useMemo(
     () => new Map(venueVendors.map((v) => [v.id, v])),
     [venueVendors]
@@ -472,6 +491,19 @@ export default function AdminPdfFormsPage() {
   const pendingVenueRecipients = useMemo(
     () => selectedVenueRecipients.filter((recipient) => !assignedUserIds.has(recipient.id)),
     [selectedVenueRecipients, assignedUserIds]
+  );
+
+  const selectedRegionRecipients = useMemo(() => {
+    if (!selectedSendRegionId) return [];
+
+    return allUsers
+      .filter((user) => user.region_id === selectedSendRegionId)
+      .sort(sortUsersByDisplayName);
+  }, [allUsers, selectedSendRegionId, sortUsersByDisplayName]);
+
+  const pendingRegionRecipients = useMemo(
+    () => selectedRegionRecipients.filter((recipient) => !assignedUserIds.has(recipient.id)),
+    [selectedRegionRecipients, assignedUserIds]
   );
 
   const vendorIdToVenueNames = useMemo(() => {
@@ -552,6 +584,24 @@ export default function AdminPdfFormsPage() {
     }
   }, []);
 
+  const loadRegions = useCallback(async () => {
+    setRegionsLoading(true);
+    try {
+      const res = await fetch('/api/regions');
+      const data = await res.json().catch(() => null);
+      const nextRegions = Array.isArray(data?.regions)
+        ? data.regions
+            .filter((region: any) => region?.id && region?.name)
+            .map((region: any) => ({ id: region.id, name: region.name }))
+        : [];
+      setRegions(nextRegions);
+    } catch {
+      setRegions([]);
+    } finally {
+      setRegionsLoading(false);
+    }
+  }, []);
+
   const fetchPickerUsers = useCallback((q: string) => {
     const waitingForUsers = allUsersLoading && allUsers.length === 0;
     setPickerLoading(waitingForUsers);
@@ -599,6 +649,7 @@ export default function AdminPdfFormsPage() {
     // Pre-select venue tab if a venue is selected on the main page
     setSendTab(pageVenueId ? 'venue' : 'users');
     setSelectedVenueId(pageVenueId);
+    setSelectedSendRegionId('');
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
@@ -628,6 +679,7 @@ export default function AdminPdfFormsPage() {
     setSelectedUsers([]);
     setSendTab('users');
     setSelectedVenueId('');
+    setSelectedSendRegionId('');
     setSendError('');
     setSendSuccess('');
     setAssignees([]);
@@ -647,6 +699,8 @@ export default function AdminPdfFormsPage() {
     const userIds =
       sendTab === 'venue'
         ? pendingVenueRecipients.map((recipient) => recipient.id)
+        : sendTab === 'region'
+        ? pendingRegionRecipients.map((recipient) => recipient.id)
         : selectedUsers.map((user) => user.id);
 
     if (userIds.length === 0) return;
@@ -671,6 +725,11 @@ export default function AdminPdfFormsPage() {
         const venueLabel = selectedVenue?.venue_name || 'selected venue';
         setSendSuccess(
           `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} at ${venueLabel}.`
+        );
+      } else if (sendTab === 'region') {
+        const regionLabel = selectedSendRegion?.name || 'selected region';
+        setSendSuccess(
+          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} in ${regionLabel}.`
         );
       } else {
         setSendSuccess(`Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''}.`);
@@ -754,6 +813,7 @@ export default function AdminPdfFormsPage() {
     await Promise.all([
       loadForms(session.access_token),
       loadPageVenues(),
+      loadRegions(),
       loadAssignableUsers(session.access_token),
       fetchVenueAssignments(session.access_token).catch(() => {}),
     ]);
@@ -790,6 +850,7 @@ export default function AdminPdfFormsPage() {
     setTitle(`${preset.code}-${currentYear}`);
     setRequiresSignature(preset.requiresSignature);
     setTargetState('');
+    setTargetRegion('');
     setError('');
     setSuccessMsg('');
     setTimeout(() => fileInputRef.current?.click(), 50);
@@ -805,6 +866,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setAllowVenueDisplay(false);
       setTargetState('');
+      setTargetRegion('');
       return;
     }
     setSelectedStatePreset(preset.code);
@@ -814,6 +876,7 @@ export default function AdminPdfFormsPage() {
     setAllowDateInput(preset.allowDateInput);
     setAllowPrintName(preset.allowPrintName);
     setTargetState(preset.state);
+    setTargetRegion('');
     setError('');
     setSuccessMsg('');
   };
@@ -838,7 +901,13 @@ export default function AdminPdfFormsPage() {
       const res = await fetch('/api/custom-forms/register-state-form', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ title: title.trim(), requiresSignature, targetState, venueId: pageVenueId || undefined }),
+        body: JSON.stringify({
+          title: title.trim(),
+          requiresSignature,
+          targetState,
+          targetRegion: targetRegion || null,
+          venueId: pageVenueId || undefined,
+        }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
@@ -865,6 +934,7 @@ export default function AdminPdfFormsPage() {
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
+      setTargetRegion('');
       setTargetUsers([]);
       setSelectedStatePreset(null);
       await loadForms(session.access_token);
@@ -886,6 +956,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setAllowVenueDisplay(false);
       setTargetState('');
+      setTargetRegion('');
       return;
     }
     setSelectedPacketPreset(preset.code);
@@ -896,6 +967,7 @@ export default function AdminPdfFormsPage() {
     setAllowDateInput(preset.allowDateInput);
     setAllowPrintName(preset.allowPrintName);
     setTargetState('');
+    setTargetRegion('');
     setError('');
     setSuccessMsg('');
   };
@@ -923,6 +995,7 @@ export default function AdminPdfFormsPage() {
           allowDateInput,
           allowPrintName,
           targetState: targetState || null,
+          targetRegion: targetRegion || null,
           packetState: preset.state,
           formType: preset.formType,
           venueId: pageVenueId || undefined,
@@ -955,6 +1028,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setAllowVenueDisplay(false);
       setTargetState('');
+      setTargetRegion('');
       setTargetUsers([]);
       setSelectedPacketPreset(null);
       await loadForms(session.access_token);
@@ -1000,6 +1074,7 @@ export default function AdminPdfFormsPage() {
       fd.append('allowPrintName', String(allowPrintName));
       fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
+      fd.append('targetRegion', targetRegion);
       if (pageVenueId) fd.append('venueId', pageVenueId);
 
       const res = await fetch('/api/custom-forms/upload', {
@@ -1036,6 +1111,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setAllowVenueDisplay(false);
       setTargetState('');
+      setTargetRegion('');
       setTargetUsers([]);
       setSelectedPreset(null);
       setSelectedStatePreset(null);
@@ -1073,6 +1149,7 @@ export default function AdminPdfFormsPage() {
       fd.append('allowPrintName', String(allowPrintName));
       fd.append('allowVenueDisplay', String(allowVenueDisplay));
       fd.append('targetState', targetState);
+      fd.append('targetRegion', targetRegion);
       fd.append('venueId', pageVenueId);
 
       const res = await fetch('/api/custom-forms/upload', {
@@ -1091,6 +1168,7 @@ export default function AdminPdfFormsPage() {
       setAllowPrintName(false);
       setAllowVenueDisplay(false);
       setTargetState('');
+      setTargetRegion('');
       setHomeVenueFileName('');
       if (homeVenueFileRef.current) homeVenueFileRef.current.value = '';
       await loadForms(session.access_token);
@@ -1694,6 +1772,28 @@ export default function AdminPdfFormsPage() {
               )}
             </div>
 
+            <div className="pt-2 border-t border-gray-100">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Restrict to Region
+                <span className="ml-1 text-xs text-gray-400 font-normal">(optional)</span>
+              </label>
+              <select
+                value={targetRegion}
+                onChange={e => setTargetRegion(e.target.value)}
+                disabled={regionsLoading}
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white disabled:bg-gray-50"
+              >
+                <option value="">
+                  {regionsLoading ? 'Loading regions...' : 'All regions'}
+                </option>
+                {regions.map(region => (
+                  <option key={region.id} value={region.id}>
+                    {region.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {/* Restrict to venue */}
             <div className="pt-2 border-t border-gray-100">
               <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1970,6 +2070,11 @@ export default function AdminPdfFormsPage() {
                           {form.target_state}
                         </span>
                       )}
+                      {form.target_region && (
+                        <span className="inline-flex items-center rounded-lg border border-teal-200 bg-teal-50 px-2.5 py-1 text-xs font-medium text-teal-700">
+                          Region: {regionNameById.get(form.target_region) || form.target_region}
+                        </span>
+                      )}
                       {form.assignment_count != null && form.assignment_count > 0 ? (
                         <span className="inline-flex items-center rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">
                           Restricted · {form.assignment_count} user{form.assignment_count !== 1 ? 's' : ''}
@@ -2063,6 +2168,17 @@ export default function AdminPdfFormsPage() {
                 }`}
               >
                 By Venue
+              </button>
+              <button
+                type="button"
+                onClick={() => setSendTab('region')}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  sendTab === 'region'
+                    ? 'bg-white text-purple-700 shadow-sm'
+                    : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                By Region
               </button>
             </div>
 
@@ -2167,7 +2283,7 @@ export default function AdminPdfFormsPage() {
             )}
 
               </>
-            ) : (
+            ) : sendTab === 'venue' ? (
               <div className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1.5">Assigned Venue</label>
@@ -2250,6 +2366,87 @@ export default function AdminPdfFormsPage() {
                   </div>
                 )}
               </div>
+            ) : (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1.5">Assigned Region</label>
+                  <select
+                    value={selectedSendRegionId}
+                    onChange={(e) => setSelectedSendRegionId(e.target.value)}
+                    disabled={regionsLoading || regions.length === 0}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:bg-gray-50"
+                  >
+                    <option value="">
+                      {regionsLoading
+                        ? 'Loading regions...'
+                        : regions.length === 0
+                        ? 'No regions available'
+                        : 'Select a region'}
+                    </option>
+                    {regions.map((region) => (
+                      <option key={region.id} value={region.id}>
+                        {region.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedSendRegion && (
+                  <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
+                    <p className="font-medium text-gray-900">{selectedSendRegion.name}</p>
+                    <p className="text-xs text-gray-600 mt-2">
+                      {selectedRegionRecipients.length} user{selectedRegionRecipients.length !== 1 ? 's' : ''} assigned to this region.
+                      {pendingRegionRecipients.length !== selectedRegionRecipients.length && (
+                        <span className="ml-1">{pendingRegionRecipients.length} still need this form.</span>
+                      )}
+                    </p>
+                  </div>
+                )}
+
+                {selectedSendRegionId && !regionsLoading && selectedRegionRecipients.length === 0 && (
+                  <p className="text-xs text-gray-400">No users are currently assigned to this region.</p>
+                )}
+
+                {selectedRegionRecipients.length > 0 && (
+                  <div>
+                    <p className="text-sm font-medium text-gray-700 mb-2">
+                      Region Users ({selectedRegionRecipients.length})
+                    </p>
+                    <div className="border border-gray-200 rounded-lg overflow-hidden divide-y divide-gray-100 max-h-56 overflow-y-auto">
+                      {selectedRegionRecipients.map((recipient) => {
+                        const isAlreadyAssigned = assignedUserIds.has(recipient.id);
+                        return (
+                          <div
+                            key={recipient.id}
+                            className={`flex items-center justify-between gap-3 px-3 py-2 ${
+                              isAlreadyAssigned ? 'bg-gray-50' : 'bg-white'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">
+                                {getDisplayName(recipient)}
+                              </p>
+                              <p className="text-xs text-gray-500 truncate">
+                                {recipient.email}
+                                {recipient.state ? ` · ${recipient.state}` : ''}
+                              </p>
+                            </div>
+                            <span
+                              className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
+                                isAlreadyAssigned
+                                  ? 'border border-gray-300 bg-gray-100 text-gray-500'
+                                  : 'border border-green-200 bg-green-50 text-green-700'
+                              }`}
+                            >
+                              {isAlreadyAssigned ? 'Already assigned' : 'Will be assigned'}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
 
             {sendError && (
@@ -2302,7 +2499,13 @@ export default function AdminPdfFormsPage() {
               onClick={handleSendToUsers}
               disabled={
                 sending ||
-                (sendTab === 'venue' ? pendingVenueRecipients.length === 0 : selectedUsers.length === 0)
+                (
+                  sendTab === 'venue'
+                    ? pendingVenueRecipients.length === 0
+                    : sendTab === 'region'
+                    ? pendingRegionRecipients.length === 0
+                    : selectedUsers.length === 0
+                )
               }
               className="flex-1 py-2 px-4 rounded-lg bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-sm font-semibold transition-colors"
             >
@@ -2310,6 +2513,8 @@ export default function AdminPdfFormsPage() {
                 ? 'Sending...'
                 : sendTab === 'venue'
                 ? `Assign to ${pendingVenueRecipients.length} User${pendingVenueRecipients.length !== 1 ? 's' : ''} at Venue`
+                : sendTab === 'region'
+                ? `Assign to ${pendingRegionRecipients.length} User${pendingRegionRecipients.length !== 1 ? 's' : ''} in Region`
                 : `Assign to ${selectedUsers.length} User${selectedUsers.length !== 1 ? 's' : ''}`}
             </button>
           </div>
