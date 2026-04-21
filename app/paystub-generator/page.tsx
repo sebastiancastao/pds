@@ -1125,7 +1125,9 @@ export default function PaystubGenerator() {
               ? storedVariableIncentive
               : Math.max(0, commissionPaidRaw - commissionShareRaw);
           const variableIncentive = roundMoney(variableIncentiveRaw);
-          const totalPay = roundMoney(commissionPaidRaw + tips + restPay);
+          const totalPay = roundMoney(
+            commissionPaid + variableIncentive + tips + restPay
+          );
           const rateInEffect = hoursWorked > 0
             ? roundMoney(commissionPaidRaw / hoursWorked)
             : 0;

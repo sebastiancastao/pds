@@ -1436,13 +1436,15 @@ export async function POST(req: NextRequest) {
         const dtPay = Number(paymentData?.doubletime_pay || 0);
 
         const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0);
-        const computedTotalPay = roundPayrollAmount(totalFinalCommissionAmt + distributedTipsShare + restBreak);
-        const reportFinalPay = computedTotalPay;
-        const computedTotalGrossPay = computedTotalPay + other;
         const reportCommissionShare = roundPayrollAmount(distributedCommissionShare);
         const reportVariableIncentive = storedVariableIncentive != null
           ? roundPayrollAmount(storedVariableIncentive)
           : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - distributedCommissionShare));
+        const reportFinalPay = roundPayrollAmount(
+          reportCommissionShare + reportVariableIncentive + tips + restBreak
+        );
+        const computedTotalPay = reportFinalPay;
+        const computedTotalGrossPay = computedTotalPay + other;
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
@@ -2076,14 +2078,16 @@ export async function POST(req: NextRequest) {
         // If persisted total_pay exists and is non-zero, keep it for non-CA; otherwise use computed.
         const persistedTotal = Number(paymentData?.total_pay || 0);
         const persistedTotalGrossPay = persistedTotal + other;
-        const computedTotalPay = roundPayrollAmount(totalFinalCommissionAmt + distributedTipsShare + restBreak);
-        const reportFinalPay = computedTotalPay;
-        const computedTotalGrossPay = computedTotalPay + other;
-        const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
         const reportCommissionShare = roundPayrollAmount(distributedCommissionShare);
         const reportVariableIncentive = storedVariableIncentive != null
           ? roundPayrollAmount(storedVariableIncentive)
           : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - distributedCommissionShare));
+        const reportFinalPay = roundPayrollAmount(
+          reportCommissionShare + reportVariableIncentive + tips + restBreak
+        );
+        const computedTotalPay = reportFinalPay;
+        const computedTotalGrossPay = computedTotalPay + other;
+        const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
