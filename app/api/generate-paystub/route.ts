@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { safeDecrypt } from "@/lib/encryption";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -86,18 +87,40 @@ export async function POST(req: NextRequest) {
       };
       return map[st] || st;
     };
+    const toPlainText = (value: unknown) => (value ?? "").toString().trim();
+    const decryptText = (value: unknown) => {
+      const raw = toPlainText(value);
+      return raw ? safeDecrypt(raw).trim() : "";
+    };
+    const buildProfileAddress = (profile: any) => {
+      const street = decryptText(profile?.address);
+      const city = decryptText(profile?.city);
+      const decryptedState = decryptText(profile?.state);
+      const stateCode = normalizeStateCode(decryptedState) || decryptedState;
+      const zipCode = decryptText(profile?.zip_code);
+      const locality = [
+        city,
+        [stateCode, zipCode].filter(Boolean).join(" "),
+      ].filter(Boolean).join(", ");
+      return [street, locality].filter(Boolean).join(", ");
+    };
 
     // Source of truth: employee profile state (fallback to request payload state).
     let paystubState = normalizeStateCode(state) || "CA";
+    let displayAddress = decryptText(address);
     if (matchedUserId) {
       try {
         const { data: profile } = await supabaseAdmin
           .from("profiles")
-          .select("state")
+          .select("state, address, city, zip_code")
           .eq("user_id", matchedUserId)
           .maybeSingle();
-        const profileState = normalizeStateCode((profile as any)?.state);
+        const profileState = normalizeStateCode(decryptText((profile as any)?.state));
         if (profileState) paystubState = profileState;
+        if (!displayAddress) {
+          const profileAddress = buildProfileAddress(profile);
+          if (profileAddress) displayAddress = profileAddress;
+        }
       } catch (e) {
         // Non-fatal; keep payload state fallback.
       }
@@ -1067,11 +1090,35 @@ export async function POST(req: NextRequest) {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
       const C = { date: 20, show: 58, venue: 105, adjGross: 152, pool: 192, numEmp: 232, comm: 275, hours: 313, rate: 345, varInc: 377, tips: 425, restPay: 456, finalPay: 487 };
+      const splitReportAddressLines = (rawAddress?: string | null) => {
+        const str = (rawAddress || "").toString().trim();
+        if (!str) return ["", "", ""] as const;
+        const parts = str.split(",").map((part) => part.trim()).filter(Boolean);
+        if (parts.length <= 1) return [str, "", ""] as const;
+        if (parts.length === 2) return [parts[0], parts[1], ""] as const;
+        return [parts[0], parts.slice(1, parts.length - 1).join(", "), parts[parts.length - 1]] as const;
+      };
+      const [reportAddressLine1, reportAddressLine2, reportAddressLine3] = splitReportAddressLines(displayAddress);
+      const reportIdentityLines = [
+        (employeeName || "").trim(),
+        reportAddressLine1,
+        reportAddressLine2,
+        reportAddressLine3,
+      ].filter((line): line is string => Boolean(line && line.trim()));
       let y = 760;
       drawR("Commission Report", 190, y, { bold: true, size: 13 });
-      y -= 16;
-      drawR("Commission = Commission Pool / # of Employees", 25, y, { size: 7 });
-      y -= 8;
+      let identityBottomY = y;
+      if (reportIdentityLines.length > 0) {
+        drawR(reportIdentityLines[0], 395, y, { bold: true, size: 9 });
+        reportIdentityLines.slice(1).forEach((line, index) => {
+          const lineY = y - 10 - (index * 8);
+          drawR(line, 395, lineY, { size: 8 });
+          identityBottomY = lineY;
+        });
+      }
+      const legendY = y - 16;
+      drawR("Commission = Commission Pool / # of Employees", 25, legendY, { size: 7 });
+      y = Math.min(legendY - 8, identityBottomY - 10);
       drawRL(20, y, 592);
       y -= 13;
       // Header row 1
@@ -1217,7 +1264,7 @@ export async function POST(req: NextRequest) {
       const maskedSsn = ssnDigits.length >= 4 ? `XXX-XX-${ssnDigits.slice(-4)}` : (ssn || "XXX-XX-XXXX");
       const accountMask = ssnDigits.length >= 4 ? `XXXXXX${ssnDigits.slice(-4)}` : "XXXXXXXXXX";
       const routingMask = "XXXXXXXXX";
-      const [addressLine1, addressLine2, addressLine3] = splitAddressLines(address);
+      const [addressLine1, addressLine2, addressLine3] = splitAddressLines(displayAddress);
 
       // Derive pay period from actual event dates so it always coincides
       // with the events loaded in the paystub generator.
@@ -1850,7 +1897,7 @@ export async function POST(req: NextRequest) {
     yPosition = height - 140;
     drawText(employeeName || '', 50, yPosition, { bold: true, size: 11 });
     yPosition -= 15;
-    drawText(address || '', 50, yPosition);
+    drawText(displayAddress || '', 50, yPosition);
     yPosition -= 15;
     drawText(`SSN: ${ssn || 'XXX-XX-XXXX'}`, 50, yPosition);
 
@@ -2329,7 +2376,7 @@ export async function POST(req: NextRequest) {
     yPosition -= 15;
     drawText(employeeName || '', 50, yPosition, { size: 9 });
     yPosition -= 12;
-    drawText(address || '', 50, yPosition, { size: 9 });
+    drawText(displayAddress || '', 50, yPosition, { size: 9 });
 
     addCommissionReportPage(nonCaCommissionRows);
 
