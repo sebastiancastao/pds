@@ -33,6 +33,8 @@ interface SickLeaveSummary {
   accrued_months: number;
   accrued_hours: number;
   accrued_days: number;
+  carry_over_hours: number;
+  carry_over_days: number;
   balance_hours: number;
   balance_days: number;
 }
@@ -2314,8 +2316,9 @@ export async function POST(req: NextRequest) {
     if (sickLeave) {
       drawText("Sick Leave Summary", 360, sickLeaveDisplayY + 12, { bold: true, size: 9 });
       drawText(`Hours Used: ${sickLeave.total_hours.toFixed(2)}`, 360, sickLeaveDisplayY, { size: 8 });
-      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 12, { size: 8 });
-      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 24, { size: 8 });
+      drawText(`Carry Over: ${Number(sickLeave.carry_over_hours || 0).toFixed(2)}`, 360, sickLeaveDisplayY - 12, { size: 8 });
+      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 24, { size: 8 });
+      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 360, sickLeaveDisplayY - 36, { size: 8 });
     }
 
     // Reimbursement
@@ -2339,9 +2342,11 @@ export async function POST(req: NextRequest) {
       drawText("Sick Leave Summary", 50, yPosition, { bold: true, size: 10 });
       yPosition -= 12;
       drawText(`Hours Used: ${sickLeave.total_hours.toFixed(2)}`, 50, yPosition, { size: 9 });
-      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`Carry Over: ${Number(sickLeave.carry_over_hours || 0).toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
-      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 50, yPosition, { size: 9 });
+      drawText(`Hours Accrued: ${sickLeave.accrued_hours.toFixed(2)}`, 50, yPosition, { size: 9 });
+      drawText(`Balance: ${sickLeave.balance_hours.toFixed(2)}`, 250, yPosition, { size: 9 });
+      yPosition -= 12;
     }
 
     // Important Notes (commission rate explanation)

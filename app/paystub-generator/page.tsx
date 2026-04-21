@@ -96,6 +96,8 @@ interface SickLeaveBalance {
   accrued_months: number;
   accrued_hours: number;
   accrued_days: number;
+  carry_over_hours: number;
+  carry_over_days: number;
   balance_hours: number;
   balance_days: number;
 }
@@ -1196,6 +1198,7 @@ export default function PaystubGenerator() {
         ? [
             {
               total_hours: sickLeave.total_hours,
+              carry_over_hours: sickLeave.carry_over_hours,
               accrued_hours: sickLeave.accrued_hours,
               balance_hours: sickLeave.balance_hours,
             },
@@ -2017,6 +2020,10 @@ export default function PaystubGenerator() {
                                             <div>
                                               <span className="text-slate-500">Hours Used:</span>{' '}
                                               <span className="font-medium text-slate-900">{sickLeave.total_hours.toFixed(2)}</span>
+                                            </div>
+                                            <div>
+                                              <span className="text-slate-500">Carry Over:</span>{' '}
+                                              <span className="font-medium text-slate-900">{Number(sickLeave.carry_over_hours || 0).toFixed(2)}</span>
                                             </div>
                                             <div>
                                               <span className="text-slate-500">Hours Accrued:</span>{' '}
