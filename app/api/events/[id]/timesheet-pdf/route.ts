@@ -114,7 +114,7 @@ function formatHoursFromMs(ms: number): string {
   return `${hh}:${String(mm).padStart(2, "0")}`;
 }
 
-function getDisplayedWorkedMs(apiTotalMsValue: number, span?: TimesheetSpan | null): number {
+function getDisplayedWorkedMs(apiTotalMsValue: number, span?: TimesheetSpan | null, applyOffset = true): number {
   const apiTotalMs = Math.max(Number(apiTotalMsValue || 0), 0);
 
   const firstInMs = span?.firstIn ? new Date(span.firstIn).getTime() : NaN;
@@ -147,7 +147,7 @@ function getDisplayedWorkedMs(apiTotalMsValue: number, span?: TimesheetSpan | nu
     totalMs = Math.max(apiTotalMs - mealMs, 0);
   }
 
-  if (totalMs > 0 && span?.firstIn) {
+  if (applyOffset && totalMs > 0 && span?.firstIn) {
     totalMs += GATE_PHONE_OFFSET_MS;
   }
 
@@ -445,6 +445,7 @@ export async function GET(
     }
 
     const date = String(event.event_date || "").split("T")[0];
+    const applyGateOffset = date >= "2026-03-03";
     const eventState = String(event.state || "CA").toUpperCase();
     const tz = getTimezoneForState(eventState) || "America/Los_Angeles";
     const teamMembers = teamResult.data || [];
@@ -855,7 +856,7 @@ export async function GET(
         const secondMealEnd = span.secondMealEndDisplay || isoToLocalHHMM(span.secondMealEnd, tz);
         const thirdMealStart = span.thirdMealStartDisplay || isoToLocalHHMM(span.thirdMealStart, tz);
         const thirdMealEnd = span.thirdMealEndDisplay || isoToLocalHHMM(span.thirdMealEnd, tz);
-        const displayedWorkedMs = getDisplayedWorkedMs(totals[uid], span);
+        const displayedWorkedMs = getDisplayedWorkedMs(totals[uid], span, applyGateOffset);
 
         const latestClockOut = latestClockOutByUserId.get(uid);
         const attestationStatusRaw =
@@ -871,7 +872,7 @@ export async function GET(
         return {
           name,
           attestationStatus,
-          gate: subtractMinutesFromHHMM(firstClockIn, GATE_PHONE_OFFSET_MINUTES),
+          gate: applyGateOffset ? subtractMinutesFromHHMM(firstClockIn, GATE_PHONE_OFFSET_MINUTES) : firstClockIn,
           clockIn: firstClockIn,
           meal1Start: firstMealStart,
           meal1End: lastMealEnd,
@@ -888,7 +889,7 @@ export async function GET(
       (span) => span.thirdMealStart || span.thirdMealEnd
     );
     const totalMs = allUserIds.reduce(
-      (sum, uid) => sum + getDisplayedWorkedMs(totals[uid], spans[uid]),
+      (sum, uid) => sum + getDisplayedWorkedMs(totals[uid], spans[uid], applyGateOffset),
       0
     );
     const totalHours = formatHoursFromMs(totalMs);

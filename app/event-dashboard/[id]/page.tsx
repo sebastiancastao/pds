@@ -2459,6 +2459,7 @@ export default function EventDashboardPage() {
 
   const GATE_PHONE_OFFSET_MINUTES = 30;
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
+  const applyGateOffset = Boolean(event?.event_date && String(event.event_date).slice(0, 10) >= "2026-03-03");
   const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 
   const getDisplayedWorkedMs = (uid: string): number => {
@@ -2500,8 +2501,8 @@ export default function EventDashboardPage() {
       totalMs = Math.max(apiTotalMs - mealMs, 0);
     }
 
-    // Apply a single 30-minute entry/admin processing offset.
-    if (totalMs > 0 && span?.firstIn) {
+    // Apply a single 30-minute entry/admin processing offset (events from 2026-03-03 onwards only).
+    if (applyGateOffset && totalMs > 0 && span?.firstIn) {
       totalMs += GATE_PHONE_OFFSET_MS;
     }
 
@@ -6069,10 +6070,9 @@ export default function EventDashboardPage() {
                 thirdMealStart,
                 thirdMealEnd,
               };
-              const gatePhoneTime = subtractMinutesFromHHMM(
-                isEditing ? draft.firstIn : firstClockIn,
-                GATE_PHONE_OFFSET_MINUTES
-              );
+              const gatePhoneTime = applyGateOffset
+                ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
+                : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
 
               const inputCls = (editable: boolean) =>

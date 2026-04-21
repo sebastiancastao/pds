@@ -721,6 +721,28 @@ export async function POST(req: NextRequest) {
 
     const round2 = (n: number) => Number(n.toFixed(2));
     const round3 = (n: number) => Number(n.toFixed(3));
+    const capDeductionValuesToGross = (values: number[], grossPay: number): number[] => {
+      let remainingGross = round2(Math.max(0, grossPay));
+      return values.map((value) => {
+        const normalizedValue = round2(Math.max(0, Number(value || 0)));
+        const appliedValue = round2(Math.min(normalizedValue, remainingGross));
+        remainingGross = round2(Math.max(0, remainingGross - appliedValue));
+        return appliedValue;
+      });
+    };
+    const roundPayrollAmount = (amount: number): number => {
+      if (!Number.isFinite(amount)) return 0;
+      const absAmount = Math.abs(amount);
+      const normalizedThousandths = Math.round((absAmount + 1e-9) * 1000) / 1000;
+      const roundedCents = Math.round((normalizedThousandths + 1e-9) * 100) / 100;
+      return amount < 0 ? -roundedCents : roundedCents;
+    };
+    const roundPayrollHours = (decimalHours: number): number => {
+      if (!Number.isFinite(decimalHours)) return 0;
+      const absHours = Math.abs(decimalHours);
+      const roundedHours = Math.round((absHours + 1e-9) * 100) / 100;
+      return decimalHours < 0 ? -roundedHours : roundedHours;
+    };
 
     const computeSickAccrualSnapshotForPayPeriod = async (
       userId: string,
@@ -1081,7 +1103,15 @@ export async function POST(req: NextRequest) {
       y -= 4;
       drawRL(20, y, 592);
       y -= 11;
-      let grandTotal = 0;
+      let grandAdjustedGross = 0;
+      let grandCommissionPool = 0;
+      let grandEmployees = 0;
+      let grandCommission = 0;
+      let grandHoursWorked = 0;
+      let grandCommissionPaid = 0;
+      let grandVariableIncentive = 0;
+      let grandTips = 0;
+      let grandRestPay = 0;
       let grandFinalPay = 0;
       for (const row of rows) {
         const showT = row.show.length > 12 ? row.show.substring(0, 12) + "..." : row.show;
@@ -1099,14 +1129,31 @@ export async function POST(req: NextRequest) {
         drawR(fmtMoney(row.tips), C.tips, y, { size: 6 });
         drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
         drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
-        grandTotal += row.commissionPerEmployee;
+        grandAdjustedGross += row.adjGrossSales;
+        grandCommissionPool += row.commissionPool;
+        grandEmployees += row.numEmployees;
+        grandCommission += row.commissionPerEmployee;
+        grandHoursWorked += row.hoursWorked;
+        grandCommissionPaid += row.commissionPerEmployee + row.variableIncentive;
+        grandVariableIncentive += row.variableIncentive;
+        grandTips += row.tips;
+        grandRestPay += row.restBreak;
         grandFinalPay += row.finalPay;
         y -= 11;
       }
       drawRL(20, y + 9, 592);
-      drawR("Total for Pay Period", C.date, y, { bold: true, size: 7 });
-      drawR(fmtMoney(grandTotal), C.comm, y, { bold: true, size: 7 });
-      drawR(fmtMoney(grandFinalPay), C.finalPay, y, { bold: true, size: 7 });
+      const averageRateInEffect = grandHoursWorked > 0 ? (grandCommissionPaid / grandHoursWorked) : 0;
+      drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandAdjustedGross), C.adjGross, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandCommissionPool), C.pool, y, { bold: true, size: 6 });
+      drawR(grandEmployees.toString(), C.numEmp, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
+      drawR(Number(grandHoursWorked).toFixed(2), C.hours, y, { bold: true, size: 6 });
+      drawR(`$${averageRateInEffect.toFixed(2)}`, C.rate, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandVariableIncentive), C.varInc, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandTips), C.tips, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandRestPay), C.restPay, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandFinalPay), C.finalPay, y, { bold: true, size: 6 });
     };
 
     if (paystubState === "CA") {
@@ -1309,6 +1356,7 @@ export async function POST(req: NextRequest) {
         const dtHours = Number(paymentData?.doubletime_hours || 0);
         const hoursFromPayment = getEffectiveHoursFromPayment(paymentData);
         const actualHours = getActualHoursForWorker(event, worker);
+        const payrollHours = roundPayrollHours(actualHours);
         const displayHours = getDisplayHoursForWorker(event, worker);
         const hoursComparison = getHoursComparison(event, worker, actualHours, displayHours);
 
@@ -1335,12 +1383,12 @@ export async function POST(req: NextRequest) {
             ? Number(tipsSharesByUser[workerUserId] || 0)
             : 0;
 
-        const extAmtRegular = actualHours * baseRate;
-        const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+        const extAmtRegular = roundPayrollAmount(payrollHours * baseRate);
+        const extAmtOnRegRateNonAzNy = roundPayrollAmount(payrollHours * baseRate * 1.5);
 
         let commissionAmt = 0;
         let totalFinalCommissionAmt = 0;
-        let loadedRateBase = actualHours > 0 ? baseRate : 0;
+        let loadedRateBase = payrollHours > 0 ? baseRate : 0;
         let computedOtRate = 0;
         let extAmtOnRegRate = 0;
 
@@ -1348,51 +1396,59 @@ export async function POST(req: NextRequest) {
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
-            actualHours > 0;
+            payrollHours > 0;
           const prelimCommission = isEligibleThisWorker
             ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
             : 0;
-          const totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
-          loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
+          const totalFinalCommissionBase = payrollHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
+          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionBase / payrollHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
+          extAmtOnRegRate = isWeeklyOT ? roundPayrollAmount(computedOtRate * payrollHours) : extAmtOnRegRateNonAzNy;
           commissionAmt = isEligibleThisWorker
             ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
             : 0;
-          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =
-            !isTrailersDivision(worker?.division) && actualHours > 0 && commissionEligibleCount > 0
+            !isTrailersDivision(worker?.division) && payrollHours > 0 && commissionEligibleCount > 0
               ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
           // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare)
           // extAmtOnRegRateNonAzNy + commissionAmt already equals that; no $150 minimum here.
-          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
-          loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
+          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionAmt / payrollHours) : baseRate;
         }
 
-        const tips = distributedTipsShare;
-        const commission = totalFinalCommissionAmt;
-        // Commission report "Final Pay" should mirror HR Dashboard's
-        // "Total Final Commission Amt" (formula-based, not persisted split columns).
-        const reportFinalCommissionAmt = totalFinalCommissionAmt;
+        const storedVariableIncentive =
+          paymentData?.variable_incentive != null && Number.isFinite(Number(paymentData.variable_incentive))
+            ? Number(paymentData.variable_incentive)
+            : null;
+        const tips = roundPayrollAmount(distributedTipsShare);
+        const commission = roundPayrollAmount(totalFinalCommissionAmt);
+        // Commission report "Final Pay" should include commission pay plus tips/rest,
+        // matching the paystub generator UI/export semantics.
+        const reportFinalCommissionAmt = roundPayrollAmount(totalFinalCommissionAmt);
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = Number(paymentData?.regular_pay || 0);
         const otPay = Number(paymentData?.overtime_pay || 0);
         const dtPay = Number(paymentData?.doubletime_pay || 0);
 
-        const restBreak = includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0;
-        const computedTotalPay = commission + tips + restBreak;
+        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0);
+        const computedTotalPay = roundPayrollAmount(totalFinalCommissionAmt + distributedTipsShare + restBreak);
+        const reportFinalPay = computedTotalPay;
         const computedTotalGrossPay = computedTotalPay + other;
+        const reportCommissionShare = roundPayrollAmount(distributedCommissionShare);
+        const reportVariableIncentive = storedVariableIncentive != null
+          ? roundPayrollAmount(storedVariableIncentive)
+          : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - distributedCommissionShare));
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
-        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalCommissionAmt > 0) {
+        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
-          const caRowVarIncentive = Math.max(0, reportFinalCommissionAmt - distributedCommissionShare);
           caCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
@@ -1400,13 +1456,13 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: commissionEligibleCount,
-            commissionPerEmployee: distributedCommissionShare,
+            commissionPerEmployee: reportCommissionShare,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
-            variableIncentive: caRowVarIncentive,
+            variableIncentive: reportVariableIncentive,
             tips,
             restBreak,
-            finalPay: reportFinalCommissionAmt,
+            finalPay: reportFinalPay,
           });
         }
 
@@ -1420,11 +1476,11 @@ export async function POST(req: NextRequest) {
         // Otherwise (no pool or ineligible): Commission = full final pay, Variable Incentive = 0.
         const isEligibleForPool =
           !isTrailersDivision(worker?.division) &&
-          actualHours > 0 &&
+          payrollHours > 0 &&
           commissionEligibleCount > 0 &&
           distributedCommissionShare > 0;
-        const pdfCommissionShare = isEligibleForPool ? distributedCommissionShare : reportFinalCommissionAmt;
-        const pdfVariableIncentive = isEligibleForPool ? Math.max(0, reportFinalCommissionAmt - distributedCommissionShare) : 0;
+        const pdfCommissionShare = isEligibleForPool ? reportCommissionShare : reportFinalCommissionAmt;
+        const pdfVariableIncentive = isEligibleForPool ? reportVariableIncentive : 0;
         totalCommission += pdfCommissionShare;
         totalVariableIncentive += pdfVariableIncentive;
         totalFinalCommission += reportFinalCommissionAmt;
@@ -1443,23 +1499,34 @@ export async function POST(req: NextRequest) {
         totalMileageReimbursement += mileageApproved ? differentialMiles * 2 * 0.71 : 0;
       }
 
-      const federalIncomeAmt = parseAmount(federalIncome);
-      const socialSecurityAmt = parseAmount(socialSecurity);
-      const medicareAmt = parseAmount(medicare);
-      const stateIncomeAmt = parseAmount(stateIncome);
-      const stateDIAmt = parseAmount(stateDI);
-      const miscDeductionAmt = parseAmount(miscDeduction);
-      const reimbursement = parseAmount(miscReimbursement, false);
-      const totalDeductions =
+      const federalIncomeAmt = round2(parseAmount(federalIncome));
+      const socialSecurityAmt = round2(parseAmount(socialSecurity));
+      const medicareAmt = round2(parseAmount(medicare));
+      const stateIncomeAmt = round2(parseAmount(stateIncome));
+      const stateDIAmt = round2(parseAmount(stateDI));
+      const miscDeductionAmt = round2(parseAmount(miscDeduction));
+      const reimbursement = round2(parseAmount(miscReimbursement, false));
+      const rawTotalDeductions = round2(
         federalIncomeAmt +
         socialSecurityAmt +
         medicareAmt +
         stateIncomeAmt +
         stateDIAmt +
-        miscDeductionAmt;
-      const mealPremiumThisPeriod = Math.abs(Number(mealPremium) || 0);
-      const sickThisPeriod = Math.abs(Number(sick) || 0);
-      const grossPayThisPeriod =
+        miscDeductionAmt
+      );
+      const totalRegularPayRounded = round2(totalRegularPayAmount);
+      const totalOvertimePayRounded = round2(totalOvertimePayAmount);
+      const totalFinalCommissionRounded = round2(totalFinalCommission);
+      const totalCommissionRounded = round2(totalCommission);
+      const totalDoubletimePayRounded = round2(totalDoubletimePayAmount);
+      const totalVariableIncentiveRounded = round2(totalVariableIncentive);
+      const totalTravelPayRounded = round2(totalTravelPay);
+      const totalTipsRounded = round2(totalTips);
+      const totalRestBreakRounded = round2(totalRestBreak);
+      const totalMileageReimbursementRounded = round2(totalMileageReimbursement);
+      const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0));
+      const sickThisPeriod = round2(Math.abs(Number(sick) || 0));
+      const grossPayThisPeriod = round2(
         totalOvertimePayAmount +
         totalTips +
         totalCommission +
@@ -1468,9 +1535,11 @@ export async function POST(req: NextRequest) {
         totalTravelPay +
         totalRestBreak +
         sickThisPeriod +
-        mealPremiumThisPeriod;
-      const netPay = grossPayThisPeriod - totalDeductions + reimbursement + totalMileageReimbursement;
-      const effectiveRate = totalHoursWorked > 0 ? totalFinalCommission / totalHoursWorked : 0;
+        mealPremiumThisPeriod
+      );
+      const appliedStatutoryDeductions = round2(Math.min(rawTotalDeductions, grossPayThisPeriod));
+      const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + totalMileageReimbursementRounded);
+      const effectiveRate = totalHoursWorked > 0 ? round2(totalFinalCommissionRounded / totalHoursWorked) : 0;
 
       let ytdSnapshot: any = null;
       if (matchedUserId) {
@@ -1515,21 +1584,21 @@ export async function POST(req: NextRequest) {
       const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
       const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
       const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
-      const ytdRegularPay = runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayAmount);
-      const ytdOvertimePay = runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayAmount);
+      const ytdRegularPay = round2(runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayRounded));
+      const ytdOvertimePay = round2(runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayRounded));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = totalFinalCommission;
-      const ytdTips = totalTips;
-      const ytdRestBreak = totalRestBreak;
-      const ytdMealPremium = mealPremiumThisPeriod;
-      const ytdSick = sickThisPeriod;
-      const ytdGross = runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod);
-      const ytdFederalIncome = runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt);
-      const ytdSocialSecurity = runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt);
-      const ytdMedicare = runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt);
-      const ytdStateIncome = runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt);
-      const ytdStateDI = runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt);
-      const ytdNet = runningYtd(ytdSnapshot?.ytd_net, netPay);
+      const ytdCommission = round2(totalFinalCommissionRounded);
+      const ytdTips = round2(totalTipsRounded);
+      const ytdRestBreak = round2(totalRestBreakRounded);
+      const ytdMealPremium = round2(mealPremiumThisPeriod);
+      const ytdSick = round2(sickThisPeriod);
+      const ytdGross = round2(runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod));
+      const ytdFederalIncome = round2(runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt));
+      const ytdSocialSecurity = round2(runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt));
+      const ytdMedicare = round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt));
+      const ytdStateIncome = round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt));
+      const ytdStateDI = round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt));
+      const ytdNet = round2(runningYtd(ytdSnapshot?.ytd_net, netPay));
 
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
@@ -1614,16 +1683,16 @@ export async function POST(req: NextRequest) {
       drawTopText("This Period", 255, 185, { size: 8 });
       drawTopLine(40, 192, 332);
 
-      const overtimeRateAvg = totalOtHours > 0 ? (totalOvertimePayAmount / totalOtHours) : 0;
+      const overtimeRateAvg = totalOtHours > 0 ? round2(totalOvertimePayRounded / totalOtHours) : 0;
 
       const earningsRows = [
-        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayAmount, ytd: ytdRegularPay, hideThisPeriod: true },
-        { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayAmount, ytd: ytdOvertimePay },
-        { y: 216, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommission, ytd: ytdCommission },
-        { y: 224, label: "Variable Incentive", color: black, rate: 0, hours: 0, thisPeriod: totalVariableIncentive, ytd: totalVariableIncentive },
-        { y: 232, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTips, ytd: ytdTips },
-        { y: 240, label: "Rest Break Pay", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreak, ytd: ytdRestBreak },
-        { y: 248, label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: totalTravelPay, ytd: totalTravelPay },
+        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayRounded, ytd: ytdRegularPay, hideThisPeriod: true },
+        { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayRounded, ytd: ytdOvertimePay },
+        { y: 216, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
+        { y: 224, label: "Variable Incentive", color: black, rate: 0, hours: 0, thisPeriod: totalVariableIncentiveRounded, ytd: totalVariableIncentiveRounded },
+        { y: 232, label: "Credit card tips owed", color: black, rate: 0, hours: 0, thisPeriod: totalTipsRounded, ytd: ytdTips },
+        { y: 240, label: "Rest Break Pay", color: black, rate: 0, hours: 0, thisPeriod: totalRestBreakRounded, ytd: ytdRestBreak },
+        { y: 248, label: "Travel Pay", color: black, rate: 0, hours: 0, thisPeriod: totalTravelPayRounded, ytd: totalTravelPayRounded },
         { y: 256, label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
         { y: 264, label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
       ];
@@ -1645,24 +1714,28 @@ export async function POST(req: NextRequest) {
       drawTopLine(109, 292, 332);
 
       const deductionRows = [
-        { y: 305.1, label: "Federal Income", thisPeriod: -federalIncomeAmt, ytd: ytdFederalIncome },
-        { y: 312.3, label: "Social Security", thisPeriod: -socialSecurityAmt, ytd: ytdSocialSecurity },
-        { y: 319.8, label: "Medicare", thisPeriod: -medicareAmt, ytd: ytdMedicare },
-        { y: 327.0, label: "California State Income", thisPeriod: -stateIncomeAmt, ytd: ytdStateIncome },
-        { y: 334.4, label: "California State DI", thisPeriod: -stateDIAmt, ytd: ytdStateDI },
+        { y: 305.1, label: "Federal Income", thisPeriod: federalIncomeAmt, ytd: ytdFederalIncome },
+        { y: 312.3, label: "Social Security", thisPeriod: socialSecurityAmt, ytd: ytdSocialSecurity },
+        { y: 319.8, label: "Medicare", thisPeriod: medicareAmt, ytd: ytdMedicare },
+        { y: 327.0, label: "California State Income", thisPeriod: stateIncomeAmt, ytd: ytdStateIncome },
+        { y: 334.4, label: "California State DI", thisPeriod: stateDIAmt, ytd: ytdStateDI },
       ];
 
-      for (const row of deductionRows) {
-        drawTopText(row.label, 112, row.y, { size: 8 });
-        drawTopText(fmt(row.thisPeriod), 249, row.y, { size: 8 });
-        drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
+      if (miscDeductionAmt > 0) {
+        deductionRows.push({ y: 341.8, label: "Misc Deduction", thisPeriod: miscDeductionAmt, ytd: miscDeductionAmt });
       }
 
-      if (miscDeductionAmt > 0) {
-        drawTopText("Misc Deduction", 112, 341.8, { size: 8 });
-        drawTopText(fmt(-miscDeductionAmt), 249, 341.8, { size: 8 });
-        drawTopText(fmt(miscDeductionAmt), 299, 341.8, { size: 8 });
-      }
+      const appliedDeductionValues = capDeductionValuesToGross(
+        deductionRows.map((row) => row.thisPeriod),
+        grossPayThisPeriod
+      );
+
+      deductionRows.forEach((row, index) => {
+        const appliedThisPeriod = appliedDeductionValues[index] || 0;
+        drawTopText(row.label, 112, row.y, { size: 8 });
+        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
+      });
 
       drawTopLine(109, 334, 332);
       drawTopText("Net Pay Adjustments", 112, 343, { size: 8, bold: true });
@@ -1673,8 +1746,8 @@ export async function POST(req: NextRequest) {
       drawTopText(fmt(reimbursement), 249, 360, { size: 8 });
       drawTopText(fmt(reimbursement), 299, 360, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, 368, { size: 8 });
-      drawTopText(fmt(totalMileageReimbursement), 249, 368, { size: 8 });
-      drawTopText(fmt(totalMileageReimbursement), 299, 368, { size: 8 });
+      drawTopText(fmt(totalMileageReimbursementRounded), 249, 368, { size: 8 });
+      drawTopText(fmt(totalMileageReimbursementRounded), 299, 368, { size: 8 });
       drawTopLine(109, 375, 332);
       drawTopText("Net Pay", 112, 383, { size: 8, bold: true });
       drawTopText(money(netPay), 240, 383, { size: 8, bold: true });
@@ -1904,6 +1977,7 @@ export async function POST(req: NextRequest) {
         const dtHours = Number(paymentData?.doubletime_hours || 0);
         const hoursFromPaymentNonCa = getEffectiveHoursFromPayment(paymentData);
         const actualHours = getActualHoursForWorker(event, worker);
+        const payrollHours = roundPayrollHours(actualHours);
         const displayHours = getDisplayHoursForWorker(event, worker);
         const hoursComparison = getHoursComparison(event, worker, actualHours, displayHours);
         const workerUserId = (worker?.user_id || "").toString();
@@ -1932,13 +2006,13 @@ export async function POST(req: NextRequest) {
         const priorWeeklyHours = isAZorNY ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
 
-        const extAmtRegular = actualHours * baseRate;
-        const extAmtOnRegRateNonAzNy = actualHours * baseRate * 1.5;
+        const extAmtRegular = roundPayrollAmount(payrollHours * baseRate);
+        const extAmtOnRegRateNonAzNy = roundPayrollAmount(payrollHours * baseRate * 1.5);
 
         // Commission Amt + Total Final Commission Amt
         let commissionAmt = 0;
         let totalFinalCommissionBase = 0;
-        let loadedRateBase = actualHours > 0 ? baseRate : baseRate;
+        let loadedRateBase = payrollHours > 0 ? baseRate : baseRate;
         let computedOtRate = 0;
         let extAmtOnRegRate = 0;
         let totalFinalCommissionAmt = 0;
@@ -1947,36 +2021,40 @@ export async function POST(req: NextRequest) {
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
-            actualHours > 0;
+            payrollHours > 0;
           const prelimCommission = isEligibleThisWorker
             ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
             : 0;
-          totalFinalCommissionBase = actualHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
-          loadedRateBase = actualHours > 0 ? (totalFinalCommissionBase / actualHours) : baseRate;
+          totalFinalCommissionBase = payrollHours > 0 ? Math.max(150, extAmtRegular + prelimCommission) : 0;
+          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionBase / payrollHours) : baseRate;
           computedOtRate = isWeeklyOT ? loadedRateBase * 1.5 : 0;
-          extAmtOnRegRate = isWeeklyOT ? (computedOtRate * actualHours) : extAmtOnRegRateNonAzNy;
+          extAmtOnRegRate = isWeeklyOT ? roundPayrollAmount(computedOtRate * payrollHours) : extAmtOnRegRateNonAzNy;
           commissionAmt = isEligibleThisWorker
             ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
             : 0;
-          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
         } else {
           extAmtOnRegRate = extAmtOnRegRateNonAzNy;
           commissionAmt =
-            !isTrailersDivision(worker?.division) && actualHours > 0 && commissionEligibleCount > 0
+            !isTrailersDivision(worker?.division) && payrollHours > 0 && commissionEligibleCount > 0
               ? Math.max(0, distributedCommissionShare - extAmtOnRegRateNonAzNy)
               : 0;
           // Mirror event-dashboard payment tab: totalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare)
           // extAmtOnRegRateNonAzNy + commissionAmt already equals that; no $150 minimum here.
-          totalFinalCommissionAmt = actualHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
-          loadedRateBase = actualHours > 0 ? (totalFinalCommissionAmt / actualHours) : baseRate;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
+          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionAmt / payrollHours) : baseRate;
           computedOtRate = 0;
         }
 
-        const tips = distributedTipsShare;
-        const commission = totalFinalCommissionAmt;
-        // Commission report "Final Pay" should mirror HR Dashboard's
-        // "Total Final Commission Amt" (formula-based, not persisted split columns).
-        const reportFinalCommissionAmt = totalFinalCommissionAmt;
+        const storedVariableIncentive =
+          paymentData?.variable_incentive != null && Number.isFinite(Number(paymentData.variable_incentive))
+            ? Number(paymentData.variable_incentive)
+            : null;
+        const tips = roundPayrollAmount(distributedTipsShare);
+        const commission = roundPayrollAmount(totalFinalCommissionAmt);
+        // Commission report "Final Pay" should include commission pay plus tips/rest,
+        // matching the paystub generator UI/export semantics.
+        const reportFinalCommissionAmt = roundPayrollAmount(totalFinalCommissionAmt);
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = Number(paymentData?.regular_pay || 0);
@@ -1992,22 +2070,26 @@ export async function POST(req: NextRequest) {
 
         // Paystub should follow the employee/paystub state for rest break display/calculation.
         // (Event state can be missing/mismatched, which would incorrectly suppress rest break.)
-        const restBreak = includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0;
+        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0);
 
         // Total (gross) used for "This Period" and Net Pay.
         // If persisted total_pay exists and is non-zero, keep it for non-CA; otherwise use computed.
         const persistedTotal = Number(paymentData?.total_pay || 0);
         const persistedTotalGrossPay = persistedTotal + other;
-        const computedTotalPay = commission + tips + restBreak;
+        const computedTotalPay = roundPayrollAmount(totalFinalCommissionAmt + distributedTipsShare + restBreak);
+        const reportFinalPay = computedTotalPay;
         const computedTotalGrossPay = computedTotalPay + other;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
+        const reportCommissionShare = roundPayrollAmount(distributedCommissionShare);
+        const reportVariableIncentive = storedVariableIncentive != null
+          ? roundPayrollAmount(storedVariableIncentive)
+          : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - distributedCommissionShare));
 
         const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
 
-        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalCommissionAmt > 0) {
+        if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
-          const ncRowVarIncentive = Math.max(0, reportFinalCommissionAmt - distributedCommissionShare);
           nonCaCommissionRows.push({
             dateStr: (event.event_date || '').toString().split('T')[0],
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
@@ -2015,13 +2097,13 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: commissionEligibleCount,
-            commissionPerEmployee: distributedCommissionShare,
+            commissionPerEmployee: reportCommissionShare,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
-            variableIncentive: ncRowVarIncentive,
+            variableIncentive: reportVariableIncentive,
             tips,
             restBreak,
-            finalPay: reportFinalCommissionAmt,
+            finalPay: reportFinalPay,
           });
         }
 
@@ -2032,10 +2114,10 @@ export async function POST(req: NextRequest) {
         totalTips += tips;
         const isEligibleForPool =
           !isTrailersDivision(worker?.division) &&
-          actualHours > 0 &&
+          payrollHours > 0 &&
           commissionEligibleCount > 0 &&
           distributedCommissionShare > 0;
-        totalCommission += isEligibleForPool ? distributedCommissionShare : reportFinalCommissionAmt;
+        totalCommission += isEligibleForPool ? reportCommissionShare : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += total;
@@ -2137,10 +2219,13 @@ export async function POST(req: NextRequest) {
     yPosition -= 15;
     drawLine(50, yPosition + 10, 560, yPosition + 10);
 
+    const mealPremiumAmt = round2(Math.abs(Number(mealPremium) || 0));
+    const currentGrossPay = round2(totalGross + mealPremiumAmt);
+
     // Gross Pay
     yPosition -= 20;
     drawText("Gross Pay", 50, yPosition, { bold: true, size: 11 });
-    drawText(`This Period: $${totalGross.toFixed(2)}`, 400, yPosition, { bold: true });
+    drawText(`This Period: $${currentGrossPay.toFixed(2)}`, 400, yPosition, { bold: true });
 
     // Deductions
     yPosition -= 30;
@@ -2160,12 +2245,17 @@ export async function POST(req: NextRequest) {
     }
 
     yPosition -= 15;
-    let totalDeductions = 0;
+    const appliedDeductionValues = capDeductionValuesToGross(
+      deductions.map((deduction) => deduction.value),
+      currentGrossPay
+    );
+    let appliedTotalDeductions = 0;
 
-    deductions.forEach(deduction => {
-      totalDeductions += deduction.value;
+    deductions.forEach((deduction, index) => {
+      const appliedValue = appliedDeductionValues[index] || 0;
+      appliedTotalDeductions += appliedValue;
       drawText(deduction.label, 50, yPosition, { size: 9 });
-      drawText(`-${deduction.value.toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`-${appliedValue.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     });
 
@@ -2189,8 +2279,7 @@ export async function POST(req: NextRequest) {
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    const mealPremiumAmt = Math.abs(Number(mealPremium) || 0);
-    const netPay = totalGross + mealPremiumAmt - totalDeductions + reimbursement;
+    const netPay = currentGrossPay - round2(appliedTotalDeductions) + reimbursement;
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });
 
