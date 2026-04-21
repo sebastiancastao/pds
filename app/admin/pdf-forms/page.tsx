@@ -106,7 +106,6 @@ const FORM_PRESETS: FormPreset[] = [
   { code: 'notice-to-employee',        label: 'Notice to Employee',    description: 'LC 2810.5 Notice to Employee',            requiresSignature: false },
   { code: 'health-insurance',          label: 'Health Insurance',      description: 'Marketplace Coverage Options Notice',     requiresSignature: false },
   { code: 'time-of-hire',              label: 'Time of Hire',          description: 'Time of Hire Notice',                    requiresSignature: false },
-  { code: 'temp-employment-agreement', label: 'Temp Employment',       description: 'Temporary Employment Services Agreement', requiresSignature: true  },
   { code: 'employee-information',      label: 'Employee Info',         description: 'Employee Information Form',               requiresSignature: false },
   { code: 'handbook',                  label: 'Handbook',              description: 'Employee Handbook Acknowledgment',        requiresSignature: true  },
   { code: 'arbitration',               label: 'Arbitration',           description: 'Arbitration Agreement',                  requiresSignature: true  },
@@ -159,7 +158,6 @@ const PACKET_FORM_PRESETS: PacketFormPreset[] = [
   { code: 'ca-notice-to-employee',   label: 'Notice to Employee',    description: 'LC 2810.5 Notice to Employee',                 state: 'CA', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ca-health-insurance',     label: 'Health Insurance',      description: 'Marketplace Coverage Options Notice',          state: 'CA', formType: 'health-insurance',     requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ca-time-of-hire',         label: 'Time of Hire',          description: 'Time of Hire Notice',                         state: 'CA', formType: 'time-of-hire',         requiresSignature: false, allowDateInput: false, allowPrintName: false },
-  { code: 'ca-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'CA', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
   { code: 'ca-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'CA', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ca-arbitration',          label: 'Arbitration',           description: 'Arbitration Agreement',                       state: 'CA', formType: 'arbitration-agreement', requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ca-sexual-harassment',    label: 'Sexual Harassment',     description: 'Prevention Policy Acknowledgment',             state: 'CA', formType: 'sexual-harassment',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
@@ -167,24 +165,20 @@ const PACKET_FORM_PRESETS: PacketFormPreset[] = [
   { code: 'az-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'AZ', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'az-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'AZ', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'az-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'AZ', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
-  { code: 'az-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'AZ', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
   // Nevada
   { code: 'nv-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NV', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'nv-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NV', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'nv-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NV', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
-  { code: 'nv-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'NV', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
   { code: 'nv-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NV', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   // New York
   { code: 'ny-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NY', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ny-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NY', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ny-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NY', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
-  { code: 'ny-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'NY', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
   { code: 'ny-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NY', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   // Wisconsin
   { code: 'wi-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'WI', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'wi-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'WI', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'wi-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'WI', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
-  { code: 'wi-temp-employment',      label: 'Temp Employment',       description: 'Temporary Employment Services Agreement',      state: 'WI', formType: 'temp-employment-agreement', requiresSignature: true, allowDateInput: false, allowPrintName: false },
   { code: 'wi-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'WI', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
 ];
 
