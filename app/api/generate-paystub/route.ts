@@ -35,6 +35,8 @@ interface SickLeaveSummary {
   accrued_days: number;
   carry_over_hours: number;
   carry_over_days: number;
+  year_to_date_hours?: number;
+  year_to_date_days?: number;
   balance_hours: number;
   balance_days: number;
 }
@@ -89,6 +91,10 @@ export async function POST(req: NextRequest) {
       };
       return map[st] || st;
     };
+    const toFiniteNumber = (value: unknown): number | null => {
+      const num = Number(value);
+      return Number.isFinite(num) ? num : null;
+    };
     const toPlainText = (value: unknown) => (value ?? "").toString().trim();
     const decryptText = (value: unknown) => {
       const raw = toPlainText(value);
@@ -110,15 +116,24 @@ export async function POST(req: NextRequest) {
     // Source of truth: employee profile state (fallback to request payload state).
     let paystubState = normalizeStateCode(state) || "CA";
     let displayAddress = decryptText(address);
+    const sickLeaveSummary =
+      sickLeave && typeof sickLeave === "object"
+        ? (sickLeave as Partial<SickLeaveSummary>)
+        : null;
+    let profileSickCarryOverHours = toFiniteNumber(sickLeaveSummary?.carry_over_hours);
     if (matchedUserId) {
       try {
         const { data: profile } = await supabaseAdmin
           .from("profiles")
-          .select("state, address, city, zip_code")
+          .select("state, address, city, zip_code, sick_leave_carry_over_hours")
           .eq("user_id", matchedUserId)
           .maybeSingle();
         const profileState = normalizeStateCode(decryptText((profile as any)?.state));
         if (profileState) paystubState = profileState;
+        const savedCarryOverHours = toFiniteNumber((profile as any)?.sick_leave_carry_over_hours);
+        if (savedCarryOverHours !== null) {
+          profileSickCarryOverHours = savedCarryOverHours;
+        }
         if (!displayAddress) {
           const profileAddress = buildProfileAddress(profile);
           if (profileAddress) displayAddress = profileAddress;
@@ -930,7 +945,9 @@ export async function POST(req: NextRequest) {
       const accruedHoursBeforeYear = round2(workedHoursBeforeYear / 30);
       const baseCarryOverHours = round2(Math.max(0, accruedHoursBeforeYear - round2(sickHoursBeforeYear)));
 
-      const carryOverHours = round2(Math.max(0, carryOverOverride?.hours ?? baseCarryOverHours));
+      const carryOverHours = round2(
+        Math.max(0, profileSickCarryOverHours ?? carryOverOverride?.hours ?? baseCarryOverHours)
+      );
       const yearToDateHours = round2(Math.max(0, yearToDateOverride?.hours ?? baseYearToDateHours));
       const takenYtdHours = round2(Math.max(0, sickHoursYtd));
       const takenThisPeriodHours = round2(Math.max(0, sickHoursThisPeriod));
@@ -1658,10 +1675,11 @@ export async function POST(req: NextRequest) {
 
       // Sick leave breakdown for this pay period and YTD
       let sickTakenThisPeriod = 0;
-      let sickTakenYtdFromJan = Number(sickLeave?.total_hours || 0); // fallback if DB query fails
-      let sickCarryOverYtd = 0;
-      let sickAccruedYtd = Number(sickLeave?.accrued_hours || 0); // fallback if DB query fails
-      let sickBalanceYtd = Number(sickLeave?.balance_hours || 0); // fallback if DB query fails
+      let sickTakenYtdFromJan = toFiniteNumber(sickLeaveSummary?.total_hours) ?? 0; // fallback if DB query fails
+      let sickCarryOverYtd =
+        profileSickCarryOverHours ?? toFiniteNumber(sickLeaveSummary?.carry_over_hours) ?? 0;
+      let sickAccruedYtd = toFiniteNumber(sickLeaveSummary?.year_to_date_hours) ?? 0; // fallback if DB query fails
+      let sickBalanceYtd = toFiniteNumber(sickLeaveSummary?.balance_hours) ?? 0; // fallback if DB query fails
 
       if (matchedUserId && (effectivePeriodStart || effectivePeriodEnd)) {
         try {

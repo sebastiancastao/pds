@@ -98,6 +98,8 @@ interface SickLeaveBalance {
   accrued_days: number;
   carry_over_hours: number;
   carry_over_days: number;
+  year_to_date_hours?: number;
+  year_to_date_days?: number;
   balance_hours: number;
   balance_days: number;
 }
