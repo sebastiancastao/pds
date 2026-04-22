@@ -225,6 +225,8 @@ const STATE_TIMEZONES: Record<string, string> = {
   WI: "America/Chicago", WY: "America/Denver",
 };
 
+const EMPLOYEE_DETAIL_REFRESH_MS = 30000;
+
 // Formats an ISO timestamp as "Jan 1, 2025, 9:00 AM", optionally in a venue state's timezone
 function formatDateTime(d?: string | null, state?: string | null) {
   if (!d) return "—";
@@ -278,6 +280,32 @@ export default function WorkerProfilePage() {
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth()); // 0-11
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    if (!employeeId) return;
+
+    const refreshVisiblePage = () => {
+      if (document.visibilityState !== "visible") return;
+      setRefreshTick((current) => current + 1);
+    };
+
+    const intervalId = window.setInterval(refreshVisiblePage, EMPLOYEE_DETAIL_REFRESH_MS);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        refreshVisiblePage();
+      }
+    };
+
+    window.addEventListener("focus", refreshVisiblePage);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", refreshVisiblePage);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [employeeId]);
 
   useEffect(() => {
     const load = async () => {
@@ -295,6 +323,7 @@ export default function WorkerProfilePage() {
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
+          cache: "no-store",
         });
 
         console.log("🔵 [DEBUG] Response status:", res.status);
@@ -340,7 +369,7 @@ export default function WorkerProfilePage() {
       console.log("🔴 [DEBUG] No employeeId provided");
       setLoading(false);
     }
-  }, [employeeId]);
+  }, [employeeId, refreshTick]);
 
   // Fetch uploaded email images for this employee
   useEffect(() => {
@@ -349,11 +378,11 @@ export default function WorkerProfilePage() {
       const headers: Record<string, string> = session?.access_token
         ? { Authorization: `Bearer ${session.access_token}` }
         : {};
-      fetch(`/api/admin/upload-emails?images=${employee.id}`, { headers })
+      fetch(`/api/admin/upload-emails?images=${employee.id}`, { headers, cache: "no-store" })
         .then((r) => r.ok ? r.json() : { images: [] })
         .then((d) => setUploadedEmails(d.images ?? []));
     });
-  }, [employee?.id]);
+  }, [employee?.id, refreshTick]);
 
   // Fetch I-9 documents after worker is loaded
   useEffect(() => {
@@ -369,6 +398,7 @@ export default function WorkerProfilePage() {
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
+          cache: "no-store",
         });
 
         if (response.ok) {
@@ -386,7 +416,7 @@ export default function WorkerProfilePage() {
     };
 
     loadI9Documents();
-  }, [employee?.id]);
+  }, [employee?.id, refreshTick]);
 
   // Fetch PDF forms after worker is loaded
   useEffect(() => {
@@ -403,6 +433,7 @@ export default function WorkerProfilePage() {
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
+          cache: "no-store",
         });
 
         if (response.ok) {
@@ -425,7 +456,7 @@ export default function WorkerProfilePage() {
     };
 
     loadPDFForms();
-  }, [employee?.id]);
+  }, [employee?.id, refreshTick]);
 
   // Fetch available custom forms list + user-specific assignments
   useEffect(() => {
@@ -437,9 +468,9 @@ export default function WorkerProfilePage() {
         const headers = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} as Record<string, string>;
 
         const [formsRes, assignmentsRes, venueRes] = await Promise.all([
-          fetch('/api/custom-forms/list', { headers }),
-          fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers }),
-          fetch(`/api/my-assigned-venues?asUser=${employee.id}`, { headers }),
+          fetch('/api/custom-forms/list', { headers, cache: "no-store" }),
+          fetch(`/api/custom-forms/user-assignments?userId=${employee.id}`, { headers, cache: "no-store" }),
+          fetch(`/api/my-assigned-venues?asUser=${employee.id}`, { headers, cache: "no-store" }),
         ]);
 
         if (venueRes.ok) {
@@ -508,7 +539,10 @@ export default function WorkerProfilePage() {
           try {
             const res = await fetch(
               `/api/custom-forms/${formId}/docs?userId=${employeeId}`,
-              { headers: { Authorization: `Bearer ${session.access_token}` } },
+              {
+                headers: { Authorization: `Bearer ${session.access_token}` },
+                cache: "no-store",
+              },
             );
             if (!res.ok) return [formId, []] as const;
             const data = await res.json();
@@ -562,7 +596,7 @@ export default function WorkerProfilePage() {
   useEffect(() => {
     const loadRegions = async () => {
       try {
-        const res = await fetch("/api/regions");
+        const res = await fetch("/api/regions", { cache: "no-store" });
         const data = await res.json();
         if (res.ok) setRegions(Array.isArray(data.regions) ? data.regions : []);
       } catch (e) {
