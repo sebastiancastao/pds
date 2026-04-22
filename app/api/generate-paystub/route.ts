@@ -252,6 +252,7 @@ export async function POST(req: NextRequest) {
       const commissionDistribution = distributePoolByHoursRule({
         totalAmount: commissionPoolDollars,
         members: eligibleMembers,
+        allShortShiftMode: 'equal',
       });
       const tipsDistribution = distributePoolByHoursRule({
         totalAmount: totalTipsEvent,

@@ -753,6 +753,7 @@ function HRDashboardContent() {
             if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
+          allShortShiftMode: "equal",
         }).amountsById;
         const tipsSharesByUser = distributePoolByHoursRule({
           totalAmount: totalTips,

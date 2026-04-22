@@ -239,6 +239,7 @@ export async function GET(req: NextRequest) {
         commissionSharesByUser: distributePoolByHoursRule({
           totalAmount: commissionPoolDollars,
           members: eligibleMembers,
+          allShortShiftMode: 'equal',
         }).amountsById,
         tipsSharesByUser: distributePoolByHoursRule({
           totalAmount: totalTipsEvent,

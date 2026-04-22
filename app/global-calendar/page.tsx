@@ -568,6 +568,7 @@ export default function DashboardPage() {
             if (!paymentUserId || !isVendorDivision(payment?.users?.division) || actualHours <= 0) return [];
             return [{ id: paymentUserId, hours: actualHours }];
           }),
+          allShortShiftMode: 'equal',
         }).amountsById;
         const tipsSharesByUser = distributePoolByHoursRule({
           totalAmount: totalTips,

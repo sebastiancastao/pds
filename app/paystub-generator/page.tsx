@@ -337,6 +337,7 @@ export default function PaystubGenerator() {
     const commissionDistribution = distributePoolByHoursRule({
       totalAmount: rawGrossCommission,
       members: eligibleMembers,
+      allShortShiftMode: 'equal',
     });
     const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
     const tipsDistribution = distributePoolByHoursRule({

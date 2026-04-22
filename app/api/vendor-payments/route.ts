@@ -401,6 +401,7 @@ export async function GET(req: NextRequest) {
           if (!(div === 'vendor' || div === 'both') || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
+        allShortShiftMode: 'equal',
       }).amountsById;
       const tipsSharesByUser = distributePoolByHoursRule({
         totalAmount: totalTips,

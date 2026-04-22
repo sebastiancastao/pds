@@ -1,4 +1,5 @@
 export type PoolDistributionMode = "equal" | "hours";
+export type AllShortShiftMode = "equal" | "hours";
 
 export type PoolDistributionMember = {
   id: string;
@@ -17,6 +18,7 @@ type DistributePoolArgs = {
   members: PoolDistributionMember[];
   mode?: PoolDistributionMode;
   shortShiftThresholdHours?: number;
+  allShortShiftMode?: AllShortShiftMode;
 };
 
 const toPositiveNumber = (value: number): number => {
@@ -29,6 +31,7 @@ export function distributePoolByHoursRule({
   members,
   mode = "equal",
   shortShiftThresholdHours = 8,
+  allShortShiftMode = "hours",
 }: DistributePoolArgs): PoolDistributionResult {
   const mergedMembers = new Map<string, number>();
 
@@ -79,6 +82,16 @@ export function distributePoolByHoursRule({
   const hourlyRate = safeTotalAmount / totalEligibleHours;
 
   if (shortShiftMembers.length === eligibleMembers.length) {
+    if (allShortShiftMode === "equal") {
+      const equalShare = safeTotalAmount / eligibleMembers.length;
+      return {
+        amountsById: Object.fromEntries(eligibleMembers.map((member) => [member.id, equalShare])),
+        eligibleCount: eligibleMembers.length,
+        totalHours: totalEligibleHours,
+        usedShortShiftRule: false,
+      };
+    }
+
     return {
       amountsById: Object.fromEntries(eligibleMembers.map((member) => [member.id, hourlyRate * member.hours])),
       eligibleCount: eligibleMembers.length,
