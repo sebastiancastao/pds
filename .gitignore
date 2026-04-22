@@ -83,6 +83,10 @@ yarn-error.log*
 logs/
 *.log
 audit-logs/
+!app/api/reports/audit-logs/
+!app/api/reports/audit-logs/route.ts
+!app/reports/audit-logs/
+!app/reports/audit-logs/page.tsx
 
 # ============================================
 # Temporary Files

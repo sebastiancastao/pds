@@ -123,7 +123,9 @@ CREATE TABLE audit_logs (
     resource_type TEXT,
     resource_id UUID,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    metadata JSONB
+    metadata JSONB,
+    success BOOLEAN NOT NULL DEFAULT TRUE,
+    error_message TEXT
 );
 
 -- Form audit trail for I-9/W-4 compliance
@@ -679,6 +681,7 @@ CREATE INDEX idx_event_vendor_payments_user_id ON event_vendor_payments(user_id)
 CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX idx_audit_logs_created_at ON audit_logs(created_at);
 CREATE INDEX idx_audit_logs_action ON audit_logs(action);
+CREATE INDEX idx_audit_logs_success_created_at ON audit_logs(success, created_at DESC);
 CREATE INDEX idx_form_audit_trail_form_id ON form_audit_trail(form_id);
 CREATE INDEX idx_form_audit_trail_user_id ON form_audit_trail(user_id);
 CREATE INDEX idx_form_signatures_form_id ON form_signatures(form_id);

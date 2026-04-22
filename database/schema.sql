@@ -144,7 +144,9 @@ CREATE TABLE public.audit_logs (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   
   -- Details
-  metadata JSONB DEFAULT '{}'::jsonb
+  metadata JSONB DEFAULT '{}'::jsonb,
+  success BOOLEAN NOT NULL DEFAULT true,
+  error_message TEXT
 );
 
 -- Indexes for fast querying
@@ -152,6 +154,7 @@ CREATE INDEX idx_audit_logs_user_id ON public.audit_logs(user_id);
 CREATE INDEX idx_audit_logs_action ON public.audit_logs(action);
 CREATE INDEX idx_audit_logs_resource ON public.audit_logs(resource_type, resource_id);
 CREATE INDEX idx_audit_logs_created_at ON public.audit_logs(created_at DESC);
+CREATE INDEX idx_audit_logs_success_created_at ON public.audit_logs(success, created_at DESC);
 
 -- ============================================
 -- Time Keeping Table
