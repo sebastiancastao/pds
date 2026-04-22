@@ -5995,7 +5995,9 @@ export default function EventDashboardPage() {
           
           <tr>
             <th className="px-3 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Staff</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
+            {applyGateOffset && (
+              <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
+            )}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">In</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
@@ -6011,7 +6013,7 @@ export default function EventDashboardPage() {
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={showThirdMeal ? 12 : 10} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -6133,10 +6135,12 @@ export default function EventDashboardPage() {
                   </td>
 
                   {/* Gate */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={gatePhoneTime} placeholder="--:--" readOnly
-                      className={inputCls(false)} />
-                  </td>
+                  {applyGateOffset && (
+                    <td className="px-1 py-1.5">
+                      <input type="time" value={gatePhoneTime} placeholder="--:--" readOnly
+                        className={inputCls(false)} />
+                    </td>
+                  )}
 
                   {/* Clock In */}
                   <td className="px-1 py-1.5">

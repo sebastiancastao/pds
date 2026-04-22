@@ -53,7 +53,7 @@ type TimesheetSpan = {
 type TimesheetRow = {
   name: string;
   attestationStatus: string;
-  gate: string;
+  gate?: string;
   clockIn: string;
   meal1Start: string;
   meal1End: string;
@@ -175,6 +175,7 @@ async function buildTimesheetPdf(
   startTime: string | null,
   endTime: string | null,
   rows: TimesheetRow[],
+  applyGateOffset: boolean,
   showThirdMeal: boolean,
   totalHours: string
 ): Promise<Uint8Array> {
@@ -251,13 +252,15 @@ async function buildTimesheetPdf(
   const cols: Array<{ header: string; width: number; align?: "left" | "right" }> = [
     { header: "Staff", width: 130 },
     { header: "Attestation", width: 72 },
-    { header: "Gate", width: 56 },
     { header: "Clock In", width: 60 },
     { header: "M1 Start", width: 58 },
     { header: "M1 End", width: 58 },
     { header: "M2 Start", width: 58 },
     { header: "M2 End", width: 58 },
   ];
+  if (applyGateOffset) {
+    cols.splice(2, 0, { header: "Gate", width: 56 });
+  }
   if (showThirdMeal) {
     cols.push({ header: "M3 Start", width: 58 });
     cols.push({ header: "M3 End", width: 58 });
@@ -339,15 +342,19 @@ async function buildTimesheetPdf(
       const cells: Array<{ text: string; width: number; align?: "left" | "right" }> = [
         { text: row.name, width: scaledCols[0].width },
         { text: row.attestationStatus, width: scaledCols[1].width },
-        { text: row.gate, width: scaledCols[2].width },
-        { text: row.clockIn, width: scaledCols[3].width },
-        { text: row.meal1Start, width: scaledCols[4].width },
-        { text: row.meal1End, width: scaledCols[5].width },
-        { text: row.meal2Start, width: scaledCols[6].width },
-        { text: row.meal2End, width: scaledCols[7].width },
       ];
+      let idx = 2;
+      if (applyGateOffset) {
+        cells.push({ text: row.gate || "", width: scaledCols[idx].width });
+        idx += 1;
+      }
+      cells.push({ text: row.clockIn, width: scaledCols[idx].width });
+      cells.push({ text: row.meal1Start, width: scaledCols[idx + 1].width });
+      cells.push({ text: row.meal1End, width: scaledCols[idx + 2].width });
+      cells.push({ text: row.meal2Start, width: scaledCols[idx + 3].width });
+      cells.push({ text: row.meal2End, width: scaledCols[idx + 4].width });
+      idx += 5;
 
-      let idx = 8;
       if (showThirdMeal) {
         cells.push({ text: row.meal3Start, width: scaledCols[idx].width });
         cells.push({ text: row.meal3End, width: scaledCols[idx + 1].width });
@@ -461,6 +468,7 @@ export async function GET(
         event.start_time ? String(event.start_time).slice(0, 5) : null,
         event.end_time ? String(event.end_time).slice(0, 5) : null,
         [],
+        applyGateOffset,
         false,
         "0:00"
       );
@@ -901,6 +909,7 @@ export async function GET(
       event.start_time ? String(event.start_time).slice(0, 5) : null,
       event.end_time ? String(event.end_time).slice(0, 5) : null,
       rows,
+      applyGateOffset,
       showThirdMeal,
       totalHours
     );
