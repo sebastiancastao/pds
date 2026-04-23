@@ -107,6 +107,7 @@ type TeamVendorOption = {
   email: string;
   role?: string | null;
   division?: string | null;
+  is_active?: boolean | null;
   distance?: number | null;
   status?: string | null;
   isExistingMember?: boolean;
@@ -325,6 +326,7 @@ export default function EventDashboardPage() {
   const [addVendorRegion, setAddVendorRegion] = useState<string>("all");
   const [addVendorOptions, setAddVendorOptions] = useState<TeamVendorOption[]>([]);
   const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<string>("");
+  const [showAddVendorConfirmModal, setShowAddVendorConfirmModal] = useState(false);
   // Cache flags to avoid re-fetching data when switching tabs
   const [teamLoaded, setTeamLoaded] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
@@ -618,14 +620,17 @@ export default function EventDashboardPage() {
         id,
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
+        is_active: member?.users?.is_active !== false,
         distance: null,
         status: String(member?.status || ""),
         isExistingMember: true,
+        isOutOfVenue: Boolean(member?.isOutOfVenue),
         profiles: {
           first_name: String(member?.users?.profiles?.first_name || ""),
           last_name: String(member?.users?.profiles?.last_name || ""),
           phone: String(member?.users?.profiles?.phone || ""),
           city: member?.users?.profiles?.city || null,
+          state: member?.users?.profiles?.state || null,
         },
       });
     }
@@ -1119,7 +1124,10 @@ export default function EventDashboardPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        setTeamMembers(data.team || []);
+        const activeTeam = Array.isArray(data?.team)
+          ? data.team.filter((member: any) => member?.users?.is_active !== false)
+          : [];
+        setTeamMembers(activeTeam);
         setUninvitedTeamMembers(Array.isArray(data.uninvited_history) ? data.uninvited_history : []);
         setTeamLoaded(true);
       } else {
@@ -1134,6 +1142,7 @@ export default function EventDashboardPage() {
 
   const closeAddVendorModal = () => {
     if (addingVendorToTeam) return;
+    setShowAddVendorConfirmModal(false);
     setShowAddVendorModal(false);
     setAddVendorSearch("");
     setAddVendorState("all");
@@ -1184,7 +1193,9 @@ export default function EventDashboardPage() {
       let available: TeamVendorOption[] = [];
       if (availableRes.ok) {
         const availableData = await availableRes.json().catch(() => ({}));
-        available = Array.isArray(availableData?.vendors) ? availableData.vendors : [];
+        available = Array.isArray(availableData?.vendors)
+          ? availableData.vendors.filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
+          : [];
       } else {
         const availableError = await availableRes.json().catch(() => ({}));
         setLocationTeamMessage(availableError?.error || "Failed to load available vendors");
@@ -1193,7 +1204,9 @@ export default function EventDashboardPage() {
       let existingTeam: any[] = [];
       if (teamRes.ok) {
         const teamData = await teamRes.json().catch(() => ({}));
-        existingTeam = Array.isArray(teamData?.team) ? teamData.team : [];
+        existingTeam = Array.isArray(teamData?.team)
+          ? teamData.team.filter((member: any) => member?.users?.is_active !== false)
+          : [];
         setTeamMembers(existingTeam);
         setUninvitedTeamMembers(Array.isArray(teamData?.uninvited_history) ? teamData.uninvited_history : []);
         setTeamLoaded(true);
@@ -1210,13 +1223,17 @@ export default function EventDashboardPage() {
         id: String(member?.vendor_id || ""),
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
+        is_active: member?.users?.is_active !== false,
         distance: null,
         status: String(member?.status || ""),
         isExistingMember: true,
+        isOutOfVenue: Boolean(member?.isOutOfVenue),
         profiles: {
           first_name: String(member?.users?.profiles?.first_name || ""),
           last_name: String(member?.users?.profiles?.last_name || ""),
           phone: String(member?.users?.profiles?.phone || ""),
+          city: member?.users?.profiles?.city || null,
+          state: member?.users?.profiles?.state || null,
         },
       }));
 
@@ -1415,6 +1432,8 @@ export default function EventDashboardPage() {
     try {
       const token = await getSessionToken();
       const query = new URLSearchParams({ venue: event.venue });
+      if (event.city) query.set("city", event.city);
+      if (event.state) query.set("state", event.state);
       const vendorsRes = await fetch(`/api/vendors?${query.toString()}`, {
         method: "GET",
         headers: {
@@ -1441,7 +1460,8 @@ export default function EventDashboardPage() {
         }
 
         const fallbackData = await fallbackRes.json().catch(() => ({}));
-        vendors = Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [];
+        vendors = (Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [])
+          .map((v: TeamVendorOption) => ({ ...v, isOutOfVenue: true }));
       }
 
       const existingTeamIds = new Set(
@@ -1451,6 +1471,7 @@ export default function EventDashboardPage() {
       );
 
       const availableVendors = vendors
+        .filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
         .filter((vendor: TeamVendorOption) => {
           const vendorId = (vendor?.id || "").toString();
           return vendorId.length > 0 && !existingTeamIds.has(vendorId);
@@ -1520,13 +1541,17 @@ export default function EventDashboardPage() {
     try {
       const token = await getSessionToken();
       const query = new URLSearchParams({ venue: event.venue, slim: 'true' });
+      if (event.city) query.set("city", event.city);
+      if (event.state) query.set("state", event.state);
       const res = await fetch(`/api/vendors?${query.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       let allVendors: TeamVendorOption[] = [];
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
-        allVendors = Array.isArray(data?.vendors) ? data.vendors : [];
+        allVendors = Array.isArray(data?.vendors)
+          ? data.vendors.filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
+          : [];
       }
       const invitedIds = new Set(
         (teamMembers || []).map((m: any) => (m?.vendor_id || m?.user_id || m?.users?.id || "").toString()).filter(Boolean)
@@ -1550,28 +1575,44 @@ export default function EventDashboardPage() {
   const handleAddVendorToTeamImmediately = async () => {
     if (!eventId || !selectedVendorToAdd) return;
 
+    const selectedVendor = addVendorOptions.find((v) => v.id === selectedVendorToAdd);
+    const isOutOfVenue = Boolean(selectedVendor?.isOutOfVenue);
+
     setAddingVendorToTeam(true);
     setMessage("");
     try {
       const token = await getSessionToken();
-      const res = await fetch(`/api/events/${eventId}/team`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          vendorIds: [selectedVendorToAdd],
-          autoConfirm: true,
-        }),
-      });
 
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to add vendor to team");
+      if (isOutOfVenue) {
+        // Out-of-venue: submit a proposal for exec review (same as location tab)
+        // Do NOT add to team or send invitation email
+        const res = await fetch(`/api/events/${eventId}/location-proposals`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ vendorIds: [selectedVendorToAdd] }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to submit proposal");
+        setMessage(`Success: ${data?.message || "Proposal submitted for exec review."}`);
+      } else {
+        // In-venue: add to team as confirmed immediately
+        const res = await fetch(`/api/events/${eventId}/team`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          },
+          body: JSON.stringify({ vendorIds: [selectedVendorToAdd], autoConfirm: true }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || "Failed to add vendor to team");
+        setMessage(`Success: ${data?.message || "Vendor added to team as confirmed."}`);
       }
 
-      setMessage(`Success: ${data?.message || "Vendor added to team as confirmed."}`);
+      setShowAddVendorConfirmModal(false);
       setShowAddVendorModal(false);
       setAddVendorSearch("");
       setSelectedVendorToAdd("");
@@ -7408,6 +7449,66 @@ export default function EventDashboardPage() {
         </div>
       )}
 
+      {showAddVendorConfirmModal && (() => {
+        const selected = addVendorOptions.find((v) => v.id === selectedVendorToAdd);
+        const firstName = (selected?.profiles?.first_name || "").toString();
+        const lastName = (selected?.profiles?.last_name || "").toString();
+        const vendorName = `${firstName} ${lastName}`.trim() || selected?.email || "this vendor";
+        const isOutOfVenue = Boolean(selected?.isOutOfVenue);
+        return (
+          <div
+            className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => { if (!addingVendorToTeam) setShowAddVendorConfirmModal(false); }}
+          >
+            <div
+              className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="px-6 py-5">
+                <h3 className="text-lg font-semibold text-gray-900 mb-3">
+                  {isOutOfVenue ? "Add Out of Venue Vendor?" : "Confirm Add Vendor"}
+                </h3>
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-sm font-medium text-gray-800">{vendorName}</span>
+                  {isOutOfVenue && (
+                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700">
+                      Out of Venue
+                    </span>
+                  )}
+                </div>
+                {isOutOfVenue ? (
+                  <p className="text-sm text-orange-800 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
+                    This vendor is <strong>out of venue</strong>. A proposal will be sent to exec for review. They will <strong>not</strong> receive an invitation until the proposal is approved.
+                  </p>
+                ) : (
+                  <p className="text-sm text-gray-600">
+                    This vendor will be added to the team as <strong>confirmed</strong> immediately.
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
+                <button
+                  onClick={() => setShowAddVendorConfirmModal(false)}
+                  disabled={addingVendorToTeam}
+                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddVendorToTeamImmediately}
+                  disabled={addingVendorToTeam}
+                  className={`px-4 py-2 rounded-lg text-white font-semibold disabled:bg-gray-400 ${
+                    isOutOfVenue ? "bg-orange-600 hover:bg-orange-700" : "bg-green-600 hover:bg-green-700"
+                  }`}
+                >
+                  {addingVendorToTeam ? "Submitting..." : isOutOfVenue ? "Submit Proposal" : "Add & Confirm"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {showAddVendorModal && (
         <div
           className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
@@ -7558,7 +7659,7 @@ export default function EventDashboardPage() {
                     if (!selected?.isOutOfVenue) return null;
                     return (
                       <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-xs text-orange-800">
-                        <span className="font-semibold">Out of Venue:</span> This vendor will be invited (pending confirmation) rather than auto-confirmed. Location assignment will still require exec approval via the location card.
+                        <span className="font-semibold">Out of Venue:</span> A proposal will be sent to exec for review. The vendor will not receive an invitation until approved.
                       </div>
                     );
                   })()}
@@ -7575,7 +7676,7 @@ export default function EventDashboardPage() {
                 Cancel
               </button>
               <button
-                onClick={handleAddVendorToTeamImmediately}
+                onClick={() => setShowAddVendorConfirmModal(true)}
                 disabled={!selectedVendorToAdd || loadingAddVendors || addingVendorToTeam}
                 className={`px-4 py-2 rounded-lg text-white font-semibold disabled:bg-gray-400 ${
                   addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
@@ -7583,11 +7684,9 @@ export default function EventDashboardPage() {
                     : "bg-green-600 hover:bg-green-700"
                 }`}
               >
-                {addingVendorToTeam
-                  ? "Adding..."
-                  : addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
-                    ? "Add + Invite (Out of Venue)"
-                    : "Add + Confirm"}
+                {addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
+                  ? "Submit Proposal (Out of Venue)"
+                  : "Add + Confirm"}
               </button>
             </div>
           </div>

@@ -41,6 +41,67 @@ function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
+const STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: 'al',
+  alaska: 'ak',
+  arizona: 'az',
+  arkansas: 'ar',
+  california: 'ca',
+  colorado: 'co',
+  connecticut: 'ct',
+  delaware: 'de',
+  florida: 'fl',
+  georgia: 'ga',
+  hawaii: 'hi',
+  idaho: 'id',
+  illinois: 'il',
+  indiana: 'in',
+  iowa: 'ia',
+  kansas: 'ks',
+  kentucky: 'ky',
+  louisiana: 'la',
+  maine: 'me',
+  maryland: 'md',
+  massachusetts: 'ma',
+  michigan: 'mi',
+  minnesota: 'mn',
+  mississippi: 'ms',
+  missouri: 'mo',
+  montana: 'mt',
+  nebraska: 'ne',
+  nevada: 'nv',
+  'new hampshire': 'nh',
+  'new jersey': 'nj',
+  'new mexico': 'nm',
+  'new york': 'ny',
+  'north carolina': 'nc',
+  'north dakota': 'nd',
+  ohio: 'oh',
+  oklahoma: 'ok',
+  oregon: 'or',
+  pennsylvania: 'pa',
+  'rhode island': 'ri',
+  'south carolina': 'sc',
+  'south dakota': 'sd',
+  tennessee: 'tn',
+  texas: 'tx',
+  utah: 'ut',
+  vermont: 'vt',
+  virginia: 'va',
+  washington: 'wa',
+  'west virginia': 'wv',
+  wisconsin: 'wi',
+  wyoming: 'wy',
+  'district of columbia': 'dc',
+};
+
+function normalizeStateKey(value: unknown): string {
+  const normalized = normalizeText(value).replace(/\./g, '').replace(/\s+/g, ' ');
+  if (!normalized) return '';
+  if (/^[a-z]{2}$/.test(normalized)) return normalized;
+  return STATE_NAME_TO_CODE[normalized] || normalized;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = createRouteHandlerClient({ cookies });
@@ -67,6 +128,8 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const venueName = searchParams.get('venue');
     const regionId = searchParams.get('region_id');
+    const venueCity = searchParams.get('city');
+    const venueState = searchParams.get('state');
     const slim = searchParams.get('slim') === 'true';
 
     if (!venueName) {
@@ -88,19 +151,34 @@ export async function GET(req: NextRequest) {
       }, { status: 404 });
     }
 
-    const venueData =
-      venueMatches.find((candidate: any) => normalizeText(candidate?.venue_name) === normalizeText(venueName)) ||
-      venueMatches[0];
+    const normalizedVenueName = normalizeText(venueName);
+    const normalizedVenueCity = normalizeText(venueCity);
+    const normalizedVenueState = normalizeStateKey(venueState);
+    const sameNameVenueMatches = venueMatches.filter(
+      (candidate: any) => normalizeText(candidate?.venue_name) === normalizedVenueName
+    );
+    const exactVenueMatches = sameNameVenueMatches.filter((candidate: any) => {
+      const cityMatches =
+        !normalizedVenueCity || normalizeText(candidate?.city) === normalizedVenueCity;
+      const stateMatches =
+        !normalizedVenueState || normalizeStateKey(candidate?.state) === normalizedVenueState;
+      return cityMatches && stateMatches;
+    });
+    const venueCandidates = exactVenueMatches.length > 0 ? exactVenueMatches : sameNameVenueMatches;
+    const venueData = venueCandidates[0] || venueMatches[0];
+    const matchedVenueIds = new Set<string>(
+      venueCandidates
+        .map((candidate: any) => String(candidate?.id || '').trim())
+        .filter(Boolean)
+    );
 
-    const { latitude: venueLat, longitude: venueLon, region_id: venueRegionId } = venueData;
+    const { latitude: venueLat, longitude: venueLon } = venueData;
+    const resolvedVenueCity = normalizedVenueCity || normalizeText(venueData?.city);
+    const resolvedVenueState = normalizedVenueState || normalizeStateKey(venueData?.state);
 
-    if (!venueLat || !venueLon) {
-      console.error('Venue coordinates missing for:', venueName, { latitude: venueLat, longitude: venueLon });
-      return NextResponse.json({
-        error: 'Venue coordinates not available in database',
-        venueName,
-        venueData
-      }, { status: 400 });
+    const venueHasCoordinates = Boolean(venueLat && venueLon);
+    if (!venueHasCoordinates) {
+      console.warn('Venue coordinates missing — distance will be null for all vendors:', venueName);
     }
 
     // Query all vendors (users with division 'vendor' or 'both')
@@ -125,8 +203,8 @@ export async function GET(req: NextRequest) {
       .in('division', ['vendor', 'both', 'trailers'])
       .eq('is_active', true);
 
-    // Apply region filter: explicit param takes priority, otherwise use the venue's own region
-    const effectiveRegionId = (regionId && regionId !== 'all') ? regionId : venueRegionId;
+    // Only apply a region filter when the caller explicitly requests one.
+    const effectiveRegionId = (regionId && regionId !== 'all') ? regionId : null;
     if (effectiveRegionId) {
       vendorQuery = vendorQuery.eq('profiles.region_id', effectiveRegionId);
     }
@@ -161,12 +239,10 @@ export async function GET(req: NextRequest) {
     const vendorIds = (vendors || []).map((vendor: any) => String(vendor?.id || '')).filter(Boolean);
     const assignedToVenueIds = new Set<string>();
 
-    const venueId = String((venueData as any)?.id || '').trim();
-    if (venueId && vendorIds.length > 0) {
+    if (vendorIds.length > 0) {
       const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
         .from('vendor_venue_assignments')
-        .select('vendor_id')
-        .eq('venue_id', venueId)
+        .select('vendor_id, venue_id, venue:venue_reference(id, venue_name, city, state)')
         .in('vendor_id', vendorIds);
 
       if (venueAssignmentsError) {
@@ -174,7 +250,27 @@ export async function GET(req: NextRequest) {
       } else {
         (venueAssignments || []).forEach((assignment: any) => {
           const vendorId = String(assignment?.vendor_id || '').trim();
-          if (vendorId) assignedToVenueIds.add(vendorId);
+          if (!vendorId) return;
+          const assignmentVenue = Array.isArray(assignment?.venue)
+            ? assignment.venue[0]
+            : assignment?.venue;
+          const assignmentVenueId = String(
+            assignment?.venue_id || assignmentVenue?.id || ''
+          ).trim();
+          if (!assignmentVenue && !assignmentVenueId) return;
+
+          const sameVenueName =
+            normalizeText(assignmentVenue?.venue_name) === normalizedVenueName;
+          const sameCity =
+            !resolvedVenueCity || normalizeText(assignmentVenue?.city) === resolvedVenueCity;
+          const sameState =
+            !resolvedVenueState || normalizeStateKey(assignmentVenue?.state) === resolvedVenueState;
+          const matchesById =
+            assignmentVenueId.length > 0 && matchedVenueIds.has(assignmentVenueId);
+
+          if (matchesById || (sameVenueName && sameCity && sameState)) {
+            assignedToVenueIds.add(vendorId);
+          }
         });
       }
     }
@@ -183,14 +279,14 @@ export async function GET(req: NextRequest) {
     // Vendors without coordinates will appear at the end
     const vendorsWithDistance = (vendors ?? [])
       .map((vendor: any) => {
-        // Calculate distance only if vendor has coordinates
+        // Calculate distance only if both venue and vendor have coordinates
         let distance: number | null = null;
         const hasCoordinates = vendor.profiles.latitude != null && vendor.profiles.longitude != null;
 
-        if (hasCoordinates) {
+        if (hasCoordinates && venueHasCoordinates) {
           distance = calculateDistance(
-            venueLat,
-            venueLon,
+            venueLat!,
+            venueLon!,
             vendor.profiles.latitude,
             vendor.profiles.longitude
           );

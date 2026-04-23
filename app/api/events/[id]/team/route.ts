@@ -82,6 +82,67 @@ function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+const STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: "al",
+  alaska: "ak",
+  arizona: "az",
+  arkansas: "ar",
+  california: "ca",
+  colorado: "co",
+  connecticut: "ct",
+  delaware: "de",
+  florida: "fl",
+  georgia: "ga",
+  hawaii: "hi",
+  idaho: "id",
+  illinois: "il",
+  indiana: "in",
+  iowa: "ia",
+  kansas: "ks",
+  kentucky: "ky",
+  louisiana: "la",
+  maine: "me",
+  maryland: "md",
+  massachusetts: "ma",
+  michigan: "mi",
+  minnesota: "mn",
+  mississippi: "ms",
+  missouri: "mo",
+  montana: "mt",
+  nebraska: "ne",
+  nevada: "nv",
+  "new hampshire": "nh",
+  "new jersey": "nj",
+  "new mexico": "nm",
+  "new york": "ny",
+  "north carolina": "nc",
+  "north dakota": "nd",
+  ohio: "oh",
+  oklahoma: "ok",
+  oregon: "or",
+  pennsylvania: "pa",
+  "rhode island": "ri",
+  "south carolina": "sc",
+  "south dakota": "sd",
+  tennessee: "tn",
+  texas: "tx",
+  utah: "ut",
+  vermont: "vt",
+  virginia: "va",
+  washington: "wa",
+  "west virginia": "wv",
+  wisconsin: "wi",
+  wyoming: "wy",
+  "district of columbia": "dc",
+};
+
+function normalizeStateKey(value: unknown): string {
+  const normalized = normalizeText(value).replace(/\./g, "").replace(/\s+/g, " ");
+  if (!normalized) return "";
+  if (/^[a-z]{2}$/.test(normalized)) return normalized;
+  return STATE_NAME_TO_CODE[normalized] || normalized;
+}
+
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -491,23 +552,41 @@ export async function GET(
     }
 
     let venueCoordinates: { latitude: number; longitude: number } | null = null;
+    let resolvedVenueName = normalizeText(eventData?.venue);
+    let resolvedVenueCity = normalizeText(eventData?.city);
+    let resolvedVenueState = normalizeStateKey(eventData?.state);
+    const matchedVenueIds = new Set<string>();
     if (eventData?.venue) {
       const { data: venueMatches, error: venueError } = await supabaseAdmin
         .from('venue_reference')
-        .select('latitude, longitude, city, state')
+        .select('id, venue_name, latitude, longitude, city, state')
         .eq('venue_name', eventData.venue);
 
       if (venueError) {
         console.error('Error loading venue coordinates for team distance calculation:', venueError);
       } else if (Array.isArray(venueMatches) && venueMatches.length > 0) {
+        const eventVenueName = normalizeText(eventData.venue);
         const eventCity = normalizeText(eventData.city);
-        const eventState = normalizeText(eventData.state);
-        const matchedVenue =
-          venueMatches.find((candidate: any) => {
-            const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
-            const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
-            return cityMatches && stateMatches;
-          }) || venueMatches[0];
+        const eventState = normalizeStateKey(eventData.state);
+        const sameNameVenueMatches = venueMatches.filter(
+          (candidate: any) => normalizeText(candidate?.venue_name) === eventVenueName
+        );
+        const exactVenueMatches = sameNameVenueMatches.filter((candidate: any) => {
+          const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+          const stateMatches = !eventState || normalizeStateKey(candidate?.state) === eventState;
+          return cityMatches && stateMatches;
+        });
+        const venueCandidates = exactVenueMatches.length > 0 ? exactVenueMatches : sameNameVenueMatches;
+        const matchedVenue = venueCandidates[0] || venueMatches[0];
+
+        resolvedVenueName = eventVenueName || normalizeText((matchedVenue as any)?.venue_name);
+        resolvedVenueCity = eventCity || normalizeText((matchedVenue as any)?.city);
+        resolvedVenueState = eventState || normalizeStateKey((matchedVenue as any)?.state);
+
+        for (const candidate of venueCandidates) {
+          const candidateId = String((candidate as any)?.id || "").trim();
+          if (candidateId) matchedVenueIds.add(candidateId);
+        }
 
         const latitude = toFiniteNumber((matchedVenue as any)?.latitude);
         const longitude = toFiniteNumber((matchedVenue as any)?.longitude);
@@ -527,10 +606,13 @@ export async function GET(
         id,
         email,
         division,
+        is_active,
         profiles (
           first_name,
           last_name,
           phone,
+          city,
+          state,
           latitude,
           longitude
         )
@@ -550,9 +632,60 @@ export async function GET(
       }, { status: 200 });
     }
 
-    const teamUserIds = (teamMembers || [])
+    const activeTeamMembers = (teamMembers || []).filter(
+      (member: any) => member?.users?.is_active !== false
+    );
+
+    const teamUserIds = activeTeamMembers
       .map((member: any) => (member?.vendor_id || member?.users?.id || '').toString())
       .filter((id: string) => id.length > 0);
+
+    const outOfVenueIds = new Set<string>();
+    if (teamUserIds.length > 0 && resolvedVenueName) {
+      const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .select('vendor_id, venue_id, venue:venue_reference(id, venue_name, city, state)')
+        .in('vendor_id', teamUserIds);
+
+      if (venueAssignmentsError) {
+        console.error('Error loading team venue assignments:', venueAssignmentsError);
+      } else {
+        const assignedToVenueIds = new Set<string>();
+
+        (venueAssignments || []).forEach((assignment: any) => {
+          const vendorId = String(assignment?.vendor_id || '').trim();
+          if (!vendorId) return;
+
+          const assignmentVenue = Array.isArray(assignment?.venue)
+            ? assignment.venue[0]
+            : assignment?.venue;
+          const assignmentVenueId = String(
+            assignment?.venue_id || assignmentVenue?.id || ''
+          ).trim();
+          if (!assignmentVenue && !assignmentVenueId) return;
+
+          const sameVenueName =
+            normalizeText(assignmentVenue?.venue_name) === resolvedVenueName;
+          const sameCity =
+            !resolvedVenueCity || normalizeText(assignmentVenue?.city) === resolvedVenueCity;
+          const sameState =
+            !resolvedVenueState || normalizeStateKey(assignmentVenue?.state) === resolvedVenueState;
+          const matchesById =
+            assignmentVenueId.length > 0 && matchedVenueIds.has(assignmentVenueId);
+          const matchesByMeta = sameVenueName && sameCity && sameState;
+
+          if (matchesById || matchesByMeta) {
+            assignedToVenueIds.add(vendorId);
+          }
+        });
+
+        for (const vendorId of teamUserIds) {
+          if (!assignedToVenueIds.has(vendorId)) {
+            outOfVenueIds.add(vendorId);
+          }
+        }
+      }
+    }
 
     let hasAttestationByUserId = new Map<string, boolean>();
     let latestClockOutByUserId = new Map<
@@ -686,7 +819,7 @@ export async function GET(
     }
 
     // Decrypt sensitive profile data and fallback to employee_information.phone when needed
-    const decryptedTeamMembers = teamMembers?.map((member: any) => {
+    const decryptedTeamMembers = activeTeamMembers?.map((member: any) => {
       if (!member?.users) return member;
 
       const memberUserId = (member?.vendor_id || member?.users?.id || '').toString();
@@ -731,6 +864,7 @@ export async function GET(
       return {
         ...member,
         distance,
+        isOutOfVenue: memberUserId ? outOfVenueIds.has(memberUserId) : false,
         has_attestation: hasSubmittedAttestation,
         attestation_status: attestationStatus,
         users: {

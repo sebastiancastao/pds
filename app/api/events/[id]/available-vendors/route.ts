@@ -48,6 +48,67 @@ function normalizeText(value: unknown): string {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
 
+const STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: "al",
+  alaska: "ak",
+  arizona: "az",
+  arkansas: "ar",
+  california: "ca",
+  colorado: "co",
+  connecticut: "ct",
+  delaware: "de",
+  florida: "fl",
+  georgia: "ga",
+  hawaii: "hi",
+  idaho: "id",
+  illinois: "il",
+  indiana: "in",
+  iowa: "ia",
+  kansas: "ks",
+  kentucky: "ky",
+  louisiana: "la",
+  maine: "me",
+  maryland: "md",
+  massachusetts: "ma",
+  michigan: "mi",
+  minnesota: "mn",
+  mississippi: "ms",
+  missouri: "mo",
+  montana: "mt",
+  nebraska: "ne",
+  nevada: "nv",
+  "new hampshire": "nh",
+  "new jersey": "nj",
+  "new mexico": "nm",
+  "new york": "ny",
+  "north carolina": "nc",
+  "north dakota": "nd",
+  ohio: "oh",
+  oklahoma: "ok",
+  oregon: "or",
+  pennsylvania: "pa",
+  "rhode island": "ri",
+  "south carolina": "sc",
+  "south dakota": "sd",
+  tennessee: "tn",
+  texas: "tx",
+  utah: "ut",
+  vermont: "vt",
+  virginia: "va",
+  washington: "wa",
+  "west virginia": "wv",
+  wisconsin: "wi",
+  wyoming: "wy",
+  "district of columbia": "dc",
+};
+
+function normalizeStateKey(value: unknown): string {
+  const normalized = normalizeText(value).replace(/\./g, "").replace(/\s+/g, " ");
+  if (!normalized) return "";
+  if (/^[a-z]{2}$/.test(normalized)) return normalized;
+  return STATE_NAME_TO_CODE[normalized] || normalized;
+}
+
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) {
     return value;
@@ -218,7 +279,7 @@ export async function GET(
     // prefer an exact city/state match to avoid incorrect distance calculations.
     const { data: venueMatches, error: venueError } = await supabaseAdmin
       .from('venue_reference')
-      .select('latitude, longitude, city, state')
+      .select('id, venue_name, latitude, longitude, city, state')
       .eq('venue_name', event.venue);
 
     console.log('🔍 DEBUG - Venue Lookup:', {
@@ -231,19 +292,29 @@ export async function GET(
 
     let venueLat: number | null = null;
     let venueLng: number | null = null;
+    let resolvedVenueCity = normalizeText(event.city);
+    let resolvedVenueState = normalizeStateKey(event.state);
 
     if (!venueError && venueMatches && venueMatches.length > 0) {
       const eventCity = normalizeText(event.city);
-      const eventState = normalizeText(event.state);
+      const eventState = normalizeStateKey(event.state);
+      const eventVenueName = normalizeText(event.venue);
+      const sameNameVenueMatches = venueMatches.filter(
+        (candidate: any) => normalizeText(candidate?.venue_name) === eventVenueName
+      );
+      const exactVenueMatches = sameNameVenueMatches.filter((candidate: any) => {
+        const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+        const stateMatches = !eventState || normalizeStateKey(candidate?.state) === eventState;
+        return cityMatches && stateMatches;
+      });
       const venueData =
-        venueMatches.find((candidate: any) => {
-          const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
-          const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
-          return cityMatches && stateMatches;
-        }) || venueMatches[0];
+        (exactVenueMatches.length > 0 ? exactVenueMatches : sameNameVenueMatches)[0] ||
+        venueMatches[0];
 
       venueLat = toFiniteNumber((venueData as any)?.latitude);
       venueLng = toFiniteNumber((venueData as any)?.longitude);
+      resolvedVenueCity = normalizeText((venueData as any)?.city) || resolvedVenueCity;
+      resolvedVenueState = normalizeStateKey((venueData as any)?.state) || resolvedVenueState;
     }
 
     // Fall back to geocoding if venue_reference lookup failed or had no coordinates
@@ -290,12 +361,17 @@ export async function GET(
         availability,
         invitation_type,
         status,
-        responded_at
+        responded_at,
+        updated_at,
+        created_at
       `)
       .or('invitation_type.eq.bulk,invitation_type.is.null')
       .eq('status', 'accepted')
       .not('responded_at', 'is', null)
-      .not('availability', 'is', null);
+      .not('availability', 'is', null)
+      .order('responded_at', { ascending: false, nullsFirst: false })
+      .order('updated_at', { ascending: false })
+      .order('created_at', { ascending: false });
 
     const { data: invitations, error: invitationsError } = await invitationsQuery;
 
@@ -326,17 +402,77 @@ export async function GET(
 
     // Map of vendorId → availability metadata (only vendors with at least partial overlap)
     type VendorAvailMeta = { isPartial: boolean; startTime?: string; endTime?: string };
+    const vendorAvailabilityDecision = new Map<string, boolean>();
     const vendorMetaMap = new Map<string, VendorAvailMeta>();
 
     for (const inv of (invitations || [])) {
+      const vendorId = String(inv.vendor_id || "").trim();
+      if (!vendorId || vendorAvailabilityDecision.has(vendorId)) continue;
       if (!inv.availability) {
         console.log(`  ❌ No availability data for vendor ${inv.vendor_id}`);
         continue;
       }
-      // Use the most-recent invitation per vendor (already de-duped below)
-      if (vendorMetaMap.has(inv.vendor_id)) continue;
+      // Skip vendors already resolved from a newer submission.
+      if (vendorMetaMap.has(vendorId)) continue;
 
       const availability = normalizeAvailabilityPayload(inv.availability);
+      const matchingDay = availability.find((day) => {
+        const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
+        return dayDate === eventDateKey;
+      });
+
+      if (matchingDay) {
+        const dayDate =
+          typeof matchingDay?.date === "string" ? matchingDay.date.slice(0, 10) : "";
+
+        if (matchingDay.available !== true) {
+          console.log(`Latest submission marks ${vendorId} unavailable on ${dayDate}`);
+          vendorAvailabilityDecision.set(vendorId, false);
+          continue;
+        }
+
+        if (matchingDay.allDay !== false) {
+          console.log(`Latest submission marks ${vendorId} available all day on ${dayDate}`);
+          vendorAvailabilityDecision.set(vendorId, true);
+          vendorMetaMap.set(vendorId, { isPartial: false });
+          continue;
+        }
+
+        const latestVendorStart: string | undefined = matchingDay.startTime;
+        const latestVendorEnd: string | undefined = matchingDay.endTime;
+
+        if (!eventStart || !eventEnd || !latestVendorStart || !latestVendorEnd) {
+          console.log(`Latest submission marks ${vendorId} available on ${dayDate} with incomplete times`);
+          vendorAvailabilityDecision.set(vendorId, true);
+          vendorMetaMap.set(vendorId, { isPartial: false });
+          continue;
+        }
+
+        const latestOverlapMins = overlapMinutes(
+          latestVendorStart,
+          latestVendorEnd,
+          eventStart,
+          eventEnd
+        );
+        if (latestOverlapMins >= MIN_OVERLAP_MINUTES) {
+          console.log(
+            `Latest submission for ${vendorId} overlaps ${eventStart}-${eventEnd} by ${latestOverlapMins} minutes`
+          );
+          vendorAvailabilityDecision.set(vendorId, true);
+          vendorMetaMap.set(vendorId, {
+            isPartial: true,
+            startTime: latestVendorStart,
+            endTime: latestVendorEnd,
+          });
+          continue;
+        }
+
+        console.log(
+          `Latest submission for ${vendorId} does not overlap ${eventStart}-${eventEnd} on ${dayDate}`
+        );
+        vendorAvailabilityDecision.set(vendorId, false);
+        continue;
+      }
 
       for (const day of availability) {
         const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
@@ -585,49 +721,63 @@ export async function GET(
     const outOfVenueIds = new Set<string>();
     if (event.venue && vendorsWithDistance.length > 0) {
       try {
-        const { data: venueMatches, error: venueError } = await supabaseAdmin
-          .from('venue_reference')
-          .select('id, city, state')
-          .eq('venue_name', event.venue);
+        const vendorIds = vendorsWithDistance.map((v: any) => v.id);
+        const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
+          .from('vendor_venue_assignments')
+          .select('vendor_id, venue_id, venue:venue_reference(id, venue_name, city, state)')
+          .in('vendor_id', vendorIds);
 
-        if (venueError) {
-          throw venueError;
+        if (venueAssignmentsError) {
+          throw venueAssignmentsError;
         }
 
-        if (Array.isArray(venueMatches) && venueMatches.length > 0) {
-          const eventCity = normalizeText(event.city);
-          const eventState = normalizeText(event.state);
-          const matchedVenue =
-            venueMatches.find((candidate: any) => {
-              const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
-              const stateMatches = !eventState || normalizeText(candidate?.state) === eventState;
-              return cityMatches && stateMatches;
-            }) || venueMatches[0];
+        const eventVenueName = normalizeText(event.venue);
+        const eventCity = resolvedVenueCity || normalizeText(event.city);
+        const eventState = resolvedVenueState || normalizeStateKey(event.state);
+        const sameNameVenueMatches = (venueMatches || []).filter(
+          (candidate: any) => normalizeText(candidate?.venue_name) === eventVenueName
+        );
+        const exactVenueMatches = sameNameVenueMatches.filter((candidate: any) => {
+          const cityMatches = !eventCity || normalizeText(candidate?.city) === eventCity;
+          const stateMatches = !eventState || normalizeStateKey(candidate?.state) === eventState;
+          return cityMatches && stateMatches;
+        });
+        const matchedVenueIds = new Set<string>(
+          (exactVenueMatches.length > 0 ? exactVenueMatches : sameNameVenueMatches)
+            .map((candidate: any) => String(candidate?.id || '').trim())
+            .filter(Boolean)
+        );
+        const assignedToVenue = new Set<string>();
 
-          const venueId = String((matchedVenue as any)?.id || '').trim();
-          if (venueId) {
-            const vendorIds = vendorsWithDistance.map((v: any) => v.id);
-            const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
-              .from('vendor_venue_assignments')
-              .select('vendor_id')
-              .eq('venue_id', venueId)
-              .in('vendor_id', vendorIds);
+        (venueAssignments || []).forEach((assignment: any) => {
+          const vendorId = String(assignment?.vendor_id || '').trim();
+          if (!vendorId) return;
 
-            if (venueAssignmentsError) {
-              throw venueAssignmentsError;
-            }
+          const assignmentVenue = Array.isArray(assignment?.venue)
+            ? assignment.venue[0]
+            : assignment?.venue;
+          const assignmentVenueId = String(
+            assignment?.venue_id || assignmentVenue?.id || ''
+          ).trim();
+          if (!assignmentVenue && !assignmentVenueId) return;
 
-            const assignedToVenue = new Set(
-              (venueAssignments || [])
-                .map((assignment: any) => String(assignment?.vendor_id || '').trim())
-                .filter(Boolean)
-            );
+          const sameVenueName =
+            normalizeText(assignmentVenue?.venue_name) === eventVenueName;
+          const sameCity =
+            !eventCity || normalizeText(assignmentVenue?.city) === eventCity;
+          const sameState =
+            !eventState || normalizeStateKey(assignmentVenue?.state) === eventState;
+          const matchesById =
+            assignmentVenueId.length > 0 && matchedVenueIds.has(assignmentVenueId);
 
-            for (const v of vendorsWithDistance) {
-              if (!assignedToVenue.has(v.id)) {
-                outOfVenueIds.add(v.id);
-              }
-            }
+          if (matchesById || (sameVenueName && sameCity && sameState)) {
+            assignedToVenue.add(vendorId);
+          }
+        });
+
+        for (const v of vendorsWithDistance) {
+          if (!assignedToVenue.has(v.id)) {
+            outOfVenueIds.add(v.id);
           }
         }
       } catch (venueCheckErr) {
