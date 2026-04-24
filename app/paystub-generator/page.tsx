@@ -6,6 +6,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { getRegionFallbackCommissionPoolPercent } from '@/lib/commission-pool';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -58,6 +59,8 @@ interface Event {
   commission_pool?: number | null;
   tips?: number | null;
   ticket_sales?: number | null;
+  fees?: number | null;
+  other_income?: number | null;
   tax_rate_percent?: number | null;
   event_payment?: EventPaymentSummary | null;
   workers?: Worker[];
@@ -266,29 +269,26 @@ export default function PaystubGenerator() {
   };
   const getAdjustedGrossForEvent = (event: Event): number => {
     const eventPaymentSummary = event.event_payment || null;
-    const hasSalesInputs =
-      event.ticket_sales !== null &&
-      event.ticket_sales !== undefined;
-    const eventTips = Number(event.tips || 0);
-    const ticketSales = Number(event.ticket_sales || 0);
-    const totalSales = Math.max(ticketSales - eventTips, 0);
-    const taxRate = Number(event.tax_rate_percent || 0);
-    const tax = totalSales * (taxRate / 100);
-    const adjustedGrossFromSales = Math.max(totalSales - tax, 0);
-
-    if (hasSalesInputs) {
-      return roundMoney(adjustedGrossFromSales);
-    }
-
     const persistedAdjustedGrossRaw = Number(eventPaymentSummary?.net_sales);
     const hasPersistedAdjustedGross =
       eventPaymentSummary?.net_sales !== null &&
       eventPaymentSummary?.net_sales !== undefined &&
       Number.isFinite(persistedAdjustedGrossRaw);
 
+    // Match the Sales tab source of truth first. That value already includes
+    // fees/other income and is what payroll saves into event_payments.
     if (hasPersistedAdjustedGross) {
       return roundMoney(Math.max(persistedAdjustedGrossRaw, 0));
     }
+
+    const eventTips = Number(event.tips || 0);
+    const eventFees = Number(event.fees || 0);
+    const eventOtherIncome = Number(event.other_income || 0);
+    const ticketSales = Number(event.ticket_sales || 0);
+    const totalSales = Math.max(ticketSales - eventTips, 0);
+    const taxRate = Number(event.tax_rate_percent || 0);
+    const tax = totalSales * (taxRate / 100);
+    const adjustedGrossFromSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
 
     return roundMoney(adjustedGrossFromSales);
   };
@@ -305,6 +305,11 @@ export default function PaystubGenerator() {
     const eventPercent = Number(event.commission_pool);
     if (Number.isFinite(eventPercent) && eventPercent > 0) {
       return eventPercent;
+    }
+
+    const fallbackPercent = Number(getRegionFallbackCommissionPoolPercent(event) || 0);
+    if (Number.isFinite(fallbackPercent) && fallbackPercent > 0) {
+      return fallbackPercent;
     }
 
     return adjustedGross > 0 && grossCommission > 0
@@ -1162,6 +1167,12 @@ export default function PaystubGenerator() {
       const eventsRows =
         filteredEvents?.flatMap(event => {
           const workers = event.workers && event.workers.length > 0 ? event.workers : [undefined];
+          const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
+          const commissionPoolPercent = getCommissionPoolPercentForEvent(
+            event,
+            adjustedGross,
+            Number(event?.event_payment?.commission_pool_dollars || 0)
+          );
           return workers.map(worker => ({
             event_id: event.id,
             event_name: event.name,
@@ -1191,9 +1202,11 @@ export default function PaystubGenerator() {
             tips: worker?.payment_data?.tips ?? '',
             total_pay: worker?.payment_data?.total_pay ?? '',
             adjustment_amount: worker?.adjustment_amount ?? '',
-            event_net_sales: event?.event_payment?.net_sales ?? '',
-            event_commission_pool_percent: event?.event_payment?.commission_pool_percent ?? event?.commission_pool ?? '',
-            event_commission_pool_dollars: event?.event_payment?.commission_pool_dollars ?? '',
+            event_net_sales: event?.event_payment?.net_sales ?? adjustedGross,
+            event_commission_pool_percent: commissionPoolPercent,
+            event_commission_pool_dollars:
+              event?.event_payment?.commission_pool_dollars ??
+              roundMoney(adjustedGross * commissionPoolPercent),
           }));
         }) ?? [];
 

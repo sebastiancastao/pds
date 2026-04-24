@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { getRegionFallbackCommissionPoolPercent } from '@/lib/commission-pool';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -131,7 +132,7 @@ export async function GET(req: NextRequest) {
 
     const { data: events, error: eventsError } = await supabaseAdmin
       .from('events')
-      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent')
+      .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income')
       .gte('event_date', startDate)
       .lt('event_date', endDateExclusive)
       .order('event_date', { ascending: true });
@@ -224,10 +225,24 @@ export async function GET(req: NextRequest) {
     for (const ev of events || []) {
       const eventRows = allVendorPaymentsByEvent[ev.id] || [];
       const ep = epByEvent[ev.id] || {};
-      const netSales = Number(ep.net_sales || 0);
+      const ticketSales = Number(ev.ticket_sales || 0);
+      const eventTips = Number(ev.tips || 0);
+      const eventFees = Number(ev.fees || 0);
+      const eventOtherIncome = Number(ev.other_income || 0);
+      const taxRate = Number(ev.tax_rate_percent || 0);
+      const totalSales = Math.max(ticketSales - eventTips, 0);
+      const tax = totalSales * (taxRate / 100);
+      const netSales = Number(ep.net_sales || 0) || Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
+      const savedPercent = Number(ep.commission_pool_percent || 0);
+      const configuredPercent = Number(ev.commission_pool || 0);
+      const fallbackPercent = Number(getRegionFallbackCommissionPoolPercent(ev) || 0);
+      const resolvedCommissionPoolPercent =
+        (Number.isFinite(savedPercent) && savedPercent > 0 ? savedPercent : 0) ||
+        (Number.isFinite(configuredPercent) && configuredPercent > 0 ? configuredPercent : 0) ||
+        (Number.isFinite(fallbackPercent) && fallbackPercent > 0 ? fallbackPercent : 0);
       const commissionPoolDollars = Number(ep.commission_pool_dollars || 0) > 0
         ? Number(ep.commission_pool_dollars || 0)
-        : netSales * Number(ev.commission_pool || 0);
+        : netSales * resolvedCommissionPoolPercent;
       const totalTipsEvent = Number(ep.total_tips || 0) || Number(ev.tips || 0);
       const eligibleMembers = eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();

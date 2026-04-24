@@ -5,6 +5,7 @@ import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { safeDecrypt } from "@/lib/encryption";
+import { getRegionFallbackCommissionPoolPercent } from "@/lib/commission-pool";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -216,6 +217,13 @@ export async function POST(req: NextRequest) {
       const fallbackRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const stateBaseRate = dbStateRates[eventState] || fallbackRates[eventState] || 17.28;
       const baseRate = Number(eventPaymentSummary?.base_rate || stateBaseRate);
+      const savedCommissionPoolPercent = Number(eventPaymentSummary?.commission_pool_percent || 0);
+      const configuredCommissionPoolPercent = Number(event?.commission_pool || 0);
+      const fallbackCommissionPoolPercent = Number(getRegionFallbackCommissionPoolPercent(event) || 0);
+      const resolvedCommissionPoolPercent =
+        (Number.isFinite(savedCommissionPoolPercent) && savedCommissionPoolPercent > 0 ? savedCommissionPoolPercent : 0) ||
+        (Number.isFinite(configuredCommissionPoolPercent) && configuredCommissionPoolPercent > 0 ? configuredCommissionPoolPercent : 0) ||
+        (Number.isFinite(fallbackCommissionPoolPercent) && fallbackCommissionPoolPercent > 0 ? fallbackCommissionPoolPercent : 0);
 
       const workers = Array.isArray(event?.workers) ? event.workers : [];
       const workersWithHours = workers.filter((w: any) => {
@@ -227,10 +235,10 @@ export async function POST(req: NextRequest) {
       // Commission pool in dollars: event_payments first, then compute from events table.
       let commissionPoolDollars =
         Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
-        (Number(eventPaymentSummary?.net_sales || 0) * Number(eventPaymentSummary?.commission_pool_percent || 0)) ||
+        (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
         0;
 
-      if (commissionPoolDollars === 0 && Number(event?.commission_pool || 0) > 0) {
+      if (commissionPoolDollars === 0 && resolvedCommissionPoolPercent > 0) {
         const ticketSales = Number(event?.ticket_sales || 0);
         const eventTips = Number(event?.tips || 0);
         const eventFees = Number(event?.fees || 0);
@@ -239,7 +247,7 @@ export async function POST(req: NextRequest) {
         const totalSales = Math.max(ticketSales - eventTips, 0);
         const tax = totalSales * (taxRate / 100);
         const netSales = Number(eventPaymentSummary?.net_sales || 0) || Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
-        commissionPoolDollars = netSales * Number(event?.commission_pool || 0);
+        commissionPoolDollars = netSales * resolvedCommissionPoolPercent;
       }
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
@@ -266,6 +274,7 @@ export async function POST(req: NextRequest) {
         baseRate,
         memberCount,
         commissionEligibleCount,
+        commissionPoolPercent: resolvedCommissionPoolPercent,
         commissionPoolDollars,
         workers,
         totalTipsEvent,
@@ -697,10 +706,19 @@ export async function POST(req: NextRequest) {
 
     const getAdjustedGrossForEvent = (event: any): number => {
       const eventPaymentSummary = event?.event_payment || event?.eventPayment || event?.event_payment_summary || null;
-      const hasSalesInputs =
-        event?.ticket_sales !== null &&
-        event?.ticket_sales !== undefined &&
-        event?.ticket_sales !== "";
+      const persistedAdjustedGrossRaw = Number(eventPaymentSummary?.net_sales);
+      const hasPersistedAdjustedGross =
+        eventPaymentSummary?.net_sales !== null &&
+        eventPaymentSummary?.net_sales !== undefined &&
+        eventPaymentSummary?.net_sales !== "" &&
+        Number.isFinite(persistedAdjustedGrossRaw);
+
+      // Prefer the persisted Sales tab value when it exists. Payroll keeps
+      // event_payments.net_sales aligned with the event-dashboard sales inputs.
+      if (hasPersistedAdjustedGross) {
+        return Math.max(persistedAdjustedGrossRaw, 0);
+      }
+
       const eventTips = Number(event?.tips || 0);
       const eventFees = Number(event?.fees || 0);
       const eventOtherIncome = Number(event?.other_income || 0);
@@ -709,19 +727,6 @@ export async function POST(req: NextRequest) {
       const taxRate = Number(event?.tax_rate_percent || 0);
       const tax = totalSales * (taxRate / 100);
       const adjustedGrossFromSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
-      if (hasSalesInputs) return adjustedGrossFromSales;
-
-      // Fallback when sales fields are missing on the event payload.
-      const persistedAdjustedGrossRaw = Number(eventPaymentSummary?.net_sales);
-      const hasPersistedAdjustedGross =
-        eventPaymentSummary?.net_sales !== null &&
-        eventPaymentSummary?.net_sales !== undefined &&
-        eventPaymentSummary?.net_sales !== "" &&
-        Number.isFinite(persistedAdjustedGrossRaw);
-
-      if (hasPersistedAdjustedGross) {
-        return Math.max(persistedAdjustedGrossRaw, 0);
-      }
       return adjustedGrossFromSales;
     };
 
@@ -1513,7 +1518,7 @@ export async function POST(req: NextRequest) {
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
 
-        const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
+        const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
         if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0) {
           // Match HR dashboard payroll logic:
@@ -2157,7 +2162,7 @@ export async function POST(req: NextRequest) {
         const computedTotalGrossPay = computedTotalPay + other;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
 
-        const reportCommissionPool = Math.max(0, adjustedGrossForReport * 0.03);
+        const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
         if ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0) {
           // Match HR dashboard payroll logic:
