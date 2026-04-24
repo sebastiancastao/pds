@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
+import { extractUuid, isValidUuid } from "@/lib/uuid";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -64,7 +65,10 @@ function parsePacificMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => {
+    const v = parts.find(p => p.type === t)?.value ?? "00";
+    return t === "hour" && v === "24" ? "00" : v;
+  };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -100,11 +104,6 @@ function decryptProfileNamePart(value: unknown, userIdForLog: string): string {
   }
 }
 
-function isValidUuid(id: unknown) {
-  if (typeof id !== "string") return false;
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
-}
-
 /**
  * GET /api/check-in/recent?eventId=<uuid>
  *
@@ -117,7 +116,7 @@ export async function GET(req: NextRequest) {
     if (!kioskUser?.id) return jsonError("Not authenticated", 401);
 
     const { searchParams } = new URL(req.url);
-    const requestedEventId = searchParams.get("eventId");
+    const requestedEventId = extractUuid(searchParams.get("eventId"));
 
     const now = new Date();
     const today = toLocalDateStr(now);

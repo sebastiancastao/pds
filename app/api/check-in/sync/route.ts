@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { extractUuid, isValidUuid } from "@/lib/uuid";
 
 export const runtime = "nodejs";
 
@@ -21,13 +22,6 @@ const CLIENT_ACTION_ID_MARKER = "clientActionId:";
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
-}
-
-function isValidUuid(id: unknown): id is string {
-  return (
-    typeof id === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)
-  );
 }
 
 async function getAuthedUser(req: Request) {
@@ -72,7 +66,10 @@ function parseEventMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => {
+    const v = parts.find(p => p.type === t)?.value ?? "00";
+    return t === "hour" && v === "24" ? "00" : v;
+  };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -174,13 +171,14 @@ export async function POST(req: NextRequest) {
 
         const workerId = codeRecord.target_user_id;
         const division = await getUserDivision(workerId);
+        const eventId = extractUuid(item.eventId) ?? undefined;
         const clientActionId =
           typeof item.clientActionId === "string" && item.clientActionId.trim()
             ? item.clientActionId.trim()
             : item.id;
         const existingEntry = await findExistingTimeEntry(workerId, clientActionId);
 
-        if (!isValidUuid(item.eventId)) {
+        if (!isValidUuid(eventId)) {
           results.push({
             id: item.id,
             success: false,
@@ -242,7 +240,7 @@ export async function POST(req: NextRequest) {
                 division,
                 timestamp: item.timestamp,
                 notes: "Auto-ended on clock out (offline sync)",
-                event_id: item.eventId,
+                event_id: eventId,
               });
             if (autoMealErr) {
               results.push({ id: item.id, success: false, error: autoMealErr.message });
@@ -279,13 +277,13 @@ export async function POST(req: NextRequest) {
             supabaseAdmin
               .from("event_teams")
               .select("status")
-              .eq("event_id", item.eventId)
+              .eq("event_id", eventId)
               .eq("vendor_id", workerId)
               .maybeSingle(),
             supabaseAdmin
               .from("events")
               .select("event_date, start_time, end_time, ends_next_day, state")
-              .eq("id", item.eventId)
+              .eq("id", eventId)
               .maybeSingle(),
           ]);
 
@@ -316,6 +314,15 @@ export async function POST(req: NextRequest) {
             windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
           } else {
             windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+          }
+
+          if (!Number.isFinite(eventStartMs) || !Number.isFinite(windowOpenMs) || !Number.isFinite(windowCloseMs)) {
+            results.push({
+              id: item.id,
+              success: false,
+              error: "Event check-in window is misconfigured. Please contact an administrator.",
+            });
+            continue;
           }
 
           if (itemTimestampMs < windowOpenMs) {
@@ -357,7 +364,7 @@ export async function POST(req: NextRequest) {
             ...(item.action === "clock_out" && typeof item.attestationAccepted === "boolean"
               ? { attestation_accepted: item.attestationAccepted }
               : {}),
-            event_id: item.eventId,
+            event_id: eventId,
           })
           .select("id, timestamp")
           .single();
@@ -379,7 +386,7 @@ export async function POST(req: NextRequest) {
             await supabaseAdmin.from("attestation_rejections").insert({
               time_entry_id: entryData.id,
               user_id: workerId,
-              event_id: item.eventId,
+              event_id: eventId,
               rejection_reason: item.rejectionReason,
               ...(item.signature ? { signature_data: item.signature } : {}),
             });

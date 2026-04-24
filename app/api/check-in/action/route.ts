@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { extractUuid, isValidUuid } from "@/lib/uuid";
 
 export const runtime = "nodejs";
 
@@ -61,7 +62,10 @@ function parseEventMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => {
+    const v = parts.find(p => p.type === t)?.value ?? "00";
+    return t === "hour" && v === "24" ? "00" : v;
+  };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -117,15 +121,11 @@ export async function POST(req: NextRequest) {
       typeof body.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const rejectionReason = typeof body.rejectionReason === "string" ? body.rejectionReason.trim() : undefined;
     const rejectionNotes  = typeof body.rejectionNotes  === "string" ? body.rejectionNotes.trim()  : undefined;
-    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
+    const eventId = extractUuid(body.eventId) ?? undefined;
     const clientActionId =
       typeof body.clientActionId === "string" && body.clientActionId.trim()
         ? body.clientActionId.trim()
         : undefined;
-
-    const isValidUuid = (id: unknown): id is string =>
-      typeof id === "string" &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
@@ -298,6 +298,10 @@ export async function POST(req: NextRequest) {
           windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
         } else {
           windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+        }
+
+        if (!Number.isFinite(eventStartMs) || !Number.isFinite(windowOpenMs) || !Number.isFinite(windowCloseMs)) {
+          return jsonError("Event check-in window is misconfigured. Please contact an administrator.", 500);
         }
 
         const now = Date.now();

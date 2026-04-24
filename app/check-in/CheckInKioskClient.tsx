@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback, MouseEvent, TouchEvent } from
 import { useRouter, useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { extractUuid } from "@/lib/uuid";
 
 // ─── Types ───────────────────────────────────────────────────────────
 const STATE_TIMEZONE_MAP: Record<string, string> = {
@@ -160,7 +161,8 @@ async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit = {}
 export default function CheckInKioskPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const eventIdFromUrl = searchParams.get("eventId");
+  const rawEventIdFromUrl = searchParams.get("eventId");
+  const eventIdFromUrl = extractUuid(rawEventIdFromUrl) ?? undefined;
 
   // Auth
   const [isAuthed, setIsAuthed] = useState(false);
@@ -233,6 +235,16 @@ export default function CheckInKioskPage() {
   useEffect(() => {
     checkAuth();
   }, []);
+
+  useEffect(() => {
+    if (!rawEventIdFromUrl || !eventIdFromUrl || rawEventIdFromUrl === eventIdFromUrl) {
+      return;
+    }
+
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("eventId", eventIdFromUrl);
+    router.replace(`/check-in?${params.toString()}`);
+  }, [eventIdFromUrl, rawEventIdFromUrl, router, searchParams]);
 
   // Block the browser back button across all navigation mechanisms
   useEffect(() => {
@@ -430,12 +442,12 @@ export default function CheckInKioskPage() {
     }
   };
 
-  const fetchRecentActivity = useCallback(async () => {
+  const fetchRecentActivity = useCallback(async (): Promise<string | undefined> => {
     try {
-      if (!isAuthed) return;
-      if (!isOnline) return;
+      if (!isAuthed) return undefined;
+      if (!isOnline) return undefined;
       const token = accessTokenRef.current;
-      if (!token) return;
+      if (!token) return undefined;
 
       const params = new URLSearchParams({ _ts: Date.now().toString() });
       if (eventIdFromUrl) {
@@ -450,28 +462,39 @@ export default function CheckInKioskPage() {
         },
       }, BACKGROUND_REQUEST_TIMEOUT_MS);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) return;
+      if (!res.ok) return undefined;
 
       const event = data?.event;
       if (event?.id && event?.startIso && event?.endIso) {
-        lastKnownEventIdRef.current = String(event.id);
+        const resolvedEventId = String(event.id);
+        lastKnownEventIdRef.current = resolvedEventId;
         setActiveEvent({
-          id: String(event.id),
+          id: resolvedEventId,
           name: typeof event.name === "string" ? event.name : null,
           startIso: String(event.startIso),
           endIso: String(event.endIso),
           state: typeof event.state === "string" ? event.state : null,
         });
+        return resolvedEventId;
       } else {
         setActiveEvent(null);
       }
-
+      return undefined;
     } catch (err) {
       if (!isAbortError(err)) {
         console.error("Failed to fetch kiosk event status:", err);
       }
+      return undefined;
     }
   }, [eventIdFromUrl, isAuthed, isOnline]);
+
+  const resolveCurrentEventId = useCallback(async (): Promise<string | undefined> => {
+    if (currentEventId) {
+      return currentEventId;
+    }
+
+    return await fetchRecentActivity();
+  }, [currentEventId, fetchRecentActivity]);
 
   // ─── Online / offline handling ──────────────────────────────────
   useEffect(() => {
@@ -875,11 +898,6 @@ export default function CheckInKioskPage() {
       return;
     }
 
-    if (!currentEventId) {
-      setError("This kiosk is not attached to an event. Open check-in from a specific event link.");
-      return;
-    }
-
     setIsSubmitting(true);
     setError("");
 
@@ -898,13 +916,20 @@ export default function CheckInKioskPage() {
         return;
       }
 
+      const resolvedEventId = await resolveCurrentEventId();
+      if (!resolvedEventId) {
+        setError("This kiosk is not attached to an active event. Open check-in from a specific event link or wait for the active event to load.");
+        setIsSubmitting(false);
+        return;
+      }
+
       const res = await fetchWithTimeout("/api/check-in/validate", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ code, eventId: currentEventId }),
+        body: JSON.stringify({ code, eventId: resolvedEventId }),
       }, VALIDATION_REQUEST_TIMEOUT_MS);
 
       const data = await res.json();
@@ -943,10 +968,6 @@ export default function CheckInKioskPage() {
     options?: { attestationAccepted?: boolean; rejectionReason?: string }
   ) => {
     if (!worker) return;
-    if (!currentEventId) {
-      setError("This kiosk is not attached to an event. Open check-in from a specific event link.");
-      return;
-    }
     setIsActioning(true);
     setError("");
     const attestationAccepted = options?.attestationAccepted;
@@ -962,6 +983,13 @@ export default function CheckInKioskPage() {
             meal_end: "Meal Ended",
           } as Record<ActionType, string>)[action];
 
+    const resolvedEventId = await resolveCurrentEventId();
+    if (!resolvedEventId) {
+      setError("This kiosk is not attached to an active event. Open check-in from a specific event link or wait for the active event to load.");
+      setIsActioning(false);
+      return;
+    }
+
     const queuedItem: QueuedAction = {
       id: clientActionId,
       clientActionId,
@@ -972,7 +1000,7 @@ export default function CheckInKioskPage() {
       signature: sig,
       attestationAccepted,
       rejectionReason,
-      eventId: currentEventId,
+      eventId: resolvedEventId,
     };
 
     if (!isOnline) {

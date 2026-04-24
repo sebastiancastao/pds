@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { extractUuid, isValidUuid } from "@/lib/uuid";
 
 export const runtime = "nodejs";
 
@@ -19,13 +20,6 @@ const supabaseAnon = createClient(
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
-}
-
-function isValidUuid(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
-  );
 }
 
 async function getAuthedUser(req: Request) {
@@ -74,7 +68,10 @@ function parseEventMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => {
+    const v = parts.find(p => p.type === t)?.value ?? "00";
+    return t === "hour" && v === "24" ? "00" : v;
+  };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -95,7 +92,7 @@ export async function POST(req: NextRequest) {
 
     const body = await req.json();
     const code = normalizeCheckinCode(body.code);
-    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : "";
+    const eventId = extractUuid(body.eventId) ?? "";
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);
@@ -177,6 +174,20 @@ export async function POST(req: NextRequest) {
           windowCloseMs = eventEndMs + 4 * 60 * 60 * 1000;
         } else {
           windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
+        }
+
+        if (!Number.isFinite(eventStartMs) || !Number.isFinite(windowOpenMs) || !Number.isFinite(windowCloseMs)) {
+          console.error("[validate] invalid event window:", {
+            eventId,
+            dateStr,
+            start: eventData.start_time,
+            end: eventData.end_time,
+            ends_next_day: eventData.ends_next_day,
+            eventStartMs,
+            windowOpenMs,
+            windowCloseMs,
+          });
+          return jsonError("Event check-in window is misconfigured. Please contact an administrator.", 500);
         }
 
         const now = Date.now();
