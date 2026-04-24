@@ -221,8 +221,12 @@ export default function VendorVenueManagementPage() {
 
       if (venueFilterId) {
         const vendorAssignments = assignmentsByVendor.get(vendor.id) || [];
-        const hasVenue = vendorAssignments.some((a) => a.venue_id === venueFilterId);
-        if (!hasVenue) return false;
+        if (venueFilterId === '__unassigned__') {
+          if (vendorAssignments.length > 0) return false;
+        } else {
+          const hasVenue = vendorAssignments.some((a) => a.venue_id === venueFilterId);
+          if (!hasVenue) return false;
+        }
       }
 
       return true;
@@ -712,6 +716,7 @@ export default function VendorVenueManagementPage() {
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 >
                   <option value="">All venues</option>
+                  <option value="__unassigned__">Unassigned</option>
                   {venues
                     .slice()
                     .sort((a, b) => a.venue_name.localeCompare(b.venue_name))
@@ -724,7 +729,7 @@ export default function VendorVenueManagementPage() {
                       </option>
                     ))}
                 </select>
-                {venueFilterId && (
+                {venueFilterId && venueFilterId !== '__unassigned__' && (
                   <button
                     onClick={() => handleUnassignEntireVenue(venueFilterId)}
                     disabled={saving}
