@@ -60,6 +60,7 @@ export async function GET(request: NextRequest) {
         user_id,
         first_name,
         last_name,
+        state,
         created_at,
         users!inner (
           id,
@@ -84,15 +85,37 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch form progress' }, { status: 500 });
     }
 
-    // Group form progress by user_id
+    // Resolve custom-form-<uuid> names to their titles
+    const customFormIds = [...new Set(
+      (formProgress || [])
+        .map((f) => f.form_name.match(/^custom-form-([a-f0-9-]{36})$/i)?.[1])
+        .filter(Boolean) as string[]
+    )];
+
+    const customFormTitleMap: Record<string, string> = {};
+    if (customFormIds.length > 0) {
+      const { data: customForms } = await adminClient
+        .from('custom_pdf_forms')
+        .select('id, title')
+        .in('id', customFormIds);
+      for (const cf of customForms || []) {
+        customFormTitleMap[cf.id] = cf.title;
+      }
+    }
+
+    // Group form progress by user_id, substituting custom form titles
     const formsByUser: Record<string, Array<{ id: string; form_name: string; updated_at: string }>> = {};
     for (const form of formProgress || []) {
       if (!formsByUser[form.user_id]) {
         formsByUser[form.user_id] = [];
       }
+      const customId = form.form_name.match(/^custom-form-([a-f0-9-]{36})$/i)?.[1];
+      const resolvedName = customId && customFormTitleMap[customId]
+        ? customFormTitleMap[customId]
+        : form.form_name;
       formsByUser[form.user_id].push({
         id: form.id,
-        form_name: form.form_name,
+        form_name: resolvedName,
         updated_at: form.updated_at,
       });
     }
@@ -122,6 +145,7 @@ export async function GET(request: NextRequest) {
         full_name: fullName,
         email: userRecord?.email || '',
         role: userRecord?.role || '',
+        state: (profile.state || '').toUpperCase() || '',
         created_at: profile.created_at,
         forms_count: forms.length,
         forms: forms,
