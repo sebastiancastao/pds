@@ -578,6 +578,7 @@ export default function DashboardPage() {
             if (!paymentUserId || isTrailersDivision(payment?.users?.division) || payment?.tips_deleted === true || actualHours <= 0) return [];
             return [{ id: paymentUserId, hours: actualHours }];
           }),
+          allShortShiftMode: 'equal',
         }).amountsById;
 
         // Initialize venue if not exists

@@ -259,6 +259,7 @@ export async function GET(req: NextRequest) {
         tipsSharesByUser: distributePoolByHoursRule({
           totalAmount: totalTipsEvent,
           members: eligibleMembers,
+          allShortShiftMode: 'equal',
         }).amountsById,
       };
     }

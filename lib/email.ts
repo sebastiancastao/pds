@@ -2117,3 +2117,122 @@ export async function sendProposalDeclinedEmail(data: {
     return { success: false, error: error.message || 'Failed to send proposal declined email' };
   }
 }
+
+export async function sendTeamBuildingNotification(data: {
+  managerName: string;
+  managerEmail: string;
+  eventName: string;
+  eventDate: string;
+  eventStartTime?: string;
+  vendorNames: string[];
+  autoConfirmed: boolean;
+}): Promise<EmailResult> {
+  const { managerName, managerEmail, eventName, eventDate, eventStartTime, vendorNames, autoConfirmed } = data;
+
+  const NOTIFY_RECIPIENTS = ['jenvillar@1pds.net', 'sebastiancastao379@gmail.com'];
+  const statusLabel = autoConfirmed ? 'Auto-Confirmed' : 'Pending Confirmation';
+  const statusColor = autoConfirmed ? '#16a34a' : '#d97706';
+  const vendorListHtml = vendorNames.length > 0
+    ? vendorNames.map(name => `<li style="padding:4px 0;color:#333;font-size:14px;">${name}</li>`).join('')
+    : '<li style="padding:4px 0;color:#888;font-size:14px;">No vendor names available</li>';
+
+  const subject = `Team Building Activity - ${eventName}`;
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+
+          <tr>
+            <td style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:40px 30px;text-align:center;">
+              <h1 style="color:#ffffff;margin:0;font-size:26px;">Team Building Activity</h1>
+              <p style="color:#e6e6ff;margin:10px 0 0 0;font-size:15px;">A room manager is building an event team</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:36px 30px;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f8f9fa;border-radius:8px;border:2px solid #667eea;margin:0 0 24px 0;">
+                <tr>
+                  <td style="padding:24px;">
+                    <h2 style="color:#667eea;margin:0 0 16px 0;font-size:18px;">Event Details</h2>
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;width:40%;"><strong>Event:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Date:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventDate}${eventStartTime ? ' at ' + eventStartTime : ''}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Manager:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${managerName} (${managerEmail})</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Members Added:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${vendorNames.length}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Status:</strong></td>
+                        <td style="padding:6px 0;font-size:14px;"><span style="color:${statusColor};font-weight:bold;">${statusLabel}</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f0f4ff;border-radius:8px;border-left:4px solid #667eea;margin:0 0 24px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#3730a3;margin:0 0 10px 0;font-size:14px;"><strong>Team Members Added:</strong></p>
+                    <ul style="margin:0;padding-left:20px;">${vendorListHtml}</ul>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color:#888;font-size:13px;margin:0;">This is an automated notification. No action is required.</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;">
+              <p style="color:#888;font-size:12px;margin:0;">PDS Events &bull; Team Management Notification</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const validRecipients = NOTIFY_RECIPIENTS.filter(isValidEmail);
+    if (validRecipients.length === 0) {
+      return { success: false, error: 'No valid notification recipients' };
+    }
+
+    const { data: result, error } = await sendResendEmail({
+      from: EVENTS_FROM,
+      to: validRecipients,
+      subject,
+      html,
+    });
+
+    if (error) {
+      return { success: false, error: formatResendError(error), errorName: (error as any).name };
+    }
+
+    return { success: true, messageId: result?.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send team building notification' };
+  }
+}

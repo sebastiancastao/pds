@@ -265,6 +265,7 @@ export async function POST(req: NextRequest) {
       const tipsDistribution = distributePoolByHoursRule({
         totalAmount: totalTipsEvent,
         members: eligibleMembers,
+        allShortShiftMode: 'equal',
       });
       const commissionEligibleCount =
         commissionDistribution.eligibleCount > 0 ? commissionDistribution.eligibleCount : memberCount;

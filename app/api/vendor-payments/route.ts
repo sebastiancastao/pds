@@ -411,6 +411,7 @@ export async function GET(req: NextRequest) {
           if (div === 'trailers' || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
+        allShortShiftMode: 'equal',
       }).amountsById;
 
       // Rest break helper (matches event-dashboard)

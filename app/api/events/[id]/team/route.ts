@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { sendTeamConfirmationEmail } from "@/lib/email";
+import { sendTeamConfirmationEmail, sendTeamBuildingNotification } from "@/lib/email";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { calculateDistanceMiles } from "@/lib/geocoding";
@@ -314,6 +314,36 @@ export async function POST(
 
     const totalTeamSize = existingVendorIds.size + newVendorIds.length;
     const alreadyOnTeam = vendorIds.filter(id => existingVendorIds.has(id)).length;
+
+    let notifyManagerName = 'Event Manager';
+    try {
+      if (managerProfile) {
+        const f = managerProfile.first_name ? decrypt(managerProfile.first_name) : '';
+        const l = managerProfile.last_name ? decrypt(managerProfile.last_name) : '';
+        notifyManagerName = `${f} ${l}`.trim() || 'Event Manager';
+      }
+    } catch {}
+
+    const newVendorsForNotify = (vendors as any[]).filter(v => newVendorIds.includes(v.id));
+    const notifyVendorNames: string[] = newVendorsForNotify.map(v => {
+      try {
+        const f = v.profiles?.first_name ? decrypt(v.profiles.first_name) : '';
+        const l = v.profiles?.last_name ? decrypt(v.profiles.last_name) : '';
+        return `${f} ${l}`.trim() || v.email || 'Unknown';
+      } catch {
+        return v.email || 'Unknown';
+      }
+    });
+
+    sendTeamBuildingNotification({
+      managerName: notifyManagerName,
+      managerEmail: requesterEmail,
+      eventName: event.event_name,
+      eventDate: formatEventDate(event.event_date),
+      eventStartTime: formatEventStartTime((event as any).start_time),
+      vendorNames: notifyVendorNames,
+      autoConfirmed: shouldAutoConfirm,
+    }).catch(err => console.error('❌ Team building notification failed:', err));
 
     if (shouldAutoConfirm) {
       return NextResponse.json({

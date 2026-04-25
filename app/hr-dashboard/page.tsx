@@ -763,6 +763,7 @@ function HRDashboardContent() {
             if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
+          allShortShiftMode: "equal",
         }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {

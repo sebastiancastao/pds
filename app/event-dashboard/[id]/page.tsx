@@ -3502,6 +3502,7 @@ export default function EventDashboardPage() {
         if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
+      allShortShiftMode: "equal",
     }).amountsById;
   };
 

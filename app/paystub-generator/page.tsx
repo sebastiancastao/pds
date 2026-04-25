@@ -348,6 +348,7 @@ export default function PaystubGenerator() {
     const tipsDistribution = distributePoolByHoursRule({
       totalAmount: totalTips,
       members: eligibleMembers,
+      allShortShiftMode: 'equal',
     });
 
     return {
