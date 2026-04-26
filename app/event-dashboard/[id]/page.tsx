@@ -255,6 +255,15 @@ export default function EventDashboardPage() {
     userRole === "admin" ||
     userRole === "supervisor2" ||
     isEventCreator;
+  const isNorCalOrSFMetroEvent =
+    ["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some(
+      (v) => event?.venue?.toLowerCase().includes(v)
+    ) ||
+    ["san francisco", "oakland", "san jose", "berkeley", "fremont", "hayward",
+     "concord", "santa clara", "sunnyvale", "mountain view", "palo alto",
+     "san mateo", "daly city", "richmond", "walnut creek", "sacramento", "fresno"].some(
+      (c) => event?.city?.toLowerCase().includes(c)
+    );
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -4978,13 +4987,15 @@ export default function EventDashboardPage() {
                       Add Vendor + Confirm
                     </button>
                   )}
-                  <button
-                    onClick={handleExportTeamMembers}
-                    disabled={loadingTeam || filteredTeamListMembers.length === 0}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                  >
-                    Export Excel
-                  </button>
+                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && (
+                    <button
+                      onClick={handleExportTeamMembers}
+                      disabled={loadingTeam || filteredTeamListMembers.length === 0}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Export Excel
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowUninvitedHistoryModal(true)}
                     disabled={loadingTeam || uninvitedTeamMembers.length === 0}
@@ -5299,13 +5310,15 @@ export default function EventDashboardPage() {
                       ? "Sending..."
                       : `Call Time${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
                   </button>
-                  <button
-                    onClick={handleExportLocations}
-                    disabled={loadingLocations || eventLocations.length === 0}
-                    className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                  >
-                    Export
-                  </button>
+                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && (
+                    <button
+                      onClick={handleExportLocations}
+                      disabled={loadingLocations || eventLocations.length === 0}
+                      className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Export
+                    </button>
+                  )}
                   <button
                     onClick={loadLocations}
                     disabled={loadingLocations}
@@ -6185,7 +6198,7 @@ export default function EventDashboardPage() {
                       <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
                     )}
                   </div>
-                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
+                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
                     <button
                       onClick={handleExportPayments}
                       disabled={loadingPaymentTab || filteredTeamMembers.length === 0}
