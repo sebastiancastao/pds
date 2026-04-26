@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { safeDecrypt } from '@/lib/encryption';
-import { calculateDistanceMiles } from '@/lib/geocoding';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,10 +8,6 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const ASSIGNABLE_VENDOR_DIVISIONS = ['vendor', 'trailers', 'both'] as const;
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const MANUAL_OVERRIDE_TABLE = 'vendor_venue_assignment_settings';
-const MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR =
-  'Missing migration: run 053_create_vendor_venue_assignment_settings.sql';
-const QUERY_BATCH_SIZE = 200;
 
 const getProfile = (profileData: any) => {
   if (!profileData) return null;
@@ -27,20 +22,6 @@ const toCoordinate = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null;
   const numeric = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(numeric) ? numeric : null;
-};
-
-const isMissingTableError = (error: any, tableName: string) => {
-  const code = String(error?.code || '');
-  const message = String(error?.message || '').toLowerCase();
-  return code === '42P01' || message.includes(tableName.toLowerCase());
-};
-
-const chunkArray = <T>(items: T[], chunkSize: number): T[][] => {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
-  }
-  return chunks;
 };
 
 async function authenticateExecAdmin(request: NextRequest) {
@@ -80,26 +61,6 @@ async function authenticateExecAdmin(request: NextRequest) {
   }
 
   return { user };
-}
-
-async function setManualOverride(
-  supabaseAdmin: any,
-  vendorId: string,
-  updatedBy: string
-) {
-  const { error } = await supabaseAdmin
-    .from(MANUAL_OVERRIDE_TABLE)
-    .upsert(
-      {
-        vendor_id: vendorId,
-        manual_override: true,
-        updated_by: updatedBy,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'vendor_id' }
-    );
-
-  return error;
 }
 
 export async function GET(request: NextRequest) {
@@ -150,120 +111,6 @@ export async function GET(request: NextRequest) {
 
     const vendorsRaw = vendorsResult.data || [];
     const venuesRaw = venuesResult.data || [];
-    const vendorIds = vendorsRaw.map((vendor: any) => vendor.id).filter(Boolean);
-
-    const manualOverrideByVendor = new Map<string, boolean>();
-
-    if (vendorIds.length > 0) {
-      const vendorIdBatches = chunkArray(vendorIds, QUERY_BATCH_SIZE);
-      for (const batch of vendorIdBatches) {
-        const { data: settingsRows, error: settingsError } = await supabaseAdmin
-          .from(MANUAL_OVERRIDE_TABLE)
-          .select('vendor_id, manual_override')
-          .in('vendor_id', batch);
-
-        if (settingsError) {
-          if (isMissingTableError(settingsError, MANUAL_OVERRIDE_TABLE)) {
-            return NextResponse.json(
-              { error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR },
-              { status: 500 }
-            );
-          }
-          console.error('[VENDOR_VENUE_ASSIGNMENTS] settings query error:', settingsError);
-          return NextResponse.json({ error: 'Failed to fetch assignment settings' }, { status: 500 });
-        }
-
-        (settingsRows || []).forEach((row: any) => {
-          manualOverrideByVendor.set(row.vendor_id, !!row.manual_override);
-        });
-      }
-    }
-
-    if (vendorIds.length > 0) {
-      const assignedVendorIds = new Set<string>();
-      const vendorIdBatches = chunkArray(vendorIds, QUERY_BATCH_SIZE);
-
-      for (const batch of vendorIdBatches) {
-        const { data: existingAssignments, error: existingAssignmentsError } = await supabaseAdmin
-          .from('vendor_venue_assignments')
-          .select('vendor_id')
-          .in('vendor_id', batch);
-
-        if (existingAssignmentsError) {
-          console.error(
-            '[VENDOR_VENUE_ASSIGNMENTS] existing assignments query error:',
-            existingAssignmentsError
-          );
-          return NextResponse.json({ error: 'Failed to evaluate auto-assignments' }, { status: 500 });
-        }
-
-        (existingAssignments || []).forEach((row: any) => {
-          if (row?.vendor_id) assignedVendorIds.add(row.vendor_id);
-        });
-      }
-
-      const venuesWithCoordinates = (venuesRaw || [])
-        .map((venue: any) => ({
-          ...venue,
-          latitude: toCoordinate(venue.latitude),
-          longitude: toCoordinate(venue.longitude),
-        }))
-        .filter((venue: any) => venue.latitude != null && venue.longitude != null);
-
-      const autoAssignmentsToInsert: Array<{
-        vendor_id: string;
-        venue_id: string;
-        assigned_by: string;
-        assigned_at: string;
-      }> = [];
-
-      for (const vendor of vendorsRaw) {
-        if (assignedVendorIds.has(vendor.id)) continue;
-        if (manualOverrideByVendor.get(vendor.id)) continue;
-
-        const profile = getProfile(vendor.profiles);
-        const vendorLatitude = toCoordinate(profile?.latitude);
-        const vendorLongitude = toCoordinate(profile?.longitude);
-        if (vendorLatitude == null || vendorLongitude == null) continue;
-
-        let closestVenueId: string | null = null;
-        let minDistance = Number.POSITIVE_INFINITY;
-
-        for (const venue of venuesWithCoordinates) {
-          const distance = calculateDistanceMiles(
-            vendorLatitude,
-            vendorLongitude,
-            venue.latitude,
-            venue.longitude
-          );
-
-          if (distance < minDistance) {
-            minDistance = distance;
-            closestVenueId = venue.id;
-          }
-        }
-
-        if (!closestVenueId) continue;
-
-        autoAssignmentsToInsert.push({
-          vendor_id: vendor.id,
-          venue_id: closestVenueId,
-          assigned_by: auth.user.id,
-          assigned_at: new Date().toISOString(),
-        });
-      }
-
-      if (autoAssignmentsToInsert.length > 0) {
-        const { error: autoAssignError } = await supabaseAdmin
-          .from('vendor_venue_assignments')
-          .insert(autoAssignmentsToInsert);
-
-        if (autoAssignError && autoAssignError.code !== '23505') {
-          console.error('[VENDOR_VENUE_ASSIGNMENTS] auto-assign insert error:', autoAssignError);
-          return NextResponse.json({ error: 'Failed to auto-assign closest venues' }, { status: 500 });
-        }
-      }
-    }
 
     let assignmentsQuery = supabaseAdmin
       .from('vendor_venue_assignments')
@@ -309,7 +156,6 @@ export async function GET(request: NextRequest) {
           first_name: firstName,
           last_name: lastName,
           full_name: fullName,
-          manual_override: !!manualOverrideByVendor.get(vendor.id),
           latitude: toCoordinate(profile?.latitude),
           longitude: toCoordinate(profile?.longitude),
         };
@@ -438,23 +284,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const manualOverrideError = await setManualOverride(
-      supabaseAdmin,
-      vendor_id,
-      auth.user.id
-    );
-
-    if (manualOverrideError) {
-      if (isMissingTableError(manualOverrideError, MANUAL_OVERRIDE_TABLE)) {
-        return NextResponse.json(
-          { error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR },
-          { status: 500 }
-        );
-      }
-      console.error('[VENDOR_VENUE_ASSIGNMENTS] POST manual override error:', manualOverrideError);
-      return NextResponse.json({ error: 'Failed to lock manual override' }, { status: 500 });
-    }
-
     const { data: assignment, error: upsertError } = await supabaseAdmin
       .from('vendor_venue_assignments')
       .upsert(
@@ -486,7 +315,7 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json(
-      { message: 'Venue assigned successfully. Distance auto-assignment disabled for this vendor.', assignment },
+      { message: 'Venue assigned successfully.', assignment },
       { status: 200 }
     );
   } catch (err: any) {
@@ -582,16 +411,6 @@ export async function PUT(request: NextRequest) {
         continue;
       }
 
-      const overrideError = await setManualOverride(supabaseAdmin, row.vendor_id, auth.user.id);
-      if (overrideError) {
-        if (isMissingTableError(overrideError, MANUAL_OVERRIDE_TABLE)) {
-          return NextResponse.json({ error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR }, { status: 500 });
-        }
-        results.push({ ...row, success: false, error: 'Failed to set manual override' });
-        failed++;
-        continue;
-      }
-
       const { error: upsertError } = await supabaseAdmin
         .from('vendor_venue_assignments')
         .upsert(
@@ -661,18 +480,6 @@ export async function DELETE(request: NextRequest) {
         return NextResponse.json({ message: 'No assignments found for this venue', removed: 0 }, { status: 200 });
       }
 
-      // Set manual override for all affected vendors
-      for (const row of venueAssignments) {
-        const overrideError = await setManualOverride(supabaseAdmin, row.vendor_id, auth.user.id);
-        if (overrideError) {
-          if (isMissingTableError(overrideError, MANUAL_OVERRIDE_TABLE)) {
-            return NextResponse.json({ error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR }, { status: 500 });
-          }
-          console.error('[VENDOR_VENUE_ASSIGNMENTS] DELETE venue override error:', overrideError);
-          return NextResponse.json({ error: 'Failed to lock manual override' }, { status: 500 });
-        }
-      }
-
       const { error: deleteError } = await supabaseAdmin
         .from('vendor_venue_assignments')
         .delete()
@@ -709,23 +516,6 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Assignment not found' }, { status: 404 });
     }
 
-    const manualOverrideError = await setManualOverride(
-      supabaseAdmin,
-      assignmentRow.vendor_id,
-      auth.user.id
-    );
-
-    if (manualOverrideError) {
-      if (isMissingTableError(manualOverrideError, MANUAL_OVERRIDE_TABLE)) {
-        return NextResponse.json(
-          { error: MISSING_MANUAL_OVERRIDE_MIGRATION_ERROR },
-          { status: 500 }
-        );
-      }
-      console.error('[VENDOR_VENUE_ASSIGNMENTS] DELETE manual override error:', manualOverrideError);
-      return NextResponse.json({ error: 'Failed to lock manual override' }, { status: 500 });
-    }
-
     const { error: deleteError } = await supabaseAdmin
       .from('vendor_venue_assignments')
       .delete()
@@ -737,10 +527,7 @@ export async function DELETE(request: NextRequest) {
     }
 
     return NextResponse.json(
-      {
-        message:
-          'Assignment removed successfully. Distance auto-assignment remains disabled for this vendor.',
-      },
+      { message: 'Assignment removed successfully.' },
       { status: 200 }
     );
   } catch (err: any) {

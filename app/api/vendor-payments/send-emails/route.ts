@@ -4,6 +4,7 @@ import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { cookies } from 'next/headers';
 import { decrypt } from '@/lib/encryption';
 import { sendEmail } from '@/lib/email';
+import { getVenueBccEmails } from '@/lib/venue-bcc';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -191,11 +192,18 @@ export async function POST(req: NextRequest) {
       `;
 
       try {
+        const uniqueVenues = [...new Set(events.map((e) => e.venue).filter(Boolean))];
+        const venueBccArrays = await Promise.all(
+          uniqueVenues.map((v) => getVenueBccEmails(v, supabaseAdmin))
+        );
+        const venueBcc = [...new Set(venueBccArrays.flat())];
+
         const emailResult = await sendEmail({
           from: 'PDS Payments <service@pdsportal.site>',
           to: email,
           subject,
           html,
+          bcc: venueBcc.length > 0 ? venueBcc : undefined,
         });
         if (!emailResult.success) {
           throw new Error(emailResult.error || 'send failed');

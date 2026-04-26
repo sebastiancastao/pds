@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { sendNonEventTimesheetCreatedNotification } from "@/lib/email";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -27,7 +28,7 @@ export async function POST(req: NextRequest) {
       if (token) {
         const { data: tokenUser, error: tokenErr } = await supabaseAnon.auth.getUser(token);
         if (!tokenErr && tokenUser?.user?.id) {
-          user = { id: tokenUser.user.id } as any;
+          user = tokenUser.user as any;
         }
       }
     }
@@ -104,6 +105,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
     }
     console.log('SUPABASE INSERT RESULT:', data);
+
+    if (event_type === "special") {
+      try {
+        const notificationResult = await sendNonEventTimesheetCreatedNotification({
+          eventId: data?.[0]?.id ?? null,
+          eventName: event_name,
+          artist,
+          venue,
+          city,
+          state,
+          eventDate: event_date,
+          startTime: start_time,
+          endTime: end_time,
+          endsNextDay: ends_next_day,
+          createdByEmail: (user as any)?.email || null,
+          createdById: user.id,
+        });
+
+        if (!notificationResult.success) {
+          console.error('NON EVENT TIME SHEET NOTIFICATION FAILED:', notificationResult.error);
+        } else {
+          console.log('NON EVENT TIME SHEET NOTIFICATION SENT:', notificationResult.messageId);
+        }
+      } catch (notificationError: any) {
+        console.error('NON EVENT TIME SHEET NOTIFICATION ERROR:', notificationError);
+      }
+    }
+
     return NextResponse.json({ event: data[0] }, { status: 201 });
   } catch (err: any) {
     console.error('SERVER ERROR in event create:', err);

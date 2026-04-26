@@ -59,7 +59,8 @@
       "Bash(python3 -c \":*)",
       "Bash(find 'c:/Users/sebas/OneDrive/Escritorio/PDS - copia - copia' -type f \\\\\\(-name *.tsx -o -name *.ts \\\\\\))",
       "Bash(find '/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia' -type f \\\\\\(-name *bulkUpload* -o -name *bulk-upload* -o -name *csvUpload* -o -name *csv-upload* -o -name *csvParser* -o -name *csv-parser* \\\\\\))",
-      "Bash(node -e \":*)"
+      "Bash(node -e \":*)",
+      "Bash(xargs wc *)"
     ],
     "deny": [],
     "ask": []

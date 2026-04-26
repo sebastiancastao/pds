@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendEmail } from "@/lib/email";
+import { getVenueBccEmails } from "@/lib/venue-bcc";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -55,6 +56,8 @@ export async function POST(
     let sentCount = 0;
     let failedCount = 0;
     const errors: string[] = [];
+
+    const venueBccEmails = await getVenueBccEmails(venue, supabaseAdmin);
 
     // Send email to each team member
     for (const member of payrollData) {
@@ -242,6 +245,7 @@ export async function POST(
           to: member.email,
           subject: `Payment Details - ${eventName}`,
           html: emailHtml,
+          bcc: venueBccEmails.length > 0 ? venueBccEmails : undefined,
         });
 
         sentCount++;

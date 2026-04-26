@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { sendTeamConfirmationEmail, sendTeamBuildingNotification } from "@/lib/email";
+import { sendTeamConfirmationEmail, sendTeamBuildingNotification, sendAddConfirmUsageNotification } from "@/lib/email";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { calculateDistanceMiles } from "@/lib/geocoding";
@@ -344,6 +344,17 @@ export async function POST(
       vendorNames: notifyVendorNames,
       autoConfirmed: shouldAutoConfirm,
     }).catch(err => console.error('❌ Team building notification failed:', err));
+
+    if (shouldAutoConfirm) {
+      await sendAddConfirmUsageNotification({
+        managerName: notifyManagerName,
+        managerEmail: requesterEmail,
+        eventName: event.event_name,
+        eventDate: formatEventDate(event.event_date),
+        eventStartTime: formatEventStartTime((event as any).start_time),
+        vendorNames: notifyVendorNames,
+      }).catch(err => console.error('❌ Add+Confirm usage notification failed:', err));
+    }
 
     if (shouldAutoConfirm) {
       return NextResponse.json({

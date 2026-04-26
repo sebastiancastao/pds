@@ -289,8 +289,8 @@ export default function EditEventPage() {
                 required
                 className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               >
-                <option value="normal">Normal</option>
-                <option value="special">Special</option>
+                <option value="normal">Event Time Keeping</option>
+                <option value="special">Non Event Time Sheet</option>
               </select>
             </div>
             <div>
@@ -484,7 +484,6 @@ export default function EditEventPage() {
     </div>
   );
 }
-
 
 
 

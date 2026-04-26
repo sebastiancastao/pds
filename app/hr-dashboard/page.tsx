@@ -257,7 +257,7 @@ function HRDashboardContent() {
     });
   };
 
-  type OtherAdjustmentType = "reimbursement_1" | "meal_break";
+  type OtherAdjustmentType = "reimbursement_1" | "meal_break" | "bonus";
   const DEFAULT_OTHER_ADJUSTMENT_TYPE: OtherAdjustmentType = "reimbursement_1";
   const normalizeOtherAdjustmentType = (value?: string | null): OtherAdjustmentType => {
     const normalized = (value || "")
@@ -266,10 +266,16 @@ function HRDashboardContent() {
       .toLowerCase()
       .replace(/\s+/g, "_")
       .replace(/-/g, "_");
-    return normalized === "meal_break" ? "meal_break" : "reimbursement_1";
+    if (normalized === "meal_break") return "meal_break";
+    if (normalized === "bonus") return "bonus";
+    return "reimbursement_1";
   };
-  const getOtherAdjustmentTypeLabel = (value?: string | null): string =>
-    normalizeOtherAdjustmentType(value) === "meal_break" ? "Meal Break" : "Reimbursement 1";
+  const getOtherAdjustmentTypeLabel = (value?: string | null): string => {
+    const t = normalizeOtherAdjustmentType(value);
+    if (t === "meal_break") return "Meal Break";
+    if (t === "bonus") return "Bonus";
+    return "Reimbursement 1";
+  };
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
@@ -2489,6 +2495,7 @@ function HRDashboardContent() {
                                                           >
                                                             <option value="reimbursement_1">Reimbursement 1</option>
                                                             <option value="meal_break">Meal Break</option>
+                                                            <option value="bonus">Bonus</option>
                                                           </select>
                                                           <div className="flex items-center gap-2">
                                                             <button

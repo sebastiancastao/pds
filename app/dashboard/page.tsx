@@ -1351,10 +1351,16 @@ export default function DashboardPage() {
 
     setSelectedTeamMembers(nextSelected);
   };
+  const getSelectedInvitableTeamMemberIds = () =>
+    Array.from(selectedTeamMembers).filter((id) => {
+      const vendor = availableVendors.find((v) => v.id === id);
+      return Boolean(vendor) && !(vendor as any).isExistingMember && !(vendor as any).confirmedElsewhere;
+    });
   const handleSaveTeam = async () => {
-    if (!selectedEvent || selectedTeamMembers.size === 0) return;
+    if (!selectedEvent) return;
 
-    const selectedIds = Array.from(selectedTeamMembers);
+    const selectedIds = getSelectedInvitableTeamMemberIds();
+    if (selectedIds.length === 0) return;
     const outOfVenueIds = selectedIds.filter((id) => {
       const v = availableVendors.find((v) => v.id === id);
       return (v as any)?.isOutOfVenue && !(v as any)?.isExistingMember;
@@ -1512,6 +1518,7 @@ export default function DashboardPage() {
   const allAvailableVendorsInvited =
     availableVendors.length > 0 &&
     availableVendors.every((v) => (v as any).isExistingMember);
+  const selectedInvitableTeamMembersCount = getSelectedInvitableTeamMemberIds().length;
   const pendingTeamInvitesCount = availableVendors.filter((vendor) => {
     const status = String((vendor as any).status || "").toLowerCase();
     return Boolean((vendor as any).isExistingMember) && status !== "confirmed" && status !== "declined";
@@ -2843,10 +2850,10 @@ export default function DashboardPage() {
                       </button>
                       <button
                         onClick={handleSaveTeam}
-                        disabled={selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations}
-                        className={`apple-button ${selectedTeamMembers.size === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations ? "apple-button-disabled" : "apple-button-primary"}`}
+                        disabled={selectedInvitableTeamMembersCount === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations}
+                        className={`apple-button ${selectedInvitableTeamMembersCount === 0 || savingTeam || allAvailableVendorsInvited || resendingTeamConfirmations ? "apple-button-disabled" : "apple-button-primary"}`}
                       >
-                        {savingTeam ? "Creating..." : allAvailableVendorsInvited ? "All Invited" : `Create Team (${selectedTeamMembers.size})`}
+                        {savingTeam ? "Creating..." : allAvailableVendorsInvited ? "All Invited" : `Create Team (${selectedInvitableTeamMembersCount})`}
                       </button>
                     </div>
                   </div>

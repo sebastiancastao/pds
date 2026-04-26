@@ -122,6 +122,7 @@ interface FinalPayEvent {
   tips: number;
   totalPay: number;
   adjustmentAmount: number;
+  reimbursementAmount?: number;
   adjustmentType: string | null;
   finalPay: number;
 }
@@ -130,6 +131,7 @@ interface FinalPayTotals {
   commissions: number;
   tips: number;
   totalPay: number;
+  reimbursements?: number;
   finalPay: number;
 }
 

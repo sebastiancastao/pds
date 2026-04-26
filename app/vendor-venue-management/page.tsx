@@ -21,7 +21,6 @@ type Vendor = {
   role: string | null;
   division: string | null;
   is_active: boolean;
-  manual_override: boolean;
   first_name: string;
   last_name: string;
   full_name: string;
@@ -410,7 +409,7 @@ export default function VendorVenueManagementPage() {
           Email: vendor.email,
           Division: vendor.division || '',
           Role: vendor.role || '',
-          'Manual Override': vendor.manual_override ? 'Yes' : 'No',
+          'Assignment Status': 'Unassigned',
           Venue: '',
           City: '',
           State: '',
@@ -434,7 +433,7 @@ export default function VendorVenueManagementPage() {
             Email: vendor.email,
             Division: vendor.division || '',
             Role: vendor.role || '',
-            'Manual Override': vendor.manual_override ? 'Yes' : 'No',
+            'Assignment Status': 'Assigned',
             Venue: assignment.venue?.venue_name || '',
             City: assignment.venue?.city || '',
             State: assignment.venue?.state || '',
@@ -642,8 +641,7 @@ export default function VendorVenueManagementPage() {
               Assign allowed venues to vendor-division users.
             </p>
             <p className="text-xs text-gray-500 mt-2">
-              Vendors without assignments are auto-assigned to their closest venue by coordinates.
-              Any manual edit locks that vendor out of future distance auto-assignment.
+              Assignments are manual only. Vendors stay unassigned until you assign a venue.
             </p>
             {userRole && (
               <p className="text-xs text-gray-500 mt-2">
@@ -774,12 +772,12 @@ export default function VendorVenueManagementPage() {
                       </span>
                       <span
                         className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium ${
-                          vendor.manual_override
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-emerald-100 text-emerald-800'
+                          vendorAssignments.length > 0
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-gray-100 text-gray-700'
                         }`}
                       >
-                        {vendor.manual_override ? 'Manual override' : 'Auto-distance'}
+                        {vendorAssignments.length > 0 ? 'Assigned' : 'Unassigned'}
                       </span>
                       {vendor.role && (
                         <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-gray-100 text-gray-700">

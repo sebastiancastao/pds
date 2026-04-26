@@ -207,6 +207,33 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: adjError.message }, { status: 500 });
     }
 
+    const { data: eventLinkedReimbursements, error: eventLinkedReimbursementsError } = await supabaseAdmin
+      .from('vendor_reimbursement_requests')
+      .select('event_id, approved_amount')
+      .eq('user_id', userId)
+      .eq('status', 'approved')
+      .not('event_id', 'is', null)
+      .in('event_id', eventIds);
+
+    if (eventLinkedReimbursementsError) {
+      return NextResponse.json({ error: eventLinkedReimbursementsError.message }, { status: 500 });
+    }
+
+    const { data: standaloneReimbursements, error: standaloneReimbursementsError } = await supabaseAdmin
+      .from('vendor_reimbursement_requests')
+      .select('id, approved_amount, approved_pay_date, description, purchase_date, created_at')
+      .eq('user_id', userId)
+      .eq('status', 'approved')
+      .is('event_id', null)
+      .not('approved_pay_date', 'is', null)
+      .gte('approved_pay_date', startDate)
+      .lt('approved_pay_date', endDateExclusive)
+      .order('approved_pay_date', { ascending: true });
+
+    if (standaloneReimbursementsError) {
+      return NextResponse.json({ error: standaloneReimbursementsError.message }, { status: 500 });
+    }
+
     // Build lookup maps
     const vpByEvent: Record<string, any> = {};
     for (const vp of vendorPayments || []) {
@@ -269,6 +296,14 @@ export async function GET(req: NextRequest) {
       adjByEvent[adj.event_id] = adj;
     }
 
+    const reimbursementsByEvent: Record<string, number> = {};
+    for (const reimbursement of eventLinkedReimbursements || []) {
+      if (!reimbursement?.event_id) continue;
+      reimbursementsByEvent[reimbursement.event_id] =
+        Number(reimbursementsByEvent[reimbursement.event_id] || 0) +
+        Number(reimbursement.approved_amount || 0);
+    }
+
     // Build per-event final pay data
     const eventResults = events
       .filter((ev: any) => vpByEvent[ev.id]) // only events where this user has payment data
@@ -291,7 +326,8 @@ export async function GET(req: NextRequest) {
         const storedTips = Number(vp.tips || 0);
         const totalPay = Number(vp.total_pay || 0);
         const adjustmentAmount = Number(adj.adjustment_amount || 0);
-        const finalPay = totalPay + adjustmentAmount;
+        const reimbursementAmount = Number(reimbursementsByEvent[ev.id] || 0);
+        const finalPay = totalPay + adjustmentAmount + reimbursementAmount;
         const netSales = Number(ep.net_sales || 0);
         const commissionPoolDollars = Number(ep.commission_pool_dollars || 0);
         const distributedCommission = Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0);
@@ -314,6 +350,7 @@ export async function GET(req: NextRequest) {
           tips: resolvedTips,
           totalPay,
           adjustmentAmount,
+          reimbursementAmount,
           adjustmentType: adj.adjustment_type || null,
           finalPay,
           netSales,
@@ -322,17 +359,39 @@ export async function GET(req: NextRequest) {
         };
       });
 
+    const standaloneResults = (standaloneReimbursements || []).map((row: any) => ({
+      id: row.id,
+      approvedAmount: Number(row.approved_amount || 0),
+      approvedPayDate: row.approved_pay_date,
+      description: row.description || '',
+      purchaseDate: row.purchase_date,
+      createdAt: row.created_at,
+    }));
+
+    const standaloneTotal = standaloneResults.reduce(
+      (sum: number, reimbursement: any) => sum + Number(reimbursement.approvedAmount || 0),
+      0
+    );
+
     const totals = eventResults.reduce(
       (acc: any, ev: any) => ({
         commissions: acc.commissions + ev.commissions,
         tips: acc.tips + ev.tips,
         totalPay: acc.totalPay + ev.totalPay,
+        reimbursements: acc.reimbursements + ev.reimbursementAmount,
         finalPay: acc.finalPay + ev.finalPay,
       }),
-      { commissions: 0, tips: 0, totalPay: 0, finalPay: 0 }
+      { commissions: 0, tips: 0, totalPay: 0, reimbursements: 0, finalPay: 0 }
     );
 
-    return NextResponse.json({ events: eventResults, totals });
+    totals.reimbursements += standaloneTotal;
+    totals.finalPay += standaloneTotal;
+
+    return NextResponse.json({
+      events: eventResults,
+      standaloneReimbursements: standaloneResults,
+      totals,
+    });
   } catch (err: any) {
     console.error('[employee-final-pay] error:', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });

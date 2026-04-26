@@ -16,7 +16,7 @@ export interface Database {
         Row: {
           id: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3';
           division: 'vendor' | 'trailers' | 'both';
           is_active: boolean;
           created_at: string;
@@ -33,7 +33,7 @@ export interface Database {
         Insert: {
           id?: string;
           email: string;
-          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
+          role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3';
           division: 'vendor' | 'trailers' | 'both';
           is_active?: boolean;
           created_at?: string;
@@ -154,6 +154,79 @@ export interface Database {
         Insert: Omit<Database['public']['Tables']['password_resets']['Row'], 'id' | 'created_at'>;
         Update: Partial<Database['public']['Tables']['password_resets']['Row']>;
       };
+      event_vendor_payments: {
+        Row: {
+          id: string;
+          event_payment_id: string | null;
+          event_id: string;
+          user_id: string;
+          effective_hours: number | null;
+          worked_hours: number | null;
+          actual_hours: number | null;
+          regular_hours: number | null;
+          overtime_hours: number | null;
+          doubletime_hours: number | null;
+          regular_pay: number | null;
+          overtime_pay: number | null;
+          doubletime_pay: number | null;
+          commissions: number | null;
+          tips: number | null;
+          total_pay: number | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['event_vendor_payments']['Row']> & {
+          event_id: string;
+          user_id: string;
+        };
+        Update: Partial<Database['public']['Tables']['event_vendor_payments']['Row']>;
+      };
+      payment_adjustments: {
+        Row: {
+          id: string;
+          event_id: string;
+          user_id: string;
+          adjustment_amount: number;
+          adjustment_note: string | null;
+          adjustment_type: string | null;
+          created_at: string;
+          updated_at: string;
+          created_by: string | null;
+        };
+        Insert: Partial<Database['public']['Tables']['payment_adjustments']['Row']> & {
+          event_id: string;
+          user_id: string;
+          adjustment_amount: number;
+        };
+        Update: Partial<Database['public']['Tables']['payment_adjustments']['Row']>;
+      };
+      vendor_reimbursement_requests: {
+        Row: {
+          id: string;
+          user_id: string;
+          event_id: string | null;
+          purchase_date: string;
+          description: string;
+          requested_amount: number;
+          approved_amount: number | null;
+          status: 'submitted' | 'approved' | 'rejected' | 'cancelled';
+          receipt_path: string | null;
+          receipt_filename: string | null;
+          approved_pay_date: string | null;
+          review_notes: string | null;
+          reviewed_by: string | null;
+          reviewed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['vendor_reimbursement_requests']['Row']> & {
+          user_id: string;
+          purchase_date: string;
+          description: string;
+          requested_amount: number;
+        };
+        Update: Partial<Database['public']['Tables']['vendor_reimbursement_requests']['Row']>;
+      };
     };
     Views: {
       [_ in never]: never;
@@ -162,11 +235,10 @@ export interface Database {
       [_ in never]: never;
     };
     Enums: {
-      user_role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee';
+      user_role: 'worker' | 'manager' | 'finance' | 'exec' | 'employee' | 'admin' | 'hr' | 'hr_admin' | 'supervisor' | 'supervisor2' | 'supervisor3';
       division: 'vendor' | 'trailers' | 'both';
       document_type: 'i9' | 'w4' | 'w9' | 'direct_deposit' | 'handbook' | 'other';
       onboarding_status: 'pending' | 'in_progress' | 'completed';
     };
   };
 }
-

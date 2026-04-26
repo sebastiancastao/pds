@@ -64,7 +64,7 @@ export default function VendorPortal() {
         </div>
 
         {/* Modules */}
-        <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid md:grid-cols-2 lg:grid-cols-5 gap-6">
           <Link href="/vendor/onboarding" className="card hover:shadow-lg transition-shadow cursor-pointer">
             <div className="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
               <svg className="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -103,6 +103,16 @@ export default function VendorPortal() {
             </div>
             <h3 className="font-semibold text-gray-900 mb-2">My Pay</h3>
             <p className="text-sm text-gray-600">View your earnings and payouts</p>
+          </Link>
+
+          <Link href="/reimbursements" className="card hover:shadow-lg transition-shadow cursor-pointer">
+            <div className="w-12 h-12 bg-primary-100 rounded-lg flex items-center justify-center mb-4">
+              <svg className="w-6 h-6 text-primary-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m-7 5h8a2 2 0 002-2V7l-5-5H6a2 2 0 00-2 2v15a2 2 0 002 2zm9-13H9" />
+              </svg>
+            </div>
+            <h3 className="font-semibold text-gray-900 mb-2">Reimbursements</h3>
+            <p className="text-sm text-gray-600">Submit receipts and track payroll reimbursement requests</p>
           </Link>
         </div>
       </main>

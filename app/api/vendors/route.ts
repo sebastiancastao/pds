@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { decrypt, decryptData } from "@/lib/encryption";
+import { decrypt } from "@/lib/encryption";
 
 export const dynamic = 'force-dynamic';
 
@@ -108,7 +108,7 @@ export async function GET(req: NextRequest) {
     // IMPORTANT: Only select non-sensitive fields to avoid exposing encrypted data
     const profileFields = slim
       ? 'first_name, last_name, city, state, latitude, longitude, region_id'
-      : 'first_name, last_name, phone, city, state, latitude, longitude, profile_photo_data, region_id';
+      : 'first_name, last_name, phone, city, state, latitude, longitude, region_id';
 
     let vendorQuery = supabaseAdmin
       .from('users')
@@ -158,16 +158,16 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: error.message || error.code || error }, { status: 500 });
     }
 
-    const vendorIds = (vendors || []).map((vendor: any) => String(vendor?.id || '')).filter(Boolean);
+    const regionVendorIdSet = new Set((vendors || []).map((vendor: any) => String(vendor?.id || '')).filter(Boolean));
     const assignedToVenueIds = new Set<string>();
 
     const venueId = String((venueData as any)?.id || '').trim();
-    if (venueId && vendorIds.length > 0) {
+    if (venueId) {
+      // Fetch ALL venue assignments regardless of region so in-venue vendors outside the region are included
       const { data: venueAssignments, error: venueAssignmentsError } = await supabaseAdmin
         .from('vendor_venue_assignments')
         .select('vendor_id')
-        .eq('venue_id', venueId)
-        .in('vendor_id', vendorIds);
+        .eq('venue_id', venueId);
 
       if (venueAssignmentsError) {
         console.error('Error loading vendor venue assignments:', venueAssignmentsError);
@@ -179,9 +179,34 @@ export async function GET(req: NextRequest) {
       }
     }
 
+    // Fetch in-venue vendors that are outside the venue's region (missed by the region filter above)
+    let allVendors = [...(vendors || [])];
+    const missingInVenueIds = Array.from(assignedToVenueIds).filter(id => !regionVendorIdSet.has(id));
+    if (missingInVenueIds.length > 0) {
+      const { data: extraVendors } = await supabaseAdmin
+        .from('users')
+        .select(`
+          id,
+          email,
+          role,
+          division,
+          is_active,
+          profiles!inner (
+            ${profileFields}
+          )
+        `)
+        .in('id', missingInVenueIds)
+        .in('division', ['vendor', 'both', 'trailers'])
+        .eq('is_active', true);
+
+      if (extraVendors && extraVendors.length > 0) {
+        allVendors = [...allVendors, ...extraVendors];
+      }
+    }
+
     // Calculate distance for vendors with coordinates, and sort by proximity (closest first)
     // Vendors without coordinates will appear at the end
-    const vendorsWithDistance = (vendors ?? [])
+    const vendorsWithDistance = allVendors
       .map((vendor: any) => {
         // Calculate distance only if vendor has coordinates
         let distance: number | null = null;
@@ -200,7 +225,6 @@ export async function GET(req: NextRequest) {
         let firstName = '';
         let lastName = '';
         let phone = '';
-        let profilePhotoUrl = null;
 
         try {
           firstName = vendor.profiles.first_name ? decrypt(vendor.profiles.first_name) : '';
@@ -215,49 +239,6 @@ export async function GET(req: NextRequest) {
           phone = '';
         }
 
-        // Convert binary profile photo (bytea) to data URL if exists (skipped in slim mode)
-        if (!slim && vendor.profiles.profile_photo_data) {
-          try {
-            let photoData = vendor.profiles.profile_photo_data;
-
-            // First, convert hex bytea to string if needed
-            if (typeof photoData === 'string' && photoData.startsWith('\\x')) {
-              const hexString = photoData.slice(2); // Remove \x prefix
-              const buffer = Buffer.from(hexString, 'hex');
-              photoData = buffer.toString('utf-8'); // Convert to string for decryption
-            }
-
-            // Check if photo data is encrypted (starts with U2FsdGVk = "Salted__" in base64)
-            if (typeof photoData === 'string' && (photoData.startsWith('U2FsdGVk') || photoData.includes('Salted'))) {
-              try {
-                // Decrypt the binary photo data using decryptData() for binary data
-                const decryptedBytes = decryptData(photoData);
-                // Convert Uint8Array to base64
-                const base64 = Buffer.from(decryptedBytes).toString('base64');
-                profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-              } catch (decryptError) {
-                // Fallback: try treating it as a data URL string instead of binary
-                try {
-                  const decryptedText = decrypt(photoData);
-                  if (decryptedText.startsWith('data:')) {
-                    profilePhotoUrl = decryptedText;
-                  }
-                } catch (fallbackError) {
-                  console.error('❌ Photo decryption failed for vendor:', vendor.id);
-                }
-              }
-            } else if (Buffer.isBuffer(photoData)) {
-              // Raw buffer - convert directly
-              const base64 = photoData.toString('base64');
-              profilePhotoUrl = `data:image/jpeg;base64,${base64}`;
-            } else if (typeof photoData === 'string' && photoData.startsWith('data:')) {
-              // Already a data URL
-              profilePhotoUrl = photoData;
-            }
-          } catch (photoError) {
-            console.error('❌ Error processing profile photo for vendor:', vendor.id, photoError);
-          }
-        }
 
         // Explicitly construct the response object to avoid exposing sensitive/encrypted fields
         return {
@@ -275,7 +256,7 @@ export async function GET(req: NextRequest) {
             state: vendor.profiles.state,
             latitude: vendor.profiles.latitude,
             longitude: vendor.profiles.longitude,
-            profile_photo_url: profilePhotoUrl
+            profile_photo_url: null
           },
           region_id: vendor.profiles.region_id || null,
           isOutOfVenue: !assignedToVenueIds.has(String(vendor.id || '')),

@@ -409,7 +409,7 @@ export default function ReportsPage() {
             <h1 className="text-4xl font-bold text-gray-900 keeping-apple-tight">Data Reports</h1>
             <p className="text-gray-500 mt-1 text-sm">All user, event, and operational data</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link
               href="/reports/availability-by-region"
               className="liquid-btn-glass liquid-btn-sm inline-flex items-center gap-2"
@@ -418,6 +418,15 @@ export default function ReportsPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 01.553-.894L9 2m0 18l6-3m-6 3V2m6 15l5.447-2.724A1 1 0 0021 13.382V2.618a1 1 0 00-.553-.894L15 0m0 17V0m0 0L9 2" />
               </svg>
               Region Availability
+            </Link>
+            <Link
+              href="/reports/attestation-rejections"
+              className="liquid-btn-glass liquid-btn-sm inline-flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h3m5 4H7a2 2 0 01-2-2V6a2 2 0 012-2h5l5 5v9a2 2 0 01-2 2z" />
+              </svg>
+              Attestation Rejections
             </Link>
             <button
               onClick={() => router.back()}

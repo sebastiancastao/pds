@@ -1506,6 +1506,7 @@ export default function EventDashboardPage() {
       form.append("body", body);
       form.append("bodyFormat", "text");
       form.append("confirm", "true");
+      if (event.venue) form.append("venue", event.venue);
       const res = await fetch("/api/admin/send-email", {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -4170,7 +4171,7 @@ export default function EventDashboardPage() {
                         : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                     }`}
                   >
-                    Normal
+                    Event Time Keeping
                   </button>
                   <button
                     type="button"
@@ -4181,7 +4182,7 @@ export default function EventDashboardPage() {
                         : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                     }`}
                   >
-                    Special
+                    Non Event Time Sheet
                   </button>
                 </div>
               </div>
@@ -5029,7 +5030,7 @@ export default function EventDashboardPage() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
                 <div className="flex items-center gap-2">
-                  {canManageTeam && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
+                  {canManageTeam && userRole === "exec" && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
                     <button
                       onClick={openAddVendorModal}
                       disabled={loadingAddVendors || addingVendorToTeam}
@@ -5038,13 +5039,15 @@ export default function EventDashboardPage() {
                       Add Vendor + Confirm
                     </button>
                   )}
-                  <button
-                    onClick={handleExportTeamMembers}
-                    disabled={loadingTeam || filteredTeamListMembers.length === 0}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                  >
-                    Export Excel
-                  </button>
+                  {userRole === "exec" && (
+                    <button
+                      onClick={handleExportTeamMembers}
+                      disabled={loadingTeam || filteredTeamListMembers.length === 0}
+                      className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Export Excel
+                    </button>
+                  )}
                   <button
                     onClick={() => setShowUninvitedHistoryModal(true)}
                     disabled={loadingTeam || uninvitedTeamMembers.length === 0}
@@ -5359,13 +5362,15 @@ export default function EventDashboardPage() {
                       ? "Sending..."
                       : `Call Time${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
                   </button>
-                  <button
-                    onClick={handleExportLocations}
-                    disabled={loadingLocations || eventLocations.length === 0}
-                    className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                  >
-                    Export
-                  </button>
+                  {userRole === "exec" && (
+                    <button
+                      onClick={handleExportLocations}
+                      disabled={loadingLocations || eventLocations.length === 0}
+                      className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                    >
+                      Export
+                    </button>
+                  )}
                   <button
                     onClick={loadLocations}
                     disabled={loadingLocations}

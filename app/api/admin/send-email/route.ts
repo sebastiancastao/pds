@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
 import type { Attachment } from "resend";
 import { sendEmail } from "@/lib/email";
+import { getVenueBccEmails } from "@/lib/venue-bcc";
 
 export const runtime = "nodejs";
 
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest) {
     const body = String(form.get("body") || "");
     const bodyFormat = String(form.get("bodyFormat") || "text").trim().toLowerCase() as BodyFormat;
     const bccRaw = String(form.get("bcc") || "");
+    const venue = String(form.get("venue") || "").trim();
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
 
     if (!["manual", "role", "region", "all"].includes(audience)) {
@@ -229,6 +231,9 @@ export async function POST(req: NextRequest) {
         ? body
         : `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(body)}</pre>`;
 
+    const venueBcc = venue ? await getVenueBccEmails(venue, supabaseAdmin) : [];
+    const mergedBcc = [...new Set([...bcc, ...venueBcc])];
+
     const batchSize = resolveIntSetting(
       process.env.EMAIL_SEND_BATCH_SIZE,
       DEFAULT_BATCH_SIZE,
@@ -258,7 +263,7 @@ export async function POST(req: NextRequest) {
     let sentCount = 0;
     const messageIds: string[] = [];
     const basePayload = {
-      bcc: bcc.length ? bcc : undefined,
+      bcc: mergedBcc.length ? mergedBcc : undefined,
       subject,
       html,
       from: process.env.RESEND_FROM || undefined,

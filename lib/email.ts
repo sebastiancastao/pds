@@ -2236,3 +2236,294 @@ export async function sendTeamBuildingNotification(data: {
     return { success: false, error: error.message || 'Failed to send team building notification' };
   }
 }
+
+export async function sendAddConfirmUsageNotification(data: {
+  managerName: string;
+  managerEmail: string;
+  eventName: string;
+  eventDate: string;
+  eventStartTime?: string;
+  vendorNames: string[];
+}): Promise<EmailResult> {
+  const { managerName, managerEmail, eventName, eventDate, eventStartTime, vendorNames } = data;
+
+  const vendorListHtml = vendorNames.length > 0
+    ? vendorNames.map(name => `<li style="padding:4px 0;color:#333;font-size:14px;">${name}</li>`).join('')
+    : '<li style="padding:4px 0;color:#888;font-size:14px;">No vendor names available</li>';
+
+  const subject = `Add+Confirm Used - ${eventName}`;
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+
+          <tr>
+            <td style="background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);padding:40px 30px;text-align:center;">
+              <h1 style="color:#ffffff;margin:0;font-size:26px;">Add+Confirm Used</h1>
+              <p style="color:#bbf7d0;margin:10px 0 0 0;font-size:15px;">A room manager instantly confirmed team members</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:36px 30px;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f8f9fa;border-radius:8px;border:2px solid #16a34a;margin:0 0 24px 0;">
+                <tr>
+                  <td style="padding:24px;">
+                    <h2 style="color:#16a34a;margin:0 0 16px 0;font-size:18px;">Event Details</h2>
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;width:40%;"><strong>Event:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Date:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventDate}${eventStartTime ? ' at ' + eventStartTime : ''}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Manager:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${managerName} (${managerEmail})</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Members Confirmed:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${vendorNames.length}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Status:</strong></td>
+                        <td style="padding:6px 0;font-size:14px;"><span style="color:#16a34a;font-weight:bold;">Auto-Confirmed (Add+Confirm)</span></td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f0fdf4;border-radius:8px;border-left:4px solid #16a34a;margin:0 0 24px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#166534;margin:0 0 10px 0;font-size:14px;"><strong>Team Members Added &amp; Confirmed:</strong></p>
+                    <ul style="margin:0;padding-left:20px;">${vendorListHtml}</ul>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color:#888;font-size:13px;margin:0;">This is an automated notification. No action is required.</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;">
+              <p style="color:#888;font-size:12px;margin:0;">PDS Events &bull; Add+Confirm Usage Notification</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data: result, error } = await sendResendEmail({
+      from: EVENTS_FROM,
+      to: ['jenvillar@1pds.net', 'sebastiancastao379@gmail.com'],
+      subject,
+      html,
+    });
+
+    if (error) {
+      return { success: false, error: formatResendError(error), errorName: (error as any).name };
+    }
+
+    return { success: true, messageId: result?.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send Add+Confirm usage notification' };
+  }
+}
+
+export async function sendNonEventTimesheetCreatedNotification(data: {
+  eventId?: string | null;
+  eventName: string;
+  artist?: string | null;
+  venue: string;
+  city?: string | null;
+  state?: string | null;
+  eventDate?: string | null;
+  startTime?: string | null;
+  endTime?: string | null;
+  endsNextDay?: boolean;
+  createdByEmail?: string | null;
+  createdById?: string | null;
+}): Promise<EmailResult> {
+  const {
+    eventId,
+    eventName,
+    artist,
+    venue,
+    city,
+    state,
+    eventDate,
+    startTime,
+    endTime,
+    endsNextDay,
+    createdByEmail,
+    createdById,
+  } = data;
+
+  const primaryRecipient = 'portal@1pds.net';
+  const bccRecipients = ['sebastiancastao379@gmail.com', 'brownseb379@gmail.com'];
+
+  const formatDate = (value?: string | null): string => {
+    if (!value) return 'Date TBD';
+    const normalized = String(value).trim();
+    const ymd = normalized.slice(0, 10);
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+      const [yearRaw, monthRaw, dayRaw] = ymd.split('-');
+      const year = Number(yearRaw);
+      const month = Number(monthRaw);
+      const day = Number(dayRaw);
+      const localDate = new Date(year, month - 1, day);
+      return localDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+    }
+
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return normalized;
+    return parsed.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  };
+
+  const formatTime = (value?: string | null): string => {
+    if (!value) return '';
+    const normalized = String(value).trim();
+    const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+
+    if (hhmm) {
+      const hour = Number(hhmm[1]);
+      const minute = Number(hhmm[2]);
+      if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+        const d = new Date();
+        d.setHours(hour, minute, 0, 0);
+        return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      }
+    }
+
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return normalized;
+    return parsed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const formattedDate = formatDate(eventDate);
+  const formattedStartTime = formatTime(startTime);
+  const formattedEndTime = formatTime(endTime);
+  const scheduleText = [formattedDate, formattedStartTime && formattedEndTime
+    ? `${formattedStartTime} - ${formattedEndTime}${endsNextDay ? ' (ends next day)' : ''}`
+    : formattedStartTime || formattedEndTime || '',
+  ].filter(Boolean).join(' at ');
+  const locationText = [venue, [city, state].filter(Boolean).join(', ')].filter(Boolean).join(' - ');
+  const createdByText = createdByEmail || createdById || 'Unknown';
+  const subject = `Non Event Time Sheet Created - ${eventName}`;
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#0f766e 0%,#115e59 100%);padding:40px 30px;text-align:center;">
+              <h1 style="color:#ffffff;margin:0;font-size:26px;">Non Event Time Sheet Created</h1>
+              <p style="color:#ccfbf1;margin:10px 0 0 0;font-size:15px;">A new non-event time sheet was created in PDS Time Keeping</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 30px;">
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f8fafc;border-radius:8px;border:2px solid #0f766e;margin:0 0 24px 0;">
+                <tr>
+                  <td style="padding:24px;">
+                    <h2 style="color:#0f766e;margin:0 0 16px 0;font-size:18px;">Event Details</h2>
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;width:38%;"><strong>Category:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">Non Event Time Sheet</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Event Name:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventName}</td>
+                      </tr>
+                      ${artist ? `<tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Artist:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${artist}</td>
+                      </tr>` : ''}
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Venue:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${locationText}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Schedule:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${scheduleText || 'Schedule TBD'}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Created By:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${createdByText}</td>
+                      </tr>
+                      ${eventId ? `<tr>
+                        <td style="padding:6px 0;color:#555;font-size:14px;"><strong>Event ID:</strong></td>
+                        <td style="padding:6px 0;color:#333;font-size:14px;">${eventId}</td>
+                      </tr>` : ''}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              <p style="color:#888;font-size:13px;margin:0;">This is an automated notification. No action is required.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;">
+              <p style="color:#888;font-size:12px;margin:0;">PDS Events &bull; Non Event Time Sheet Notification</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data: result, error } = await sendResendEmail({
+      from: EVENTS_FROM,
+      to: primaryRecipient,
+      bcc: bccRecipients,
+      subject,
+      html,
+    });
+
+    if (error) {
+      return { success: false, error: formatResendError(error), errorName: (error as any).name };
+    }
+
+    return { success: true, messageId: result?.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send non-event time sheet notification' };
+  }
+}
