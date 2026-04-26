@@ -299,7 +299,7 @@ export async function POST(
     // Insert only new team members (incremental team building - no deletion!)
     const { data: insertedTeams, error: insertError } = await supabaseAdmin
       .from('event_teams')
-      .insert(teamMembers)
+      .upsert(teamMembers, { onConflict: 'event_id,vendor_id', ignoreDuplicates: true })
       .select();
 
     console.log('🔍 DEBUG - Inserted teams:', insertedTeams);
@@ -335,7 +335,7 @@ export async function POST(
       }
     });
 
-    sendTeamBuildingNotification({
+    await sendTeamBuildingNotification({
       managerName: notifyManagerName,
       managerEmail: requesterEmail,
       eventName: event.event_name,
