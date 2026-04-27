@@ -568,6 +568,7 @@ export async function GET(
         id,
         email,
         division,
+        role,
         profiles (
           first_name,
           last_name,

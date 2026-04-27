@@ -60,7 +60,9 @@
       "Bash(find 'c:/Users/sebas/OneDrive/Escritorio/PDS - copia - copia' -type f \\\\\\(-name *.tsx -o -name *.ts \\\\\\))",
       "Bash(find '/c/Users/sebas/OneDrive/Escritorio/PDS - copia - copia' -type f \\\\\\(-name *bulkUpload* -o -name *bulk-upload* -o -name *csvUpload* -o -name *csv-upload* -o -name *csvParser* -o -name *csv-parser* \\\\\\))",
       "Bash(node -e \":*)",
-      "Bash(xargs wc *)"
+      "Bash(xargs wc *)",
+      "Read(//c/Users/sebas/.claude/**)",
+      "Read(//c/Users/sebas/.claude/skills/**)"
     ],
     "deny": [],
     "ask": []

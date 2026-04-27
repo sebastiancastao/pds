@@ -620,6 +620,7 @@ export default function EventDashboardPage() {
         id,
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
+        role: member?.users?.role || null,
         distance: member?.distance ?? null,
         status: String(member?.status || ""),
         isExistingMember: true,
@@ -3910,7 +3911,7 @@ export default function EventDashboardPage() {
                 ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
                 ["locations", "Locations", "M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z"],
                 ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
-                ["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"],
+                ...(userRole === "exec" ? [["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"]] : []),
               ].map(([key, label, icon]) => (
                 <button
                   key={key}
@@ -5168,6 +5169,9 @@ export default function EventDashboardPage() {
                               const profile = member.users?.profiles;
                               const firstName = profile?.first_name || "N/A";
                               const lastName = profile?.last_name || "";
+                              const memberRole = (member.users?.role || "").toLowerCase();
+                              const isManagerRole = memberRole === "manager";
+                              const isSupervisorRole = memberRole === "supervisor" || memberRole === "supervisor2" || memberRole === "supervisor3";
                               const email = member.users?.email || "N/A";
                               const phone = profile?.phone || "N/A";
                               const parsedDistance =
@@ -5229,10 +5233,20 @@ export default function EventDashboardPage() {
                               return (
                                 <tr key={member.id} className={rowBg}>
                                   <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <div className="text-sm font-medium text-gray-900">
                                         {firstName} {lastName}
                                       </div>
+                                      {isManagerRole && (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                          Manager
+                                        </span>
+                                      )}
+                                      {isSupervisorRole && (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                          Supervisor
+                                        </span>
+                                      )}
                                       {distanceFromVenue !== null && (
                                         <span
                                           className={`px-2 py-0.5 rounded text-xs font-medium ${
@@ -5575,6 +5589,16 @@ export default function EventDashboardPage() {
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {(member?.role || "").toLowerCase() === "manager" && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                              Manager
+                                            </span>
+                                          )}
+                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                              Supervisor
+                                            </span>
+                                          )}
                                           {isLeader && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-1">
                                               <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
@@ -5781,6 +5805,16 @@ export default function EventDashboardPage() {
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {(member?.role || "").toLowerCase() === "manager" && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                              Manager
+                                            </span>
+                                          )}
+                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                              Supervisor
+                                            </span>
+                                          )}
                                           {!member.isExistingMember && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
@@ -6030,6 +6064,9 @@ export default function EventDashboardPage() {
               const firstName = profile?.first_name || "N/A";
               const lastName = profile?.last_name || "";
               const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+              const timesheetMemberRole = (m.users?.role || "").toLowerCase();
+              const isTimesheetManager = timesheetMemberRole === "manager";
+              const isTimesheetSupervisor = timesheetMemberRole === "supervisor" || timesheetMemberRole === "supervisor2" || timesheetMemberRole === "supervisor3";
               const attestationStatus = String(m?.attestation_status || "").trim().toLowerCase();
               const hasSubmittedAttestation =
                 attestationStatus === "submitted" ||
@@ -6107,8 +6144,20 @@ export default function EventDashboardPage() {
                         }
                       />
                       <div className="min-w-0">
-                        <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
-                          {firstName} {lastName}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
+                            {firstName} {lastName}
+                          </div>
+                          {isTimesheetManager && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
+                              Manager
+                            </span>
+                          )}
+                          {isTimesheetSupervisor && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
+                              Supervisor
+                            </span>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -6497,6 +6546,9 @@ export default function EventDashboardPage() {
                           const lastName = profile?.last_name || "";
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
                           const hasAttestation = Boolean(member?.has_attestation);
+                          const payrollMemberRole = (member.users?.role || "").toLowerCase();
+                          const isPayrollManager = payrollMemberRole === "manager";
+                          const isPayrollSupervisor = payrollMemberRole === "supervisor" || payrollMemberRole === "supervisor2" || payrollMemberRole === "supervisor3";
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
@@ -6561,6 +6613,20 @@ export default function EventDashboardPage() {
                                     <div className="font-medium text-gray-900 text-sm truncate">
                                       {firstName} {lastName}
                                     </div>
+                                    {(isPayrollManager || isPayrollSupervisor) && (
+                                      <div className="mt-0.5">
+                                        {isPayrollManager && (
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
+                                            Manager
+                                          </span>
+                                        )}
+                                        {isPayrollSupervisor && (
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
+                                            Supervisor
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
                                     <div className="text-[10px] text-gray-500 break-all">
                                       {member.users?.email || "N/A"}
                                     </div>

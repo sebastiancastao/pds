@@ -37,6 +37,63 @@ function sanitizeFilename(name: string) {
   return name.replace(/[^\w.\-]+/g, '_');
 }
 
+function isMissingFormAuditTrailError(error: any) {
+  const message = String(error?.message || '');
+  return error?.code === 'PGRST205'
+    || message.includes("public.form_audit_trail")
+    || message.includes('form_audit_trail');
+}
+
+async function logProxyI9DocumentChange(params: {
+  actorUserId: string;
+  ownerUserId: string;
+  documentType: string;
+  normalizedKey: string;
+  filename: string;
+  ipAddress: string;
+  userAgent: string;
+}) {
+  const {
+    actorUserId,
+    ownerUserId,
+    documentType,
+    normalizedKey,
+    filename,
+    ipAddress,
+    userAgent,
+  } = params;
+
+  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false },
+  });
+
+  const { error } = await supabase
+    .from('form_audit_trail')
+    .insert({
+      form_id: 'i9-documents',
+      form_type: 'i9',
+      user_id: ownerUserId,
+      action: 'edited',
+      action_details: {
+        origin: 'i9-documents/upload',
+        performed_by_user_id: actorUserId,
+        performed_for_user_id: ownerUserId,
+        is_proxy_edit: true,
+        document_type: documentType,
+        normalized_key: normalizedKey,
+        file_name: filename,
+      },
+      ip_address: ipAddress,
+      user_agent: userAgent,
+      session_id: `proxy-i9-upload-${Date.now()}`,
+      timestamp: new Date().toISOString(),
+    });
+
+  if (error && !isMissingFormAuditTrailError(error)) {
+    console.error('[I9_UPLOAD] Failed to write proxy audit row:', error);
+  }
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization');
@@ -209,6 +266,23 @@ export async function POST(request: NextRequest) {
       key: colPrefix,
       path: storageKey,
     });
+
+    if (targetUserId !== user.id) {
+      const ipAddress = request.headers.get('x-forwarded-for') ||
+        request.headers.get('x-real-ip') ||
+        'unknown';
+      const userAgent = request.headers.get('user-agent') || 'unknown';
+
+      await logProxyI9DocumentChange({
+        actorUserId: user.id,
+        ownerUserId: targetUserId,
+        documentType,
+        normalizedKey: colPrefix,
+        filename: file.name,
+        ipAddress,
+        userAgent,
+      });
+    }
 
     return NextResponse.json({
       success: true,

@@ -11,6 +11,18 @@ const supabaseAdmin = createClient(
   { auth: { persistSession: false } }
 );
 
+function isI9FormName(formName: string) {
+  const normalized = String(formName || '').trim().toLowerCase();
+  return normalized === 'i9' || normalized.endsWith('-i9');
+}
+
+function isMissingFormAuditTrailError(error: any) {
+  const message = String(error?.message || '');
+  return error?.code === 'PGRST205'
+    || message.includes("public.form_audit_trail")
+    || message.includes('form_audit_trail');
+}
+
 export async function POST(request: NextRequest) {
   try {
     console.log('[SAVE API] Request received');
@@ -65,6 +77,20 @@ export async function POST(request: NextRequest) {
     }
 
     const resolvedFormName = formName;
+    const isProxySave = saveUserId !== userId;
+    const shouldLogI9ProxySave = isProxySave && isI9FormName(resolvedFormName);
+    let hadExistingI9Record = false;
+
+    if (shouldLogI9ProxySave) {
+      const { data: existingI9Record } = await supabaseAdmin
+        .from('pdf_form_progress')
+        .select('id')
+        .eq('user_id', saveUserId)
+        .eq('form_name', resolvedFormName)
+        .maybeSingle();
+
+      hadExistingI9Record = !!existingI9Record;
+    }
 
     console.log('[SAVE API] Upserting form:', resolvedFormName, 'for user:', saveUserId);
 
@@ -86,6 +112,37 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[SAVE API] Saved successfully');
+
+    if (shouldLogI9ProxySave) {
+      const ipAddress = request.headers.get('x-forwarded-for') ||
+        request.headers.get('x-real-ip') ||
+        'unknown';
+      const userAgent = request.headers.get('user-agent') || 'unknown';
+
+      const { error: auditError } = await supabaseAdmin
+        .from('form_audit_trail')
+        .insert({
+          form_id: resolvedFormName,
+          form_type: 'i9',
+          user_id: saveUserId,
+          action: hadExistingI9Record ? 'edited' : 'created',
+          action_details: {
+            origin: 'pdf-form-progress/save',
+            performed_by_user_id: userId,
+            performed_for_user_id: saveUserId,
+            is_proxy_edit: true,
+            form_date: formDate || null,
+          },
+          ip_address: ipAddress,
+          user_agent: userAgent,
+          session_id: `proxy-save-${Date.now()}`,
+          timestamp: new Date().toISOString(),
+        });
+
+      if (auditError && !isMissingFormAuditTrailError(auditError)) {
+        console.error('[SAVE API] Failed to create proxy I-9 audit row:', auditError);
+      }
+    }
 
     // Upload the filled PDF to i9-documents storage bucket
     let storageUrl: string | null = null;
