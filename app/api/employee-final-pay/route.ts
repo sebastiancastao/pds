@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 import { getRegionFallbackCommissionPoolPercent } from '@/lib/commission-pool';
+import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -23,6 +24,8 @@ const roundHoursForDebug = (value: number): number =>
   Number((Number.isFinite(value) ? value : 0).toFixed(6));
 const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
 const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
+const roundMoney = (value: number): number =>
+  Math.round(((Number.isFinite(value) ? value : 0) + Number.EPSILON) * 100) / 100;
 
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
@@ -142,7 +145,10 @@ export async function GET(req: NextRequest) {
     }
 
     if (!events || events.length === 0) {
-      return NextResponse.json({ events: [], totals: { commissions: 0, tips: 0, totalPay: 0, finalPay: 0 } });
+      return NextResponse.json({
+        events: [],
+        totals: { commissions: 0, commissionPaidTotal: 0, tips: 0, totalPay: 0, finalPay: 0 },
+      });
     }
 
     const eventIds = events.map((e: any) => e.id);
@@ -150,7 +156,7 @@ export async function GET(req: NextRequest) {
     // Fetch vendor payment records for this user in those events
     const { data: vendorPayments, error: vpError } = await supabaseAdmin
       .from('event_vendor_payments')
-      .select('event_id, effective_hours, actual_hours, worked_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, tips, total_pay')
+      .select('event_id, effective_hours, actual_hours, worked_hours, regular_hours, regular_pay, overtime_hours, overtime_pay, doubletime_hours, doubletime_pay, commissions, variable_incentive, tips, total_pay')
       .eq('user_id', userId)
       .in('event_id', eventIds);
 
@@ -170,6 +176,9 @@ export async function GET(req: NextRequest) {
         regular_hours,
         overtime_hours,
         doubletime_hours,
+        commission_override,
+        commission_deleted,
+        tips_deleted,
         users:user_id (
           division
         )
@@ -246,6 +255,7 @@ export async function GET(req: NextRequest) {
     }
 
     const distributionByEvent: Record<string, {
+      commissionPoolDollars: number;
       commissionSharesByUser: Record<string, number>;
       tipsSharesByUser: Record<string, number>;
     }> = {};
@@ -271,21 +281,42 @@ export async function GET(req: NextRequest) {
         ? Number(ep.commission_pool_dollars || 0)
         : netSales * resolvedCommissionPoolPercent;
       const totalTipsEvent = Number(ep.total_tips || 0) || Number(ev.tips || 0);
-      const eligibleMembers = eventRows.flatMap((row: any) => {
+      const commissionEligibleMembers = eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();
         const actualHours = getEffectiveHours(row);
-        if (!paymentUserId || isTrailersDivision(row?.users?.division) || actualHours <= 0) return [];
+        if (
+          !paymentUserId ||
+          isTrailersDivision(row?.users?.division) ||
+          row?.commission_deleted === true ||
+          actualHours <= 0
+        ) {
+          return [];
+        }
+        return [{ id: paymentUserId, hours: actualHours }];
+      });
+      const tipsEligibleMembers = eventRows.flatMap((row: any) => {
+        const paymentUserId = (row.user_id || '').toString();
+        const actualHours = getEffectiveHours(row);
+        if (
+          !paymentUserId ||
+          isTrailersDivision(row?.users?.division) ||
+          row?.tips_deleted === true ||
+          actualHours <= 0
+        ) {
+          return [];
+        }
         return [{ id: paymentUserId, hours: actualHours }];
       });
       distributionByEvent[ev.id] = {
+        commissionPoolDollars,
         commissionSharesByUser: distributePoolByHoursRule({
           totalAmount: commissionPoolDollars,
-          members: eligibleMembers,
+          members: commissionEligibleMembers,
           allShortShiftMode: 'equal',
         }).amountsById,
         tipsSharesByUser: distributePoolByHoursRule({
           totalAmount: totalTipsEvent,
-          members: eligibleMembers,
+          members: tipsEligibleMembers,
           allShortShiftMode: 'equal',
         }).amountsById,
       };
@@ -303,6 +334,24 @@ export async function GET(req: NextRequest) {
         Number(reimbursementsByEvent[reimbursement.event_id] || 0) +
         Number(reimbursement.approved_amount || 0);
     }
+
+    const payPeriodCommission = computePayPeriodCommission({
+      events: (events || []).map((ev: any) => ({
+        eventId: (ev?.id || '').toString(),
+        state: ev?.state,
+        commissionPoolDollars: Number(distributionByEvent[ev.id]?.commissionPoolDollars || 0),
+        workers: (allVendorPaymentsByEvent[ev.id] || []).map((row: any) => ({
+          userId: (row?.user_id || '').toString(),
+          division: row?.users?.division,
+          hours: getEffectiveHours(row),
+          commissionDeleted: row?.commission_deleted === true,
+          commissionOverride:
+            row?.commission_override != null && Number.isFinite(Number(row.commission_override))
+              ? Number(row.commission_override)
+              : null,
+        })),
+      })),
+    });
 
     // Build per-event final pay data
     const eventResults = events
@@ -329,11 +378,44 @@ export async function GET(req: NextRequest) {
         const reimbursementAmount = Number(reimbursementsByEvent[ev.id] || 0);
         const finalPay = totalPay + adjustmentAmount + reimbursementAmount;
         const netSales = Number(ep.net_sales || 0);
-        const commissionPoolDollars = Number(ep.commission_pool_dollars || 0);
+        const commissionPoolDollars = Number(
+          ep.commission_pool_dollars || distributionByEvent[ev.id]?.commissionPoolDollars || 0
+        );
         const distributedCommission = Number(distributionByEvent[ev.id]?.commissionSharesByUser?.[userId] || 0);
         const distributedTips = Number(distributionByEvent[ev.id]?.tipsSharesByUser?.[userId] || 0);
-        const commissions = distributedCommission;
         const resolvedTips = distributedTips > 0 ? distributedTips : storedTips;
+        const usesPeriodRate = isPeriodRateState(ev.state);
+        const periodWorker = payPeriodCommission.byEvent?.[ev.id]?.[userId];
+        const persistedCommissionPaidTotal =
+          Number(vp.regular_pay || 0) +
+          Number(vp.overtime_pay || 0) +
+          Number(vp.doubletime_pay || 0) +
+          Number(vp.commissions || 0);
+        const fallbackVariableIncentive =
+          vp.variable_incentive != null && Number.isFinite(Number(vp.variable_incentive))
+            ? Number(vp.variable_incentive)
+            : Math.max(0, persistedCommissionPaidTotal - distributedCommission);
+        const commissionPay = roundMoney(
+          usesPeriodRate
+            ? Number(periodWorker?.commissionPay || 0)
+            : distributedCommission
+        );
+        const variableIncentive = roundMoney(
+          usesPeriodRate
+            ? Number(periodWorker?.variableIncentive || 0)
+            : fallbackVariableIncentive
+        );
+        const commissionPaidTotal = roundMoney(
+          usesPeriodRate
+            ? Number(periodWorker?.commissionPaidTotal || 0)
+            : persistedCommissionPaidTotal
+        );
+        const rateInEffect = roundMoney(
+          usesPeriodRate
+            ? Number(periodWorker?.rateInEffect || 0)
+            : (actualHours > 0 ? commissionPaidTotal / actualHours : 0)
+        );
+        const commissions = commissionPay;
 
         return {
           eventId: ev.id,
@@ -347,6 +429,10 @@ export async function GET(req: NextRequest) {
           overtimePay: Number(vp.overtime_pay || 0),
           doubletimePay: Number(vp.doubletime_pay || 0),
           commissions,
+          commissionPay,
+          rateInEffect,
+          variableIncentive,
+          commissionPaidTotal,
           tips: resolvedTips,
           totalPay,
           adjustmentAmount,
@@ -376,12 +462,13 @@ export async function GET(req: NextRequest) {
     const totals = eventResults.reduce(
       (acc: any, ev: any) => ({
         commissions: acc.commissions + ev.commissions,
+        commissionPaidTotal: acc.commissionPaidTotal + ev.commissionPaidTotal,
         tips: acc.tips + ev.tips,
         totalPay: acc.totalPay + ev.totalPay,
         reimbursements: acc.reimbursements + ev.reimbursementAmount,
         finalPay: acc.finalPay + ev.finalPay,
       }),
-      { commissions: 0, tips: 0, totalPay: 0, reimbursements: 0, finalPay: 0 }
+      { commissions: 0, commissionPaidTotal: 0, tips: 0, totalPay: 0, reimbursements: 0, finalPay: 0 }
     );
 
     totals.reimbursements += standaloneTotal;

@@ -40,6 +40,10 @@ interface I9ReportRow {
   list_a_uploaded_at: string | null;
   list_b_uploaded_at: string | null;
   list_c_uploaded_at: string | null;
+  onboarding_status_exists: boolean;
+  onboarding_status_created_at: string | null;
+  onboarding_status_completed_at: string | null;
+  inferred_hr_edit: boolean;
   last_editor_user_id: string;
   last_editor_name: string;
   last_editor_email: string;
@@ -133,6 +137,10 @@ function exportExcel(rows: I9ReportRow[]) {
     'List A Uploaded At',
     'List B Uploaded At',
     'List C Uploaded At',
+    'Onboarding Status Exists',
+    'Onboarding Status Created At',
+    'Onboarding Status Completed At',
+    'Inferred HR Edit',
     'Last Editor Name',
     'Last Editor Email',
     'Last Editor Role',
@@ -166,6 +174,10 @@ function exportExcel(rows: I9ReportRow[]) {
     fmtExportDateTime(row.list_a_uploaded_at),
     fmtExportDateTime(row.list_b_uploaded_at),
     fmtExportDateTime(row.list_c_uploaded_at),
+    row.onboarding_status_exists ? 'Yes' : 'No',
+    fmtExportDateTime(row.onboarding_status_created_at),
+    fmtExportDateTime(row.onboarding_status_completed_at),
+    row.inferred_hr_edit ? 'Yes' : 'No',
     row.last_editor_name,
     row.last_editor_email || '',
     row.last_editor_role || '',
@@ -200,6 +212,10 @@ function exportExcel(rows: I9ReportRow[]) {
     { wch: 24 },
     { wch: 24 },
     { wch: 24 },
+    { wch: 18 },
+    { wch: 24 },
+    { wch: 24 },
+    { wch: 16 },
     { wch: 28 },
     { wch: 34 },
     { wch: 18 },
@@ -453,7 +469,7 @@ export default function I9AuditReportPage() {
         </div>
 
         <div className="liquid-card p-4 text-sm text-gray-600">
-          Proxy edits are flagged when the authenticated actor was different from the I-9 owner. Existing historical rows without actor audit data fall back to the owner.
+          Proxy edits are flagged from explicit audit data when available. If audit data is missing, the report now infers an HR edit when the account already had onboarding status at the time the I-9 changed.
         </div>
 
         <div className="liquid-card overflow-hidden">
@@ -539,6 +555,11 @@ export default function I9AuditReportPage() {
                             {row.last_editor_role}
                           </span>
                         )}
+                        {row.inferred_hr_edit && (
+                          <p className="text-xs text-amber-700 mt-2">
+                            Inferred from onboarding status
+                          </p>
+                        )}
                       </td>
 
                       <td className="px-4 py-4">
@@ -555,6 +576,11 @@ export default function I9AuditReportPage() {
                             </p>
                             {row.latest_proxy_source && (
                               <p className="text-xs text-gray-400">{row.latest_proxy_source}</p>
+                            )}
+                            {row.onboarding_status_created_at && (
+                              <p className="text-xs text-gray-400">
+                                Onboarding status since {fmtDateTime(row.onboarding_status_created_at)}
+                              </p>
                             )}
                             <p className="text-xs text-gray-400 mt-1">
                               {row.proxy_change_count} proxy change{row.proxy_change_count === 1 ? '' : 's'}

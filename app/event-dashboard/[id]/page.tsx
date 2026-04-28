@@ -3,6 +3,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { getRegionFallbackCommissionPoolPercent } from "@/lib/commission-pool";
+import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 
@@ -210,6 +212,9 @@ export default function EventDashboardPage() {
   const searchParams = useSearchParams();
   const eventId = params.id as string;
   const initialTab = (searchParams.get("tab") as TabType) || "edit";
+  const periodStartParam = (searchParams.get("periodStart") || "").trim();
+  const periodEndParam = (searchParams.get("periodEnd") || "").trim();
+  const hasPeriodWindow = Boolean(periodStartParam && periodEndParam);
 
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [event, setEvent] = useState<EventItem | null>(null);
@@ -333,6 +338,8 @@ export default function EventDashboardPage() {
   const [tipsOverridesLoaded, setTipsOverridesLoaded] = useState(false);
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
   const [savedEventPaymentSummary, setSavedEventPaymentSummary] = useState<any | null>(null);
+  const [periodEvents, setPeriodEvents] = useState<any[]>([]);
+  const [loadingPeriodEvents, setLoadingPeriodEvents] = useState(false);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
   const [locationLeaders, setLocationLeaders] = useState<Record<string, string>>({});
@@ -1114,6 +1121,48 @@ export default function EventDashboardPage() {
     setTimeout(() => { sessionTokenRef.current = null; }, 50000);
     return token;
   };
+
+  useEffect(() => {
+    if (activeTab !== "hr" || !hasPeriodWindow) {
+      setPeriodEvents([]);
+      setLoadingPeriodEvents(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setLoadingPeriodEvents(true);
+      try {
+        const token = await getSessionToken();
+        const res = await fetch(
+          `/api/events-by-date?startDate=${encodeURIComponent(periodStartParam)}&endDate=${encodeURIComponent(periodEndParam)}&includeHours=true`,
+          {
+            method: "GET",
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+          }
+        );
+
+        if (!res.ok) {
+          if (!cancelled) setPeriodEvents([]);
+          return;
+        }
+
+        const data = await res.json();
+        if (!cancelled) setPeriodEvents(Array.isArray(data?.events) ? data.events : []);
+      } catch {
+        if (!cancelled) setPeriodEvents([]);
+      } finally {
+        if (!cancelled) setLoadingPeriodEvents(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, hasPeriodWindow, periodStartParam, periodEndParam]);
 
   const loadTeam = async (skipPhotos = false) => {
     if (!eventId) return;
@@ -2545,23 +2594,22 @@ export default function EventDashboardPage() {
       const totalMs = getDisplayedWorkedMs(uid);
       const actualHours = getActualHoursFromWorkedMs(totalMs);
       const hoursHHMM = formatHoursFromMs(totalMs);
-      const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
       const trailersDivision = isTrailersDivision(division);
       const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
       const {
         commissionAmount,
+        extAmtOnRegRate,
         displayedCommissionPay,
+        finalCommissionRate,
         totalFinalCommission,
         variableIncentive,
-      } = getCommissionBreakdown({
+      } = getDisplayedPaymentBreakdown({
         uid,
         division,
         actualHours,
-        extAmtOnRegRate,
+        baseRate,
         distributedCommissionShare,
       });
-      const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
-      const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
       const proratedTips =
         !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
       const restBreak = getRestBreakAmount(actualHours, eventState);
@@ -3508,6 +3556,129 @@ export default function EventDashboardPage() {
     }).amountsById;
   };
 
+  const liveCommissionSharesByUser = useMemo(() => {
+    return buildCommissionSharesByUser(resolvedCommissionPoolDollars, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+    );
+  }, [teamMembers, timesheetTotals, commissionsOverrides, resolvedCommissionPoolDollars]);
+
+  const liveTipsSharesByUser = useMemo(() => {
+    return buildTipsSharesByUser(Number(tips) || 0, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+    );
+  }, [teamMembers, timesheetTotals, tipsOverrides, tips]);
+
+  const getPersistedWorkerHoursForPeriod = (worker: any): number => {
+    const payment = worker?.payment_data || {};
+    const effective = Number(payment?.effective_hours ?? payment?.actual_hours ?? 0);
+    if (Number.isFinite(effective) && effective > 0) return roundPayrollAmount(effective);
+    const worked = Number(payment?.worked_hours ?? worker?.worked_hours ?? 0);
+    if (Number.isFinite(worked) && worked > 0) return roundPayrollAmount(worked);
+    const regular = Number(payment?.regular_hours ?? 0);
+    const overtime = Number(payment?.overtime_hours ?? 0);
+    const doubletime = Number(payment?.doubletime_hours ?? 0);
+    const summed = regular + overtime + doubletime;
+    return summed > 0 ? roundPayrollAmount(summed) : 0;
+  };
+
+  const getResolvedPoolDollarsForPeriodEvent = (periodEvent: any): number => {
+    const savedPoolDollars = Number(periodEvent?.event_payment?.commission_pool_dollars || 0);
+    if (savedPoolDollars > 0) return savedPoolDollars;
+
+    const savedNetSales = Number(periodEvent?.event_payment?.net_sales || 0);
+    const savedPoolPercent = Number(periodEvent?.event_payment?.commission_pool_percent || 0);
+    const configuredPoolPercent = Number(periodEvent?.commission_pool || 0);
+    const fallbackPoolPercent = Number(getRegionFallbackCommissionPoolPercent(periodEvent) || 0);
+    const resolvedPoolPercent =
+      (savedPoolPercent > 0 ? savedPoolPercent : 0) ||
+      (configuredPoolPercent > 0 ? configuredPoolPercent : 0) ||
+      (fallbackPoolPercent > 0 ? fallbackPoolPercent : 0);
+
+    if (savedNetSales > 0 && resolvedPoolPercent > 0) {
+      return savedNetSales * resolvedPoolPercent;
+    }
+
+    const ticketSales = Number(periodEvent?.ticket_sales || 0);
+    const eventTips = Number(periodEvent?.tips || 0);
+    const eventFees = Number(periodEvent?.fees || 0);
+    const eventOtherIncome = Number(periodEvent?.other_income || 0);
+    const taxRate = Number(periodEvent?.tax_rate_percent || 0);
+    const totalSales = Math.max(ticketSales - eventTips, 0);
+    const tax = totalSales * (taxRate / 100);
+    const netSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
+    return netSales * resolvedPoolPercent;
+  };
+
+  const payPeriodCommission = useMemo(() => {
+    const eventsForPeriod: Array<{
+      eventId: string;
+      state?: string | null;
+      commissionPoolDollars: number;
+      workers: Array<{
+        userId: string;
+        division?: string | null;
+        hours: number;
+        commissionDeleted?: boolean;
+        commissionOverride?: number | null;
+      }>;
+    }> = [];
+
+    if (event && eventId) {
+      eventsForPeriod.push({
+        eventId,
+        state: event.state,
+        commissionPoolDollars: resolvedCommissionPoolDollars,
+        workers: teamMembers.map((member: any) => {
+          const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+          return {
+            userId: uid,
+            division: member?.users?.division,
+            hours: getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true),
+            commissionDeleted: commissionsOverrides[uid] === null,
+            commissionOverride:
+              commissionsOverrides[uid] !== undefined && commissionsOverrides[uid] !== null
+                ? Number(commissionsOverrides[uid])
+                : null,
+          };
+        }),
+      });
+    }
+
+    if (hasPeriodWindow) {
+      for (const periodEvent of periodEvents) {
+        const periodEventId = (periodEvent?.id || "").toString();
+        if (!periodEventId || periodEventId === eventId) continue;
+
+        eventsForPeriod.push({
+          eventId: periodEventId,
+          state: periodEvent?.state,
+          commissionPoolDollars: getResolvedPoolDollarsForPeriodEvent(periodEvent),
+          workers: (periodEvent?.workers || []).map((worker: any) => ({
+            userId: (worker?.user_id || "").toString(),
+            division: worker?.division,
+            hours: getPersistedWorkerHoursForPeriod(worker),
+            commissionDeleted: worker?.payment_data?.commission_deleted === true,
+            commissionOverride:
+              worker?.payment_data?.commission_override != null
+                ? Number(worker.payment_data.commission_override)
+                : null,
+          })),
+        });
+      }
+    }
+
+    return computePayPeriodCommission({ events: eventsForPeriod });
+  }, [
+    event,
+    eventId,
+    teamMembers,
+    periodEvents,
+    hasPeriodWindow,
+    commissionsOverrides,
+    resolvedCommissionPoolDollars,
+    timesheetTotals,
+  ]);
+
   const getCommissionBreakdown = ({
     uid,
     division,
@@ -3557,6 +3728,70 @@ export default function EventDashboardPage() {
       variableIncentive,
     };
   };
+
+  const getDisplayedPaymentBreakdown = useCallback(({
+    uid,
+    division,
+    actualHours,
+    baseRate,
+    distributedCommissionShare,
+  }: {
+    uid: string;
+    division?: string | null;
+    actualHours: number;
+    baseRate: number;
+    distributedCommissionShare: number;
+  }) => {
+    const eventState = event?.state?.toUpperCase()?.trim() || "CA";
+    const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+    const trailersDivision = isTrailersDivision(division);
+    const commissionOverride = commissionsOverrides[uid];
+
+    if (eventId && isPeriodRateState(eventState)) {
+      const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[uid];
+      const displayedCommissionPay = Number(periodWorker?.commissionPay || 0);
+      const variableIncentive = Number(periodWorker?.variableIncentive || 0);
+      const totalFinalCommission = Number(periodWorker?.commissionPaidTotal || 0);
+      const finalCommissionRate = Number(periodWorker?.rateInEffect || 0);
+
+      return {
+        commissionAmount: Math.max(0, totalFinalCommission - extAmtOnRegRate),
+        commissionOverride,
+        displayedCommissionPay,
+        totalFinalCommission,
+        trailersDivision,
+        variableIncentive,
+        finalCommissionRate,
+        extAmtOnRegRate,
+      };
+    }
+
+    const {
+      commissionAmount,
+      displayedCommissionPay,
+      totalFinalCommission,
+      variableIncentive,
+    } = getCommissionBreakdown({
+      uid,
+      division,
+      actualHours,
+      extAmtOnRegRate,
+      distributedCommissionShare,
+    });
+    const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
+    const minLoadedRate = ["NY", "WI", "NV", "AZ"].includes(eventState) ? 25.92 : 28.5;
+
+    return {
+      commissionAmount,
+      commissionOverride,
+      displayedCommissionPay,
+      totalFinalCommission,
+      trailersDivision,
+      variableIncentive,
+      finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
+      extAmtOnRegRate,
+    };
+  }, [commissionsOverrides, event?.state, eventId, payPeriodCommission]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -6584,6 +6819,13 @@ export default function EventDashboardPage() {
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
                           const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
                           const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
+                          const displayedBreakdown = getDisplayedPaymentBreakdown({
+                            uid,
+                            division: member.users?.division,
+                            actualHours,
+                            baseRate,
+                            distributedCommissionShare,
+                          });
 
                           const tipsOverride = tipsOverrides[uid];
                           const proratedTips = tipsOverride === null
@@ -6593,7 +6835,7 @@ export default function EventDashboardPage() {
                             : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
                           // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
-                          const totalBasePay = totalFinalCommission;
+                          const totalBasePay = displayedBreakdown.totalFinalCommission;
 
                           // Calculate total gross pay
                           const restBreak = getRestBreakAmount(actualHours, eventState);
@@ -6643,8 +6885,8 @@ export default function EventDashboardPage() {
 
                               {/* Loaded Rate */}
                               <td className="px-2 py-2 align-top">
-                                <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
-                                  ${formatPayrollMoney(finalCommissionRate)}/hr
+                                <div className={`font-medium ${displayedBreakdown.finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
+                                  ${formatPayrollMoney(displayedBreakdown.finalCommissionRate)}/hr
                                 </div>
                               </td>
 
@@ -6657,7 +6899,7 @@ export default function EventDashboardPage() {
 
                               {/* Commission Per Vendor */}
                               <td className="px-2 py-2 align-top">
-                                {commissionOverrideVal === null ? (
+                                {displayedBreakdown.commissionOverride === null ? (
                                   <div className="flex flex-col gap-1">
                                     <span className="text-xs text-red-500 line-through">$0.00</span>
                                     <span className="text-[10px] text-red-400">Excluded</span>
@@ -6676,7 +6918,7 @@ export default function EventDashboardPage() {
                                   </div>
                                 ) : (
                                   <div className="text-sm font-medium text-blue-600">
-                                    ${formatPayrollMoney(displayedCommissionPay)}
+                                    ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
                                   </div>
                                 )}
                               </td>
@@ -6684,7 +6926,7 @@ export default function EventDashboardPage() {
                               {/* Variable Incentive */}
                               <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-purple-600">
-                                  ${formatPayrollMoney(variableIncentive)}
+                                  ${formatPayrollMoney(displayedBreakdown.variableIncentive)}
                                 </div>
                               </td>
 

@@ -18,10 +18,13 @@ interface PaymentData {
   overtime_pay: number | null;
   doubletime_pay: number | null;
   commissions: number | null;
+  commission_deleted?: boolean | null;
+  commission_override?: number | null;
   variable_incentive: number | null;
   rest_break_pay: number | null;
   travel_pay: number | null;
   tips: number | null;
+  tips_deleted?: boolean | null;
   total_pay: number | null;
 }
 
@@ -119,6 +122,10 @@ interface FinalPayEvent {
   overtimePay: number;
   doubletimePay: number;
   commissions: number;
+  commissionPay: number;
+  rateInEffect: number;
+  variableIncentive: number;
+  commissionPaidTotal: number;
   tips: number;
   totalPay: number;
   adjustmentAmount: number;
@@ -322,7 +329,12 @@ export default function PaystubGenerator() {
     const workers = Array.isArray(event.workers) ? event.workers : [];
     return workers.filter((worker) => {
       const workerId = (worker?.user_id || '').toString();
-      return !!workerId && !isTrailersDivision(worker.division) && getCommissionReportHours(worker) > 0;
+      return (
+        !!workerId &&
+        !isTrailersDivision(worker.division) &&
+        worker?.payment_data?.commission_deleted !== true &&
+        getCommissionReportHours(worker) > 0
+      );
     }).length;
   };
   const getDistributedSharesForEvent = (event: Event) => {
@@ -335,21 +347,41 @@ export default function PaystubGenerator() {
     );
     const rawGrossCommission =
       persistedGrossCommission || adjustedGross * adjustedGrossPercent;
-    const eligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
+    const commissionEligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
       const workerId = (worker?.user_id || '').toString();
       const hoursWorked = getCommissionReportHours(worker);
-      if (!workerId || isTrailersDivision(worker.division) || hoursWorked <= 0) return [];
+      if (
+        !workerId ||
+        isTrailersDivision(worker.division) ||
+        worker?.payment_data?.commission_deleted === true ||
+        hoursWorked <= 0
+      ) {
+        return [];
+      }
+      return [{ id: workerId, hours: hoursWorked }];
+    });
+    const tipsEligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
+      const workerId = (worker?.user_id || '').toString();
+      const hoursWorked = getCommissionReportHours(worker);
+      if (
+        !workerId ||
+        isTrailersDivision(worker.division) ||
+        worker?.payment_data?.tips_deleted === true ||
+        hoursWorked <= 0
+      ) {
+        return [];
+      }
       return [{ id: workerId, hours: hoursWorked }];
     });
     const commissionDistribution = distributePoolByHoursRule({
       totalAmount: rawGrossCommission,
-      members: eligibleMembers,
+      members: commissionEligibleMembers,
       allShortShiftMode: 'equal',
     });
     const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
     const tipsDistribution = distributePoolByHoursRule({
       totalAmount: totalTips,
-      members: eligibleMembers,
+      members: tipsEligibleMembers,
       allShortShiftMode: 'equal',
     });
 
@@ -1035,6 +1067,7 @@ export default function PaystubGenerator() {
         commission: number;
         hoursWorked: number;
         rateInEffect: number;
+        commissionPaidTotal: number;
         variableIncentive: number | '';
         tips: number | '';
         restPay: number | '';
@@ -1103,7 +1136,6 @@ export default function PaystubGenerator() {
           } = getDistributedSharesForEvent(event);
           const employeeCount = distributedEmployeeCount || getCommissionVendorCountForEvent(event);
           const commissionShareRaw = Number(commissionSharesByUser[reportUserId] || 0);
-          const commission = roundMoney(commissionShareRaw);
 
           const restPayRaw =
             Number(worker.payment_data?.rest_break_pay ?? 0) ||
@@ -1116,9 +1148,7 @@ export default function PaystubGenerator() {
           const tips = distributedTips > 0
             ? distributedTips
             : roundMoney(Number(finalPayData?.tips ?? worker.payment_data?.tips ?? 0));
-          const totalPayRaw =
-            Number(finalPayData?.totalPay ?? worker.payment_data?.total_pay ?? 0);
-          const persistedCommissionPay =
+          const persistedCommissionPaidTotal =
             Number(worker.payment_data?.regular_pay || 0) +
             Number(worker.payment_data?.commissions || 0);
           const storedVariableIncentive =
@@ -1126,24 +1156,27 @@ export default function PaystubGenerator() {
             Number.isFinite(Number(worker.payment_data.variable_incentive))
               ? Number(worker.payment_data.variable_incentive)
               : null;
-          const commissionPaidRaw =
-            storedVariableIncentive != null
-              ? commissionShareRaw + storedVariableIncentive
-              : persistedCommissionPay > 0
-                ? persistedCommissionPay
-                : Math.max(0, totalPayRaw - tips - restPay);
-          const commissionPaid = roundMoney(commissionPaidRaw);
-          const variableIncentiveRaw =
-            storedVariableIncentive != null
-              ? storedVariableIncentive
-              : Math.max(0, commissionPaidRaw - commissionShareRaw);
-          const variableIncentive = roundMoney(variableIncentiveRaw);
-          const totalPay = roundMoney(
-            commissionPaid + variableIncentive + tips + restPay
+          const commission = roundMoney(
+            Number(finalPayData?.commissionPay ?? commissionShareRaw)
           );
-          const rateInEffect = hoursWorked > 0
-            ? roundMoney(commissionPaidRaw / hoursWorked)
-            : 0;
+          const variableIncentive = roundMoney(
+            Number(
+              finalPayData?.variableIncentive ??
+              (storedVariableIncentive != null
+                ? storedVariableIncentive
+                : Math.max(0, persistedCommissionPaidTotal - commissionShareRaw))
+            )
+          );
+          const commissionPaidTotal = roundMoney(
+            Number(finalPayData?.commissionPaidTotal ?? (commission + variableIncentive))
+          );
+          const totalPay = roundMoney(commissionPaidTotal + tips + restPay);
+          const rateInEffect = roundMoney(
+            Number(
+              finalPayData?.rateInEffect ??
+              (hoursWorked > 0 ? commissionPaidTotal / hoursWorked : 0)
+            )
+          );
 
           return [{
             showDate: formatCommissionReportDate(event.event_date),
@@ -1156,6 +1189,7 @@ export default function PaystubGenerator() {
             commission,
             hoursWorked,
             rateInEffect,
+            commissionPaidTotal,
             variableIncentive: Math.abs(variableIncentive) < 0.005 ? '' : variableIncentive,
             tips: Math.abs(tips) < 0.005 ? '' : tips,
             restPay: Math.abs(restPay) < 0.005 ? '' : restPay,
@@ -1282,7 +1316,7 @@ export default function PaystubGenerator() {
           typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
-        const commissionPaid = row.commission + variableIncentive;
+        const commissionPaid = row.commissionPaidTotal;
 
         return {
           commission: acc.commission + row.commission,

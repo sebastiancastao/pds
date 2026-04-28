@@ -10,6 +10,7 @@ type Audience = 'manual' | 'role' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
 
 const allowedRoles = new Set(['admin', 'exec', 'hr', 'hr_admin']);
+const MAX_BULK_EMAIL_RECIPIENTS = 600;
 
 const getRegionIcon = (regionName?: string | null) => {
   const name = (regionName || '').toLowerCase();
@@ -205,6 +206,10 @@ function AdminEmailPageContent() {
 
     if (audience === 'manual' && !to.trim()) {
       setError('Recipient list is required.');
+      return;
+    }
+    if (audience === 'manual' && manualRecipientCount > MAX_BULK_EMAIL_RECIPIENTS) {
+      setError(`Too many recipients. Max allowed is ${MAX_BULK_EMAIL_RECIPIENTS} per request.`);
       return;
     }
 
@@ -417,7 +422,7 @@ function AdminEmailPageContent() {
                     </label>
                     <div className="flex items-center gap-2">
                       <div className="text-xs text-gray-500">
-                        {manualRecipientCount} recipient(s)
+                        {manualRecipientCount} recipient(s) / {MAX_BULK_EMAIL_RECIPIENTS} max
                       </div>
                       <button
                         type="button"
@@ -583,7 +588,7 @@ function AdminEmailPageContent() {
                     <span className="text-sm text-yellow-900">
                       I confirm I want to send this email in bulk.
                       <span className="block text-xs text-yellow-800 mt-1">
-                        Bulk sends are limited by `MAX_BULK_EMAIL_RECIPIENTS` on the server.
+                        Bulk sends are limited to {MAX_BULK_EMAIL_RECIPIENTS} recipients per request.
                       </span>
                     </span>
                   </label>

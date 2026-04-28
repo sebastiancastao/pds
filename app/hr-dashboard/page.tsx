@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -129,6 +130,7 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
+  const [payrollGroupBy, setPayrollGroupBy] = useState<'venue' | 'vendor'>('venue');
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalFile, setApprovalFile] = useState<File | null>(null);
   const [sendingApproval, setSendingApproval] = useState(false);
@@ -216,6 +218,8 @@ function HRDashboardContent() {
     roundUpThousandsToNextHundred(amount).toFixed(2);
   const formatExactMoney = (amount: number): string =>
     (Number.isFinite(amount) ? amount : 0).toFixed(2);
+  const usesPeriodRateBreakdown = (stateCode?: string | null): boolean =>
+    isPeriodRateState(normalizeState(stateCode));
   const getEffectiveHours = (payment: any): number => {
     // Payroll tab: when hours are computed from timesheet effective_hours,
     // include the Gate/Phone lead time (30 minutes).
@@ -666,6 +670,8 @@ function HRDashboardContent() {
                       doubletimeHours: 0,
                       doubletimePay: 0,
                       commissions: 0,
+                      commissionDeleted: false,
+                      commissionOverride: null,
                       tips: 0,
                       totalPay: 0,
                       adjustmentAmount: 0,
@@ -685,6 +691,7 @@ function HRDashboardContent() {
                   state: eventInfo.state,
                   baseRate: configuredBaseRate,
                   commissionDollars: eventCommissionDollars,
+                  commissionPoolDollars: eventCommissionDollars,
                   adjustedGrossAmount,
                   totalTips: eventTotalTips,
                   totalRestBreak: 0,
@@ -710,6 +717,7 @@ function HRDashboardContent() {
             state: eventInfo.state,
             baseRate: configuredBaseRate,
             commissionDollars: eventCommissionDollars,
+            commissionPoolDollars: eventCommissionDollars,
             adjustedGrossAmount,
             totalTips: eventTotalTips,
             totalRestBreak: 0,
@@ -892,6 +900,8 @@ function HRDashboardContent() {
               doubletimeHours: 0,
               doubletimePay: 0,
               commissions: commissionAmt,
+              commissionDeleted: payment.commission_deleted === true,
+              commissionOverride: payment.commission_override != null ? Number(payment.commission_override) : null,
               tips,
               totalPay,
               adjustmentAmount,
@@ -935,6 +945,7 @@ function HRDashboardContent() {
           state: eventInfo.state,
           baseRate,
           commissionDollars: eventCommissionDollars,
+          commissionPoolDollars: safeCommissionPoolDollars,
           adjustedGrossAmount,
           totalTips: eventTotalTips,
           totalRestBreak: eventTotalRestBreak,
@@ -1056,20 +1067,10 @@ function HRDashboardContent() {
           const payments = (ev.payments || []).map((p: any) => {
             if (p.userId !== userId) return p;
             const newAdj = amount;
-            const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt || 0);
-            const totalFinalCommissionForLoadedRate =
-              newAdj !== 0
-                ? (totalFinalCommissionAmt + newAdj)
-                : totalFinalCommissionAmt;
-            const rawHours = roundHoursToTwoDecimals(Number(p.actualHours || 0));
-            const loadedRate = rawHours > 0
-              ? Math.max(28.5, totalFinalCommissionForLoadedRate / rawHours)
-              : 0;
             return {
               ...p,
               adjustmentAmount: newAdj,
               adjustmentType,
-              loadedRate,
               finalPay: Number(p.totalPay || 0) + newAdj,
               totalGrossPay: Number(p.totalPay || 0) + newAdj,
             };
@@ -1093,6 +1094,143 @@ function HRDashboardContent() {
       setSavingAdjustment(false);
     }
   }, [adjustments, adjustmentTypes, supabase]);
+
+  const payPeriodCommission = useMemo(() => {
+    const events = paymentsByVenue.flatMap((venue) => venue.events || []);
+    return computePayPeriodCommission({
+      events: events.map((event: any) => ({
+        eventId: (event?.id || "").toString(),
+        state: event?.state,
+        commissionPoolDollars: Number(event?.commissionPoolDollars ?? event?.commissionDollars ?? 0),
+        workers: (event?.payments || []).map((payment: any) => ({
+          userId: (payment?.userId || "").toString(),
+          division: payment?.division,
+          hours: roundHoursToTwoDecimals(Number(payment?.actualHours || 0)),
+          commissionDeleted: payment?.commissionDeleted === true,
+          commissionOverride: payment?.commissionOverride ?? null,
+        })),
+      })),
+    });
+  }, [paymentsByVenue]);
+
+  const paymentsByVendor = useMemo(() => {
+    const byVendor: Record<string, {
+      userId: string; firstName: string; lastName: string; email: string;
+      totalHours: number; totalPay: number;
+      events: Array<{ event: any; venue: string; city: string | null; state: string | null; payment: any }>;
+    }> = {};
+    paymentsByVenue.forEach(v => {
+      (v.events || []).forEach((ev: any) => {
+        (ev.payments || []).forEach((p: any) => {
+          const key = p.userId || p.email || `${p.firstName}_${p.lastName}`;
+          if (!byVendor[key]) {
+            byVendor[key] = {
+              userId: p.userId, firstName: p.firstName || '', lastName: p.lastName || '', email: p.email || '',
+              totalHours: 0, totalPay: 0, events: [],
+            };
+          }
+          byVendor[key].totalHours += Number(p.actualHours || 0);
+          byVendor[key].totalPay += Number(p.finalPay || 0);
+          byVendor[key].events.push({ event: ev, venue: v.venue, city: v.city ?? null, state: v.state ?? null, payment: p });
+        });
+      });
+    });
+    return Object.values(byVendor).sort((a, b) => {
+      const aLast = (a.lastName || '').toLowerCase();
+      const bLast = (b.lastName || '').toLowerCase();
+      if (aLast !== bLast) return aLast.localeCompare(bLast);
+      return (a.firstName || '').toLowerCase().localeCompare((b.firstName || '').toLowerCase());
+    });
+  }, [paymentsByVenue]);
+
+  const getDisplayedPaymentBreakdown = useCallback((event: any, payment: any) => {
+    const stateCode = normalizeState(event?.state);
+    const regRate = Number(payment?.regRate ?? event?.baseRate ?? 0);
+    const hours = Number(payment?.actualHours || 0);
+    const isTrailers = (payment?.division || "").toString().toLowerCase().trim() === "trailers";
+
+    if (usesPeriodRateBreakdown(stateCode)) {
+      const periodWorker = payPeriodCommission.byEvent?.[event?.id]?.[payment?.userId];
+      const rateInEffect = Number(periodWorker?.rateInEffect || 0);
+      const commissionPay = Number(periodWorker?.commissionPay || 0);
+      const variableIncentive = Number(periodWorker?.variableIncentive || 0);
+      const commissionPaidTotal = Number(periodWorker?.commissionPaidTotal || 0);
+
+      return {
+        rateInEffect,
+        commissionPay,
+        variableIncentive,
+        commissionPaidTotal,
+        regRate,
+        hours,
+        isTrailers,
+        usesPeriodRate: true,
+      };
+    }
+
+    const totalFinalCommissionAmt = Number(payment?.totalFinalCommissionAmt ?? 0);
+    const commissionPay = Number(payment?.commissionShare ?? event?.commissionPerVendor ?? 0);
+    const variableIncentive = hours > 0 && !isTrailers
+      ? Math.max(0, totalFinalCommissionAmt - commissionPay)
+      : 0;
+
+    return {
+      rateInEffect: Number(payment?.loadedRate ?? regRate),
+      commissionPay,
+      variableIncentive,
+      commissionPaidTotal: totalFinalCommissionAmt,
+      regRate,
+      hours,
+      isTrailers,
+      usesPeriodRate: false,
+    };
+  }, [payPeriodCommission]);
+
+  const getDisplayedEventTotals = useCallback((event: any) => {
+    const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
+    const eventHours = payments.reduce((sum: number, payment: any) => {
+      return sum + Number(payment?.actualHours || 0);
+    }, 0);
+    const totalCommissionPay = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).commissionPay;
+    }, 0);
+    const totalVariableIncentive = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).variableIncentive;
+    }, 0);
+    const totalCommissionPaid = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).commissionPaidTotal;
+    }, 0);
+    const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
+    const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + Number(payment?.restBreak || 0), 0);
+    const totalOther = payments.reduce((sum: number, payment: any) => sum + Number(payment?.adjustmentAmount || 0), 0);
+    const totalMileagePay = payments.reduce((sum: number, payment: any) => {
+      return sum + (getMileageApproval(event.id, payment.userId).mileage
+        ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0)
+        : 0);
+    }, 0);
+    const totalTravelPay = payments.reduce((sum: number, payment: any) => {
+      const approval = getMileageApproval(event.id, payment.userId);
+      if (!approval.travel) return sum;
+      const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+      if (diffMiles === null) return sum;
+      const breakdown = getDisplayedPaymentBreakdown(event, payment);
+      return sum + ((diffMiles * 2) / 60) * breakdown.rateInEffect;
+    }, 0);
+    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalOther + totalMileagePay + totalTravelPay;
+
+    return {
+      eventHours,
+      totalCommissionPay,
+      totalVariableIncentive,
+      totalCommissionPaid,
+      totalTips,
+      totalRestBreak,
+      totalOther,
+      totalMileagePay,
+      totalTravelPay,
+      totalGross,
+    };
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -1200,9 +1338,38 @@ function HRDashboardContent() {
 
     paymentsByVenue.forEach(venue => {
       venue.events.forEach(event => {
-        const totalExtAmtRegRate = Array.isArray(event.payments)
-          ? event.payments.reduce((sum: number, p: any) => sum + Number(p.extAmtOnRegRate ?? p.regularPay ?? 0), 0)
-          : 0;
+        const eventPayments = Array.isArray(event.payments) ? event.payments : [];
+        const totalDisplayedCommissionPay = eventPayments.reduce((sum: number, p: any) => {
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + breakdown.commissionPay;
+        }, 0);
+        const totalDisplayedVariableIncentive = eventPayments.reduce((sum: number, p: any) => {
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + breakdown.variableIncentive;
+        }, 0);
+        const totalDisplayedCommissionPaid = eventPayments.reduce((sum: number, p: any) => {
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + breakdown.commissionPaidTotal;
+        }, 0);
+        const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
+        const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
+        const totalDisplayedTravelPay = eventPayments.reduce((sum: number, p: any) => {
+          const approval = getMileageApproval(event.id, p.userId);
+          if (!approval.travel) return sum;
+          const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
+          if (diffMiles === null) return sum;
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + ((diffMiles * 2) / 60) * breakdown.rateInEffect;
+        }, 0);
+        const totalDisplayedMileagePay = eventPayments.reduce((sum: number, p: any) => {
+          return sum + (getMileageApproval(event.id, p.userId).mileage
+            ? Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0)
+            : 0);
+        }, 0);
+        const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          return sum + breakdown.commissionPaidTotal + Number(p.tips || 0) + Number(p.restBreak || 0) + Number(p.adjustmentAmount || 0);
+        }, 0) + totalDisplayedMileagePay + totalDisplayedTravelPay;
 
         summaryRows.push({
           'Venue': venue.venue,
@@ -1216,33 +1383,26 @@ function HRDashboardContent() {
           'Commission per Vendor': Number(roundUpThousandsToNextHundred(Number(event.commissionPerVendor || 0)).toFixed(2)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
           'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
-          'Total Rest Break': Number(Number(event.totalRestBreak || 0).toFixed(2)),
-          'Total Other': Number(Number(event.totalOther || 0).toFixed(2)),
-          'Total Mileage Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => s + (getMileageApproval(event.id, p.userId).mileage ? Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0) : 0), 0) : 0).toFixed(2)),
-          'Total Travel Pay': Number(Number(Array.isArray(event.payments) ? event.payments.reduce((s: number, p: any) => { if (!getMileageApproval(event.id, p.userId).travel) return s; const dm = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null; return s + (dm !== null ? ((dm * 2) / 60) * Number(p.loadedRate ?? p.regRate ?? event.baseRate ?? 0) : 0); }, 0) : 0).toFixed(2)),
-          'Total': Number(Number(event.eventTotal || 0).toFixed(2)),
-          'Total Ext Amt Reg Rate': Number(Number(totalExtAmtRegRate).toFixed(2)),
+          'Total Rest Break': Number(Number(totalDisplayedRestBreak).toFixed(2)),
+          'Total Other': Number(Number(totalDisplayedOther).toFixed(2)),
+          'Total Mileage Pay': Number(Number(totalDisplayedMileagePay).toFixed(2)),
+          'Total Travel Pay': Number(Number(totalDisplayedTravelPay).toFixed(2)),
+          'Total': Number(Number(totalDisplayedGrossPay).toFixed(2)),
+          'Total Ext Amt Reg Rate': Number(Number(totalDisplayedCommissionPay).toFixed(2)),
         });
 
-        if (Array.isArray(event.payments) && event.payments.length > 0) {
-          event.payments.forEach((p: any) => {
+        if (eventPayments.length > 0) {
+          eventPayments.forEach((p: any) => {
             const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
             const hideRest = false;
-
-            const regRate = Number(p.regRate ?? event.baseRate ?? 0);
-            const loadedRate = Number(p.loadedRate ?? regRate);
-            const hours = Number(p.actualHours || 0);
+            const breakdown = getDisplayedPaymentBreakdown(event, p);
+            const regRate = breakdown.regRate;
+            const loadedRate = breakdown.rateInEffect;
+            const hours = breakdown.hours;
             const hoursHHMM = formatHoursHHMM(hours);
             const hoursInDecimal = roundHoursToTwoDecimals(hours);
-            const commissionPay = Number(p.commissionShare ?? event.commissionPerVendor ?? 0);
-            const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
-            const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
-            const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
-            const isTrailersExport = (p.division || '').toString().toLowerCase().trim() === 'trailers';
-            const displayedCommissionPay = hours > 0 ? commissionPay : 0;
-            const variableIncentive = hours > 0 && !isTrailersExport
-              ? Math.max(0, totalFinalCommissionAmt - commissionPay)
-              : 0;
+            const displayedCommissionPay = breakdown.commissionPay;
+            const variableIncentive = breakdown.variableIncentive;
             const other = Number(p.adjustmentAmount || 0);
             const tips = Number(p.tips || 0);
             const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
@@ -1250,12 +1410,18 @@ function HRDashboardContent() {
             const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
             const diffMilesExport = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
             const _travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
-            const _travelPayExport = _travelHoursExport * Number(p.loadedRate ?? p.regRate ?? event.baseRate ?? 0);
+            const _travelPayExport = _travelHoursExport * loadedRate;
             const exportApproval = getMileageApproval(event.id, p.userId);
             const mileagePay = exportApproval.mileage ? _mileagePayExport : 0;
             const travelPayExport = exportApproval.travel ? _travelPayExport : 0;
             const travelHoursExport = exportApproval.travel ? _travelHoursExport : 0;
-            const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPayExport;
+            const totalGrossPay =
+              breakdown.commissionPaidTotal +
+              tips +
+              restBreak +
+              other +
+              mileagePay +
+              travelPayExport;
 
             rows.push({
               'Venue': venue.venue,
@@ -1399,7 +1565,7 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent]);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown]);
 
   // Load onboarding forms
   const loadOnboardingForms = useCallback(async () => {
@@ -2194,6 +2360,13 @@ function HRDashboardContent() {
                 <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
                   Export to Excel
                 </button>
+                <button
+                  onClick={() => setPayrollGroupBy(g => g === 'venue' ? 'vendor' : 'venue')}
+                  className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`}
+                  disabled={paymentsByVenue.length === 0}
+                >
+                  {payrollGroupBy === 'venue' ? 'Group by Vendor' : 'Group by Venue'}
+                </button>
                 <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
                   Send to Approval
                 </button>
@@ -2264,8 +2437,96 @@ function HRDashboardContent() {
                 <div className="apple-empty-state">
                   <p className="text-gray-500">No payment data to show. Load a date range.</p>
                 </div>
+              ) : payrollGroupBy === 'vendor' ? (
+                paymentsByVendor.map(vendor => {
+                  const vendorDisplayedTotal = vendor.events.reduce((sum, { event, payment }) => {
+                    const breakdown = getDisplayedPaymentBreakdown(event, payment);
+                    const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
+                    const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+                    const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
+                    const approval = getMileageApproval(event.id, payment.userId);
+                    return sum + breakdown.commissionPaidTotal + Number(payment.tips || 0) + Number(payment.restBreak || 0) + Number(payment.adjustmentAmount || 0) + (approval.mileage ? _mp : 0) + (approval.travel ? _tp : 0);
+                  }, 0);
+
+                  return (
+                    <div key={vendor.userId || vendor.email} className="apple-card">
+                      <div className="flex items-center justify-between mb-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-gray-900">{vendor.firstName} {vendor.lastName}</h3>
+                          <p className="text-sm text-gray-500">{vendor.email}</p>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(vendorDisplayedTotal)}</div>
+                          <div className="text-sm text-gray-500">{formatHoursDecimal(vendor.totalHours)} hrs</div>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Event</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Venue</th>
+                              <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Hours</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tips</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {vendor.events.map(({ event, venue, city, state, payment }, idx) => {
+                              const breakdown = getDisplayedPaymentBreakdown(event, payment);
+                              const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
+                              const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
+                              const approval = getMileageApproval(event.id, payment.userId);
+                              const mileagePay = approval.mileage ? _mp : 0;
+                              const travelPay = approval.travel ? _tp : 0;
+                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + Number(payment.restBreak || 0) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay;
+                              const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
+                              return (
+                                <tr key={`${event.id}-${idx}`} className="hover:bg-gray-50">
+                                  <td className="px-4 py-2 text-sm">
+                                    <Link href={eventHref} className="text-blue-600 hover:text-blue-800 hover:underline">{event.name}</Link>
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-gray-700">{venue}<span className="text-gray-400 ml-1">{city ? `· ${city}` : ''}{state ? `, ${state}` : ''}</span></td>
+                                  <td className="px-4 py-2 text-sm text-gray-500">{event.date || '—'}</td>
+                                  <td className="px-4 py-2 text-sm text-right">{formatHoursDecimal(Number(payment.actualHours || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(breakdown.commissionPay)}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-purple-600">${formatPayrollMoney(breakdown.variableIncentive)}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-orange-600">${formatPayrollMoney(Number(payment.tips || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-green-600">${formatPayrollMoney(Number(payment.restBreak || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(mileagePay)}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-indigo-600">${formatPayrollMoney(travelPay)}</td>
+                                  <td className="px-4 py-2 text-sm text-right">${formatPayrollMoney(Number(payment.adjustmentAmount || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right font-semibold">${formatPayrollMoney(rowTotal)}</td>
+                                </tr>
+                              );
+                            })}
+                            <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
+                              <td className="px-4 py-2 uppercase tracking-wide" colSpan={3}>Total</td>
+                              <td className="px-4 py-2 text-right">{formatHoursDecimal(vendor.totalHours)}</td>
+                              <td colSpan={7} className="px-4 py-2"></td>
+                              <td className="px-4 py-2 text-right">${formatPayrollMoney(vendorDisplayedTotal)}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })
               ) : (
-                paymentsByVenue.map(v => (
+                paymentsByVenue.map(v => {
+                  const venueDisplayedTotal = (v.events || []).reduce((sum: number, ev: any) => {
+                    return sum + getDisplayedEventTotals(ev).totalGross;
+                  }, 0);
+
+                  return (
                   <div key={v.venue} className="apple-card">
                     <div className="flex items-center justify-between mb-3">
                       <div>
@@ -2273,7 +2534,7 @@ function HRDashboardContent() {
                         <p className="text-sm text-gray-500">{v.city || '—'}, {v.state || ''}</p>
                       </div>
                       <div className="text-right">
-                        <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(v.totalPayment)}</div>
+                        <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(venueDisplayedTotal)}</div>
                         <div className="text-sm text-gray-500">{formatHoursDecimal(v.totalHours)} hrs</div>
                       </div>
                     </div>
@@ -2294,12 +2555,19 @@ function HRDashboardContent() {
                           </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                          {v.events.map(ev => (
+                          {v.events.map(ev => {
+                            const eventTotals = getDisplayedEventTotals(ev);
+                            const eventHref = `/event-dashboard/${ev.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
+                            return (
                             <>
                               <tr key={ev.id} className="bg-white">
                                 <td className="px-4 py-2 text-sm text-gray-900">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Event</div>
-                                  <div>{ev.name}</div>
+                                  <div>
+                                    <Link href={eventHref} className="text-blue-600 hover:text-blue-800 hover:underline">
+                                      {ev.name}
+                                    </Link>
+                                  </div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-500">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Date</div>
@@ -2307,7 +2575,7 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Hours</div>
-                                  <div>{formatHoursDecimal(ev.eventHours || 0)}</div>
+                                  <div>{formatHoursDecimal(eventTotals.eventHours || 0)}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Adjusted Gross Amount</div>
@@ -2328,15 +2596,15 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Rest Break</div>
-                                  <div>${formatExactMoney(Number(ev.totalRestBreak || 0))}</div>
+                                  <div>${formatExactMoney(Number(eventTotals.totalRestBreak || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Other</div>
-                                  <div>${formatExactMoney(Number(ev.totalOther || 0))}</div>
+                                  <div>${formatExactMoney(Number(eventTotals.totalOther || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total</div>
-                                  <div>${formatExactMoney(Number(ev.eventTotal || 0))}</div>
+                                  <div>${formatExactMoney(Number(eventTotals.totalGross || 0))}</div>
                                 </td>
                               </tr>
                               <tr>
@@ -2397,19 +2665,13 @@ function HRDashboardContent() {
                                                 const hideRest = false;
                                                 const showOT = st === "AZ" || st === "NY";
 
-                                                const regRate = Number(p.regRate ?? ev.baseRate ?? 0);
-                                                const loadedRate = Number(p.loadedRate ?? regRate);
-                                                const hours = Number(p.actualHours || 0);
+                                                const breakdown = getDisplayedPaymentBreakdown(ev, p);
+                                                const regRate = breakdown.regRate;
+                                                const loadedRate = breakdown.rateInEffect;
+                                                const hours = breakdown.hours;
                                                 const otRate = Number(p.otRate || 0);
-                                                const extAmtOnRegRate = Number(p.extAmtOnRegRate ?? p.regularPay ?? 0);
-                                                const commissionAmt = Number(p.commissionAmt ?? p.commissions ?? 0);
-                                                const totalFinalCommissionAmt = Number(p.totalFinalCommissionAmt ?? 0);
-                                                const commissionPay = Number(p.commissionShare ?? ev.commissionPerVendor ?? 0);
-                                                const isTrailersUI = (p.division || '').toString().toLowerCase().trim() === 'trailers';
-                                                const displayedCommissionPay = hours > 0 ? commissionPay : 0;
-                                                const variableIncentive = hours > 0 && !isTrailersUI
-                                                  ? Math.max(0, totalFinalCommissionAmt - commissionPay)
-                                                  : 0;
+                                                const displayedCommissionPay = breakdown.commissionPay;
+                                                const variableIncentive = breakdown.variableIncentive;
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
@@ -2419,7 +2681,13 @@ function HRDashboardContent() {
                                                 const approval = getMileageApproval(ev.id, p.userId);
                                                 const mileagePay = approval.mileage ? _mileagePay : 0;
                                                 const travelPay = approval.travel ? _travelPay : 0;
-                                                const totalGrossPay = Number(p.finalPay || p.totalGrossPay || 0) + mileagePay + travelPay;
+                                                const totalGrossPay =
+                                                  breakdown.commissionPaidTotal +
+                                                  tips +
+                                                  restBreak +
+                                                  Number(p.adjustmentAmount || 0) +
+                                                  mileagePay +
+                                                  travelPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
                                                   ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
                                                 );
@@ -2531,43 +2799,22 @@ function HRDashboardContent() {
                                             const st = normalizeState(ev.state || v.state);
                                             const hideRest = false;
                                             const showOT = st === "AZ" || st === "NY";
-                                            const payments: any[] = ev.payments;
-                                            const totHours = payments.reduce((s: number, p: any) => s + Number(p.actualHours || 0), 0);
-                                            const totExt = payments.reduce((s: number, p: any) => s + Number(p.extAmtOnRegRate ?? p.regularPay ?? 0), 0);
-                                            const totComm = payments.reduce((s: number, p: any) => s + Number(p.commissionAmt ?? p.commissions ?? 0), 0);
-                                            const totFinalComm = payments.reduce((s: number, p: any) => s + Number(p.totalFinalCommissionAmt ?? 0), 0);
-                                            const totTips = payments.reduce((s: number, p: any) => s + Number(p.tips || 0), 0);
-                                            const totRest = payments.reduce((s: number, p: any) => s + Number(p.restBreak || 0), 0);
-                                            const totOther = payments.reduce((s: number, p: any) => s + Number(p.adjustmentAmount || 0), 0);
-                                            const totMileage = payments.reduce((s: number, p: any) => {
-                                              const appr = getMileageApproval(ev.id, p.userId);
-                                              return s + (appr.mileage ? Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0) : 0);
-                                            }, 0);
-                                            const totTravel = payments.reduce((s: number, p: any) => {
-                                              const appr = getMileageApproval(ev.id, p.userId);
-                                              if (!appr.travel) return s;
-                                              const diffMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
-                                              const regR = Number(p.regRate ?? ev.baseRate ?? 0);
-                                              const loadedR = Number(p.loadedRate ?? regR);
-                                              return s + (diffMiles !== null ? ((diffMiles * 2) / 60) * loadedR : 0);
-                                            }, 0);
-                                            const totGross = payments.reduce((s: number, p: any) => s + Number(p.finalPay || p.totalGrossPay || 0), 0) + totMileage + totTravel;
+                                            const eventTotals = getDisplayedEventTotals(ev);
                                             return (
                                               <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                                                 <td className="p-2 uppercase tracking-wide">Total</td>
                                                 <td className="p-2"></td>
                                                 <td className="p-2"></td>
-                                                <td className="p-2">{totHours.toFixed(2)}</td>
+                                                <td className="p-2">{eventTotals.eventHours.toFixed(2)}</td>
                                                 {showOT && <td className="p-2"></td>}
-                                                <td className="p-2 text-green-600">${formatExactMoney(totExt)}</td>
-                                                <td className="p-2 text-purple-600">${formatPayrollMoney(totComm)}</td>
-                                                <td className="p-2 text-green-600">${formatPayrollMoney(totFinalComm)}</td>
-                                                <td className="p-2 text-orange-600">${formatPayrollMoney(totTips)}</td>
-                                                {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(totRest)}</td>}
-                                                <td className="p-2 text-blue-600">${formatPayrollMoney(totMileage)}</td>
-                                                <td className="p-2 text-indigo-600">${formatPayrollMoney(totTravel)}</td>
-                                                <td className="p-2 text-right">${formatPayrollMoney(totOther)}</td>
-                                                <td className="p-2 text-right">${formatPayrollMoney(totGross)}</td>
+                                                <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPay)}</td>
+                                                <td className="p-2 text-purple-600">${formatPayrollMoney(eventTotals.totalVariableIncentive)}</td>
+                                                <td className="p-2 text-orange-600">${formatPayrollMoney(eventTotals.totalTips)}</td>
+                                                {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
+                                                <td className="p-2 text-blue-600">${formatPayrollMoney(eventTotals.totalMileagePay)}</td>
+                                                <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
+                                                <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
+                                                <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalGross)}</td>
                                               </tr>
                                             );
                                           })()}
@@ -2580,24 +2827,24 @@ function HRDashboardContent() {
                                 </td>
                               </tr>
                             </>
-                          ))}
+                          )})}
                           <tr key="venue-totals" style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                             <td className="px-4 py-2 text-gray-900 uppercase tracking-wide">Total</td>
                             <td className="px-4 py-2"></td>
-                            <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => s + Number(ev.eventHours || 0), 0).toFixed(2)}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).eventHours, 0).toFixed(2)}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.adjustedGrossAmount || 0), 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.commissionDollars || 0), 0))}</td>
                             <td className="px-4 py-2"></td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalTips || 0), 0))}</td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalRestBreak || 0), 0))}</td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.totalOther || 0), 0))}</td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.eventTotal || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalTips, 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalRestBreak, 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalOther, 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalGross, 0))}</td>
                           </tr>
                         </tbody>
                       </table>
                     </div>
                   </div>
-                ))
+                )})
               )}
             </div>
 

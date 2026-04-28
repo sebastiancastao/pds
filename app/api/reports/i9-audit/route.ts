@@ -28,6 +28,8 @@ type UserDirectoryEntry = {
   role: string;
   state: string;
   full_name: string;
+  profile_id: string | null;
+  onboarding_submitted_at: string | null;
 };
 
 type ActivityCandidate = {
@@ -169,9 +171,11 @@ export async function GET(req: NextRequest) {
         email,
         role,
         profiles (
+          id,
           first_name,
           last_name,
-          state
+          state,
+          onboarding_completed_at
         )
       `);
 
@@ -193,7 +197,31 @@ export async function GET(req: NextRequest) {
         role: String((row as any).role || '').trim(),
         state: normalizeState(profile?.state),
         full_name: fullName,
+        profile_id: profile?.id || null,
+        onboarding_submitted_at: normalizeIso(profile?.onboarding_completed_at) || null,
       });
+    }
+
+    const profileIdToUserId = new Map<string, string>();
+    for (const user of usersById.values()) {
+      if (user.profile_id) {
+        profileIdToUserId.set(user.profile_id, user.id);
+      }
+    }
+
+    const { data: onboardingStatusRows, error: onboardingStatusError } = await supabaseAdmin
+      .from('vendor_onboarding_status')
+      .select('profile_id, onboarding_completed, completed_date, created_at, updated_at');
+
+    if (onboardingStatusError) {
+      throw new Error(onboardingStatusError.message);
+    }
+
+    const onboardingStatusByUserId = new Map<string, any>();
+    for (const row of onboardingStatusRows || []) {
+      const mappedUserId = profileIdToUserId.get((row as any).profile_id);
+      if (!mappedUserId) continue;
+      onboardingStatusByUserId.set(mappedUserId, row);
     }
 
     const { data: formProgressRows, error: formsError } = await supabaseAdmin
@@ -302,11 +330,14 @@ export async function GET(req: NextRequest) {
         role: '',
         state: '',
         full_name: userId,
+        profile_id: null,
+        onboarding_submitted_at: null,
       };
 
       const formRow = latestI9FormByUser.get(userId) || null;
       const docsRow = i9DocsByUser.get(userId) || null;
       const auditRows = auditsByUser.get(userId) || [];
+      const onboardingStatusRow = onboardingStatusByUserId.get(userId) || null;
 
       const hasListA = !!docsRow?.additional_doc_filename;
       const hasListB = !!docsRow?.drivers_license_filename;
@@ -382,6 +413,35 @@ export async function GET(req: NextRequest) {
 
       lastActivityCandidates.sort((a, b) => compareDescByIso(a.at, b.at));
       const lastActivity = lastActivityCandidates[0] || null;
+      const onboardingStatusCreatedAt = normalizeIso(onboardingStatusRow?.created_at) || owner.onboarding_submitted_at || null;
+      const onboardingStatusCompletedAt = normalizeIso(onboardingStatusRow?.completed_date) || null;
+      const inferredHrEdit = !!(
+        !latestProxyAudit
+        && lastActivity?.at
+        && onboardingStatusCreatedAt
+        && Date.parse(lastActivity.at) >= Date.parse(onboardingStatusCreatedAt)
+      );
+      const inferredHrEditor = inferredHrEdit
+        ? {
+            id: 'hr-inferred',
+            full_name: 'HR (inferred from onboarding status)',
+            email: '',
+            role: 'hr',
+          }
+        : null;
+      const resolvedLastEditor = latestAuditActor
+        || inferredHrEditor
+        || owner;
+      const editedByNonOwner = proxyAudits.length > 0 || inferredHrEdit;
+      const latestProxyEditorName = latestProxyActor?.full_name || inferredHrEditor?.full_name || null;
+      const latestProxyEditorEmail = latestProxyActor?.email || inferredHrEditor?.email || null;
+      const latestProxyEditorRole = latestProxyActor?.role || inferredHrEditor?.role || null;
+      const latestProxyAt = normalizeIso(latestProxyAudit?.timestamp) || (inferredHrEdit ? normalizeIso(lastActivity?.at) : null);
+      const latestProxySource = latestProxyAudit
+        ? getActionSource(String(latestProxyAudit.form_id || ''), latestProxyDetails)
+        : inferredHrEdit
+          ? `${lastActivity?.source || 'Unknown'} (onboarding-status inference)`
+          : null;
 
       return {
         user_id: userId,
@@ -407,19 +467,23 @@ export async function GET(req: NextRequest) {
         list_a_uploaded_at: normalizeIso(docsRow?.additional_doc_uploaded_at) || null,
         list_b_uploaded_at: normalizeIso(docsRow?.drivers_license_uploaded_at) || null,
         list_c_uploaded_at: normalizeIso(docsRow?.ssn_document_uploaded_at) || null,
-        last_editor_user_id: lastActivity?.editor?.id || owner.id,
-        last_editor_name: lastActivity?.editor?.full_name || owner.full_name,
-        last_editor_email: lastActivity?.editor?.email || owner.email,
-        last_editor_role: lastActivity?.editor?.role || owner.role,
+        onboarding_status_exists: !!onboardingStatusRow || !!owner.onboarding_submitted_at,
+        onboarding_status_created_at: onboardingStatusCreatedAt,
+        onboarding_status_completed_at: onboardingStatusCompletedAt,
+        inferred_hr_edit: inferredHrEdit,
+        last_editor_user_id: resolvedLastEditor.id || owner.id,
+        last_editor_name: resolvedLastEditor.full_name || owner.full_name,
+        last_editor_email: resolvedLastEditor.email || owner.email,
+        last_editor_role: resolvedLastEditor.role || owner.role,
         last_change_at: normalizeIso(lastActivity?.at) || null,
         last_change_source: lastActivity?.source || 'Unknown',
-        edited_by_non_owner: proxyAudits.length > 0,
-        proxy_change_count: proxyAudits.length,
-        latest_proxy_editor_name: latestProxyActor?.full_name || null,
-        latest_proxy_editor_email: latestProxyActor?.email || null,
-        latest_proxy_editor_role: latestProxyActor?.role || null,
-        latest_proxy_at: normalizeIso(latestProxyAudit?.timestamp) || null,
-        latest_proxy_source: latestProxyAudit ? getActionSource(String(latestProxyAudit.form_id || ''), latestProxyDetails) : null,
+        edited_by_non_owner: editedByNonOwner,
+        proxy_change_count: proxyAudits.length + (inferredHrEdit ? 1 : 0),
+        latest_proxy_editor_name: latestProxyEditorName,
+        latest_proxy_editor_email: latestProxyEditorEmail,
+        latest_proxy_editor_role: latestProxyEditorRole,
+        latest_proxy_at: latestProxyAt,
+        latest_proxy_source: latestProxySource,
       };
     });
 
