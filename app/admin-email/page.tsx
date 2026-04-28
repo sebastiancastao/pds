@@ -10,7 +10,7 @@ type Audience = 'manual' | 'role' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
 
 const allowedRoles = new Set(['admin', 'exec', 'hr', 'hr_admin']);
-const MAX_BULK_EMAIL_RECIPIENTS = 600;
+const MAX_BULK_EMAIL_RECIPIENTS = 5600;
 
 const getRegionIcon = (regionName?: string | null) => {
   const name = (regionName || '').toLowerCase();
