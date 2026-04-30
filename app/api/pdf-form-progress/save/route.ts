@@ -77,7 +77,7 @@ export async function POST(request: NextRequest) {
         form_name: resolvedFormName,
         form_data: formData,
         updated_at: new Date().toISOString(),
-        ...(formDate ? { form_date: formDate } : {}),
+        ...(formDate !== undefined ? { form_date: formDate || null } : {}),
       }, { onConflict: 'user_id,form_name' });
 
     if (error) {

@@ -88,6 +88,9 @@ const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 const isAttestationFormId = (formId?: string | null) =>
   Boolean(formId && (formId === 'attestation' || formId.endsWith('-attestation')));
 
+const isUniformPolicyFormId = (formId?: string | null) =>
+  Boolean(formId && (formId === 'uniform-policy' || formId.endsWith('-uniform-policy')));
+
 const embedAttestationSignature = async (pdfBytes: Uint8Array, signatureData: string) => {
   const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
   const { PDFDocument, rgb } = await import('pdf-lib');
@@ -237,6 +240,7 @@ export default function StatePayrollFormViewer({
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
   const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
   const lastSavedSignatureRef = useRef<string | null>(null);
+  const uniformPolicyDateByFormRef = useRef<Map<string, string>>(new Map());
 
   // Home venue assignment state
   type VenueOption = { id: string; venue_name: string; city: string | null; state: string | null };
@@ -360,7 +364,7 @@ export default function StatePayrollFormViewer({
     loadI9Documents();
   }, [selectedForm]);
 
-  // Load signature for current form and reset canvas when form changes
+  // Load signature for the current form into the canvas whenever signatures change.
   useEffect(() => {
     // Reset last saved signature reference when form changes
     lastSavedSignatureRef.current = null;
@@ -397,14 +401,77 @@ export default function StatePayrollFormViewer({
         }
       }
     }
+  }, [currentForm?.formId, selectedForm, signatures]);
 
-    // Reset health insurance acknowledgment when form changes
+  useEffect(() => {
+    // Reset form-specific UI state only when changing forms.
+    const currentFormId = currentForm?.formId;
     setHealthInsuranceAcknowledged(false);
-    setUniformPolicyDate('');
+    if (isUniformPolicyFormId(currentFormId)) {
+      setUniformPolicyDate(uniformPolicyDateByFormRef.current.get(currentFormId) || '');
+    } else {
+      setUniformPolicyDate('');
+    }
     setHomeVenueDate('');
     setHomeVenuePrintName('');
     setMissingRequiredFields([]);
-  }, [currentForm?.formId, selectedForm, signatures]);
+  }, [currentForm?.formId, selectedForm]);
+
+  useEffect(() => {
+    const currentFormId = currentForm?.formId;
+    if (selectedForm !== 'uniform-policy' || !currentFormId) return;
+
+    let cancelled = false;
+
+    const loadSavedUniformPolicyDate = async () => {
+      try {
+        const cachedDate = uniformPolicyDateByFormRef.current.get(currentFormId);
+        if (cachedDate && !cancelled) {
+          setUniformPolicyDate(cachedDate);
+        }
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const params = new URLSearchParams({ formName: currentFormId });
+        if (asUser) {
+          params.set('targetUserId', asUser);
+        }
+
+        const response = await fetch(`/api/pdf-form-progress/retrieve?${params.toString()}`, {
+          credentials: 'same-origin',
+          headers: {
+            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+          },
+        });
+
+        if (!response.ok) {
+          console.warn('[UNIFORM POLICY] Failed to retrieve saved date:', response.status);
+          return;
+        }
+
+        const savedData = await response.json();
+        const savedDate =
+          typeof savedData?.formDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(savedData.formDate)
+            ? savedData.formDate
+            : '';
+
+        if (cancelled || !savedDate) return;
+
+        uniformPolicyDateByFormRef.current.set(currentFormId, savedDate);
+        setUniformPolicyDate((currentValue) => currentValue || savedDate);
+      } catch (error) {
+        console.warn('[UNIFORM POLICY] Could not load saved date', error);
+      }
+    };
+
+    void loadSavedUniformPolicyDate();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [asUser, currentForm?.formId, selectedForm]);
 
   // Load venues when home-venue-assignment form is shown
   useEffect(() => {
@@ -550,6 +617,9 @@ export default function StatePayrollFormViewer({
         formData: base64,
         ...(asUser ? { targetUserId: asUser } : {}),
       };
+      if (isUniformPolicyFormId(formId)) {
+        payload.formDate = uniformPolicyDateByFormRef.current.get(formId) || null;
+      }
       // Only include i9 data if saving the i9 form
       if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
         payload.i9Mode = i9Mode;
@@ -2782,7 +2852,17 @@ export default function StatePayrollFormViewer({
                 <input
                   type="date"
                   value={uniformPolicyDate}
-                  onChange={(e) => setUniformPolicyDate(e.target.value)}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setUniformPolicyDate(nextValue);
+                    if (currentForm?.formId) {
+                      if (nextValue) {
+                        uniformPolicyDateByFormRef.current.set(currentForm.formId, nextValue);
+                      } else {
+                        uniformPolicyDateByFormRef.current.delete(currentForm.formId);
+                      }
+                    }
+                  }}
                   style={{
                     padding: '10px 14px',
                     fontSize: '15px',
