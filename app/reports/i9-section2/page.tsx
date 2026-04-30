@@ -42,6 +42,11 @@ interface ReportData {
   rows: Section2Row[];
 }
 
+type PdfViewerState = {
+  title: string;
+  url: string;
+} | null;
+
 function fmtDateTime(iso: string | null | undefined): string {
   if (!iso) return '-';
   return new Date(iso).toLocaleString('en-US', {
@@ -166,6 +171,17 @@ function FieldGrid({ fields }: { fields: Record<string, string> }) {
   );
 }
 
+function createPdfBlobUrl(base64Data: string) {
+  const byteCharacters = atob(base64Data);
+  const byteNumbers = new Array(byteCharacters.length);
+  for (let index = 0; index < byteCharacters.length; index++) {
+    byteNumbers[index] = byteCharacters.charCodeAt(index);
+  }
+  const byteArray = new Uint8Array(byteNumbers);
+  const blob = new Blob([byteArray], { type: 'application/pdf' });
+  return window.URL.createObjectURL(blob);
+}
+
 export default function I9Section2ReportPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -175,6 +191,9 @@ export default function I9Section2ReportPage() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'filled' | 'missing'>('all');
   const [stateFilter, setStateFilter] = useState('all');
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [viewingUserId, setViewingUserId] = useState<string | null>(null);
+  const [viewerError, setViewerError] = useState<string | null>(null);
+  const [pdfViewer, setPdfViewer] = useState<PdfViewerState>(null);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -211,6 +230,70 @@ export default function I9Section2ReportPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  useEffect(() => {
+    return () => {
+      if (pdfViewer?.url) {
+        window.URL.revokeObjectURL(pdfViewer.url);
+      }
+    };
+  }, [pdfViewer]);
+
+  const closeViewer = useCallback(() => {
+    setPdfViewer((current) => {
+      if (current?.url) {
+        window.URL.revokeObjectURL(current.url);
+      }
+      return null;
+    });
+  }, []);
+
+  const openI9Viewer = useCallback(async (row: Section2Row) => {
+    if (!row.i9_form_name) {
+      setViewerError('No saved I-9 form is available for this user.');
+      return;
+    }
+
+    setViewingUserId(row.user_id);
+    setViewerError(null);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        router.push('/login');
+        return;
+      }
+
+      const response = await fetch(
+        `/api/reports/i9-section2/form?userId=${encodeURIComponent(row.user_id)}&formName=${encodeURIComponent(row.i9_form_name)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        }
+      );
+
+      const json = await response.json();
+      if (!response.ok || !json.found || !json.formData) {
+        throw new Error(json.error || 'Failed to load saved I-9 PDF');
+      }
+
+      const objectUrl = createPdfBlobUrl(json.formData);
+      setPdfViewer((current) => {
+        if (current?.url) {
+          window.URL.revokeObjectURL(current.url);
+        }
+        return {
+          title: `${row.vendor_name} - ${formatI9Label(row.i9_form_name)}`,
+          url: objectUrl,
+        };
+      });
+    } catch (fetchError: any) {
+      setViewerError(fetchError?.message || 'Failed to open saved I-9 PDF');
+    } finally {
+      setViewingUserId(null);
+    }
+  }, [router]);
 
   const uniqueStates = useMemo(
     () => Array.from(new Set((data?.rows || []).map((row) => row.vendor_state).filter(Boolean))).sort(),
@@ -508,6 +591,20 @@ export default function I9Section2ReportPage() {
                                   </div>
                                 </div>
 
+                                <div className="flex flex-wrap items-center gap-3">
+                                  <button
+                                    type="button"
+                                    onClick={() => openI9Viewer(row)}
+                                    disabled={viewingUserId === row.user_id || !row.i9_form_name}
+                                    className="liquid-btn-glass liquid-btn-sm disabled:opacity-40"
+                                  >
+                                    {viewingUserId === row.user_id ? 'Opening I-9...' : 'View Saved I-9'}
+                                  </button>
+                                  {viewerError && (
+                                    <p className="text-sm text-red-600">{viewerError}</p>
+                                  )}
+                                </div>
+
                                 <div>
                                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
                                     Uploaded I-9 Documents
@@ -554,6 +651,43 @@ export default function I9Section2ReportPage() {
           {filteredRows.length} of {data?.summary.total ?? 0} I-9 records shown. Section 2 is detected from saved PDF fields, not from uploaded document presence alone.
         </p>
       </div>
+
+      {pdfViewer && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm p-4 sm:p-6">
+          <div className="mx-auto flex h-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-white/20 bg-white shadow-2xl">
+            <div className="flex items-center justify-between gap-4 border-b border-gray-100 px-5 py-4">
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">{pdfViewer.title}</h2>
+                <p className="text-sm text-gray-500">Saved PDF from `pdf_form_progress`</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <a
+                  href={pdfViewer.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="liquid-btn-glass liquid-btn-sm"
+                >
+                  Open In New Tab
+                </a>
+                <button
+                  type="button"
+                  onClick={closeViewer}
+                  className="liquid-btn-glass liquid-btn-sm"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 bg-gray-100">
+              <iframe
+                src={pdfViewer.url}
+                title={pdfViewer.title}
+                className="h-full w-full border-0"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -95,6 +95,22 @@ type Section2Result = {
   fields: Record<string, string>;
 };
 
+type I9MetaEntry = {
+  userId: string;
+  form_name: string;
+  updated_at: string;
+};
+
+const EMPTY_SECTION2_RESULT: Section2Result = {
+  filled: false,
+  basis: 'none',
+  fields: {},
+};
+
+const LOOKUP_BATCH_SIZE = 200;
+const LOOKUP_BATCH_CONCURRENCY = 3;
+const SECTION2_FETCH_CONCURRENCY = 12;
+
 function isI9FormName(formName: unknown): boolean {
   if (typeof formName !== 'string') return false;
   const normalized = formName.trim().toLowerCase();
@@ -191,15 +207,9 @@ function isSection2FieldName(name: string): boolean {
 }
 
 async function parseSection2(rawFormData: unknown): Promise<Section2Result> {
-  const emptyResult: Section2Result = {
-    filled: false,
-    basis: 'none',
-    fields: {},
-  };
-
   try {
     const base64 = normalizeBase64(rawFormData);
-    if (!base64) return emptyResult;
+    if (!base64) return EMPTY_SECTION2_RESULT;
 
     const pdfBytes = Buffer.from(base64, 'base64');
     const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
@@ -235,7 +245,46 @@ async function parseSection2(rawFormData: unknown): Promise<Section2Result> {
       fields: matchedFields,
     };
   } catch {
-    return emptyResult;
+    return EMPTY_SECTION2_RESULT;
+  }
+}
+
+async function fetchLatestI9Section2(meta: I9MetaEntry): Promise<Section2Result> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pdf_form_progress')
+      .select('form_data, updated_at')
+      .eq('user_id', meta.userId)
+      .eq('form_name', meta.form_name)
+      .not('form_data', 'is', null)
+      .neq('form_data', '')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.warn('[I9-SECTION2-REPORT] Failed to fetch latest I-9 form data', {
+        userId: meta.userId,
+        formName: meta.form_name,
+        updatedAt: meta.updated_at,
+        error: error.message,
+      });
+      return EMPTY_SECTION2_RESULT;
+    }
+
+    if (!data) {
+      return EMPTY_SECTION2_RESULT;
+    }
+
+    return await parseSection2((data as any).form_data);
+  } catch (error: any) {
+    console.warn('[I9-SECTION2-REPORT] Skipping malformed or unreadable I-9 form payload', {
+      userId: meta.userId,
+      formName: meta.form_name,
+      updatedAt: meta.updated_at,
+      error: error?.message || String(error),
+    });
+    return EMPTY_SECTION2_RESULT;
   }
 }
 
@@ -275,34 +324,10 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    const { data: userRows, error: usersError } = await supabaseAdmin
-      .from('users')
-      .select('id, email, role, profiles(id, first_name, last_name, state)');
-
-    if (usersError) {
-      throw new Error(usersError.message);
-    }
-
-    const usersById = new Map<string, UserDirectoryEntry>();
-    for (const row of userRows || []) {
-      const typedRow = row as any;
-      const profile = Array.isArray(typedRow.profiles) ? typedRow.profiles[0] : typedRow.profiles;
-      const firstName = dec(profile?.first_name);
-      const lastName = dec(profile?.last_name);
-      const email = String(typedRow.email || '').trim();
-
-      usersById.set(typedRow.id, {
-        id: typedRow.id,
-        email,
-        role: String(typedRow.role || '').trim(),
-        state: String(profile?.state || '').trim().toUpperCase(),
-        full_name: [firstName, lastName].filter(Boolean).join(' ') || email || typedRow.id,
-      });
-    }
-
     const { data: metaRows, error: metaError } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('user_id, form_name, updated_at')
+      .or('form_name.ilike.i9,form_name.ilike.*-i9')
       .not('form_data', 'is', null)
       .neq('form_data', '');
 
@@ -324,70 +349,96 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const { data: docsRows, error: docsError } = await supabaseAdmin
-      .from('i9_documents')
-      .select(`
-        user_id,
-        additional_doc_filename,
-        additional_doc_uploaded_at,
-        drivers_license_filename,
-        drivers_license_uploaded_at,
-        ssn_document_filename,
-        ssn_document_uploaded_at
-      `);
+    const i9MetaEntries = Array.from(latestI9MetaByUser.entries()).map(([userId, meta]) => ({
+      userId,
+      form_name: meta.form_name,
+      updated_at: meta.updated_at,
+    }));
+    const i9UserIds = i9MetaEntries.map((entry) => entry.userId);
 
-    if (docsError) {
-      throw new Error(docsError.message);
+    if (i9UserIds.length === 0) {
+      return NextResponse.json({
+        summary: {
+          total: 0,
+          with_section2: 0,
+          without_section2: 0,
+          with_documents: 0,
+        },
+        rows: [],
+      }, { status: 200 });
+    }
+
+    const userIdBatches = chunkArray(i9UserIds, LOOKUP_BATCH_SIZE);
+    const [userBatchResults, docsBatchResults] = await Promise.all([
+      runBatched(userIdBatches, async (userIdBatch) => {
+        const { data, error } = await supabaseAdmin
+          .from('users')
+          .select('id, email, role, profiles(id, first_name, last_name, state)')
+          .in('id', userIdBatch);
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        return data || [];
+      }, LOOKUP_BATCH_CONCURRENCY),
+      runBatched(userIdBatches, async (userIdBatch) => {
+        const { data, error } = await supabaseAdmin
+          .from('i9_documents')
+          .select(`
+            user_id,
+            additional_doc_filename,
+            additional_doc_uploaded_at,
+            drivers_license_filename,
+            drivers_license_uploaded_at,
+            ssn_document_filename,
+            ssn_document_uploaded_at
+          `)
+          .in('user_id', userIdBatch);
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        return data || [];
+      }, LOOKUP_BATCH_CONCURRENCY),
+    ]);
+
+    const usersById = new Map<string, UserDirectoryEntry>();
+    for (const batch of userBatchResults) {
+      for (const row of batch) {
+        const typedRow = row as any;
+        const profile = Array.isArray(typedRow.profiles) ? typedRow.profiles[0] : typedRow.profiles;
+        const firstName = dec(profile?.first_name);
+        const lastName = dec(profile?.last_name);
+        const email = String(typedRow.email || '').trim();
+
+        usersById.set(typedRow.id, {
+          id: typedRow.id,
+          email,
+          role: String(typedRow.role || '').trim(),
+          state: String(profile?.state || '').trim().toUpperCase(),
+          full_name: [firstName, lastName].filter(Boolean).join(' ') || email || typedRow.id,
+        });
+      }
     }
 
     const docsByUser = new Map<string, any>();
-    for (const row of docsRows || []) {
-      docsByUser.set((row as any).user_id, row);
+    for (const batch of docsBatchResults) {
+      for (const row of batch) {
+        docsByUser.set((row as any).user_id, row);
+      }
     }
 
-    const i9UserIds = Array.from(latestI9MetaByUser.keys());
-    const userIdBatches = chunkArray(i9UserIds, 20);
     const parsedByUser = new Map<string, Section2Result>();
 
-    const batchResults = await runBatched(userIdBatches, async (userIdBatch) => {
-      const { data: formRows, error: formError } = await supabaseAdmin
-        .from('pdf_form_progress')
-        .select('user_id, form_name, form_data, updated_at')
-        .in('user_id', userIdBatch)
-        .not('form_data', 'is', null)
-        .neq('form_data', '');
+    const parsedResults = await runBatched(i9MetaEntries, async (meta) => ({
+      userId: meta.userId,
+      result: await fetchLatestI9Section2(meta),
+    }), SECTION2_FETCH_CONCURRENCY);
 
-      if (formError) {
-        throw new Error(formError.message);
-      }
-
-      const latestRowsByUser = new Map<string, any>();
-      for (const row of formRows || []) {
-        const typedRow = row as any;
-        const meta = latestI9MetaByUser.get(typedRow.user_id);
-        if (!meta) continue;
-        if (!isI9FormName(typedRow.form_name)) continue;
-        if (String(typedRow.form_name || '').trim() !== meta.form_name) continue;
-
-        const existing = latestRowsByUser.get(typedRow.user_id);
-        if (!existing || String(typedRow.updated_at || '') > String(existing.updated_at || '')) {
-          latestRowsByUser.set(typedRow.user_id, typedRow);
-        }
-      }
-
-      const parsedBatch = await Promise.all(
-        Array.from(latestRowsByUser.entries()).map(async ([userId, row]) => ({
-          userId,
-          result: await parseSection2(row.form_data),
-        }))
-      );
-      return parsedBatch;
-    }, 4);
-
-    for (const batch of batchResults) {
-      for (const parsed of batch) {
-        parsedByUser.set(parsed.userId, parsed.result);
-      }
+    for (const parsed of parsedResults) {
+      parsedByUser.set(parsed.userId, parsed.result);
     }
 
     const rows = i9UserIds.map((userId) => {
@@ -400,11 +451,7 @@ export async function GET(req: NextRequest) {
       };
       const meta = latestI9MetaByUser.get(userId)!;
       const docsRow = docsByUser.get(userId) || null;
-      const section2 = parsedByUser.get(userId) || {
-        filled: false,
-        basis: 'none' as const,
-        fields: {},
-      };
+      const section2 = parsedByUser.get(userId) || EMPTY_SECTION2_RESULT;
 
       const hasListA = !!docsRow?.additional_doc_filename;
       const hasListB = !!docsRow?.drivers_license_filename;
