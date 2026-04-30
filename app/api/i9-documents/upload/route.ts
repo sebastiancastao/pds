@@ -1,6 +1,11 @@
 // app/api/i9-documents/upload/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  I9_ENTRY_POINTS,
+  logI9AuditEvent,
+  normalizeI9EntryPoint,
+} from '@/lib/i9-proxy-audit';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -37,63 +42,6 @@ function sanitizeFilename(name: string) {
   return name.replace(/[^\w.\-]+/g, '_');
 }
 
-function isMissingFormAuditTrailError(error: any) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST205'
-    || message.includes("public.form_audit_trail")
-    || message.includes('form_audit_trail');
-}
-
-async function logProxyI9DocumentChange(params: {
-  actorUserId: string;
-  ownerUserId: string;
-  documentType: string;
-  normalizedKey: string;
-  filename: string;
-  ipAddress: string;
-  userAgent: string;
-}) {
-  const {
-    actorUserId,
-    ownerUserId,
-    documentType,
-    normalizedKey,
-    filename,
-    ipAddress,
-    userAgent,
-  } = params;
-
-  const supabase = createClient(supabaseUrl, supabaseServiceKey, {
-    auth: { persistSession: false },
-  });
-
-  const { error } = await supabase
-    .from('form_audit_trail')
-    .insert({
-      form_id: 'i9-documents',
-      form_type: 'i9',
-      user_id: ownerUserId,
-      action: 'edited',
-      action_details: {
-        origin: 'i9-documents/upload',
-        performed_by_user_id: actorUserId,
-        performed_for_user_id: ownerUserId,
-        is_proxy_edit: true,
-        document_type: documentType,
-        normalized_key: normalizedKey,
-        file_name: filename,
-      },
-      ip_address: ipAddress,
-      user_agent: userAgent,
-      session_id: `proxy-i9-upload-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-    });
-
-  if (error && !isMissingFormAuditTrailError(error)) {
-    console.error('[I9_UPLOAD] Failed to write proxy audit row:', error);
-  }
-}
-
 export async function POST(request: NextRequest) {
   try {
     const authHeader = request.headers.get('authorization');
@@ -123,6 +71,7 @@ export async function POST(request: NextRequest) {
     const documentType = String(formData.get('documentType') || '');
     const file = formData.get('file') as unknown as File | null;
     const targetUserIdParam = formData.get('userId') ? String(formData.get('userId')) : null;
+    const entryPoint = formData.get('entryPoint');
 
     console.log('[I9_UPLOAD] Received:', { documentType, hasFile: !!file, fileType: file?.type, fileSize: file?.size, targetUserIdParam });
 
@@ -172,6 +121,11 @@ export async function POST(request: NextRequest) {
       }
       targetUserId = targetUserIdParam;
     }
+    const isProxyEdit = targetUserId !== user.id;
+    const resolvedEntryPoint = normalizeI9EntryPoint(
+      entryPoint,
+      isProxyEdit ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
+    );
 
     // Ensure the storage bucket exists (create if missing, ignore if already exists)
     const { data: buckets } = await supabase.storage.listBuckets();
@@ -231,9 +185,10 @@ export async function POST(request: NextRequest) {
     // Does a row already exist for this user?
     const { data: existing } = await supabase
       .from('i9_documents')
-      .select('id')
+      .select('id, drivers_license_url, ssn_document_url, additional_doc_url')
       .eq('user_id', targetUserId)
       .maybeSingle();
+    const hadExistingDocument = Boolean(existing?.[`${colPrefix}_url`]);
 
     let dbRes;
     if (existing) {
@@ -267,22 +222,30 @@ export async function POST(request: NextRequest) {
       path: storageKey,
     });
 
-    if (targetUserId !== user.id) {
-      const ipAddress = request.headers.get('x-forwarded-for') ||
-        request.headers.get('x-real-ip') ||
-        'unknown';
-      const userAgent = request.headers.get('user-agent') || 'unknown';
+    const ipAddress = request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+    const userAgent = request.headers.get('user-agent') || 'unknown';
 
-      await logProxyI9DocumentChange({
-        actorUserId: user.id,
-        ownerUserId: targetUserId,
-        documentType,
-        normalizedKey: colPrefix,
-        filename: file.name,
-        ipAddress,
-        userAgent,
-      });
-    }
+    await logI9AuditEvent({
+      supabase,
+      actorUserId: user.id,
+      actorEmail: user.email || null,
+      ownerUserId: targetUserId,
+      formId: 'i9-documents',
+      action: hadExistingDocument ? 'edited' : 'created',
+      origin: 'i9-documents/upload',
+      entryPoint: resolvedEntryPoint,
+      editKind: 'document_upload',
+      ipAddress,
+      userAgent,
+      timestamp: nowIso,
+      extraDetails: {
+        document_type: documentType,
+        normalized_key: colPrefix,
+        file_name: file.name,
+      },
+    });
 
     return NextResponse.json({
       success: true,

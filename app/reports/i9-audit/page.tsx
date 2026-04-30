@@ -12,6 +12,8 @@ interface I9ReportSummary {
   with_documents: number;
   without_documents: number;
   proxy_edits: number;
+  proxy_edited_users: number;
+  inferred_proxy_edits: number;
   form_only: number;
   documents_only: number;
 }
@@ -51,6 +53,7 @@ interface I9ReportRow {
   last_change_at: string | null;
   last_change_source: string;
   edited_by_non_owner: boolean;
+  inferred_proxy_change_count?: number;
   proxy_change_count: number;
   latest_proxy_editor_name: string | null;
   latest_proxy_editor_email: string | null;
@@ -62,6 +65,10 @@ interface I9ReportRow {
 interface ReportData {
   summary: I9ReportSummary;
   rows: I9ReportRow[];
+  meta?: {
+    audit_source: 'form_audit_trail' | 'audit_logs_fallback' | 'missing';
+    audit_warning: string | null;
+  };
 }
 
 function fmtDateTime(iso: string | null | undefined): string {
@@ -391,7 +398,7 @@ export default function I9AuditReportPage() {
           </div>
           <div className="liquid-card p-5 text-center">
             <p className="text-3xl font-bold text-ios-indigo">{data?.summary.proxy_edits ?? 0}</p>
-            <p className="text-sm text-gray-500 mt-1">Proxy Edits</p>
+            <p className="text-sm text-gray-500 mt-1">Proxy Changes</p>
           </div>
           <div className="liquid-card p-5 text-center">
             <p className="text-3xl font-bold text-ios-purple">{filteredRows.length}</p>
@@ -469,7 +476,12 @@ export default function I9AuditReportPage() {
         </div>
 
         <div className="liquid-card p-4 text-sm text-gray-600">
-          Proxy edits are flagged from explicit audit data when available. If audit data is missing, the report now infers an HR edit when the account already had onboarding status at the time the I-9 changed.
+          This report only counts explicit on-behalf-of-employee I-9 saves and uploads recorded in audit data. Current total: {data?.summary.proxy_edits ?? 0} proxy changes across {data?.summary.proxy_edited_users ?? 0} users.
+          {data?.meta?.audit_warning && (
+            <p className={`mt-2 ${data.meta.audit_source === 'missing' ? 'text-amber-700' : 'text-gray-500'}`}>
+              {data.meta.audit_warning}
+            </p>
+          )}
         </div>
 
         <div className="liquid-card overflow-hidden">

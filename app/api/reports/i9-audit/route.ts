@@ -21,6 +21,11 @@ const ALLOWED_ROLES = new Set([
   'exec',
 ]);
 const KNOWN_I9_FORM_IDS = ['i9', 'ca-i9', 'az-i9', 'nv-i9', 'ny-i9', 'wi-i9', 'i9-documents'];
+const PROXY_I9_ORIGINS = new Set([
+  'pdf-form-progress/save',
+  'pdf-form-progress/admin-upload',
+  'i9-documents/upload',
+]);
 
 type UserDirectoryEntry = {
   id: string;
@@ -35,8 +40,25 @@ type UserDirectoryEntry = {
 type ActivityCandidate = {
   at: string;
   source: string;
-  editor: UserDirectoryEntry | null;
+  editor: ActorSummary | null;
 };
+
+type ActorSummary = {
+  id: string;
+  email: string;
+  role: string;
+  full_name: string;
+};
+
+type ProxyEvent = {
+  at: string;
+  source: string;
+  editor: ActorSummary | null;
+  inferred: boolean;
+  key: string;
+};
+
+type AuditSourceMode = 'form_audit_trail' | 'audit_logs_fallback' | 'missing';
 
 function isI9FormName(formName: unknown): boolean {
   if (typeof formName !== 'string') return false;
@@ -82,6 +104,23 @@ function maxIso(values: Array<string | null | undefined>): string | null {
   return best;
 }
 
+function minIso(values: Array<string | null | undefined>): string | null {
+  let best: string | null = null;
+  let bestTime = Number.POSITIVE_INFINITY;
+
+  for (const value of values) {
+    const normalized = normalizeIso(value);
+    if (!normalized) continue;
+    const time = Date.parse(normalized);
+    if (time < bestTime) {
+      best = normalized;
+      bestTime = time;
+    }
+  }
+
+  return best;
+}
+
 function compareDescByIso(a: string | null | undefined, b: string | null | undefined): number {
   const aTime = a ? Date.parse(a) : 0;
   const bTime = b ? Date.parse(b) : 0;
@@ -109,15 +148,37 @@ function getActorUserId(details: Record<string, any>): string | null {
     || details.performedByUserId
     || details.actor_user_id
     || details.actorUserId
+    || details.editor_user_id
+    || details.editorUserId
     || null;
 }
 
 function getActionSource(formId: string, details: Record<string, any>): string {
   const origin = String(details.origin || '').trim();
   if (origin === 'i9-documents/upload') return 'Document upload';
-  if (origin === 'pdf-form-progress/save') return 'Form save';
+  if (origin === 'pdf-form-progress/save' || origin === 'pdf-form-progress/admin-upload') return 'Form save';
+  if (origin === 'form-signatures/save') return 'Signature save';
   if (formId === 'i9-documents') return 'Document upload';
   return 'Audit trail';
+}
+
+function toActorSummary(user: UserDirectoryEntry | null | undefined): ActorSummary | null {
+  if (!user) return null;
+  return {
+    id: user.id,
+    email: user.email,
+    role: user.role,
+    full_name: user.full_name,
+  };
+}
+
+function setLatestIso(map: Map<string, string>, key: string, value: string | null | undefined) {
+  const normalized = normalizeIso(value);
+  if (!normalized || !key) return;
+  const existing = map.get(key);
+  if (!existing || Date.parse(normalized) > Date.parse(existing)) {
+    map.set(key, normalized);
+  }
 }
 
 function isMissingFormAuditTrailError(error: any): boolean {
@@ -270,6 +331,8 @@ export async function GET(req: NextRequest) {
     ]));
 
     const auditRowsById = new Map<string, any>();
+    let auditSourceMode: AuditSourceMode = 'form_audit_trail';
+    let formAuditTrailMissing = false;
 
     if (auditFormIds.length > 0) {
       const { data: auditRowsByFormId, error: auditByFormError } = await supabaseAdmin
@@ -282,6 +345,7 @@ export async function GET(req: NextRequest) {
         if (!isMissingFormAuditTrailError(auditByFormError)) {
           throw new Error(auditByFormError.message);
         }
+        formAuditTrailMissing = true;
       } else {
         for (const row of auditRowsByFormId || []) {
           auditRowsById.set((row as any).id, row);
@@ -299,9 +363,62 @@ export async function GET(req: NextRequest) {
       if (!isMissingFormAuditTrailError(auditByTypeError)) {
         throw new Error(auditByTypeError.message);
       }
+      formAuditTrailMissing = true;
     } else {
       for (const row of auditRowsByType || []) {
         auditRowsById.set((row as any).id, row);
+      }
+    }
+
+    if (formAuditTrailMissing) {
+      const { data: auditLogRows, error: auditLogsError } = await supabaseAdmin
+        .from('audit_logs')
+        .select('id, user_id, resource_id, metadata, created_at')
+        .eq('action', 'i9.proxy_edit')
+        .eq('resource_type', 'i9')
+        .order('created_at', { ascending: false });
+
+      if (auditLogsError) {
+        throw new Error(auditLogsError.message);
+      }
+
+      if ((auditLogRows || []).length > 0) {
+        auditSourceMode = 'audit_logs_fallback';
+      } else {
+        auditSourceMode = 'missing';
+      }
+
+      for (const row of auditLogRows || []) {
+        const metadata = normalizeActionDetails((row as any).metadata);
+        const ownerUserId = String(
+          metadata.owner_user_id
+          || metadata.performed_for_user_id
+          || metadata.ownerUserId
+          || metadata.performedForUserId
+          || ''
+        ).trim();
+
+        if (!ownerUserId) continue;
+
+        const actionDetails = {
+          ...metadata,
+          origin: metadata.origin || 'audit_logs/i9.proxy_edit',
+          performed_by_user_id: metadata.performed_by_user_id || metadata.actor_user_id || (row as any).user_id || null,
+          actor_user_id: metadata.actor_user_id || metadata.performed_by_user_id || (row as any).user_id || null,
+          performed_for_user_id: metadata.performed_for_user_id || ownerUserId,
+          owner_user_id: metadata.owner_user_id || ownerUserId,
+          is_proxy_edit: true,
+        };
+
+        auditRowsById.set(`audit-log-${(row as any).id}`, {
+          id: `audit-log-${(row as any).id}`,
+          user_id: ownerUserId,
+          form_id: String(metadata.form_id || 'i9-documents').trim(),
+          form_type: String(metadata.form_type || 'i9').trim(),
+          action: String(metadata.proxy_action || 'edited').trim(),
+          action_details: actionDetails,
+          timestamp: normalizeIso(metadata.occurred_at) || normalizeIso((row as any).created_at) || (row as any).created_at,
+        });
       }
     }
 
@@ -370,32 +487,100 @@ export async function GET(req: NextRequest) {
       const proxyAudits = auditRows.filter((auditRow: any) => {
         const details = normalizeActionDetails(auditRow.action_details);
         const actorUserId = getActorUserId(details);
+        const origin = String(details.origin || '').trim();
         const explicitProxy = details.is_proxy_edit === true || details.isProxyEdit === true;
-        return explicitProxy || (!!actorUserId && actorUserId !== userId);
+        return explicitProxy || (PROXY_I9_ORIGINS.has(origin) && !!actorUserId && actorUserId !== userId);
       });
 
       const latestAudit = auditRows[0] || null;
-      const latestProxyAudit = proxyAudits[0] || null;
 
       const latestAuditDetails = normalizeActionDetails(latestAudit?.action_details);
       const latestAuditActorId = getActorUserId(latestAuditDetails);
-      const latestAuditActor = latestAuditActorId ? usersById.get(latestAuditActorId) || null : null;
+      const latestAuditActor = toActorSummary(
+        latestAuditActorId ? usersById.get(latestAuditActorId) || null : null
+      );
+      const unknownProxyAuditEditor: ActorSummary = {
+        id: 'non-owner-audit',
+        full_name: 'Non-owner (audit)',
+        email: '',
+        role: 'hr',
+      };
 
-      const latestProxyDetails = normalizeActionDetails(latestProxyAudit?.action_details);
-      const latestProxyActorId = getActorUserId(latestProxyDetails);
-      const latestProxyActor = latestProxyActorId ? usersById.get(latestProxyActorId) || null : null;
+      const explicitProxyEvents: ProxyEvent[] = [];
 
-      const lastActivityCandidates: ActivityCandidate[] = [];
+      for (const proxyAudit of proxyAudits) {
+        const details = normalizeActionDetails(proxyAudit.action_details);
+        const at = normalizeIso(proxyAudit.timestamp);
+        if (!at) continue;
 
-      if (latestAudit?.timestamp) {
-        lastActivityCandidates.push({
-          at: latestAudit.timestamp,
-          source: getActionSource(String(latestAudit.form_id || ''), latestAuditDetails),
-          editor: latestAuditActor || owner,
+        const formId = String(proxyAudit.form_id || '').trim();
+        const source = getActionSource(formId, details);
+        const normalizedKey = String(details.normalized_key || details.normalizedKey || '').trim();
+        const actorUserId = getActorUserId(details);
+        const actor = toActorSummary(actorUserId ? usersById.get(actorUserId) || null : null);
+
+        explicitProxyEvents.push({
+          at,
+          source,
+          editor: actor,
+          inferred: false,
+          key: normalizedKey || formId || source,
         });
       }
 
-      if (latestDocumentAt) {
+      const lastActivityCandidates: ActivityCandidate[] = [];
+      const onboardingStatusCreatedAt = normalizeIso(onboardingStatusRow?.created_at) || owner.onboarding_submitted_at || null;
+      const onboardingStatusCompletedAt = normalizeIso(onboardingStatusRow?.completed_date) || null;
+      const formSavedAt = normalizeIso(formRow?.updated_at) || null;
+
+      const documentActivities = [
+        {
+          key: 'additional_doc',
+          uploadedAt: normalizeIso(docsRow?.additional_doc_uploaded_at) || null,
+          activitySource: 'Documents',
+        },
+        {
+          key: 'drivers_license',
+          uploadedAt: normalizeIso(docsRow?.drivers_license_uploaded_at) || null,
+          activitySource: 'Documents',
+        },
+        {
+          key: 'ssn_document',
+          uploadedAt: normalizeIso(docsRow?.ssn_document_uploaded_at) || null,
+          activitySource: 'Documents',
+        },
+      ];
+
+      const allProxyEvents = [...explicitProxyEvents].sort((a, b) => compareDescByIso(a.at, b.at));
+      const latestProxyEvent = allProxyEvents[0] || null;
+      const latestAuditIsProxy = !!(latestAudit && proxyAudits.some((auditRow: any) => auditRow.id === latestAudit.id));
+
+      if (latestAudit?.timestamp) {
+        lastActivityCandidates.push({
+          at: normalizeIso(latestAudit.timestamp) || latestAudit.timestamp,
+          source: getActionSource(String(latestAudit.form_id || ''), latestAuditDetails),
+          editor: latestAuditActor || (latestAuditIsProxy ? unknownProxyAuditEditor : owner),
+        });
+      }
+
+      for (const documentActivity of documentActivities) {
+        if (!documentActivity.uploadedAt) continue;
+        lastActivityCandidates.push({
+          at: documentActivity.uploadedAt,
+          source: documentActivity.activitySource,
+          editor: owner,
+        });
+      }
+
+      if (formSavedAt) {
+        lastActivityCandidates.push({
+          at: formSavedAt,
+          source: 'Form',
+          editor: owner,
+        });
+      }
+
+      if (!documentActivities.some((activity) => !!activity.uploadedAt) && latestDocumentAt) {
         lastActivityCandidates.push({
           at: latestDocumentAt,
           source: 'Documents',
@@ -403,45 +588,16 @@ export async function GET(req: NextRequest) {
         });
       }
 
-      if (formRow?.updated_at) {
-        lastActivityCandidates.push({
-          at: formRow.updated_at,
-          source: 'Form',
-          editor: owner,
-        });
-      }
-
       lastActivityCandidates.sort((a, b) => compareDescByIso(a.at, b.at));
       const lastActivity = lastActivityCandidates[0] || null;
-      const onboardingStatusCreatedAt = normalizeIso(onboardingStatusRow?.created_at) || owner.onboarding_submitted_at || null;
-      const onboardingStatusCompletedAt = normalizeIso(onboardingStatusRow?.completed_date) || null;
-      const inferredHrEdit = !!(
-        !latestProxyAudit
-        && lastActivity?.at
-        && onboardingStatusCreatedAt
-        && Date.parse(lastActivity.at) >= Date.parse(onboardingStatusCreatedAt)
-      );
-      const inferredHrEditor = inferredHrEdit
-        ? {
-            id: 'hr-inferred',
-            full_name: 'HR (inferred from onboarding status)',
-            email: '',
-            role: 'hr',
-          }
-        : null;
-      const resolvedLastEditor = latestAuditActor
-        || inferredHrEditor
-        || owner;
-      const editedByNonOwner = proxyAudits.length > 0 || inferredHrEdit;
-      const latestProxyEditorName = latestProxyActor?.full_name || inferredHrEditor?.full_name || null;
-      const latestProxyEditorEmail = latestProxyActor?.email || inferredHrEditor?.email || null;
-      const latestProxyEditorRole = latestProxyActor?.role || inferredHrEditor?.role || null;
-      const latestProxyAt = normalizeIso(latestProxyAudit?.timestamp) || (inferredHrEdit ? normalizeIso(lastActivity?.at) : null);
-      const latestProxySource = latestProxyAudit
-        ? getActionSource(String(latestProxyAudit.form_id || ''), latestProxyDetails)
-        : inferredHrEdit
-          ? `${lastActivity?.source || 'Unknown'} (onboarding-status inference)`
-          : null;
+      const inferredHrEdit = false;
+      const resolvedLastEditor = lastActivity?.editor || owner;
+      const editedByNonOwner = allProxyEvents.length > 0;
+      const latestProxyEditorName = latestProxyEvent?.editor?.full_name || null;
+      const latestProxyEditorEmail = latestProxyEvent?.editor?.email || null;
+      const latestProxyEditorRole = latestProxyEvent?.editor?.role || null;
+      const latestProxyAt = latestProxyEvent?.at || null;
+      const latestProxySource = latestProxyEvent?.source || null;
 
       return {
         user_id: userId,
@@ -478,7 +634,8 @@ export async function GET(req: NextRequest) {
         last_change_at: normalizeIso(lastActivity?.at) || null,
         last_change_source: lastActivity?.source || 'Unknown',
         edited_by_non_owner: editedByNonOwner,
-        proxy_change_count: proxyAudits.length + (inferredHrEdit ? 1 : 0),
+        inferred_proxy_change_count: 0,
+        proxy_change_count: allProxyEvents.length,
         latest_proxy_editor_name: latestProxyEditorName,
         latest_proxy_editor_email: latestProxyEditorEmail,
         latest_proxy_editor_role: latestProxyEditorRole,
@@ -498,12 +655,23 @@ export async function GET(req: NextRequest) {
       with_form: rows.filter((row) => row.has_i9_form).length,
       with_documents: rows.filter((row) => row.documents_added).length,
       without_documents: rows.filter((row) => !row.documents_added).length,
-      proxy_edits: rows.filter((row) => row.edited_by_non_owner).length,
+      proxy_edits: rows.reduce((sum, row) => sum + row.proxy_change_count, 0),
+      proxy_edited_users: rows.filter((row) => row.edited_by_non_owner).length,
+      inferred_proxy_edits: rows.reduce((sum, row) => sum + row.inferred_proxy_change_count, 0),
       form_only: rows.filter((row) => row.has_i9_form && !row.documents_added).length,
       documents_only: rows.filter((row) => !row.has_i9_form && row.documents_added).length,
     };
 
-    return NextResponse.json({ summary, rows }, { status: 200 });
+    const meta = {
+      audit_source: auditSourceMode,
+      audit_warning: auditSourceMode === 'missing'
+        ? 'Explicit I-9 HR audit data is unavailable in this database. The form_audit_trail table is missing and no fallback audit_logs rows exist, so historical HR edits cannot be reconstructed exactly.'
+        : auditSourceMode === 'audit_logs_fallback'
+          ? 'Using audit_logs fallback because the form_audit_trail table is missing in this database.'
+          : null,
+    };
+
+    return NextResponse.json({ summary, rows, meta }, { status: 200 });
   } catch (err: any) {
     console.error('[I9-AUDIT-REPORT]', err);
     return NextResponse.json({ error: err?.message || 'Server error' }, { status: 500 });

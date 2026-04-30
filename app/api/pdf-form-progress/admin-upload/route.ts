@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import {
+  I9_ENTRY_POINTS,
+  isI9FormName,
+  logI9AuditEvent,
+} from '@/lib/i9-proxy-audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -70,7 +75,8 @@ export async function POST(request: NextRequest) {
     }
 
     const previousUpdatedAt = existingRecord?.updated_at ?? null;
-    const targetUpdatedAt = previousUpdatedAt ?? new Date().toISOString();
+    const targetUpdatedAt = new Date().toISOString();
+    const isProxyI9Upload = sanitizedUserId !== user.id && isI9FormName(sanitizedFormName);
 
     const { error: upsertError } = await supabaseAdmin
       .from('pdf_form_progress')
@@ -87,6 +93,28 @@ export async function POST(request: NextRequest) {
     if (upsertError) {
       console.error('[PDF-UPLOAD] Failed to persist PDF form', upsertError);
       return NextResponse.json({ error: 'Failed to save form data' }, { status: 500 });
+    }
+
+    if (isProxyI9Upload) {
+      const ipAddress = request.headers.get('x-forwarded-for') ||
+        request.headers.get('x-real-ip') ||
+        'unknown';
+      const userAgent = request.headers.get('user-agent') || 'unknown';
+
+      await logI9AuditEvent({
+        supabase: supabaseAdmin,
+        actorUserId: user.id,
+        actorEmail: user.email || null,
+        ownerUserId: sanitizedUserId,
+        formId: sanitizedFormName,
+        action: previousUpdatedAt ? 'edited' : 'created',
+        origin: 'pdf-form-progress/admin-upload',
+        entryPoint: I9_ENTRY_POINTS.ADMIN_UPLOAD,
+        editKind: 'admin_upload',
+        ipAddress,
+        userAgent,
+        timestamp: targetUpdatedAt,
+      });
     }
 
     return NextResponse.json({

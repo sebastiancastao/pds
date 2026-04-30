@@ -3,9 +3,21 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { createHash } from 'crypto';
+import {
+  I9_ENTRY_POINTS,
+  isI9FormName,
+  logI9AuditEvent,
+  normalizeI9EntryPoint,
+} from '@/lib/i9-proxy-audit';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const supabaseAdmin = createClient(
+  supabaseUrl,
+  supabaseServiceKey,
+  { auth: { persistSession: false } }
+);
 
 const getAuthToken = async (request: NextRequest) => {
   const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
@@ -52,7 +64,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { formId, formType, signatureData, formData } = body;
+    const { formId, formType, signatureData, formData, entryPoint } = body;
 
     if (!formId || !formType || !signatureData) {
       return NextResponse.json({
@@ -121,6 +133,28 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[SIGNATURE SAVE] ✅ Signature saved successfully:', data);
+
+    if (isI9FormName(formId)) {
+      await logI9AuditEvent({
+        supabase: supabaseAdmin,
+        actorUserId: user.id,
+        actorEmail: user.email || null,
+        ownerUserId: user.id,
+        formId,
+        action: 'signed',
+        origin: 'form-signatures/save',
+        entryPoint: normalizeI9EntryPoint(entryPoint, I9_ENTRY_POINTS.PAYROLL_PACKET),
+        editKind: 'signature_save',
+        ipAddress,
+        userAgent,
+        timestamp,
+        extraDetails: {
+          form_type_label: formType,
+          signature_role: 'employee',
+          signature_id: data[0]?.id || null,
+        },
+      });
+    }
 
     return NextResponse.json({
       success: true,

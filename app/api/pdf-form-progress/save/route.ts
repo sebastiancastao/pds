@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import {
+  I9_ENTRY_POINTS,
+  isI9FormName,
+  logI9AuditEvent,
+  normalizeI9EntryPoint,
+} from '@/lib/i9-proxy-audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -11,28 +17,18 @@ const supabaseAdmin = createClient(
   { auth: { persistSession: false } }
 );
 
-function isI9FormName(formName: string) {
-  const normalized = String(formName || '').trim().toLowerCase();
-  return normalized === 'i9' || normalized.endsWith('-i9');
-}
-
-function isMissingFormAuditTrailError(error: any) {
-  const message = String(error?.message || '');
-  return error?.code === 'PGRST205'
-    || message.includes("public.form_audit_trail")
-    || message.includes('form_audit_trail');
-}
-
 export async function POST(request: NextRequest) {
   try {
     console.log('[SAVE API] Request received');
 
-    // Resolve authenticated user — try cookie session first, then Bearer token
+    // Resolve authenticated user: try cookie session first, then Bearer token.
+    let authUser: { id: string; email?: string | null } | null = null;
     let userId: string | null = null;
 
     const cookieClient = createRouteHandlerClient({ cookies });
     const { data: { user: cookieUser } } = await cookieClient.auth.getUser();
     if (cookieUser?.id) {
+      authUser = cookieUser;
       userId = cookieUser.id;
       console.log('[SAVE API] Cookie-based auth OK:', userId);
     }
@@ -43,6 +39,7 @@ export async function POST(request: NextRequest) {
       if (token) {
         const { data: { user: tokenUser }, error: tokenErr } = await supabaseAdmin.auth.getUser(token);
         if (!tokenErr && tokenUser?.id) {
+          authUser = tokenUser;
           userId = tokenUser.id;
           console.log('[SAVE API] Bearer token auth OK:', userId);
         }
@@ -55,7 +52,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { formName, formData, targetUserId, formDate } = body;
+    const { formName, formData, targetUserId, formDate, entryPoint } = body;
 
     if (!formName || !formData) {
       return NextResponse.json({ error: 'Missing formName or formData' }, { status: 400 });
@@ -78,10 +75,10 @@ export async function POST(request: NextRequest) {
 
     const resolvedFormName = formName;
     const isProxySave = saveUserId !== userId;
-    const shouldLogI9ProxySave = isProxySave && isI9FormName(resolvedFormName);
+    const shouldLogI9Save = isI9FormName(resolvedFormName);
     let hadExistingI9Record = false;
 
-    if (shouldLogI9ProxySave) {
+    if (shouldLogI9Save) {
       const { data: existingI9Record } = await supabaseAdmin
         .from('pdf_form_progress')
         .select('id')
@@ -94,8 +91,6 @@ export async function POST(request: NextRequest) {
 
     console.log('[SAVE API] Upserting form:', resolvedFormName, 'for user:', saveUserId);
 
-    // Upsert on (user_id, form_name). Custom forms use "custom-form-{uuid}" as the
-    // form_name, so each distinct template has its own unique key regardless of title.
     const { error } = await supabaseAdmin
       .from('pdf_form_progress')
       .upsert({
@@ -113,35 +108,31 @@ export async function POST(request: NextRequest) {
 
     console.log('[SAVE API] Saved successfully');
 
-    if (shouldLogI9ProxySave) {
+    if (shouldLogI9Save) {
       const ipAddress = request.headers.get('x-forwarded-for') ||
         request.headers.get('x-real-ip') ||
         'unknown';
       const userAgent = request.headers.get('user-agent') || 'unknown';
 
-      const { error: auditError } = await supabaseAdmin
-        .from('form_audit_trail')
-        .insert({
-          form_id: resolvedFormName,
-          form_type: 'i9',
-          user_id: saveUserId,
-          action: hadExistingI9Record ? 'edited' : 'created',
-          action_details: {
-            origin: 'pdf-form-progress/save',
-            performed_by_user_id: userId,
-            performed_for_user_id: saveUserId,
-            is_proxy_edit: true,
-            form_date: formDate || null,
-          },
-          ip_address: ipAddress,
-          user_agent: userAgent,
-          session_id: `proxy-save-${Date.now()}`,
-          timestamp: new Date().toISOString(),
-        });
-
-      if (auditError && !isMissingFormAuditTrailError(auditError)) {
-        console.error('[SAVE API] Failed to create proxy I-9 audit row:', auditError);
-      }
+      await logI9AuditEvent({
+        supabase: supabaseAdmin,
+        actorUserId: userId,
+        actorEmail: authUser?.email || null,
+        ownerUserId: saveUserId,
+        formId: resolvedFormName,
+        action: hadExistingI9Record ? 'edited' : 'created',
+        origin: 'pdf-form-progress/save',
+        entryPoint: normalizeI9EntryPoint(
+          entryPoint,
+          isProxySave ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
+        ),
+        editKind: 'form_save',
+        ipAddress,
+        userAgent,
+        extraDetails: {
+          form_date: formDate || null,
+        },
+      });
     }
 
     // Upload the filled PDF to i9-documents storage bucket
@@ -151,9 +142,8 @@ export async function POST(request: NextRequest) {
       const sanitizedName = formName.replace(/[^\w\s-]/g, '').replace(/\s+/g, '-');
       const storagePath = `${saveUserId}/custom-forms/${sanitizedName}.pdf`;
 
-      // Ensure bucket exists
       const { data: buckets } = await supabaseAdmin.storage.listBuckets();
-      if (!buckets?.some(b => b.name === 'i9-documents')) {
+      if (!buckets?.some((bucket) => bucket.name === 'i9-documents')) {
         const { error: bucketErr } = await supabaseAdmin.storage.createBucket('i9-documents', {
           public: true,
           fileSizeLimit: 52428800,
@@ -176,7 +166,6 @@ export async function POST(request: NextRequest) {
       }
     } catch (storageErr: any) {
       console.error('[SAVE API] Storage upload unexpected error:', storageErr);
-      // Non-fatal — DB save already succeeded
     }
 
     return NextResponse.json({ success: true, message: 'Form progress saved', storageUrl }, { status: 200 });

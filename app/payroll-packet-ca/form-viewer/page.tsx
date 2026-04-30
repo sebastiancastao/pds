@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
+import { I9_ENTRY_POINTS, normalizeI9EntryPoint } from '@/lib/i9-proxy-audit';
 
 // Dynamically import PDFFormEditor to avoid SSR issues
 const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
@@ -23,6 +24,10 @@ function FormViewerContent() {
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
   const asUser = searchParams.get('asUser') || undefined;
+  const i9EntryPoint = normalizeI9EntryPoint(
+    searchParams.get('entryPoint'),
+    asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
+  );
 
   const escapeFieldNameForSelector = (fieldName: string) => {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
@@ -381,6 +386,7 @@ function FormViewerContent() {
         formName: formId,
         formData: base64,
         ...(asUser ? { targetUserId: asUser } : {}),
+        entryPoint: i9EntryPoint,
       };
       if (formId === 'i9') {
         payload.i9Mode = i9Mode;
@@ -1581,6 +1587,7 @@ function FormViewerContent() {
           formId: formId,
           formType: formDisplay,
           signatureData: signatureData,
+          entryPoint: i9EntryPoint,
           formData: currentPdfBytes ? btoa(
             Array.from(currentPdfBytes)
               .map(byte => String.fromCharCode(byte))
@@ -1640,6 +1647,7 @@ function FormViewerContent() {
       formData.append('file', file);
       formData.append('documentType', documentType);
       if (asUser) formData.append('userId', asUser);
+      formData.append('entryPoint', i9EntryPoint);
 
       const response = await fetch('/api/i9-documents/upload', {
         method: 'POST',

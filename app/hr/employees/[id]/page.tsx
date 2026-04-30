@@ -321,7 +321,7 @@ export default function EmployeeProfilePage() {
       NV: '/payroll-packet-nv/form-viewer',
     };
     const base = (employee?.state && stateRoutes[employee.state.toUpperCase()]) || '/payroll-packet-ca/form-viewer';
-    return `${base}?form=i9&asUser=${employeeId}`;
+    return `${base}?form=i9&asUser=${employeeId}&entryPoint=hr-employees`;
   }, [employee?.state, employeeId]);
 
   useEffect(() => {
@@ -859,6 +859,7 @@ export default function EmployeeProfilePage() {
       fd.append('documentType', documentType);
       fd.append('file', file);
       fd.append('userId', employeeId);
+      fd.append('entryPoint', 'hr-employees');
       const res = await fetch('/api/i9-documents/upload', {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.access_token}` },

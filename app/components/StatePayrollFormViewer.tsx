@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
+import { I9_ENTRY_POINTS, normalizeI9EntryPoint } from '@/lib/i9-proxy-audit';
 
 const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
   ssr: false,
@@ -197,6 +198,10 @@ export default function StatePayrollFormViewer({
   const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, forms);
   const selectedForm = searchParams.get('form') || startFormId || firstFormId;
   const asUser = searchParams.get('asUser') || undefined;
+  const i9EntryPoint = normalizeI9EntryPoint(
+    searchParams.get('entryPoint'),
+    asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
+  );
   const currentFormBase = formConfig[selectedForm] || formConfig[firstFormId];
   const isAzStateTax = stateCode === 'az' && currentFormBase?.formId?.includes('state-tax');
   const isNyStateTax = stateCode === 'ny' && currentFormBase?.formId?.includes('state-tax');
@@ -549,6 +554,7 @@ export default function StatePayrollFormViewer({
         formName: formId,
         formData: base64,
         ...(asUser ? { targetUserId: asUser } : {}),
+        entryPoint: i9EntryPoint,
       };
       // Only include i9 data if saving the i9 form
       if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
@@ -629,6 +635,7 @@ export default function StatePayrollFormViewer({
       formData.append('file', file);
       formData.append('documentType', documentType);
       if (asUser) formData.append('userId', asUser);
+      formData.append('entryPoint', i9EntryPoint);
 
       const response = await fetch('/api/i9-documents/upload', {
         method: 'POST',
@@ -2527,6 +2534,7 @@ export default function StatePayrollFormViewer({
           formId: currentForm.formId,
           formType: currentForm.display,
           signatureData: signatureData,
+          entryPoint: i9EntryPoint,
           formData: pdfBytesRef.current ? btoa(
             Array.from(pdfBytesRef.current)
               .map(byte => String.fromCharCode(byte))
