@@ -159,7 +159,6 @@ export function computePayPeriodCommission({
 
         return [{ id: userId, hours }];
       }),
-      allShortShiftMode: "equal",
     }).amountsById;
 
     byEvent[eventId] = {};
