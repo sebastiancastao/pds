@@ -3,6 +3,8 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { getRegionFallbackCommissionPoolPercent } from "@/lib/commission-pool";
+import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 
@@ -107,7 +109,6 @@ type TeamVendorOption = {
   email: string;
   role?: string | null;
   division?: string | null;
-  is_active?: boolean | null;
   distance?: number | null;
   status?: string | null;
   isExistingMember?: boolean;
@@ -211,6 +212,9 @@ export default function EventDashboardPage() {
   const searchParams = useSearchParams();
   const eventId = params.id as string;
   const initialTab = (searchParams.get("tab") as TabType) || "edit";
+  const periodStartParam = (searchParams.get("periodStart") || "").trim();
+  const periodEndParam = (searchParams.get("periodEnd") || "").trim();
+  const hasPeriodWindow = Boolean(periodStartParam && periodEndParam);
 
   const [activeTab, setActiveTab] = useState<TabType>(initialTab);
   const [event, setEvent] = useState<EventItem | null>(null);
@@ -255,15 +259,6 @@ export default function EventDashboardPage() {
     userRole === "admin" ||
     userRole === "supervisor2" ||
     isEventCreator;
-  const isNorCalOrSFMetroEvent =
-    ["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some(
-      (v) => event?.venue?.toLowerCase().includes(v)
-    ) ||
-    ["san francisco", "oakland", "san jose", "berkeley", "fremont", "hayward",
-     "concord", "santa clara", "sunnyvale", "mountain view", "palo alto",
-     "san mateo", "daly city", "richmond", "walnut creek", "sacramento", "fresno"].some(
-      (c) => event?.city?.toLowerCase().includes(c)
-    );
 
   const [ticketSales, setTicketSales] = useState<string>("");
   const [ticketCount, setTicketCount] = useState<string>("");
@@ -335,7 +330,6 @@ export default function EventDashboardPage() {
   const [addVendorRegion, setAddVendorRegion] = useState<string>("all");
   const [addVendorOptions, setAddVendorOptions] = useState<TeamVendorOption[]>([]);
   const [selectedVendorToAdd, setSelectedVendorToAdd] = useState<string>("");
-  const [showAddVendorConfirmModal, setShowAddVendorConfirmModal] = useState(false);
   // Cache flags to avoid re-fetching data when switching tabs
   const [teamLoaded, setTeamLoaded] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
@@ -343,6 +337,9 @@ export default function EventDashboardPage() {
   const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
   const [tipsOverridesLoaded, setTipsOverridesLoaded] = useState(false);
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
+  const [savedEventPaymentSummary, setSavedEventPaymentSummary] = useState<any | null>(null);
+  const [periodEvents, setPeriodEvents] = useState<any[]>([]);
+  const [loadingPeriodEvents, setLoadingPeriodEvents] = useState(false);
   const [eventLocations, setEventLocations] = useState<EventLocation[]>([]);
   const [locationAssignments, setLocationAssignments] = useState<Record<string, string[]>>({});
   const [locationLeaders, setLocationLeaders] = useState<Record<string, string>>({});
@@ -425,6 +422,7 @@ export default function EventDashboardPage() {
   const [pendingTimesheetEditUid, setPendingTimesheetEditUid] = useState<string | null>(null);
   const [timesheetEditNote, setTimesheetEditNote] = useState("");
   const [timesheetEditSignature, setTimesheetEditSignature] = useState("");
+  const [exportingTimesheetPdf, setExportingTimesheetPdf] = useState(false);
   const [signatureIsEmpty, setSignatureIsEmpty] = useState(true);
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingRef = useRef(false);
@@ -629,8 +627,8 @@ export default function EventDashboardPage() {
         id,
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
-        is_active: member?.users?.is_active !== false,
-        distance: null,
+        role: member?.users?.role || null,
+        distance: member?.distance ?? null,
         status: String(member?.status || ""),
         isExistingMember: true,
         isOutOfVenue: Boolean(member?.isOutOfVenue),
@@ -640,6 +638,7 @@ export default function EventDashboardPage() {
           phone: String(member?.users?.profiles?.phone || ""),
           city: member?.users?.profiles?.city || null,
           state: member?.users?.profiles?.state || null,
+          region_id: member?.users?.profiles?.region_id || null,
         },
       });
     }
@@ -749,6 +748,10 @@ export default function EventDashboardPage() {
   const isVendorDivision = (division?: string | null) => {
     const normalized = (division || '').toString().toLowerCase();
     return normalized === 'vendor' || normalized === 'both';
+  };
+  const isTrailersDivision = (division?: string | null) => {
+    const normalized = (division || '').toString().toLowerCase();
+    return normalized === 'trailers';
   };
 
   const hasTimesheetForMember = (member: any) => {
@@ -1119,6 +1122,48 @@ export default function EventDashboardPage() {
     return token;
   };
 
+  useEffect(() => {
+    if (activeTab !== "hr" || !hasPeriodWindow) {
+      setPeriodEvents([]);
+      setLoadingPeriodEvents(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    (async () => {
+      setLoadingPeriodEvents(true);
+      try {
+        const token = await getSessionToken();
+        const res = await fetch(
+          `/api/events-by-date?startDate=${encodeURIComponent(periodStartParam)}&endDate=${encodeURIComponent(periodEndParam)}&includeHours=true`,
+          {
+            method: "GET",
+            headers: {
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+          }
+        );
+
+        if (!res.ok) {
+          if (!cancelled) setPeriodEvents([]);
+          return;
+        }
+
+        const data = await res.json();
+        if (!cancelled) setPeriodEvents(Array.isArray(data?.events) ? data.events : []);
+      } catch {
+        if (!cancelled) setPeriodEvents([]);
+      } finally {
+        if (!cancelled) setLoadingPeriodEvents(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, hasPeriodWindow, periodStartParam, periodEndParam]);
+
   const loadTeam = async (skipPhotos = false) => {
     if (!eventId) return;
     setLoadingTeam(true);
@@ -1133,10 +1178,7 @@ export default function EventDashboardPage() {
       });
       if (res.ok) {
         const data = await res.json();
-        const activeTeam = Array.isArray(data?.team)
-          ? data.team.filter((member: any) => member?.users?.is_active !== false)
-          : [];
-        setTeamMembers(activeTeam);
+        setTeamMembers(data.team || []);
         setUninvitedTeamMembers(Array.isArray(data.uninvited_history) ? data.uninvited_history : []);
         setTeamLoaded(true);
       } else {
@@ -1151,7 +1193,6 @@ export default function EventDashboardPage() {
 
   const closeAddVendorModal = () => {
     if (addingVendorToTeam) return;
-    setShowAddVendorConfirmModal(false);
     setShowAddVendorModal(false);
     setAddVendorSearch("");
     setAddVendorState("all");
@@ -1202,9 +1243,7 @@ export default function EventDashboardPage() {
       let available: TeamVendorOption[] = [];
       if (availableRes.ok) {
         const availableData = await availableRes.json().catch(() => ({}));
-        available = Array.isArray(availableData?.vendors)
-          ? availableData.vendors.filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
-          : [];
+        available = Array.isArray(availableData?.vendors) ? availableData.vendors : [];
       } else {
         const availableError = await availableRes.json().catch(() => ({}));
         setLocationTeamMessage(availableError?.error || "Failed to load available vendors");
@@ -1213,9 +1252,7 @@ export default function EventDashboardPage() {
       let existingTeam: any[] = [];
       if (teamRes.ok) {
         const teamData = await teamRes.json().catch(() => ({}));
-        existingTeam = Array.isArray(teamData?.team)
-          ? teamData.team.filter((member: any) => member?.users?.is_active !== false)
-          : [];
+        existingTeam = Array.isArray(teamData?.team) ? teamData.team : [];
         setTeamMembers(existingTeam);
         setUninvitedTeamMembers(Array.isArray(teamData?.uninvited_history) ? teamData.uninvited_history : []);
         setTeamLoaded(true);
@@ -1232,8 +1269,7 @@ export default function EventDashboardPage() {
         id: String(member?.vendor_id || ""),
         email: String(member?.users?.email || ""),
         division: String(member?.users?.division || ""),
-        is_active: member?.users?.is_active !== false,
-        distance: null,
+        distance: member?.distance ?? null,
         status: String(member?.status || ""),
         isExistingMember: true,
         isOutOfVenue: Boolean(member?.isOutOfVenue),
@@ -1243,6 +1279,7 @@ export default function EventDashboardPage() {
           phone: String(member?.users?.profiles?.phone || ""),
           city: member?.users?.profiles?.city || null,
           state: member?.users?.profiles?.state || null,
+          region_id: member?.users?.profiles?.region_id || null,
         },
       }));
 
@@ -1441,8 +1478,6 @@ export default function EventDashboardPage() {
     try {
       const token = await getSessionToken();
       const query = new URLSearchParams({ venue: event.venue });
-      if (event.city) query.set("city", event.city);
-      if (event.state) query.set("state", event.state);
       const vendorsRes = await fetch(`/api/vendors?${query.toString()}`, {
         method: "GET",
         headers: {
@@ -1469,8 +1504,7 @@ export default function EventDashboardPage() {
         }
 
         const fallbackData = await fallbackRes.json().catch(() => ({}));
-        vendors = (Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [])
-          .map((v: TeamVendorOption) => ({ ...v, isOutOfVenue: true }));
+        vendors = Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [];
       }
 
       const existingTeamIds = new Set(
@@ -1480,7 +1514,6 @@ export default function EventDashboardPage() {
       );
 
       const availableVendors = vendors
-        .filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
         .filter((vendor: TeamVendorOption) => {
           const vendorId = (vendor?.id || "").toString();
           return vendorId.length > 0 && !existingTeamIds.has(vendorId);
@@ -1523,6 +1556,7 @@ export default function EventDashboardPage() {
       form.append("body", body);
       form.append("bodyFormat", "text");
       form.append("confirm", "true");
+      if (event.venue) form.append("venue", event.venue);
       const res = await fetch("/api/admin/send-email", {
         method: "POST",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -1550,17 +1584,13 @@ export default function EventDashboardPage() {
     try {
       const token = await getSessionToken();
       const query = new URLSearchParams({ venue: event.venue, slim: 'true' });
-      if (event.city) query.set("city", event.city);
-      if (event.state) query.set("state", event.state);
       const res = await fetch(`/api/vendors?${query.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       let allVendors: TeamVendorOption[] = [];
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
-        allVendors = Array.isArray(data?.vendors)
-          ? data.vendors.filter((vendor: TeamVendorOption) => vendor?.is_active !== false)
-          : [];
+        allVendors = Array.isArray(data?.vendors) ? data.vendors : [];
       }
       const invitedIds = new Set(
         (teamMembers || []).map((m: any) => (m?.vendor_id || m?.user_id || m?.users?.id || "").toString()).filter(Boolean)
@@ -1584,44 +1614,28 @@ export default function EventDashboardPage() {
   const handleAddVendorToTeamImmediately = async () => {
     if (!eventId || !selectedVendorToAdd) return;
 
-    const selectedVendor = addVendorOptions.find((v) => v.id === selectedVendorToAdd);
-    const isOutOfVenue = Boolean(selectedVendor?.isOutOfVenue);
-
     setAddingVendorToTeam(true);
     setMessage("");
     try {
       const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          vendorIds: [selectedVendorToAdd],
+          autoConfirm: true,
+        }),
+      });
 
-      if (isOutOfVenue) {
-        // Out-of-venue: submit a proposal for exec review (same as location tab)
-        // Do NOT add to team or send invitation email
-        const res = await fetch(`/api/events/${eventId}/location-proposals`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ vendorIds: [selectedVendorToAdd] }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.error || "Failed to submit proposal");
-        setMessage(`Success: ${data?.message || "Proposal submitted for exec review."}`);
-      } else {
-        // In-venue: add to team as confirmed immediately
-        const res = await fetch(`/api/events/${eventId}/team`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-          body: JSON.stringify({ vendorIds: [selectedVendorToAdd], autoConfirm: true }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data?.error || "Failed to add vendor to team");
-        setMessage(`Success: ${data?.message || "Vendor added to team as confirmed."}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to add vendor to team");
       }
 
-      setShowAddVendorConfirmModal(false);
+      setMessage(`Success: ${data?.message || "Vendor added to team as confirmed."}`);
       setShowAddVendorModal(false);
       setAddVendorSearch("");
       setSelectedVendorToAdd("");
@@ -2496,6 +2510,7 @@ export default function EventDashboardPage() {
 
   const GATE_PHONE_OFFSET_MINUTES = 30;
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
+  const applyGateOffset = Boolean(event?.event_date && String(event.event_date).slice(0, 10) >= "2026-03-03");
   const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 
   const getDisplayedWorkedMs = (uid: string): number => {
@@ -2537,8 +2552,8 @@ export default function EventDashboardPage() {
       totalMs = Math.max(apiTotalMs - mealMs, 0);
     }
 
-    // Apply a single 30-minute entry/admin processing offset.
-    if (totalMs > 0 && span?.firstIn) {
+    // Apply a single 30-minute entry/admin processing offset (events from 2026-03-03 onwards only).
+    if (applyGateOffset && totalMs > 0 && span?.firstIn) {
       totalMs += GATE_PHONE_OFFSET_MS;
     }
 
@@ -2559,9 +2574,7 @@ export default function EventDashboardPage() {
   const buildPaymentExportRows = (): Record<string, string | number>[] => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
     const baseRate = getBaseRateForState(eventState);
-    const netSales = sharesData?.netSales || 0;
-    const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-    const totalCommissionPool = netSales * poolPercent;
+    const totalCommissionPool = resolvedCommissionPoolDollars;
     const totalTips = Number(tips) || 0;
 
     const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
@@ -2581,23 +2594,24 @@ export default function EventDashboardPage() {
       const totalMs = getDisplayedWorkedMs(uid);
       const actualHours = getActualHoursFromWorkedMs(totalMs);
       const hoursHHMM = formatHoursFromMs(totalMs);
-      const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
-      const isTrailersDivision = division === "trailers";
-      const distributedCommissionShare = isTrailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
-      const totalFinalCommission = isTrailersDivision
-        ? extAmtOnRegRate
-        : Math.max(extAmtOnRegRate, distributedCommissionShare);
-      const commissionAmount =
-        !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0
-          ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
-          : 0;
-      const displayUsesPoolShare = !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0;
-      const displayedCommissionPay = displayUsesPoolShare ? distributedCommissionShare : totalFinalCommission;
-      const variableIncentive = displayUsesPoolShare ? Math.max(0, totalFinalCommission - distributedCommissionShare) : 0;
-      const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
-      const finalCommissionRate = Math.max(28.5, rawFinalCommissionRate);
+      const trailersDivision = isTrailersDivision(division);
+      const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+      const {
+        commissionAmount,
+        extAmtOnRegRate,
+        displayedCommissionPay,
+        finalCommissionRate,
+        totalFinalCommission,
+        variableIncentive,
+      } = getDisplayedPaymentBreakdown({
+        uid,
+        division,
+        actualHours,
+        baseRate,
+        distributedCommissionShare,
+      });
       const proratedTips =
-        !isTrailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
+        !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
       const restBreak = getRestBreakAmount(actualHours, eventState);
       const otherAmount = (adjustments[uid] || 0) + (reimbursements[uid] || 0);
       const totalGrossPay = totalFinalCommission + proratedTips + restBreak + otherAmount;
@@ -2764,8 +2778,10 @@ export default function EventDashboardPage() {
       if (!res.ok) return;
       const json = await res.json();
       const eventData = json.paymentsByEvent?.[eventId];
+      if (eventData?.eventPayment) {
+        setSavedEventPaymentSummary(eventData.eventPayment);
+      }
       const vendorRows: any[] = eventData?.vendorPayments || [];
-      if (vendorRows.length === 0) return;
       const overrides: Record<string, number | null> = {};
       for (const row of vendorRows) {
         const uid = (row.user_id || '').toString();
@@ -2796,6 +2812,9 @@ export default function EventDashboardPage() {
       if (!res.ok) return;
       const json = await res.json();
       const eventData = json.paymentsByEvent?.[eventId];
+      if (eventData?.eventPayment) {
+        setSavedEventPaymentSummary(eventData.eventPayment);
+      }
       const vendorRows: any[] = eventData?.vendorPayments || [];
       const overrides: Record<string, number | null> = {};
       for (const row of vendorRows) {
@@ -3144,14 +3163,40 @@ export default function EventDashboardPage() {
     return formatTaxAmountInput(totalSales, getDerivedTaxAmount(totalSales, Number(stateTaxRate) || 0));
   }, [ticketSales, tips, manualTaxAmount, manualTaxEdited, stateTaxRate]);
 
-  // Calculate commission amount - updates reactively when inputs change
-  const calculatedCommission = useMemo(() => {
-    if (!sharesData) return 0;
-    const pool = commissionPool !== ""
+  const resolvedCommissionNetSales = useMemo(() => {
+    const liveNetSales = Number(sharesData?.netSales || 0);
+    if (liveNetSales > 0) return liveNetSales;
+    return Number(savedEventPaymentSummary?.net_sales || 0);
+  }, [sharesData, savedEventPaymentSummary?.net_sales]);
+
+  const resolvedCommissionPoolPercent = useMemo(() => {
+    const configuredPoolPercent = commissionPool !== ""
       ? Number(commissionPool)
-      : (event?.commission_pool || 0);
-    return sharesData.netSales * pool;
-  }, [sharesData, commissionPool, event?.commission_pool]);
+      : Number(event?.commission_pool || 0);
+    if (configuredPoolPercent > 0) return configuredPoolPercent;
+    return Number(savedEventPaymentSummary?.commission_pool_percent || 0) || 0;
+  }, [commissionPool, event?.commission_pool, savedEventPaymentSummary?.commission_pool_percent]);
+
+  const resolvedCommissionPoolDollars = useMemo(() => {
+    const liveCommissionPool = resolvedCommissionNetSales * resolvedCommissionPoolPercent;
+    if (liveCommissionPool > 0) return liveCommissionPool;
+
+    const savedPoolDollars = Number(savedEventPaymentSummary?.commission_pool_dollars || 0);
+    if (savedPoolDollars > 0) return savedPoolDollars;
+
+    const savedNetSales = Number(savedEventPaymentSummary?.net_sales || 0);
+    const savedPoolPercent = Number(savedEventPaymentSummary?.commission_pool_percent || 0) || 0;
+    return savedNetSales > 0 && savedPoolPercent > 0 ? savedNetSales * savedPoolPercent : 0;
+  }, [
+    resolvedCommissionNetSales,
+    resolvedCommissionPoolPercent,
+    savedEventPaymentSummary?.commission_pool_dollars,
+    savedEventPaymentSummary?.net_sales,
+    savedEventPaymentSummary?.commission_pool_percent,
+  ]);
+
+  // Calculate commission amount - updates reactively when inputs change
+  const calculatedCommission = useMemo(() => resolvedCommissionPoolDollars, [resolvedCommissionPoolDollars]);
 
   const commissionPerVendor = useMemo(() => {
     return vendorCount > 0 ? (calculatedCommission / vendorCount) : 0;
@@ -3488,9 +3533,10 @@ export default function EventDashboardPage() {
       members: teamMembers.flatMap((member: any) => {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
         const actualHours = getHoursForUser(uid);
-        if (!uid || !isVendorDivision(member?.users?.division) || commissionsOverrides[uid] === null || actualHours <= 0) return [];
+        if (!uid || isTrailersDivision(member?.users?.division) || commissionsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
+      allShortShiftMode: "equal",
     }).amountsById;
   };
 
@@ -3503,12 +3549,249 @@ export default function EventDashboardPage() {
       members: teamMembers.flatMap((member: any) => {
         const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
         const actualHours = getHoursForUser(uid);
-        if (!uid || member?.users?.division === "trailers" || tipsOverrides[uid] === null || actualHours <= 0) return [];
+        if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
+      allShortShiftMode: "equal",
     }).amountsById;
   };
 
+  const liveCommissionSharesByUser = useMemo(() => {
+    return buildCommissionSharesByUser(resolvedCommissionPoolDollars, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+    );
+  }, [teamMembers, timesheetTotals, commissionsOverrides, resolvedCommissionPoolDollars]);
+
+  const liveTipsSharesByUser = useMemo(() => {
+    return buildTipsSharesByUser(Number(tips) || 0, (uid) =>
+      getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
+    );
+  }, [teamMembers, timesheetTotals, tipsOverrides, tips]);
+
+  const getPersistedWorkerHoursForPeriod = (worker: any): number => {
+    const payment = worker?.payment_data || {};
+    const effective = Number(payment?.effective_hours ?? payment?.actual_hours ?? 0);
+    if (Number.isFinite(effective) && effective > 0) return roundPayrollAmount(effective);
+    const worked = Number(payment?.worked_hours ?? worker?.worked_hours ?? 0);
+    if (Number.isFinite(worked) && worked > 0) return roundPayrollAmount(worked);
+    const regular = Number(payment?.regular_hours ?? 0);
+    const overtime = Number(payment?.overtime_hours ?? 0);
+    const doubletime = Number(payment?.doubletime_hours ?? 0);
+    const summed = regular + overtime + doubletime;
+    return summed > 0 ? roundPayrollAmount(summed) : 0;
+  };
+
+  const getResolvedPoolDollarsForPeriodEvent = (periodEvent: any): number => {
+    const savedPoolDollars = Number(periodEvent?.event_payment?.commission_pool_dollars || 0);
+    if (savedPoolDollars > 0) return savedPoolDollars;
+
+    const savedNetSales = Number(periodEvent?.event_payment?.net_sales || 0);
+    const savedPoolPercent = Number(periodEvent?.event_payment?.commission_pool_percent || 0);
+    const configuredPoolPercent = Number(periodEvent?.commission_pool || 0);
+    const fallbackPoolPercent = Number(getRegionFallbackCommissionPoolPercent(periodEvent) || 0);
+    const resolvedPoolPercent =
+      (savedPoolPercent > 0 ? savedPoolPercent : 0) ||
+      (configuredPoolPercent > 0 ? configuredPoolPercent : 0) ||
+      (fallbackPoolPercent > 0 ? fallbackPoolPercent : 0);
+
+    if (savedNetSales > 0 && resolvedPoolPercent > 0) {
+      return savedNetSales * resolvedPoolPercent;
+    }
+
+    const ticketSales = Number(periodEvent?.ticket_sales || 0);
+    const eventTips = Number(periodEvent?.tips || 0);
+    const eventFees = Number(periodEvent?.fees || 0);
+    const eventOtherIncome = Number(periodEvent?.other_income || 0);
+    const taxRate = Number(periodEvent?.tax_rate_percent || 0);
+    const totalSales = Math.max(ticketSales - eventTips, 0);
+    const tax = totalSales * (taxRate / 100);
+    const netSales = Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
+    return netSales * resolvedPoolPercent;
+  };
+
+  const payPeriodCommission = useMemo(() => {
+    const eventsForPeriod: Array<{
+      eventId: string;
+      state?: string | null;
+      commissionPoolDollars: number;
+      workers: Array<{
+        userId: string;
+        division?: string | null;
+        hours: number;
+        commissionDeleted?: boolean;
+        commissionOverride?: number | null;
+      }>;
+    }> = [];
+
+    if (event && eventId) {
+      eventsForPeriod.push({
+        eventId,
+        state: event.state,
+        commissionPoolDollars: resolvedCommissionPoolDollars,
+        workers: teamMembers.map((member: any) => {
+          const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
+          return {
+            userId: uid,
+            division: member?.users?.division,
+            hours: getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true),
+            commissionDeleted: commissionsOverrides[uid] === null,
+            commissionOverride:
+              commissionsOverrides[uid] !== undefined && commissionsOverrides[uid] !== null
+                ? Number(commissionsOverrides[uid])
+                : null,
+          };
+        }),
+      });
+    }
+
+    if (hasPeriodWindow) {
+      for (const periodEvent of periodEvents) {
+        const periodEventId = (periodEvent?.id || "").toString();
+        if (!periodEventId || periodEventId === eventId) continue;
+
+        eventsForPeriod.push({
+          eventId: periodEventId,
+          state: periodEvent?.state,
+          commissionPoolDollars: getResolvedPoolDollarsForPeriodEvent(periodEvent),
+          workers: (periodEvent?.workers || []).map((worker: any) => ({
+            userId: (worker?.user_id || "").toString(),
+            division: worker?.division,
+            hours: getPersistedWorkerHoursForPeriod(worker),
+            commissionDeleted: worker?.payment_data?.commission_deleted === true,
+            commissionOverride:
+              worker?.payment_data?.commission_override != null
+                ? Number(worker.payment_data.commission_override)
+                : null,
+          })),
+        });
+      }
+    }
+
+    return computePayPeriodCommission({ events: eventsForPeriod });
+  }, [
+    event,
+    eventId,
+    teamMembers,
+    periodEvents,
+    hasPeriodWindow,
+    commissionsOverrides,
+    resolvedCommissionPoolDollars,
+    timesheetTotals,
+  ]);
+
+  const getCommissionBreakdown = ({
+    uid,
+    division,
+    actualHours,
+    extAmtOnRegRate,
+    distributedCommissionShare,
+  }: {
+    uid: string;
+    division?: string | null;
+    actualHours: number;
+    extAmtOnRegRate: number;
+    distributedCommissionShare: number;
+  }) => {
+    const trailersDivision = isTrailersDivision(division);
+    const commissionOverride = commissionsOverrides[uid];
+    const rawTotalFinalCommission = trailersDivision
+      ? extAmtOnRegRate
+      : Math.max(extAmtOnRegRate, distributedCommissionShare);
+    const rawCommissionAmount =
+      !trailersDivision && actualHours > 0 && distributedCommissionShare > 0
+        ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
+        : 0;
+    const commissionAmount = commissionOverride === null
+      ? 0
+      : commissionOverride !== undefined
+      ? commissionOverride
+      : rawCommissionAmount;
+    const totalFinalCommission = extAmtOnRegRate + commissionAmount;
+    const displayedCommissionPay =
+      !trailersDivision && commissionOverride !== null && actualHours > 0
+        ? Number(distributedCommissionShare || 0)
+        : 0;
+    const usesPoolShareBreakdown =
+      !trailersDivision &&
+      commissionOverride !== null &&
+      actualHours > 0;
+    const variableIncentive = usesPoolShareBreakdown
+      ? Math.max(0, totalFinalCommission - displayedCommissionPay)
+      : 0;
+
+    return {
+      commissionAmount,
+      commissionOverride,
+      displayedCommissionPay,
+      totalFinalCommission,
+      trailersDivision,
+      variableIncentive,
+    };
+  };
+
+  const getDisplayedPaymentBreakdown = useCallback(({
+    uid,
+    division,
+    actualHours,
+    baseRate,
+    distributedCommissionShare,
+  }: {
+    uid: string;
+    division?: string | null;
+    actualHours: number;
+    baseRate: number;
+    distributedCommissionShare: number;
+  }) => {
+    const eventState = event?.state?.toUpperCase()?.trim() || "CA";
+    const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+    const trailersDivision = isTrailersDivision(division);
+    const commissionOverride = commissionsOverrides[uid];
+
+    if (eventId && isPeriodRateState(eventState)) {
+      const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[uid];
+      const displayedCommissionPay = Number(periodWorker?.commissionPay || 0);
+      const variableIncentive = Number(periodWorker?.variableIncentive || 0);
+      const totalFinalCommission = Number(periodWorker?.commissionPaidTotal || 0);
+      const finalCommissionRate = Number(periodWorker?.rateInEffect || 0);
+
+      return {
+        commissionAmount: Math.max(0, totalFinalCommission - extAmtOnRegRate),
+        commissionOverride,
+        displayedCommissionPay,
+        totalFinalCommission,
+        trailersDivision,
+        variableIncentive,
+        finalCommissionRate,
+        extAmtOnRegRate,
+      };
+    }
+
+    const {
+      commissionAmount,
+      displayedCommissionPay,
+      totalFinalCommission,
+      variableIncentive,
+    } = getCommissionBreakdown({
+      uid,
+      division,
+      actualHours,
+      extAmtOnRegRate,
+      distributedCommissionShare,
+    });
+    const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : baseRate;
+    const minLoadedRate = ["NY", "WI", "NV", "AZ"].includes(eventState) ? 25.92 : 28.5;
+
+    return {
+      commissionAmount,
+      commissionOverride,
+      displayedCommissionPay,
+      totalFinalCommission,
+      trailersDivision,
+      variableIncentive,
+      finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
+      extAmtOnRegRate,
+    };
+  }, [commissionsOverrides, event?.state, eventId, payPeriodCommission]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -3527,9 +3810,9 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const netSales = sharesData?.netSales || 0;
-      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-      const totalCommissionPool = netSales * poolPercent;
+      const netSales = resolvedCommissionNetSales;
+      const poolPercent = resolvedCommissionPoolPercent;
+      const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
       const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
         getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
@@ -3551,32 +3834,31 @@ export default function EventDashboardPage() {
         const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
-        const isTrailersDivision = memberDivision === 'trailers';
+        const trailersDivision = isTrailersDivision(memberDivision);
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
         const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
-        const distributedCommissionShare = isTrailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+        const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const rawTotalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare);
-        const rawCommissionAmount =
-          !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0
-            ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
-            : 0;
-        const commissionOverride = commissionsOverrides[uid];
-        const commissionAmount = commissionOverride === null
-          ? 0
-          : commissionOverride !== undefined
-          ? commissionOverride
-          : rawCommissionAmount;
+        const {
+          commissionAmount,
+          commissionOverride,
+        } = getCommissionBreakdown({
+          uid,
+          division: memberDivision,
+          actualHours,
+          extAmtOnRegRate,
+          distributedCommissionShare,
+        });
         const tipsOverride = tipsOverrides[uid];
         const proratedTips = tipsOverride === null
           ? 0 // tips deleted for this user
           : tipsOverride !== undefined
           ? tipsOverride // manual override
-          : (!isTrailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
+          : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak;
 
@@ -3652,9 +3934,7 @@ export default function EventDashboardPage() {
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
       const baseRate = getBaseRateForState(eventState);
 
-      const netSales = sharesData?.netSales || 0;
-      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-      const totalCommissionPool = netSales * poolPercent;
+      const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
       const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
         getActualHoursFromWorkedMs(getMealDeductedMsForSave(uid))
@@ -3676,21 +3956,28 @@ export default function EventDashboardPage() {
         const doubletimePay = 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
-        const isTrailersDivision = memberDivision === 'trailers';
+        const trailersDivision = isTrailersDivision(memberDivision);
 
         // Ext Amt on Reg Rate = total hours × base rate × 1.5
         const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
         const restBreak = getRestBreakAmount(actualHours, eventState);
-        const distributedCommissionShare = isTrailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+        const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
         // Payment rule: if per-vendor commission share is lower than Ext Amt on Reg Rate,
         // pay Ext Amt on Reg Rate (otherwise pay the commission share).
-        const totalFinalCommission = Math.max(extAmtOnRegRate, distributedCommissionShare);
-        const commissionAmount =
-          !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0
-            ? Math.max(0, totalFinalCommission - extAmtOnRegRate)
-            : 0;
-        const proratedTips = !isTrailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
+        const {
+          commissionAmount,
+          displayedCommissionPay,
+          totalFinalCommission,
+          variableIncentive,
+        } = getCommissionBreakdown({
+          uid,
+          division: memberDivision,
+          actualHours,
+          extAmtOnRegRate,
+          distributedCommissionShare,
+        });
+        const proratedTips = !trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0;
         const adjustment = adjustments[uid] || 0;
 
         const totalPay = extAmtOnRegRate + commissionAmount + proratedTips + restBreak + adjustment;
@@ -3705,7 +3992,8 @@ export default function EventDashboardPage() {
           overtimePay: formatPayrollMoney(overtimePay),
           doubletimeHours: doubletimeHours.toFixed(2),
           doubletimePay: formatPayrollMoney(doubletimePay),
-          commission: formatPayrollMoney(commissionAmount),
+          commissionPay: formatPayrollMoney(displayedCommissionPay),
+          variableIncentive: formatPayrollMoney(variableIncentive),
           tips: formatPayrollMoney(proratedTips),
           restBreak: formatPayrollMoney(restBreak),
           adjustment: formatPayrollMoney(adjustment),
@@ -3858,7 +4146,7 @@ export default function EventDashboardPage() {
                 ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
                 ["locations", "Locations", "M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z"],
                 ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
-                ["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"],
+                ...(userRole === "exec" ? [["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"]] : []),
               ].map(([key, label, icon]) => (
                 <button
                   key={key}
@@ -4119,7 +4407,7 @@ export default function EventDashboardPage() {
                         : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                     }`}
                   >
-                    Normal
+                    Event Time Keeping
                   </button>
                   <button
                     type="button"
@@ -4130,7 +4418,7 @@ export default function EventDashboardPage() {
                         : "border-gray-200 bg-white text-gray-500 hover:border-gray-300"
                     }`}
                   >
-                    Special
+                    Non Event Time Sheet
                   </button>
                 </div>
               </div>
@@ -4978,7 +5266,7 @@ export default function EventDashboardPage() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
                 <div className="flex items-center gap-2">
-                  {canManageTeam && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
+                  {canManageTeam && userRole === "exec" && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
                     <button
                       onClick={openAddVendorModal}
                       disabled={loadingAddVendors || addingVendorToTeam}
@@ -4987,7 +5275,7 @@ export default function EventDashboardPage() {
                       Add Vendor + Confirm
                     </button>
                   )}
-                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && (
+                  {userRole === "exec" && (
                     <button
                       onClick={handleExportTeamMembers}
                       disabled={loadingTeam || filteredTeamListMembers.length === 0}
@@ -5116,6 +5404,9 @@ export default function EventDashboardPage() {
                               const profile = member.users?.profiles;
                               const firstName = profile?.first_name || "N/A";
                               const lastName = profile?.last_name || "";
+                              const memberRole = (member.users?.role || "").toLowerCase();
+                              const isManagerRole = memberRole === "manager";
+                              const isSupervisorRole = memberRole === "supervisor" || memberRole === "supervisor2" || memberRole === "supervisor3";
                               const email = member.users?.email || "N/A";
                               const phone = profile?.phone || "N/A";
                               const parsedDistance =
@@ -5177,10 +5468,20 @@ export default function EventDashboardPage() {
                               return (
                                 <tr key={member.id} className={rowBg}>
                                   <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <div className="text-sm font-medium text-gray-900">
                                         {firstName} {lastName}
                                       </div>
+                                      {isManagerRole && (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                          Manager
+                                        </span>
+                                      )}
+                                      {isSupervisorRole && (
+                                        <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                          Supervisor
+                                        </span>
+                                      )}
                                       {distanceFromVenue !== null && (
                                         <span
                                           className={`px-2 py-0.5 rounded text-xs font-medium ${
@@ -5310,7 +5611,7 @@ export default function EventDashboardPage() {
                       ? "Sending..."
                       : `Call Time${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
                   </button>
-                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && (
+                  {userRole === "exec" && (
                     <button
                       onClick={handleExportLocations}
                       disabled={loadingLocations || eventLocations.length === 0}
@@ -5523,6 +5824,16 @@ export default function EventDashboardPage() {
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {(member?.role || "").toLowerCase() === "manager" && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                              Manager
+                                            </span>
+                                          )}
+                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                              Supervisor
+                                            </span>
+                                          )}
                                           {isLeader && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-yellow-100 text-yellow-800 border border-yellow-300 flex items-center gap-1">
                                               <svg className="w-2.5 h-2.5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor">
@@ -5729,6 +6040,16 @@ export default function EventDashboardPage() {
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <p className="text-sm font-medium text-gray-900 truncate">{fullName}</p>
+                                          {(member?.role || "").toLowerCase() === "manager" && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                              Manager
+                                            </span>
+                                          )}
+                                          {(["supervisor", "supervisor2", "supervisor3"].includes((member?.role || "").toLowerCase())) && (
+                                            <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
+                                              Supervisor
+                                            </span>
+                                          )}
                                           {!member.isExistingMember && (
                                             <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-800">
                                               Not Invited
@@ -5856,7 +6177,59 @@ export default function EventDashboardPage() {
 
   <div className="space-y-6">
     <div className="flex items-center justify-between">
-      <h2 className="text-2xl font-bold">TimeSheet</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-2xl font-bold">TimeSheet</h2>
+        {userRole === "exec" && (
+          <button
+            onClick={async () => {
+              if (exportingTimesheetPdf) return;
+              setExportingTimesheetPdf(true);
+              try {
+                const token = await getSessionToken();
+                const res = await fetch(`/api/events/${eventId}/timesheet-pdf`, {
+                  headers: {
+                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                  },
+                });
+                if (!res.ok) {
+                  const data = await res.json().catch(() => ({}));
+                  setMessage(data?.error || "Failed to export PDF.");
+                  return;
+                }
+                const blob = await res.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                const cd = res.headers.get("content-disposition") || "";
+                const match = cd.match(/filename="([^"]+)"/);
+                a.download = match ? match[1] : "timesheet.pdf";
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch {
+                setMessage("Network error exporting PDF.");
+              } finally {
+                setExportingTimesheetPdf(false);
+              }
+            }}
+            disabled={exportingTimesheetPdf}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg transition-colors"
+          >
+            {exportingTimesheetPdf ? (
+              <>
+                <span className="inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                Exporting…
+              </>
+            ) : (
+              <>
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3M3 17V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+                </svg>
+                Export PDF
+              </>
+            )}
+          </button>
+        )}
+      </div>
       <div className="text-sm text-gray-500 text-right">
         <div className="font-medium text-gray-700">
           Vendors: {assignedVendorCount}
@@ -5898,7 +6271,9 @@ export default function EventDashboardPage() {
           
           <tr>
             <th className="px-3 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Staff</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
+            {applyGateOffset && (
+              <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
+            )}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">In</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
@@ -5914,7 +6289,7 @@ export default function EventDashboardPage() {
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={showThirdMeal ? 12 : 10} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -5924,6 +6299,9 @@ export default function EventDashboardPage() {
               const firstName = profile?.first_name || "N/A";
               const lastName = profile?.last_name || "";
               const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
+              const timesheetMemberRole = (m.users?.role || "").toLowerCase();
+              const isTimesheetManager = timesheetMemberRole === "manager";
+              const isTimesheetSupervisor = timesheetMemberRole === "supervisor" || timesheetMemberRole === "supervisor2" || timesheetMemberRole === "supervisor3";
               const attestationStatus = String(m?.attestation_status || "").trim().toLowerCase();
               const hasSubmittedAttestation =
                 attestationStatus === "submitted" ||
@@ -5973,10 +6351,9 @@ export default function EventDashboardPage() {
                 thirdMealStart,
                 thirdMealEnd,
               };
-              const gatePhoneTime = subtractMinutesFromHHMM(
-                isEditing ? draft.firstIn : firstClockIn,
-                GATE_PHONE_OFFSET_MINUTES
-              );
+              const gatePhoneTime = applyGateOffset
+                ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
+                : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
 
               const inputCls = (editable: boolean) =>
@@ -6002,8 +6379,20 @@ export default function EventDashboardPage() {
                         }
                       />
                       <div className="min-w-0">
-                        <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
-                          {firstName} {lastName}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
+                            {firstName} {lastName}
+                          </div>
+                          {isTimesheetManager && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
+                              Manager
+                            </span>
+                          )}
+                          {isTimesheetSupervisor && (
+                            <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
+                              Supervisor
+                            </span>
+                          )}
                         </div>
                         <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
                           <span className={`text-xs font-medium ${attestationStatusClass}`}>
@@ -6037,10 +6426,12 @@ export default function EventDashboardPage() {
                   </td>
 
                   {/* Gate */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={gatePhoneTime} placeholder="--:--" readOnly
-                      className={inputCls(false)} />
-                  </td>
+                  {applyGateOffset && (
+                    <td className="px-1 py-1.5">
+                      <input type="time" value={gatePhoneTime} placeholder="--:--" readOnly
+                        className={inputCls(false)} />
+                    </td>
+                  )}
 
                   {/* Clock In */}
                   <td className="px-1 py-1.5">
@@ -6198,7 +6589,7 @@ export default function EventDashboardPage() {
                       <span className="text-gray-500"> ({vendorCount} with timesheets)</span>
                     )}
                   </div>
-                  {(!isNorCalOrSFMetroEvent || userRole === "exec") && userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
+                  {userRole !== "manager" && userRole !== "supervisor" && userRole !== "supervisor2" && userRole !== "supervisor3" && (
                     <button
                       onClick={handleExportPayments}
                       disabled={loadingPaymentTab || filteredTeamMembers.length === 0}
@@ -6289,9 +6680,7 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-indigo-900">
                     {(() => {
-                      const poolPercent = Number(commissionPool || event?.commission_pool || 0) || 0;
-                      const netSales = sharesData?.netSales || 0;
-                      const totalPool = netSales * poolPercent;
+                      const totalPool = resolvedCommissionPoolDollars;
                       if (totalPool <= 0 || vendorCount === 0) return `$${formatPayrollMoney(commissionPerVendor)}`;
                       const commShares = buildCommissionSharesByUser(totalPool, (uid) =>
                         getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
@@ -6379,10 +6768,7 @@ export default function EventDashboardPage() {
                         </tr>
                       ) : (() => {
                         const totalTips = Number(tips) || 0;
-                        const netSales = sharesData?.netSales || 0;
-                        const poolPercent =
-                          Number(commissionPool || event?.commission_pool || 0) || 0; // fraction 0.04
-                        const totalCommissionPool = netSales * poolPercent;
+                        const totalCommissionPool = resolvedCommissionPoolDollars;
                         const commissionSharesByUser = buildCommissionSharesByUser(totalCommissionPool, (uid) =>
                           getActualHoursFromWorkedMs(getDisplayedWorkedMs(uid), true)
                         );
@@ -6395,6 +6781,9 @@ export default function EventDashboardPage() {
                           const lastName = profile?.last_name || "";
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
                           const hasAttestation = Boolean(member?.has_attestation);
+                          const payrollMemberRole = (member.users?.role || "").toLowerCase();
+                          const isPayrollManager = payrollMemberRole === "manager";
+                          const isPayrollSupervisor = payrollMemberRole === "supervisor" || payrollMemberRole === "supervisor2" || payrollMemberRole === "supervisor3";
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
@@ -6413,38 +6802,40 @@ export default function EventDashboardPage() {
                           const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
 
                           // Commission pool (Net Sales × pool fraction)
-                          const isTrailersDivision = member.users?.division === 'trailers';
-                          const distributedCommissionShare = isTrailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
-                          const rawTotalFinalCommission = isTrailersDivision
-                            ? extAmtOnRegRate
-                            : Math.max(extAmtOnRegRate, distributedCommissionShare);
-                          const rawCommissionAmount =
-                            !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0
-                              ? Math.max(0, rawTotalFinalCommission - extAmtOnRegRate)
-                              : 0;
-                          const commissionOverrideVal = commissionsOverrides[uid];
-                          const commissionAmount = commissionOverrideVal === null
-                            ? 0
-                            : commissionOverrideVal !== undefined
-                            ? commissionOverrideVal
-                            : rawCommissionAmount;
-                          const totalFinalCommission = extAmtOnRegRate + commissionAmount;
-                          const displayUsesPoolShare = !isTrailersDivision && actualHours > 0 && distributedCommissionShare > 0;
-                          const displayedCommissionPay = displayUsesPoolShare ? distributedCommissionShare : totalFinalCommission;
-                          const variableIncentive = displayUsesPoolShare ? Math.max(0, totalFinalCommission - distributedCommissionShare) : 0;
+                          const trailersDivision = isTrailersDivision(member.users?.division);
+                          const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
+                          const {
+                            commissionOverride: commissionOverrideVal,
+                            displayedCommissionPay,
+                            totalFinalCommission,
+                            variableIncentive,
+                          } = getCommissionBreakdown({
+                            uid,
+                            division: member.users?.division,
+                            actualHours,
+                            extAmtOnRegRate,
+                            distributedCommissionShare,
+                          });
                           const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
                           const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
                           const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
+                          const displayedBreakdown = getDisplayedPaymentBreakdown({
+                            uid,
+                            division: member.users?.division,
+                            actualHours,
+                            baseRate,
+                            distributedCommissionShare,
+                          });
 
                           const tipsOverride = tipsOverrides[uid];
                           const proratedTips = tipsOverride === null
                             ? 0 // tips deleted for this user
                             : tipsOverride !== undefined
                             ? tipsOverride // manual override
-                            : (!isTrailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
+                            : (!trailersDivision ? Number(tipsSharesByUser[uid] || 0) : 0);
 
                           // Payment for the event is the Total Final Commission value (Ext Amt + any commission uplift)
-                          const totalBasePay = totalFinalCommission;
+                          const totalBasePay = displayedBreakdown.totalFinalCommission;
 
                           // Calculate total gross pay
                           const restBreak = getRestBreakAmount(actualHours, eventState);
@@ -6464,6 +6855,20 @@ export default function EventDashboardPage() {
                                     <div className="font-medium text-gray-900 text-sm truncate">
                                       {firstName} {lastName}
                                     </div>
+                                    {(isPayrollManager || isPayrollSupervisor) && (
+                                      <div className="mt-0.5">
+                                        {isPayrollManager && (
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
+                                            Manager
+                                          </span>
+                                        )}
+                                        {isPayrollSupervisor && (
+                                          <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
+                                            Supervisor
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
                                     <div className="text-[10px] text-gray-500 break-all">
                                       {member.users?.email || "N/A"}
                                     </div>
@@ -6480,8 +6885,8 @@ export default function EventDashboardPage() {
 
                               {/* Loaded Rate */}
                               <td className="px-2 py-2 align-top">
-                                <div className={`font-medium ${finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
-                                  ${formatPayrollMoney(finalCommissionRate)}/hr
+                                <div className={`font-medium ${displayedBreakdown.finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
+                                  ${formatPayrollMoney(displayedBreakdown.finalCommissionRate)}/hr
                                 </div>
                               </td>
 
@@ -6494,15 +6899,34 @@ export default function EventDashboardPage() {
 
                               {/* Commission Per Vendor */}
                               <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-blue-600">
-                                  ${formatPayrollMoney(displayedCommissionPay)}
-                                </div>
+                                {displayedBreakdown.commissionOverride === null ? (
+                                  <div className="flex flex-col gap-1">
+                                    <span className="text-xs text-red-500 line-through">$0.00</span>
+                                    <span className="text-[10px] text-red-400">Excluded</span>
+                                    {canEditTimesheets && (
+                                      <button
+                                        onClick={() => setCommissionsOverrides(prev => {
+                                          const next = { ...prev };
+                                          delete next[uid];
+                                          return next;
+                                        })}
+                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                      >
+                                        Restore
+                                      </button>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <div className="text-sm font-medium text-blue-600">
+                                    ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
+                                  </div>
+                                )}
                               </td>
 
                               {/* Variable Incentive */}
                               <td className="px-2 py-2 align-top">
                                 <div className="text-sm font-medium text-purple-600">
-                                  ${formatPayrollMoney(variableIncentive)}
+                                  ${formatPayrollMoney(displayedBreakdown.variableIncentive)}
                                 </div>
                               </td>
 
@@ -7462,66 +7886,6 @@ export default function EventDashboardPage() {
         </div>
       )}
 
-      {showAddVendorConfirmModal && (() => {
-        const selected = addVendorOptions.find((v) => v.id === selectedVendorToAdd);
-        const firstName = (selected?.profiles?.first_name || "").toString();
-        const lastName = (selected?.profiles?.last_name || "").toString();
-        const vendorName = `${firstName} ${lastName}`.trim() || selected?.email || "this vendor";
-        const isOutOfVenue = Boolean(selected?.isOutOfVenue);
-        return (
-          <div
-            className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4"
-            onClick={() => { if (!addingVendorToTeam) setShowAddVendorConfirmModal(false); }}
-          >
-            <div
-              className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-gray-200"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-5">
-                <h3 className="text-lg font-semibold text-gray-900 mb-3">
-                  {isOutOfVenue ? "Add Out of Venue Vendor?" : "Confirm Add Vendor"}
-                </h3>
-                <div className="flex items-center gap-2 mb-4">
-                  <span className="text-sm font-medium text-gray-800">{vendorName}</span>
-                  {isOutOfVenue && (
-                    <span className="px-2 py-0.5 rounded text-xs font-semibold bg-orange-100 text-orange-700">
-                      Out of Venue
-                    </span>
-                  )}
-                </div>
-                {isOutOfVenue ? (
-                  <p className="text-sm text-orange-800 bg-orange-50 border border-orange-200 rounded-lg px-3 py-2">
-                    This vendor is <strong>out of venue</strong>. A proposal will be sent to exec for review. They will <strong>not</strong> receive an invitation until the proposal is approved.
-                  </p>
-                ) : (
-                  <p className="text-sm text-gray-600">
-                    This vendor will be added to the team as <strong>confirmed</strong> immediately.
-                  </p>
-                )}
-              </div>
-              <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-gray-200">
-                <button
-                  onClick={() => setShowAddVendorConfirmModal(false)}
-                  disabled={addingVendorToTeam}
-                  className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 font-medium hover:bg-gray-50 disabled:text-gray-400 disabled:border-gray-200"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleAddVendorToTeamImmediately}
-                  disabled={addingVendorToTeam}
-                  className={`px-4 py-2 rounded-lg text-white font-semibold disabled:bg-gray-400 ${
-                    isOutOfVenue ? "bg-orange-600 hover:bg-orange-700" : "bg-green-600 hover:bg-green-700"
-                  }`}
-                >
-                  {addingVendorToTeam ? "Submitting..." : isOutOfVenue ? "Submit Proposal" : "Add & Confirm"}
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
-
       {showAddVendorModal && (
         <div
           className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
@@ -7672,7 +8036,7 @@ export default function EventDashboardPage() {
                     if (!selected?.isOutOfVenue) return null;
                     return (
                       <div className="bg-orange-50 border border-orange-200 rounded-lg px-3 py-2 text-xs text-orange-800">
-                        <span className="font-semibold">Out of Venue:</span> A proposal will be sent to exec for review. The vendor will not receive an invitation until approved.
+                        <span className="font-semibold">Out of Venue:</span> This vendor will be invited (pending confirmation) rather than auto-confirmed. Location assignment will still require exec approval via the location card.
                       </div>
                     );
                   })()}
@@ -7689,7 +8053,7 @@ export default function EventDashboardPage() {
                 Cancel
               </button>
               <button
-                onClick={() => setShowAddVendorConfirmModal(true)}
+                onClick={handleAddVendorToTeamImmediately}
                 disabled={!selectedVendorToAdd || loadingAddVendors || addingVendorToTeam}
                 className={`px-4 py-2 rounded-lg text-white font-semibold disabled:bg-gray-400 ${
                   addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
@@ -7697,9 +8061,11 @@ export default function EventDashboardPage() {
                     : "bg-green-600 hover:bg-green-700"
                 }`}
               >
-                {addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
-                  ? "Submit Proposal (Out of Venue)"
-                  : "Add + Confirm"}
+                {addingVendorToTeam
+                  ? "Adding..."
+                  : addVendorOptions.find((v) => v.id === selectedVendorToAdd)?.isOutOfVenue
+                    ? "Add + Invite (Out of Venue)"
+                    : "Add + Confirm"}
               </button>
             </div>
           </div>
