@@ -74,6 +74,7 @@ export default function AttestationRejectionsReportPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ReportData | null>(null);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // Filters
   const [fromDate, setFromDate] = useState('');
@@ -129,6 +130,41 @@ export default function AttestationRejectionsReportPage() {
   });
 
   const allReasons = Array.from(new Set((data?.rows || []).map(r => r.rejection_reason))).sort();
+
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const params = new URLSearchParams();
+      if (fromDate) params.set('from', fromDate);
+      if (toDate)   params.set('to', toDate);
+
+      const res = await fetch(`/api/reports/attestation-rejections/pdf?${params}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Failed to generate PDF');
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const match = disposition.match(/filename="([^"]+)"/);
+      a.href = url;
+      a.download = match?.[1] || 'attestation-rejections.pdf';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(err.message || 'Failed to export PDF');
+    } finally {
+      setExportingPdf(false);
+    }
+  };
 
   const handleExport = () => {
     exportExcel(
@@ -200,13 +236,22 @@ export default function AttestationRejectionsReportPage() {
               <p className="text-sm text-gray-500 mt-0.5">Workers who disputed their clock-out attestation</p>
             </div>
           </div>
-          <button
-            onClick={handleExport}
-            disabled={filteredRows.length === 0}
-            className="liquid-btn-glass liquid-btn-sm disabled:opacity-40"
-          >
-            Export Excel
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportPdf}
+              disabled={!data || data.total === 0 || exportingPdf}
+              className="liquid-btn-glass liquid-btn-sm disabled:opacity-40"
+            >
+              {exportingPdf ? 'Generating PDF…' : 'Export PDF (per user)'}
+            </button>
+            <button
+              onClick={handleExport}
+              disabled={filteredRows.length === 0}
+              className="liquid-btn-glass liquid-btn-sm disabled:opacity-40"
+            >
+              Export Excel
+            </button>
+          </div>
         </div>
 
         {/* Summary Cards */}
