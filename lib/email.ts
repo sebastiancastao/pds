@@ -2527,3 +2527,140 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     return { success: false, error: error.message || 'Failed to send non-event time sheet notification' };
   }
 }
+
+interface CheckinLinkEmailData {
+  recipientEmails: string[];
+  eventName: string;
+  eventDate: string;
+  eventVenue: string;
+  checkinUrl: string;
+  expiresAt: Date;
+  senderName: string;
+}
+
+export async function sendCheckinLinkEmail({
+  recipientEmails,
+  eventName,
+  eventDate,
+  eventVenue,
+  checkinUrl,
+  expiresAt,
+  senderName,
+}: CheckinLinkEmailData): Promise<EmailResult> {
+  const validEmails = recipientEmails.map((e) => e.trim()).filter(isValidEmail);
+  if (validEmails.length === 0) {
+    return { success: false, error: 'No valid recipient emails provided' };
+  }
+
+  const expiresStr = expiresAt.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    timeZone: 'America/Los_Angeles',
+    timeZoneName: 'short',
+  });
+
+  const subject = `Check-In Link for ${eventName}`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="margin:0;padding:0;background-color:#f4f4f5;font-family:Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f4f5;padding:30px 0;">
+    <tr>
+      <td align="center">
+        <table width="600" cellpadding="0" cellspacing="0" style="background-color:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#2563eb,#7c3aed);padding:32px 40px;">
+              <h1 style="color:#ffffff;margin:0;font-size:24px;font-weight:700;">PDS Check-In Link</h1>
+              <p style="color:#bfdbfe;margin:8px 0 0;font-size:14px;">Time-limited kiosk access for your team</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 40px;">
+              <p style="color:#374151;font-size:15px;margin:0 0 24px;">
+                ${senderName} has shared a check-in kiosk link for the following event:
+              </p>
+
+              <table cellpadding="0" cellspacing="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:20px;width:100%;margin-bottom:28px;">
+                <tr>
+                  <td style="padding:6px 0;">
+                    <span style="color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Event</span><br>
+                    <span style="color:#111827;font-size:16px;font-weight:700;">${eventName}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;">
+                    <span style="color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Date</span><br>
+                    <span style="color:#374151;font-size:14px;">${eventDate}</span>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:6px 0;">
+                    <span style="color:#6b7280;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">Venue</span><br>
+                    <span style="color:#374151;font-size:14px;">${eventVenue}</span>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color:#374151;font-size:14px;margin:0 0 16px;">
+                Use the button below to open the check-in kiosk. No login is required — the link is pre-authorized.
+              </p>
+
+              <table cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
+                <tr>
+                  <td style="background:#2563eb;border-radius:8px;">
+                    <a href="${checkinUrl}" style="display:inline-block;padding:14px 32px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;letter-spacing:0.02em;">
+                      Open Check-In Kiosk →
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+              <table cellpadding="0" cellspacing="0" style="background:#fefce8;border:1px solid #fde68a;border-radius:8px;padding:16px;width:100%;margin-bottom:24px;">
+                <tr>
+                  <td>
+                    <p style="color:#92400e;font-size:13px;margin:0;font-weight:600;">⏱ Link expires: ${expiresStr}</p>
+                    <p style="color:#92400e;font-size:12px;margin:6px 0 0;">This link grants access to the kiosk without authentication. Do not share it outside your team.</p>
+                  </td>
+                </tr>
+              </table>
+
+              <p style="color:#9ca3af;font-size:12px;margin:0;">
+                If the button doesn't work, copy and paste this URL into your browser:<br>
+                <span style="color:#2563eb;word-break:break-all;">${checkinUrl}</span>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f8fafc;padding:20px 40px;text-align:center;border-top:1px solid #e5e7eb;">
+              <p style="color:#9ca3af;font-size:12px;margin:0;">PDS Events &bull; Check-In Kiosk</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  const [primaryRecipient, ...remainingRecipients] = validEmails;
+
+  try {
+    const { data: result, error } = await sendResendEmail({
+      from: EVENTS_FROM,
+      to: primaryRecipient,
+      cc: remainingRecipients.length > 0 ? remainingRecipients : undefined,
+      bcc: mergeBccRecipients(),
+      subject,
+      html,
+    });
+
+    if (error) {
+      return { success: false, error: formatResendError(error), errorName: (error as any).name };
+    }
+
+    return { success: true, messageId: result?.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send check-in link email' };
+  }
+}

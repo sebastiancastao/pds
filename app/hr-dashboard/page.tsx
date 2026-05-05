@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
-import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
+import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -132,7 +132,7 @@ function HRDashboardContent() {
   const [loadingPayments, setLoadingPayments] = useState(false);
   const [paymentsError, setPaymentsError] = useState<string>("");
   const [sendingEmails, setSendingEmails] = useState(false);
-  const [payrollGroupBy, setPayrollGroupBy] = useState<'venue' | 'vendor'>('venue');
+  const [payrollGroupBy, setPayrollGroupBy] = useState<'venue' | 'vendor'>('vendor');
   const [showApprovalModal, setShowApprovalModal] = useState(false);
   const [approvalFile, setApprovalFile] = useState<File | null>(null);
   const [sendingApproval, setSendingApproval] = useState(false);
@@ -141,6 +141,16 @@ function HRDashboardContent() {
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
   const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
+  // Create salaried user modal
+  const [showCreateSalariedModal, setShowCreateSalariedModal] = useState(false);
+  const [createSalariedForm, setCreateSalariedForm] = useState({
+    firstName: '', lastName: '', email: '', role: 'worker' as 'worker' | 'manager' | 'finance' | 'exec' | 'hr',
+    division: 'vendor' as 'vendor' | 'trailers' | 'both',
+    annualSalary: '', department: '', position: '',
+  });
+  const [createSalariedError, setCreateSalariedError] = useState('');
+  const [createSalariedLoading, setCreateSalariedLoading] = useState(false);
+  const [createSalariedSuccess, setCreateSalariedSuccess] = useState('');
   const getMileageApproval = (eventId: string, userId: string) =>
     mileageApprovals[eventId]?.[userId] ?? { mileage: true, travel: true };
   const setMileageApproval = async (eventId: string, userId: string, field: 'mileage' | 'travel', value: boolean) => {
@@ -357,6 +367,71 @@ function HRDashboardContent() {
     setLoadingEmployees(false);
   }, [selectedState, selectedEmployeeRegion]);
 
+  const submitCreateSalariedUser = useCallback(async () => {
+    const { firstName, lastName, email, role, division, annualSalary, department, position } = createSalariedForm;
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      setCreateSalariedError('First name, last name, and email are required.');
+      return;
+    }
+    if (!annualSalary || isNaN(Number(annualSalary)) || Number(annualSalary) < 0) {
+      setCreateSalariedError('Please enter a valid annual salary.');
+      return;
+    }
+    setCreateSalariedLoading(true);
+    setCreateSalariedError('');
+    setCreateSalariedSuccess('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      };
+
+      // Step 1: invite user
+      const inviteRes = await fetch('/api/auth/invite', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ invites: [{ email: email.trim().toLowerCase(), role, division, firstName: firstName.trim(), lastName: lastName.trim() }] }),
+      });
+      const inviteJson = await inviteRes.json();
+      if (!inviteRes.ok) throw new Error(inviteJson.error || 'Failed to invite user');
+      const inviteResult = inviteJson.results?.[0];
+      if (inviteResult?.status === 'error') throw new Error(inviteResult.message || 'Invite failed');
+
+      // Step 2: find user id for the invited user to save salary
+      const usersRes = await fetch(`/api/users/all`, {
+        headers: authHeaders,
+      });
+      let userId: string | null = null;
+      if (usersRes.ok) {
+        const usersJson = await usersRes.json();
+        const match = (usersJson.users || []).find((u: any) => u.email === email.trim().toLowerCase());
+        userId = match?.id ?? null;
+      }
+
+      if (userId) {
+        await fetch('/api/salaries', {
+          method: 'POST',
+          headers: authHeaders,
+          body: JSON.stringify({
+            user_id: userId,
+            annual_salary: Number(annualSalary),
+            department: department.trim() || null,
+            position: position.trim() || null,
+            employment_type: 'salaried',
+          }),
+        });
+      }
+
+      setCreateSalariedSuccess(`Invite sent to ${email.trim()}. Salary will be saved once the user completes registration.`);
+      setCreateSalariedForm({ firstName: '', lastName: '', email: '', role: 'worker', division: 'vendor', annualSalary: '', department: '', position: '' });
+      await loadEmployees();
+    } catch (err: any) {
+      setCreateSalariedError(err.message || 'Failed to create salaried user');
+    }
+    setCreateSalariedLoading(false);
+  }, [createSalariedForm, loadEmployees]);
+
   const loadBackgroundChecks = useCallback(async () => {
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -459,6 +534,7 @@ function HRDashboardContent() {
     setPaymentsError("");
     setPaymentsByVenue([]);
     setMileageByEvent({});
+    setPayrollGroupBy('vendor');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[HR PAYMENTS] loading events for HR dashboard');
@@ -691,11 +767,12 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
+                  event_type: eventInfo.event_type || 'normal',
                   isSanDiegoHourly: isEventSD,
                   commissionPerVendor,
                   vendorsWithHours,
                   state: eventInfo.state,
-                  baseRate: configuredBaseRate,
+                  baseRate: isEventSD ? SAN_DIEGO_BASE_RATE : configuredBaseRate,
                   commissionDollars: eventCommissionDollars,
                   commissionPoolDollars: eventCommissionDollars,
                   adjustedGrossAmount,
@@ -718,11 +795,12 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
+            event_type: eventInfo.event_type || 'normal',
             isSanDiegoHourly: isEventSD,
             commissionPerVendor: 0,
             vendorsWithHours: 0,
             state: eventInfo.state,
-            baseRate: configuredBaseRate,
+            baseRate: isEventSD ? SAN_DIEGO_BASE_RATE : configuredBaseRate,
             commissionDollars: eventCommissionDollars,
             commissionPoolDollars: eventCommissionDollars,
             adjustedGrossAmount,
@@ -739,7 +817,11 @@ function HRDashboardContent() {
         // Process events with payment data
         const vendorPayments = eventPaymentData.vendorPayments;
         const summaryBaseRate = Number(eventPaymentSummary.base_rate || 0);
-        const baseRate = configuredBaseRate > 0 ? configuredBaseRate : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
+        const baseRate = isEventSD
+          ? SAN_DIEGO_BASE_RATE
+          : configuredBaseRate > 0
+            ? configuredBaseRate
+            : (summaryBaseRate > 0 ? summaryBaseRate : 17.28);
         console.log('[HR PAYMENTS] Event with payment data:', eventId, eventInfo.event_name, { vendorCount: vendorPayments.length });
 
         // Total team members on this event
@@ -978,6 +1060,7 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          event_type: eventInfo.event_type || 'normal',
           isSanDiegoHourly: isEventSD,
           commissionPerVendor,
           vendorsWithHours,
@@ -1195,6 +1278,26 @@ function HRDashboardContent() {
     const doubletimeHours = Number(payment?.doubletimeHours || 0);
     const doubletimePay = Number(payment?.doubletimePay || 0);
 
+    if (isEventSD) {
+      const hourlyPay = regularPay + overtimePay + doubletimePay;
+      return {
+        rateInEffect: hours > 0 ? (hourlyPay / hours) : Number(payment?.loadedRate ?? regRate),
+        commissionPay: 0,
+        variableIncentive: 0,
+        commissionPaidTotal: hourlyPay,
+        regRate,
+        hours,
+        isTrailers,
+        usesPeriodRate: false,
+        regularHours,
+        regularPay,
+        overtimeHours,
+        overtimePay,
+        doubletimeHours,
+        doubletimePay,
+      };
+    }
+
     if (usesPeriodRateBreakdown(stateCode)) {
       const periodWorker = payPeriodCommission.byEvent?.[event?.id]?.[payment?.userId];
       const rateInEffect = Number(periodWorker?.rateInEffect || 0);
@@ -1221,25 +1324,6 @@ function HRDashboardContent() {
     }
 
     const totalFinalCommissionAmt = Number(payment?.totalFinalCommissionAmt ?? 0);
-    if (isEventSD) {
-      const hourlyPay = regularPay + overtimePay + doubletimePay;
-      return {
-        rateInEffect: hours > 0 ? (hourlyPay / hours) : Number(payment?.loadedRate ?? regRate),
-        commissionPay: 0,
-        variableIncentive: 0,
-        commissionPaidTotal: hourlyPay,
-        regRate,
-        hours,
-        isTrailers,
-        usesPeriodRate: false,
-        regularHours,
-        regularPay,
-        overtimeHours,
-        overtimePay,
-        doubletimeHours,
-        doubletimePay,
-      };
-    }
     const commissionPay = Number(payment?.commissionShare ?? event?.commissionPerVendor ?? 0);
     const variableIncentive = hours > 0 && !isTrailers
       ? Math.max(0, totalFinalCommissionAmt - commissionPay)
@@ -1332,6 +1416,66 @@ function HRDashboardContent() {
       totalTravelPay,
       totalGross,
     };
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals]);
+
+  const getDisplayedVendorTotals = useCallback((vendor: {
+    events: Array<{ event: any; venue: string; city: string | null; state: string | null; payment: any }>;
+  }) => {
+    return vendor.events.reduce((totals, { event, payment }) => {
+      const breakdown = getDisplayedPaymentBreakdown(event, payment);
+      const isEventSD =
+        event?.isSanDiegoHourly === true ||
+        payment?.isSanDiegoHourly === true ||
+        isSanDiegoRegion(event);
+      const tips = Number(payment?.tips || 0);
+      const restBreak = isEventSD ? 0 : Number(payment?.restBreak || 0);
+      const other = Number(payment?.adjustmentAmount || 0);
+      const approval = getMileageApproval(event.id, payment.userId);
+      const mileagePay = approval.mileage
+        ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0)
+        : 0;
+      const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+      const travelPay =
+        approval.travel && diffMiles !== null
+          ? ((diffMiles * 2) / 60) * breakdown.rateInEffect
+          : 0;
+
+      totals.totalHours += Number(payment?.actualHours || 0);
+      totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
+      totals.totalRegularPay += isEventSD ? breakdown.regularPay : 0;
+      totals.totalOvertimeHours += isEventSD ? breakdown.overtimeHours : 0;
+      totals.totalOvertimePay += isEventSD ? breakdown.overtimePay : 0;
+      totals.totalDoubletimeHours += isEventSD ? breakdown.doubletimeHours : 0;
+      totals.totalDoubletimePay += isEventSD ? breakdown.doubletimePay : 0;
+      totals.totalCommissionPay += isEventSD ? 0 : breakdown.commissionPay;
+      totals.totalVariableIncentive += isEventSD ? 0 : breakdown.variableIncentive;
+      totals.totalCommissionPaid += breakdown.commissionPaidTotal;
+      totals.totalTips += tips;
+      totals.totalRestBreak += restBreak;
+      totals.totalMileagePay += mileagePay;
+      totals.totalTravelPay += travelPay;
+      totals.totalOther += other;
+      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + other + mileagePay + travelPay;
+
+      return totals;
+    }, {
+      totalHours: 0,
+      totalRegularHours: 0,
+      totalRegularPay: 0,
+      totalOvertimeHours: 0,
+      totalOvertimePay: 0,
+      totalDoubletimeHours: 0,
+      totalDoubletimePay: 0,
+      totalCommissionPay: 0,
+      totalVariableIncentive: 0,
+      totalCommissionPaid: 0,
+      totalTips: 0,
+      totalRestBreak: 0,
+      totalMileagePay: 0,
+      totalTravelPay: 0,
+      totalOther: 0,
+      totalGross: 0,
+    });
   }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals]);
 
   const saveAllAdjustments = useCallback(async () => {
@@ -1435,8 +1579,177 @@ function HRDashboardContent() {
 
     // Event-level summary rows (matches payroll header metrics in UI)
     const summaryRows: any[] = [];
-    // Employee-level detail rows
-    const rows: any[] = [];
+    const allVendorDetailRows: any[] = [];
+    const vendorRows: any[] = [];
+    const hourlyRows: any[] = [];
+    const commissionTravelRows: any[] = [];
+    const commissionNoTravelRows: any[] = [];
+    const hourlyOnlyKeys = [
+      'Regular Time Hours',
+      'Regular Time Pay',
+      'Overtime Hours',
+      'Overtime Pay',
+      'Double Time Hours',
+      'Double Time Pay',
+    ] as const;
+
+    const buildDetailRow = (
+      vendor: any,
+      event: any,
+      venue: string,
+      city: string | null,
+      state: string | null,
+      payment: any
+    ) => {
+      const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+      const hideRest = isEventSD;
+      const breakdown = getDisplayedPaymentBreakdown(event, payment);
+      const regRate = breakdown.regRate;
+      const loadedRate = breakdown.rateInEffect;
+      const hours = breakdown.hours;
+      const hoursHHMM = formatHoursHHMM(hours);
+      const hoursInDecimal = roundHoursToTwoDecimals(hours);
+      const displayedCommissionPay = breakdown.commissionPay;
+      const variableIncentive = breakdown.variableIncentive;
+      const other = Number(payment.adjustmentAmount || 0);
+      const tips = Number(payment.tips || 0);
+      const restBreak = hideRest ? 0 : Number(payment.restBreak || 0);
+      const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
+      const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
+      const diffMilesExport = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+      const rawTravelHours = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
+      const exportApproval = getMileageApproval(event.id, payment.userId);
+      const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
+      const travelHoursExport = exportApproval.travel ? rawTravelHours : 0;
+      const travelPayExport = exportApproval.travel ? rawTravelHours * loadedRate : 0;
+      const totalGrossPay =
+        breakdown.commissionPaidTotal +
+        tips +
+        restBreak +
+        other +
+        mileagePay +
+        travelPayExport;
+      const category = isEventSD
+        ? 'Hourly'
+        : travelPayExport > 0
+          ? 'Commission - Travel Pay'
+          : 'Commission - No Travel Pay';
+      const vendorName = `${vendor.firstName || payment.firstName || ''} ${vendor.lastName || payment.lastName || ''}`.trim();
+      const baseRow = {
+        'Vendor': vendorName,
+        'Vendor Email': vendor.email || payment.email || '',
+        'Category': category,
+        'Venue': venue,
+        'City': city || '',
+        'State': state || '',
+        'Event Name': event.name,
+        'Event Date': event.date || '',
+        'Reg Rate': formatPayrollMoney(regRate),
+        'Rate in Effect': formatPayrollMoney(loadedRate),
+        'Hours': hoursHHMM,
+        'Hours in Decimal': hoursInDecimal,
+        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
+        'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
+        'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
+        'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
+        'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+        'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
+        'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
+        'Travel Hours': !exportApproval.travel ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
+        'Travel Pay': Number(roundUpThousandsToNextHundred(travelPayExport).toFixed(2)),
+        'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
+        'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
+      };
+
+      if (!isEventSD) return baseRow;
+
+      return {
+        ...baseRow,
+        'Regular Time Hours': Number(breakdown.regularHours.toFixed(2)),
+        'Regular Time Pay': Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2)),
+        'Overtime Hours': Number(breakdown.overtimeHours.toFixed(2)),
+        'Overtime Pay': Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2)),
+        'Double Time Hours': Number(breakdown.doubletimeHours.toFixed(2)),
+        'Double Time Pay': Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2)),
+      };
+    };
+
+    const appendTotalsRow = (targetRows: any[], sourceRows?: any[], label = 'TOTAL') => {
+      const rowsToSum = sourceRows ?? targetRows;
+      if (rowsToSum.length === 0) return;
+      const sumNum = (key: string) => rowsToSum.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
+      const includeHourlyColumns = hourlyOnlyKeys.some((key) =>
+        rowsToSum.some((row) => Object.prototype.hasOwnProperty.call(row, key))
+      );
+      const totalRow: any = {
+        'Vendor': label,
+        'Vendor Email': '',
+        'Category': '',
+        'Venue': '',
+        'City': '',
+        'State': '',
+        'Event Name': '',
+        'Event Date': '',
+        'Reg Rate': '',
+        'Rate in Effect': '',
+        'Hours': '',
+        'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
+        'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
+        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
+        'Tips': Number(sumNum('Tips').toFixed(2)),
+        'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
+        'Mileage Miles': '',
+        'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
+        'Travel Differential Miles': '',
+        'Travel Hours': '',
+        'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
+        'Other': Number(sumNum('Other').toFixed(2)),
+        'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
+      };
+
+      if (includeHourlyColumns) {
+        totalRow['Regular Time Hours'] = Number(sumNum('Regular Time Hours').toFixed(2));
+        totalRow['Regular Time Pay'] = Number(sumNum('Regular Time Pay').toFixed(2));
+        totalRow['Overtime Hours'] = Number(sumNum('Overtime Hours').toFixed(2));
+        totalRow['Overtime Pay'] = Number(sumNum('Overtime Pay').toFixed(2));
+        totalRow['Double Time Hours'] = Number(sumNum('Double Time Hours').toFixed(2));
+        totalRow['Double Time Pay'] = Number(sumNum('Double Time Pay').toFixed(2));
+      }
+
+      targetRows.push(totalRow);
+    };
+
+    const detailColumnConfig = [
+      { key: 'Vendor', wch: 25 },
+      { key: 'Vendor Email', wch: 30 },
+      { key: 'Category', wch: 26 },
+      { key: 'Venue', wch: 25 },
+      { key: 'City', wch: 15 },
+      { key: 'State', wch: 8 },
+      { key: 'Event Name', wch: 30 },
+      { key: 'Event Date', wch: 12 },
+      { key: 'Reg Rate', wch: 10 },
+      { key: 'Rate in Effect', wch: 12 },
+      { key: 'Hours', wch: 8 },
+      { key: 'Hours in Decimal', wch: 16 },
+      { key: 'Regular Time Hours', wch: 18 },
+      { key: 'Regular Time Pay', wch: 18 },
+      { key: 'Overtime Hours', wch: 14 },
+      { key: 'Overtime Pay', wch: 14 },
+      { key: 'Double Time Hours', wch: 18 },
+      { key: 'Double Time Pay', wch: 18 },
+      { key: 'Commission Pay', wch: 16 },
+      { key: 'Variable Incentive', wch: 18 },
+      { key: 'Tips', wch: 10 },
+      { key: 'Rest Break', wch: 12 },
+      { key: 'Mileage Miles', wch: 14 },
+      { key: 'Mileage Pay', wch: 12 },
+      { key: 'Travel Differential Miles', wch: 22 },
+      { key: 'Travel Hours', wch: 12 },
+      { key: 'Travel Pay', wch: 12 },
+      { key: 'Other', wch: 10 },
+      { key: 'Total Gross Pay', wch: 15 },
+    ];
 
     paymentsByVenue.forEach(venue => {
       venue.events.forEach(event => {
@@ -1494,75 +1807,42 @@ function HRDashboardContent() {
           'Total Ext Amt Reg Rate': Number(Number(totalDisplayedCommissionPay).toFixed(2)),
         });
 
-        if (eventPayments.length > 0) {
-          eventPayments.forEach((p: any) => {
-            const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
-            const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-            const hideRest = isEventSD;
-            const breakdown = getDisplayedPaymentBreakdown(event, p);
-            const regRate = breakdown.regRate;
-            const loadedRate = breakdown.rateInEffect;
-            const hours = breakdown.hours;
-            const hoursHHMM = formatHoursHHMM(hours);
-            const hoursInDecimal = roundHoursToTwoDecimals(hours);
-            const displayedCommissionPay = breakdown.commissionPay;
-            const variableIncentive = breakdown.variableIncentive;
-            const other = Number(p.adjustmentAmount || 0);
-            const tips = Number(p.tips || 0);
-            const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
-            const _mileagePayExport = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
-            const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
-            const diffMilesExport = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
-            const _travelHoursExport = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
-            const _travelPayExport = _travelHoursExport * loadedRate;
-            const exportApproval = getMileageApproval(event.id, p.userId);
-            const mileagePay = exportApproval.mileage ? _mileagePayExport : 0;
-            const travelPayExport = exportApproval.travel ? _travelPayExport : 0;
-            const travelHoursExport = exportApproval.travel ? _travelHoursExport : 0;
-            const totalGrossPay =
-              breakdown.commissionPaidTotal +
-              tips +
-              restBreak +
-              other +
-              mileagePay +
-              travelPayExport;
-
-            rows.push({
-              'Venue': venue.venue,
-              'City': venue.city || '',
-              'State': venue.state || '',
-              'Event Name': event.name,
-              'Event Date': event.date || '',
-              'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
-              'Email': p.email || '',
-              'Reg Rate': formatPayrollMoney(regRate),
-              'Rate in Effect': formatPayrollMoney(loadedRate),
-              'Hours': hoursHHMM,
-              'Hours in Decimal': hoursInDecimal,
-              'Regular Time Hours': isEventSD ? Number(breakdown.regularHours.toFixed(2)) : 0,
-              'Regular Time Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2)) : 0,
-              'Overtime Hours': isEventSD ? Number(breakdown.overtimeHours.toFixed(2)) : 0,
-              'Overtime Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2)) : 0,
-              'Double Time Hours': isEventSD ? Number(breakdown.doubletimeHours.toFixed(2)) : 0,
-              'Double Time Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2)) : 0,
-              'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
-              'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
-              'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
-              'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
-              'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
-              'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
-              'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
-              'Travel Hours': !exportApproval.travel ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
-              'Travel Pay': Number(roundUpThousandsToNextHundred(travelPayExport).toFixed(2)),
-              'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
-              'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
-            });
-          });
-        }
       });
     });
 
-    if (summaryRows.length === 0 && rows.length === 0) {
+    paymentsByVendor.forEach((vendor) => {
+      const vendorTotals = getDisplayedVendorTotals(vendor);
+      const vendorDetailRows = [...vendor.events]
+        .sort((a, b) => {
+          const aDate = (a?.event?.date || '').toString();
+          const bDate = (b?.event?.date || '').toString();
+          if (aDate !== bDate) return aDate.localeCompare(bDate);
+          return ((a?.event?.name || '').toString()).localeCompare((b?.event?.name || '').toString());
+        })
+        .map(({ event, venue, city, state, payment }) =>
+          buildDetailRow(vendor, event, venue, city, state, payment)
+        );
+
+      allVendorDetailRows.push(...vendorDetailRows);
+      vendorRows.push(...vendorDetailRows);
+
+      vendorDetailRows.forEach((row) => {
+        const category = row['Category'];
+        if (category === 'Hourly') {
+          hourlyRows.push(row);
+        } else if (category === 'Commission - Travel Pay') {
+          commissionTravelRows.push(row);
+        } else {
+          commissionNoTravelRows.push(row);
+        }
+      });
+
+      if (vendorDetailRows.length > 0) {
+        appendTotalsRow(vendorRows, vendorDetailRows, `TOTAL - ${String(vendorDetailRows[0]['Vendor'] || 'Vendor')}`);
+      }
+    });
+
+    if (summaryRows.length === 0 && allVendorDetailRows.length === 0) {
       alert('No payment records found in the loaded data.');
       return;
     }
@@ -1591,36 +1871,37 @@ function HRDashboardContent() {
       });
     }
 
-    // Add totals row to Payments sheet
-    if (rows.length > 0) {
-      const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
-      rows.push({
-        'Venue': 'TOTAL',
-        'City': '',
-        'State': '',
-        'Event Name': '',
-        'Event Date': '',
-        'Employee': '',
-        'Email': '',
-        'Reg Rate': '',
-        'Rate in Effect': '',
-        'Hours': '',
-        'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
-        'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
-        'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
-        'Tips': Number(sumNum('Tips').toFixed(2)),
-        'Rest Break': Number(rows.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
-        'Mileage Miles': '',
-        'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
-        'Travel Hours': '',
-        'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
-        'Other': Number(sumNum('Other').toFixed(2)),
-        'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
-      });
-    }
+    appendTotalsRow(vendorRows, allVendorDetailRows);
+    appendTotalsRow(hourlyRows);
+    appendTotalsRow(commissionTravelRows);
+    appendTotalsRow(commissionNoTravelRows);
 
     // Create workbook
     const workbook = XLSX.utils.book_new();
+
+    const appendDetailSheet = (sheetName: string, dataRows: any[], excludedKeys: string[] = []) => {
+      if (dataRows.length === 0) return;
+      const excludedKeySet = new Set(excludedKeys);
+      const sanitizedRows = dataRows.map((row) =>
+        Object.fromEntries(
+          Object.entries(row).filter(([key]) => !excludedKeySet.has(key))
+        )
+      );
+      const visibleColumns = detailColumnConfig.filter(({ key }) =>
+        !excludedKeySet.has(key) &&
+        sanitizedRows.some((row) => Object.prototype.hasOwnProperty.call(row, key))
+      );
+      const worksheet = XLSX.utils.json_to_sheet(sanitizedRows, {
+        header: visibleColumns.map((column) => column.key),
+      });
+      worksheet['!cols'] = visibleColumns.map(({ wch }) => ({ wch }));
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    };
+
+    appendDetailSheet('Vendor Payments', vendorRows);
+    appendDetailSheet('Hourly Users', hourlyRows, ['Commission Pay']);
+    appendDetailSheet('Comm Travel Pay', commissionTravelRows);
+    appendDetailSheet('Comm No Travel', commissionNoTravelRows);
 
     if (summaryRows.length > 0) {
       const summaryWorksheet = XLSX.utils.json_to_sheet(summaryRows);
@@ -1644,30 +1925,6 @@ function HRDashboardContent() {
       XLSX.utils.book_append_sheet(workbook, summaryWorksheet, 'Event Summaries');
     }
 
-    if (rows.length > 0) {
-      const worksheet = XLSX.utils.json_to_sheet(rows);
-      worksheet['!cols'] = [
-        { wch: 25 }, // Venue
-        { wch: 15 }, // City
-        { wch: 8 },  // State
-        { wch: 30 }, // Event Name
-        { wch: 12 }, // Event Date
-        { wch: 25 }, // Employee
-        { wch: 30 }, // Email
-        { wch: 10 }, // Reg Rate
-        { wch: 12 }, // Rate in Effect
-        { wch: 8 },  // Hours
-        { wch: 16 }, // Hours in Decimal
-        { wch: 16 }, // Commission Pay
-        { wch: 18 }, // Variable Incentive
-        { wch: 10 }, // Tips
-        { wch: 12 }, // Rest Break
-        { wch: 10 }, // Other
-        { wch: 15 }, // Total Gross Pay
-      ];
-      XLSX.utils.book_append_sheet(workbook, worksheet, 'Payments');
-    }
-
     // Generate filename with date range
     const startStr = paymentsStartDate || 'start';
     const endStr = paymentsEndDate || 'end';
@@ -1675,7 +1932,184 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown]);
+  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedVendorTotals]);
+
+  const exportNonEventPayroll = useCallback(() => {
+    const nonEventVenues = paymentsByVenue
+      .map(v => ({ ...v, events: v.events.filter((e: any) => e.event_type === 'special') }))
+      .filter(v => v.events.length > 0);
+
+    if (nonEventVenues.length === 0) {
+      alert('No Non Event time sheet data found. Load a date range that includes Non Event time sheets.');
+      return;
+    }
+
+    const rows: any[] = [];
+    nonEventVenues.forEach(venue => {
+      venue.events.forEach(event => {
+        const eventPayments = Array.isArray(event.payments) ? event.payments : [];
+        eventPayments.forEach((p: any) => {
+          const breakdown = getDisplayedPaymentBreakdown(event, p);
+          const hours = breakdown.hours;
+          const hoursInDecimal = roundHoursToTwoDecimals(hours);
+          const regRate = breakdown.regRate;
+          const rateInEffect = breakdown.rateInEffect;
+          const regularHours = Number(breakdown.regularHours.toFixed(2));
+          const regularPay = Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2));
+          const overtimeHours = Number(breakdown.overtimeHours.toFixed(2));
+          const overtimePay = Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2));
+          const doubletimeHours = Number(breakdown.doubletimeHours.toFixed(2));
+          const doubletimePay = Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2));
+          const other = Number(p.adjustmentAmount || 0);
+          const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
+          const _mileagePayRaw = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
+          const exportApproval = getMileageApproval(event.id, p.userId);
+          const mileagePay = exportApproval.mileage ? _mileagePayRaw : 0;
+          const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
+          const travelHours = exportApproval.travel && diffMiles !== null ? (diffMiles * 2) / 60 : 0;
+          const travelPay = exportApproval.travel && diffMiles !== null ? travelHours * rateInEffect : 0;
+          const totalGrossPay = Number(roundUpThousandsToNextHundred(
+            breakdown.commissionPaidTotal + Number(p.tips || 0) + other + mileagePay + travelPay
+          ).toFixed(2));
+
+          rows.push({
+            'Venue': venue.venue,
+            'City': venue.city || '',
+            'State': venue.state || '',
+            'Event Name': event.name,
+            'Event Date': event.date || '',
+            'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
+            'Email': p.email || '',
+            'Reg Rate': formatPayrollMoney(regRate),
+            'Rate in Effect': formatPayrollMoney(rateInEffect),
+            'Hours': formatHoursHHMM(hours),
+            'Hours in Decimal': hoursInDecimal,
+            'Regular Time Hours': regularHours,
+            'Regular Time Pay': regularPay,
+            'Overtime Hours': overtimeHours,
+            'Overtime Pay': overtimePay,
+            'Double Time Hours': doubletimeHours,
+            'Double Time Pay': doubletimePay,
+            'Tips': Number(roundUpThousandsToNextHundred(Number(p.tips || 0)).toFixed(2)),
+            'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
+            'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
+            'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
+            'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
+            'Travel Pay': Number(roundUpThousandsToNextHundred(travelPay).toFixed(2)),
+            'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
+            'Total Gross Pay': totalGrossPay,
+          });
+        });
+      });
+    });
+
+    if (rows.length === 0) {
+      alert('No Non Event employee payment records found.');
+      return;
+    }
+
+    const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
+    rows.push({
+      'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
+      'Employee': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '',
+      'Hours': '', 'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
+      'Regular Time Hours': Number(sumNum('Regular Time Hours').toFixed(2)),
+      'Regular Time Pay': Number(sumNum('Regular Time Pay').toFixed(2)),
+      'Overtime Hours': Number(sumNum('Overtime Hours').toFixed(2)),
+      'Overtime Pay': Number(sumNum('Overtime Pay').toFixed(2)),
+      'Double Time Hours': Number(sumNum('Double Time Hours').toFixed(2)),
+      'Double Time Pay': Number(sumNum('Double Time Pay').toFixed(2)),
+      'Tips': Number(sumNum('Tips').toFixed(2)),
+      'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
+      'Travel Differential Miles': '', 'Travel Hours': '',
+      'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
+      'Other': Number(sumNum('Other').toFixed(2)),
+      'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
+    });
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 30 }, { wch: 12 },
+      { wch: 25 }, { wch: 30 }, { wch: 10 }, { wch: 12 }, { wch: 8 },
+      { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 13 },
+      { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 12 },
+      { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 15 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Non Event Payroll');
+    const startStr = paymentsStartDate || 'start';
+    const endStr = paymentsEndDate || 'end';
+    XLSX.writeFile(wb, `non_event_payroll_${startStr}_to_${endStr}.xlsx`);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getMileageApproval]);
+
+  const exportSalariedPayroll = useCallback(() => {
+    const salariedEmployees = employees.filter(e => e.salary > 0);
+    if (salariedEmployees.length === 0) {
+      alert('No salaried employees found.');
+      return;
+    }
+
+    let periodDays = 0;
+    if (paymentsStartDate && paymentsEndDate) {
+      const start = new Date(paymentsStartDate);
+      const end = new Date(paymentsEndDate);
+      periodDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    }
+
+    const rows = salariedEmployees.map(e => {
+      const annualSalary = Number(e.salary);
+      const periodPay = periodDays > 0 ? Number(((annualSalary / 365) * periodDays).toFixed(2)) : null;
+      return {
+        'First Name': e.first_name,
+        'Last Name': e.last_name,
+        'Email': e.email,
+        'Department': e.department,
+        'Position': e.position,
+        'State': e.state,
+        'City': e.city || '',
+        'Status': e.status,
+        'Hire Date': e.hire_date,
+        'Annual Salary': Number(annualSalary.toFixed(2)),
+        ...(periodDays > 0 ? {
+          'Period Start': paymentsStartDate,
+          'Period End': paymentsEndDate,
+          'Period Days': periodDays,
+          'Period Gross Pay': periodPay,
+        } : {}),
+      };
+    });
+
+    if (rows.length === 0) {
+      alert('No salaried employee records to export.');
+      return;
+    }
+
+    const annualTotal = Number(rows.reduce((s, r) => s + r['Annual Salary'], 0).toFixed(2));
+    const totalRow: any = {
+      'First Name': 'TOTAL', 'Last Name': '', 'Email': '', 'Department': '',
+      'Position': '', 'State': '', 'City': '', 'Status': '', 'Hire Date': '',
+      'Annual Salary': annualTotal,
+    };
+    if (periodDays > 0) {
+      totalRow['Period Start'] = '';
+      totalRow['Period End'] = '';
+      totalRow['Period Days'] = '';
+      totalRow['Period Gross Pay'] = Number(rows.reduce((s, r) => s + (r['Period Gross Pay'] ?? 0), 0).toFixed(2));
+    }
+    rows.push(totalRow);
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [
+      { wch: 15 }, { wch: 15 }, { wch: 30 }, { wch: 20 }, { wch: 20 },
+      { wch: 8 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
+      ...(periodDays > 0 ? [{ wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }] : []),
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Salaried Payroll');
+    const startStr = paymentsStartDate || 'start';
+    const endStr = paymentsEndDate || 'end';
+    XLSX.writeFile(wb, `salaried_payroll_${startStr}_to_${endStr}.xlsx`);
+  }, [employees, paymentsStartDate, paymentsEndDate]);
 
   // Load onboarding forms
   const loadOnboardingForms = useCallback(async () => {
@@ -2470,6 +2904,12 @@ function HRDashboardContent() {
                 <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
                   Export to Excel
                 </button>
+                <button onClick={exportNonEventPayroll} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
+                  Non Event
+                </button>
+                <button onClick={exportSalariedPayroll} className={`apple-button ${employees.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={employees.length === 0}>
+                  Salaried
+                </button>
                 <button
                   onClick={() => setPayrollGroupBy(g => g === 'venue' ? 'vendor' : 'venue')}
                   className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`}
@@ -2549,25 +2989,13 @@ function HRDashboardContent() {
                 </div>
               ) : payrollGroupBy === 'vendor' ? (
                 paymentsByVendor.map(vendor => {
-                  const vendorDisplayedTotal = vendor.events.reduce((sum, { event, payment }) => {
-                    const breakdown = getDisplayedPaymentBreakdown(event, payment);
-                    const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-                    const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
-                    const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                    const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
-                    const approval = getMileageApproval(event.id, payment.userId);
-                    return sum + breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + (approval.mileage ? _mp : 0) + (approval.travel ? _tp : 0);
-                  }, 0);
+                  const vendorTotals = getDisplayedVendorTotals(vendor);
+                  const vendorDisplayedTotal = vendorTotals.totalGross;
                   const vendorHasSanDiegoEvents = vendor.events.some(({ event }) => event?.isSanDiegoHourly === true || isSanDiegoRegion(event));
                   const vendorHasNonSanDiegoEvents = vendor.events.some(({ event }) => !(event?.isSanDiegoHourly === true || isSanDiegoRegion(event)));
                   const showVendorHourlyColumns = vendorHasSanDiegoEvents;
                   const showVendorCommissionColumns = vendorHasNonSanDiegoEvents;
                   const showVendorRestBreakColumn = vendorHasNonSanDiegoEvents;
-                  const vendorMiddleColSpan =
-                    (showVendorHourlyColumns ? 3 : 0) +
-                    (showVendorCommissionColumns ? 2 : 0) +
-                    (showVendorRestBreakColumn ? 1 : 0) +
-                    4;
 
                   return (
                     <div key={vendor.userId || vendor.email} className="apple-card">
@@ -2578,7 +3006,7 @@ function HRDashboardContent() {
                         </div>
                         <div className="text-right">
                           <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(vendorDisplayedTotal)}</div>
-                          <div className="text-sm text-gray-500">{formatHoursDecimal(vendor.totalHours)} hrs</div>
+                          <div className="text-sm text-gray-500">{formatHoursDecimal(vendorTotals.totalHours)} hrs</div>
                         </div>
                       </div>
                       <div className="overflow-x-auto">
@@ -2670,8 +3098,39 @@ function HRDashboardContent() {
                             })}
                             <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                               <td className="px-4 py-2 uppercase tracking-wide" colSpan={3}>Total</td>
-                              <td className="px-4 py-2 text-right">{formatHoursDecimal(vendor.totalHours)}</td>
-                              <td colSpan={vendorMiddleColSpan} className="px-4 py-2"></td>
+                              <td className="px-4 py-2 text-right">{formatHoursDecimal(vendorTotals.totalHours)}</td>
+                              {showVendorHourlyColumns && (
+                                <>
+                                  <td className="px-4 py-2 text-right text-gray-900">
+                                    {vendorTotals.totalRegularHours > 0 || vendorTotals.totalRegularPay > 0
+                                      ? `${formatHoursDecimal(vendorTotals.totalRegularHours)}h / $${formatPayrollMoney(vendorTotals.totalRegularPay)}`
+                                      : '\u2014'}
+                                  </td>
+                                  <td className="px-4 py-2 text-right text-orange-600">
+                                    {vendorTotals.totalOvertimeHours > 0 || vendorTotals.totalOvertimePay > 0
+                                      ? `${formatHoursDecimal(vendorTotals.totalOvertimeHours)}h / $${formatPayrollMoney(vendorTotals.totalOvertimePay)}`
+                                      : '\u2014'}
+                                  </td>
+                                  <td className="px-4 py-2 text-right text-rose-600">
+                                    {vendorTotals.totalDoubletimeHours > 0 || vendorTotals.totalDoubletimePay > 0
+                                      ? `${formatHoursDecimal(vendorTotals.totalDoubletimeHours)}h / $${formatPayrollMoney(vendorTotals.totalDoubletimePay)}`
+                                      : '\u2014'}
+                                  </td>
+                                </>
+                              )}
+                              {showVendorCommissionColumns && (
+                                <>
+                                  <td className="px-4 py-2 text-right text-blue-600">${formatPayrollMoney(vendorTotals.totalCommissionPay)}</td>
+                                  <td className="px-4 py-2 text-right text-purple-600">${formatPayrollMoney(vendorTotals.totalVariableIncentive)}</td>
+                                </>
+                              )}
+                              <td className="px-4 py-2 text-right text-orange-600">${formatPayrollMoney(vendorTotals.totalTips)}</td>
+                              {showVendorRestBreakColumn && (
+                                <td className="px-4 py-2 text-right text-green-600">${formatPayrollMoney(vendorTotals.totalRestBreak)}</td>
+                              )}
+                              <td className="px-4 py-2 text-right text-blue-600">${formatPayrollMoney(vendorTotals.totalMileagePay)}</td>
+                              <td className="px-4 py-2 text-right text-indigo-600">${formatPayrollMoney(vendorTotals.totalTravelPay)}</td>
+                              <td className="px-4 py-2 text-right">${formatPayrollMoney(vendorTotals.totalOther)}</td>
                               <td className="px-4 py-2 text-right">${formatPayrollMoney(vendorDisplayedTotal)}</td>
                             </tr>
                           </tbody>
@@ -3131,6 +3590,12 @@ function HRDashboardContent() {
             <div className="flex items-center justify-between">
               <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Employees</h2>
               <div className="flex flex-wrap items-center justify-end gap-3">
+                <button
+                  onClick={() => { setCreateSalariedError(''); setCreateSalariedSuccess(''); setShowCreateSalariedModal(true); }}
+                  className="apple-button apple-button-primary"
+                >
+                  + Create Salaried User
+                </button>
                 <div className="relative">
                   <label className="sr-only" htmlFor="employee-search">Search employees</label>
                   <svg
@@ -3262,6 +3727,155 @@ function HRDashboardContent() {
                 </div>
               )}
             </div>
+
+            {/* Create Salaried User Modal */}
+            {showCreateSalariedModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-8">
+                  <div className="flex items-center justify-between mb-6">
+                    <h2 className="text-xl font-semibold text-gray-900">Create Salaried User</h2>
+                    <button
+                      onClick={() => { setShowCreateSalariedModal(false); setCreateSalariedError(''); setCreateSalariedSuccess(''); }}
+                      className="text-gray-400 hover:text-gray-600 transition-colors text-2xl leading-none"
+                      aria-label="Close"
+                    >
+                      &times;
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="apple-label" htmlFor="cs-first-name">First Name <span className="text-red-500">*</span></label>
+                      <input
+                        id="cs-first-name"
+                        type="text"
+                        value={createSalariedForm.firstName}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, firstName: e.target.value }))}
+                        className="apple-select w-full"
+                        placeholder="First name"
+                      />
+                    </div>
+                    <div>
+                      <label className="apple-label" htmlFor="cs-last-name">Last Name <span className="text-red-500">*</span></label>
+                      <input
+                        id="cs-last-name"
+                        type="text"
+                        value={createSalariedForm.lastName}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, lastName: e.target.value }))}
+                        className="apple-select w-full"
+                        placeholder="Last name"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="apple-label" htmlFor="cs-email">Email <span className="text-red-500">*</span></label>
+                    <input
+                      id="cs-email"
+                      type="email"
+                      value={createSalariedForm.email}
+                      onChange={e => setCreateSalariedForm(f => ({ ...f, email: e.target.value }))}
+                      className="apple-select w-full"
+                      placeholder="user@example.com"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="apple-label" htmlFor="cs-role">Role <span className="text-red-500">*</span></label>
+                      <select
+                        id="cs-role"
+                        value={createSalariedForm.role}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, role: e.target.value as any }))}
+                        className="apple-select w-full"
+                      >
+                        <option value="worker">Worker</option>
+                        <option value="manager">Manager</option>
+                        <option value="finance">Finance</option>
+                        <option value="exec">Executive</option>
+                        <option value="hr">HR</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="apple-label" htmlFor="cs-division">Division <span className="text-red-500">*</span></label>
+                      <select
+                        id="cs-division"
+                        value={createSalariedForm.division}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, division: e.target.value as any }))}
+                        className="apple-select w-full"
+                      >
+                        <option value="vendor">Vendor</option>
+                        <option value="trailers">Trailers</option>
+                        <option value="both">Both</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="apple-label" htmlFor="cs-salary">Annual Salary ($) <span className="text-red-500">*</span></label>
+                    <input
+                      id="cs-salary"
+                      type="number"
+                      min="0"
+                      step="1000"
+                      value={createSalariedForm.annualSalary}
+                      onChange={e => setCreateSalariedForm(f => ({ ...f, annualSalary: e.target.value }))}
+                      className="apple-select w-full"
+                      placeholder="e.g. 55000"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 mb-6">
+                    <div>
+                      <label className="apple-label" htmlFor="cs-department">Department</label>
+                      <input
+                        id="cs-department"
+                        type="text"
+                        value={createSalariedForm.department}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, department: e.target.value }))}
+                        className="apple-select w-full"
+                        placeholder="e.g. Operations"
+                      />
+                    </div>
+                    <div>
+                      <label className="apple-label" htmlFor="cs-position">Position</label>
+                      <input
+                        id="cs-position"
+                        type="text"
+                        value={createSalariedForm.position}
+                        onChange={e => setCreateSalariedForm(f => ({ ...f, position: e.target.value }))}
+                        className="apple-select w-full"
+                        placeholder="e.g. Coordinator"
+                      />
+                    </div>
+                  </div>
+
+                  {createSalariedError && (
+                    <div className="apple-alert apple-alert-error mb-4">{createSalariedError}</div>
+                  )}
+                  {createSalariedSuccess && (
+                    <div className="rounded-xl bg-green-50 border border-green-200 text-green-700 px-4 py-3 text-sm mb-4">{createSalariedSuccess}</div>
+                  )}
+
+                  <div className="flex gap-3 justify-end">
+                    <button
+                      onClick={() => { setShowCreateSalariedModal(false); setCreateSalariedError(''); setCreateSalariedSuccess(''); }}
+                      className="apple-button apple-button-secondary"
+                      disabled={createSalariedLoading}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={submitCreateSalariedUser}
+                      className={`apple-button ${createSalariedLoading ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                      disabled={createSalariedLoading}
+                    >
+                      {createSalariedLoading ? 'Creating…' : 'Create & Send Invite'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

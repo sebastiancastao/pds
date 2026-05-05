@@ -5,7 +5,7 @@ import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
-import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
+import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 
@@ -2574,7 +2574,7 @@ export default function EventDashboardPage() {
 
   const buildPaymentExportRows = (): Record<string, string | number>[] => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
-    const baseRate = getBaseRateForState(eventState);
+    const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
     const totalCommissionPool = resolvedCommissionPoolDollars;
     const totalTips = Number(tips) || 0;
 
@@ -3878,7 +3878,7 @@ export default function EventDashboardPage() {
 
       // Calculate all payment data using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-      const baseRate = getBaseRateForState(eventState);
+      const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
 
       const netSales = resolvedCommissionNetSales;
       const poolPercent = resolvedCommissionPoolPercent;
@@ -4004,7 +4004,7 @@ export default function EventDashboardPage() {
     try {
       // Calculate payroll data for each team member using rates from database
       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-      const baseRate = getBaseRateForState(eventState);
+      const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
 
       const totalCommissionPool = resolvedCommissionPoolDollars;
       const totalTips = Number(tips) || 0;
@@ -6720,7 +6720,7 @@ export default function EventDashboardPage() {
                   <div className="text-3xl font-bold text-purple-900">
                     ${(() => {
                       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                      const baseRate = getBaseRateForState(eventState);
+                      const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
                       // Sum per-member base pay so SD OT/DT rules apply correctly per worker.
                       const totalPayment = teamMembers.reduce((sum: number, member: any) => {
                         const uid = (member.user_id || member.vendor_id || member.users?.id || '').toString();
@@ -6785,7 +6785,7 @@ export default function EventDashboardPage() {
                   <div className="text-right">
                     <div className="text-sm font-semibold text-blue-700">Base Rate</div>
                     <div className="text-2xl font-bold text-blue-900">
-                      ${formatPayrollMoney(getBaseRateForState(event?.state || 'CA'))}/hr
+                      ${formatPayrollMoney(isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(event?.state || 'CA'))}/hr
                     </div>
                   </div>
                 </div>
@@ -6876,7 +6876,7 @@ export default function EventDashboardPage() {
 
                           // Use rates from database based on venue state
                           const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
-                          const baseRate = getBaseRateForState(eventState);
+                          const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
                           console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', baseRate);
 
                           // Commission pool (Net Sales × pool fraction)

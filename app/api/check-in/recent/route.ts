@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
+import { validateCheckinLinkToken } from "@/lib/checkin-link-token";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -114,10 +115,12 @@ function isValidUuid(id: unknown) {
 export async function GET(req: NextRequest) {
   try {
     const kioskUser = await getAuthedUser(req);
-    if (!kioskUser?.id) return jsonError("Not authenticated", 401);
+    const linkTokenAuth = kioskUser?.id ? null : await validateCheckinLinkToken(req);
+    if (!kioskUser?.id && !linkTokenAuth) return jsonError("Not authenticated", 401);
 
     const { searchParams } = new URL(req.url);
-    const requestedEventId = searchParams.get("eventId");
+    // Prefer the event bound to the link token
+    const requestedEventId = linkTokenAuth?.eventId ?? searchParams.get("eventId");
 
     const now = new Date();
     const today = toLocalDateStr(now);

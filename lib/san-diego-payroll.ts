@@ -4,6 +4,8 @@ type SanDiegoHourSplit = {
   doubletimeHours: number;
 };
 
+export const SAN_DIEGO_BASE_RATE = 28.5;
+
 export type SanDiegoHourlyBreakdown = SanDiegoHourSplit & {
   regularPay: number;
   overtimePay: number;
@@ -45,7 +47,7 @@ export function computeSanDiegoHourlyBreakdown(
   priorWeeklyHours = 0
 ): SanDiegoHourlyBreakdown {
   const safeHours = Math.max(0, Number.isFinite(hours) ? hours : 0);
-  const safeBaseRate = Math.max(0, Number.isFinite(baseRate) ? baseRate : 0);
+  const safeBaseRate = SAN_DIEGO_BASE_RATE;
   const { regularHours, overtimeHours, doubletimeHours } = splitSanDiegoHours(safeHours);
   const weeklyOvertimeHoursConverted = getSanDiegoWeeklyOvertimeHoursToConvert(
     priorWeeklyHours,

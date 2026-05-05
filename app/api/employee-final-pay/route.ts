@@ -4,7 +4,7 @@ import { getMondayOfWeek } from '@/lib/utils';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
-import { computeSanDiegoHourlyBreakdown } from '@/lib/san-diego-payroll';
+import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -456,11 +456,12 @@ export async function GET(req: NextRequest) {
         const usesPeriodRate = isPeriodRateState(ev.state);
         const periodWorker = payPeriodCommission.byEvent?.[ev.id]?.[userId];
         const eventState = normalizeState(ev.state);
-        const baseRate =
-          Number(ep.base_rate || 0) ||
-          Number(baseRateByState[eventState] || 0) ||
-          fallbackBaseRates[eventState] ||
-          17.28;
+        const baseRate = isEventSD
+          ? SAN_DIEGO_BASE_RATE
+          : Number(ep.base_rate || 0) ||
+            Number(baseRateByState[eventState] || 0) ||
+            fallbackBaseRates[eventState] ||
+            17.28;
         const persistedCommissionPaidTotal =
           Number(vp.regular_pay || 0) +
           Number(vp.overtime_pay || 0) +

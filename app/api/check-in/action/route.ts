@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { validateCheckinLinkToken } from "@/lib/checkin-link-token";
 
 export const runtime = "nodejs";
 
@@ -104,7 +105,9 @@ type ActionType = "clock_in" | "clock_out" | "meal_start" | "meal_end";
 export async function POST(req: NextRequest) {
   try {
     const kioskUser = await getAuthedUser(req);
-    if (!kioskUser?.id) {
+    const linkTokenAuth = kioskUser?.id ? null : await validateCheckinLinkToken(req);
+
+    if (!kioskUser?.id && !linkTokenAuth) {
       return jsonError("Not authenticated", 401);
     }
 
@@ -117,7 +120,10 @@ export async function POST(req: NextRequest) {
       typeof body.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const rejectionReason = typeof body.rejectionReason === "string" ? body.rejectionReason.trim() : undefined;
     const rejectionNotes  = typeof body.rejectionNotes  === "string" ? body.rejectionNotes.trim()  : undefined;
-    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : undefined;
+    // When using a checkin link token the event is already bound to the token
+    const eventId =
+      linkTokenAuth?.eventId ??
+      (typeof body.eventId === "string" ? body.eventId.trim() : undefined);
     const clientActionId =
       typeof body.clientActionId === "string" && body.clientActionId.trim()
         ? body.clientActionId.trim()

@@ -125,6 +125,14 @@ export async function GET(req: NextRequest) {
       regionData = region;
     }
 
+    // Fetch all salary records so we can join them in-memory
+    const { data: salaryRows } = await supabaseAdmin
+      .from('user_salaries')
+      .select('user_id, annual_salary, department, position, employment_type');
+    const salaryByUserId = new Map<string, { annual_salary: number; department: string | null; position: string | null; employment_type: string }>(
+      (salaryRows || []).map((s: any) => [s.user_id, s])
+    );
+
     // Fetch real users from the database - query from users table and join with profiles
     let query = supabaseAdmin
       .from("users")
@@ -323,18 +331,20 @@ export async function GET(req: NextRequest) {
         regionBackfills.set(user.id, matchedRegion.id);
       }
 
+      const salaryRecord = salaryByUserId.get(user.id);
       return {
         id: user.id,
         first_name: firstName,
         last_name: lastName,
         email: user.email || "N/A",
         phone: profile?.phone,
-        department: "General", // Default department - you can add this field to profiles table later
-        position: "Vendor", // Default position - you can add this field to profiles table later
+        department: salaryRecord?.department || "General",
+        position: salaryRecord?.position || "Vendor",
         hire_date: user.created_at || new Date().toISOString(),
-        status: "active", // Default status - you can add this field to profiles table later
-        salary: 0, // Default - you can add this field to profiles table later
-        profile_photo_url: null, // Photo handling will be added later if needed
+        status: "active",
+        salary: salaryRecord ? Number(salaryRecord.annual_salary) : 0,
+        employment_type: salaryRecord?.employment_type || 'hourly',
+        profile_photo_url: null,
         state,
         city,
         region_id: resolvedRegionId,

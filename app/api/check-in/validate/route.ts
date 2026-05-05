@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { decrypt, isEncrypted } from "@/lib/encryption";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { validateCheckinLinkToken } from "@/lib/checkin-link-token";
 
 export const runtime = "nodejs";
 
@@ -89,13 +90,18 @@ function parseEventMs(dateStr: string, timeStr: string): number {
 export async function POST(req: NextRequest) {
   try {
     const kioskUser = await getAuthedUser(req);
-    if (!kioskUser?.id) {
+    const linkTokenAuth = kioskUser?.id ? null : await validateCheckinLinkToken(req);
+
+    if (!kioskUser?.id && !linkTokenAuth) {
       return jsonError("Not authenticated", 401);
     }
 
     const body = await req.json();
     const code = normalizeCheckinCode(body.code);
-    const eventId = typeof body.eventId === "string" ? body.eventId.trim() : "";
+    // When using a checkin link token the event is already bound to the token
+    const eventId =
+      linkTokenAuth?.eventId ??
+      (typeof body.eventId === "string" ? body.eventId.trim() : "");
 
     if (!isValidCheckinCode(code)) {
       return jsonError("Invalid code format", 400);

@@ -2,6 +2,11 @@ import { distributePoolByHoursRule } from "./payroll-distribution";
 
 export const PERIOD_RATE_MINIMUM = 28.5;
 export const PERIOD_RATE_STATES = ["CA", "NV", "WI"] as const;
+export const PERIOD_RATE_MINIMUM_BY_STATE: Record<PeriodRateState, number> = {
+  CA: 28.5,
+  NV: 25.92,
+  WI: 25.92,
+};
 
 export type PeriodRateState = (typeof PERIOD_RATE_STATES)[number];
 
@@ -74,6 +79,16 @@ const normalizeDivision = (value?: string | null): string =>
 
 export const isPeriodRateState = (value?: string | null): value is PeriodRateState =>
   PERIOD_RATE_STATES.includes(normalizeState(value) as PeriodRateState);
+
+export const getPeriodRateMinimum = (
+  value?: string | null,
+  fallback = PERIOD_RATE_MINIMUM
+): number => {
+  const stateCode = normalizeState(value);
+  return isPeriodRateState(stateCode)
+    ? PERIOD_RATE_MINIMUM_BY_STATE[stateCode]
+    : fallback;
+};
 
 export const isTrailersDivision = (value?: string | null): boolean =>
   normalizeDivision(value) === "trailers";
@@ -179,7 +194,12 @@ export function computePayPeriodCommission({
       const isTrailers = isTrailersDivision(worker?.division);
       const commissionShare = roundMoney(Number(commissionSharesByUser[userId] || 0));
       const eligibleForPeriodRate =
-        usesPeriodRate && isVendor && !isTrailers && !commissionDeleted && hours > 0;
+        usesPeriodRate &&
+        isVendor &&
+        !isTrailers &&
+        !commissionDeleted &&
+        hours > 0 &&
+        commissionShare > 0;
 
       byEvent[eventId][userId] = {
         stateCode,
@@ -219,11 +239,15 @@ export function computePayPeriodCommission({
     );
     const rateInEffect = totalHours > 0 ? totalCommissionShare / totalHours : 0;
 
-    const baseCommissionPayByEvent = allocateRoundedAmounts(
-      rows.map((row) => ({
-        key: row.eventId,
-        amount: rateInEffect * row.hours,
-      }))
+    const baseVariableIncentiveByEvent = allocateRoundedAmounts(
+      rows.map((row) => {
+        const eventEntry = byEvent[row.eventId]?.[userId];
+        const minimumRateForEvent = getPeriodRateMinimum(eventEntry?.stateCode, minimumRate);
+        return {
+          key: row.eventId,
+          amount: Math.max(0, (minimumRateForEvent - rateInEffect) * row.hours),
+        };
+      })
     );
 
     let totalCommissionPay = 0;
@@ -233,24 +257,26 @@ export function computePayPeriodCommission({
       const eventEntry = byEvent[row.eventId]?.[userId];
       if (!eventEntry) continue;
 
-      const baseCommissionPay = roundMoney(
-        Number(baseCommissionPayByEvent[row.eventId] || 0)
-      );
-      const targetCents = toCents(minimumRate * row.hours);
+      // Keep the actual event commission share intact.
+      // Only the minimum-rate shortfall is spread by event hours across the period.
+      const baseCommissionPay = roundMoney(row.commissionShare);
       const commissionPayCents = toCents(baseCommissionPay);
-      const baseVariableCents = Math.max(0, targetCents - commissionPayCents);
+      const baseVariableCents = toCents(
+        Number(baseVariableIncentiveByEvent[row.eventId] || 0)
+      );
       const overrideCents =
         eventEntry.commissionOverride != null ? toCents(eventEntry.commissionOverride) : 0;
       const variableIncentive = fromCents(baseVariableCents + overrideCents);
-      const commissionPaidTotal = roundMoney(baseCommissionPay + variableIncentive);
+      const commissionPay = fromCents(commissionPayCents);
+      const commissionPaidTotal = roundMoney(commissionPay + variableIncentive);
 
       eventEntry.rateInEffect = rateInEffect;
       eventEntry.baseCommissionPay = baseCommissionPay;
-      eventEntry.commissionPay = baseCommissionPay;
+      eventEntry.commissionPay = commissionPay;
       eventEntry.variableIncentive = variableIncentive;
       eventEntry.commissionPaidTotal = commissionPaidTotal;
 
-      totalCommissionPay += baseCommissionPay;
+      totalCommissionPay += commissionPay;
       totalVariableIncentive += variableIncentive;
     }
 
@@ -271,7 +297,38 @@ export function computePayPeriodCommission({
       const userTotals = byUser[userId];
       workerResult.rateInEffect = userTotals?.rateInEffect || 0;
 
-      if (!workerResult.eligibleForPeriodRate || workerResult.commissionDeleted) {
+      if (workerResult.commissionDeleted) {
+        workerResult.baseCommissionPay = 0;
+        workerResult.commissionPay = 0;
+        workerResult.variableIncentive = 0;
+        workerResult.commissionPaidTotal = 0;
+        continue;
+      }
+
+      if (!workerResult.eligibleForPeriodRate) {
+        const minimumRateForEvent = getPeriodRateMinimum(workerResult.stateCode, minimumRate);
+        const isMinimumGuaranteeRow =
+          workerResult.isVendor &&
+          !workerResult.isTrailers &&
+          workerResult.hours > 0 &&
+          workerResult.commissionShare <= 0;
+
+        if (isMinimumGuaranteeRow) {
+          const guaranteedCommissionPay = roundMoney(minimumRateForEvent * workerResult.hours);
+          const overrideCents =
+            workerResult.commissionOverride != null ? toCents(workerResult.commissionOverride) : 0;
+          const variableIncentive = fromCents(overrideCents);
+
+          workerResult.rateInEffect = minimumRateForEvent;
+          workerResult.baseCommissionPay = guaranteedCommissionPay;
+          workerResult.commissionPay = guaranteedCommissionPay;
+          workerResult.variableIncentive = variableIncentive;
+          workerResult.commissionPaidTotal = roundMoney(
+            guaranteedCommissionPay + variableIncentive
+          );
+          continue;
+        }
+
         workerResult.baseCommissionPay = 0;
         workerResult.commissionPay = 0;
         workerResult.variableIncentive = 0;

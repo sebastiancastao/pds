@@ -7,7 +7,7 @@ import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
-import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
+import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -220,7 +220,9 @@ export async function POST(req: NextRequest) {
       const isEventSD = isSanDiegoRegion(event);
       const fallbackRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const stateBaseRate = dbStateRates[eventState] || fallbackRates[eventState] || 17.28;
-      const baseRate = Number(eventPaymentSummary?.base_rate || stateBaseRate);
+      const baseRate = isEventSD
+        ? SAN_DIEGO_BASE_RATE
+        : Number(eventPaymentSummary?.base_rate || stateBaseRate);
       const savedCommissionPoolPercent = Number(eventPaymentSummary?.commission_pool_percent || 0);
       const configuredCommissionPoolPercent = Number(event?.commission_pool || 0);
       const fallbackCommissionPoolPercent = Number(getRegionFallbackCommissionPoolPercent(event) || 0);

@@ -8,6 +8,8 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { isSanDiegoRegion } from "@/lib/commission-pool";
+import { SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { getVenueAbbreviation } from "@/lib/utils";
 import "./dashboard-styles.css";
 
@@ -547,7 +549,7 @@ export default function DashboardPage() {
 
         console.log('[PAYMENTS] â Found', vendorPayments.length, 'vendor payments for event', event.event_name);
 
-        const baseRate = eventPaymentSummary?.base_rate || 17.28;
+        const baseRate = isSanDiegoRegion(event) ? SAN_DIEGO_BASE_RATE : (eventPaymentSummary?.base_rate || 17.28);
         const normalizeDivision = (division?: string | null) => (division || "").toString().toLowerCase().trim();
         const isTrailersDivision = (division?: string | null) => normalizeDivision(division) === "trailers";
         const isVendorDivision = (division?: string | null) => {

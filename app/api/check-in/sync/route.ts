@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { isValidCheckinCode, normalizeCheckinCode } from "@/lib/checkin-code";
+import { validateCheckinLinkToken } from "@/lib/checkin-link-token";
 
 export const runtime = "nodejs";
 
@@ -117,7 +118,8 @@ type QueuedAction = {
 export async function POST(req: NextRequest) {
   try {
     const kioskUser = await getAuthedUser(req);
-    if (!kioskUser?.id) {
+    const linkTokenAuth = kioskUser?.id ? null : await validateCheckinLinkToken(req);
+    if (!kioskUser?.id && !linkTokenAuth) {
       return jsonError("Not authenticated", 401);
     }
 
