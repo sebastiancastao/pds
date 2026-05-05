@@ -75,6 +75,7 @@ export default function AttestationRejectionsReportPage() {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<ReportData | null>(null);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [exportingUserPdf, setExportingUserPdf] = useState<string | null>(null);
 
   // Filters
   const [fromDate, setFromDate] = useState('');
@@ -163,6 +164,40 @@ export default function AttestationRejectionsReportPage() {
       alert(err.message || 'Failed to export PDF');
     } finally {
       setExportingPdf(false);
+    }
+  };
+
+  const handleExportUserPdf = async (userId: string, workerName: string) => {
+    setExportingUserPdf(userId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { router.push('/login'); return; }
+
+      const params = new URLSearchParams({ user_id: userId });
+      if (fromDate) params.set('from', fromDate);
+      if (toDate)   params.set('to', toDate);
+
+      const res = await fetch(`/api/reports/attestation-rejections/pdf?${params}`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        throw new Error(json.error || 'Failed to generate PDF');
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safeName = workerName.replace(/[^a-z0-9]/gi, '-').toLowerCase();
+      a.href = url;
+      a.download = `attestation-rejections-${safeName}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(err.message || 'Failed to export PDF');
+    } finally {
+      setExportingUserPdf(null);
     }
   };
 
@@ -368,6 +403,7 @@ export default function AttestationRejectionsReportPage() {
                     <th className="text-left px-4 py-3 font-semibold text-gray-600">Reason</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-600">Notes</th>
                     <th className="text-left px-4 py-3 font-semibold text-gray-600">Submitted</th>
+                    <th className="px-4 py-3" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -416,6 +452,15 @@ export default function AttestationRejectionsReportPage() {
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap text-gray-500 text-xs">
                         {fmtDateTime(r.created_at)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => handleExportUserPdf(r.user_id, r.worker_name)}
+                          disabled={exportingUserPdf === r.user_id}
+                          className="liquid-btn-glass liquid-btn-sm disabled:opacity-40 whitespace-nowrap"
+                        >
+                          {exportingUserPdf === r.user_id ? '…' : 'PDF'}
+                        </button>
                       </td>
                     </tr>
                   ))}

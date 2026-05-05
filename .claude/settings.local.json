@@ -62,7 +62,10 @@
       "Bash(node -e \":*)",
       "Bash(xargs wc *)",
       "Read(//c/Users/sebas/.claude/**)",
-      "Read(//c/Users/sebas/.claude/skills/**)"
+      "Read(//c/Users/sebas/.claude/skills/**)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\sebas\\\\OneDrive\\\\Escritorio\\\\PDS - copia - copia\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\sebas\\\\OneDrive\\\\Escritorio\\\\PDS - copia - copia\" -Recurse -Directory -ErrorAction SilentlyContinue | Select-Object -First 30 | ForEach-Object { $_.FullName })"
     ],
     "deny": [],
     "ask": []

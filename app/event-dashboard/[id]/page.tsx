@@ -5296,7 +5296,7 @@ export default function EventDashboardPage() {
                     disabled={loadingTeam}
                     className="bg-gray-800 hover:bg-gray-900 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                   >
-                    Close Event
+                    Complete Event
                   </button>
                   <button
                     onClick={() => loadTeam(false)}
@@ -7519,9 +7519,9 @@ export default function EventDashboardPage() {
           >
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <div>
-                <h3 className="text-xl font-semibold text-gray-900">Close Event — Not Invited</h3>
+                <h3 className="text-xl font-semibold text-gray-900">Close Event</h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  Vendors in this venue&apos;s region who were not invited to the event
+                  Event Team Completed
                   {!loadingCloseEvent && ` (${closeEventVendors.length})`}
                 </p>
               </div>

@@ -27,6 +27,7 @@ type RejectionQueryRow = {
   id: string;
   rejection_reason: string;
   rejection_notes: string | null;
+  signature_data: string | null;
   created_at: string;
   user_id: string;
   event_id: string | null;
@@ -56,9 +57,21 @@ type RejectionQueryRow = {
   }>;
 };
 
+type ShiftData = {
+  clock_in: string | null;
+  clock_out: string | null;
+  meal1_start: string | null;
+  meal1_end: string | null;
+  meal2_start: string | null;
+  meal2_end: string | null;
+  meal3_start: string | null;
+  meal3_end: string | null;
+};
+
 type MappedRow = {
   id: string;
   user_id: string;
+  time_entry_id: string;
   worker_name: string;
   worker_email: string;
   worker_role: string;
@@ -70,9 +83,17 @@ type MappedRow = {
   event_date: string;
   clock_in: string | null;
   clock_out: string | null;
+  meal1_start: string | null;
+  meal1_end: string | null;
+  meal2_start: string | null;
+  meal2_end: string | null;
+  meal3_start: string | null;
+  meal3_end: string | null;
+  total_hours: string;
   rejection_reason: string;
   rejection_notes: string;
   created_at: string;
+  signatureData: string | null;
 };
 
 async function getAuthedUser(req: NextRequest) {
@@ -96,6 +117,40 @@ function dec(value: unknown): string {
 function one<T>(value: MaybeArray<T>): T | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function parseSignatureDataUrl(value: string): { format: "png" | "jpeg"; bytes: Buffer } | null {
+  const match = value.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
+  if (!match) return null;
+  const rawFormat = match[1].toLowerCase();
+  const normalized = rawFormat === "jpg" ? "jpeg" : rawFormat;
+  if (normalized !== "png" && normalized !== "jpeg") return null;
+  try { return { format: normalized, bytes: Buffer.from(match[2], "base64") }; } catch { return null; }
+}
+
+function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+function calcHours(shift: Pick<MappedRow, "clock_in" | "clock_out" | "meal1_start" | "meal1_end" | "meal2_start" | "meal2_end" | "meal3_start" | "meal3_end">): string {
+  if (!shift.clock_in || !shift.clock_out) return "—";
+  const grossMs = new Date(shift.clock_out).getTime() - new Date(shift.clock_in).getTime();
+  if (grossMs <= 0) return "0:00";
+  let mealMs = 0;
+  const meals = [
+    [shift.meal1_start, shift.meal1_end],
+    [shift.meal2_start, shift.meal2_end],
+    [shift.meal3_start, shift.meal3_end],
+  ];
+  for (const [s, e] of meals) {
+    if (s && e) mealMs += Math.max(new Date(e).getTime() - new Date(s).getTime(), 0);
+  }
+  const netMs = Math.max(grossMs - mealMs, 0);
+  const totalMin = Math.floor(netMs / 60000);
+  return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, "0")}`;
 }
 
 function fmtDate(iso: string | null | undefined): string {
@@ -174,13 +229,21 @@ async function buildRejectionsPdf(
   y -= 16;
 
   // ── Column layout ──────────────────────────────────────────────────────────
+  const showThirdMeal = rows.some(r => r.meal3_start || r.meal3_end);
+
   const cols = [
-    { header: "Event",          width: 160 },
-    { header: "Event Date",     width: 76  },
-    { header: "Clock In",       width: 108 },
-    { header: "Clock Out",      width: 108 },
-    { header: "Reason",         width: 110 },
-    { header: "Notes",          width: 166 },
+    { header: "Event",     width: 115 },
+    { header: "Date",      width: 62  },
+    { header: "In",        width: 62  },
+    { header: "M1 Start",  width: 50  },
+    { header: "M1 End",    width: 50  },
+    { header: "M2 Start",  width: 50  },
+    { header: "M2 End",    width: 50  },
+    ...(showThirdMeal ? [{ header: "M3 Start", width: 50 }, { header: "M3 End", width: 50 }] : []),
+    { header: "Out",       width: 62  },
+    { header: "Hrs",       width: 38, align: "right" as const },
+    { header: "Reason",    width: 80  },
+    { header: "Notes",     width: 85  },
   ];
   const totalColWidth = cols.reduce((s, c) => s + c.width, 0);
   const scale = contentWidth / totalColWidth;
@@ -261,21 +324,61 @@ async function buildRejectionsPdf(
 
     // Column headers
     drawRow(
-      sc.map(c => ({ text: c.header, width: c.width })),
+      sc.map(c => ({ text: c.header, width: c.width, align: c.align })),
       { bold: true, size: 7.5, bg: { r: 0.94, g: 0.96, b: 0.99 } }
     );
     drawDivider(1);
 
     // Data rows
     for (const r of worker.rows) {
-      drawRow([
-        { text: r.event_name || "—",               width: sc[0].width },
-        { text: fmtDate(r.event_date),              width: sc[1].width },
-        { text: fmtDateTime(r.clock_in),            width: sc[2].width },
-        { text: fmtDateTime(r.clock_out),           width: sc[3].width },
-        { text: r.rejection_reason || "—",          width: sc[4].width },
-        { text: r.rejection_notes || "—",           width: sc[5].width },
-      ]);
+      const cells: Array<{ text: string; width: number; align?: "left" | "right" }> = [
+        { text: r.event_name || "—",      width: sc[0].width },
+        { text: fmtDate(r.event_date),    width: sc[1].width },
+        { text: fmtTime(r.clock_in),      width: sc[2].width },
+        { text: fmtTime(r.meal1_start),   width: sc[3].width },
+        { text: fmtTime(r.meal1_end),     width: sc[4].width },
+        { text: fmtTime(r.meal2_start),   width: sc[5].width },
+        { text: fmtTime(r.meal2_end),     width: sc[6].width },
+      ];
+      let idx = 7;
+      if (showThirdMeal) {
+        cells.push({ text: fmtTime(r.meal3_start), width: sc[idx].width });
+        cells.push({ text: fmtTime(r.meal3_end),   width: sc[idx + 1].width });
+        idx += 2;
+      }
+      cells.push({ text: fmtTime(r.clock_out),        width: sc[idx].width });
+      cells.push({ text: r.total_hours,               width: sc[idx + 1].width, align: "right" });
+      cells.push({ text: r.rejection_reason || "—",   width: sc[idx + 2].width });
+      cells.push({ text: r.rejection_notes  || "—",   width: sc[idx + 3].width });
+      drawRow(cells);
+
+      if (r.signatureData) {
+        const parsed = parseSignatureDataUrl(r.signatureData);
+        if (parsed) {
+          try {
+            const embedded = parsed.format === "png"
+              ? await pdfDoc.embedPng(parsed.bytes)
+              : await pdfDoc.embedJpg(parsed.bytes);
+            const maxSigWidth = Math.min(220, contentWidth / 2);
+            const maxSigHeight = 44;
+            const sigScale = Math.min(maxSigWidth / embedded.width, maxSigHeight / embedded.height, 1);
+            const drawWidth = embedded.width * sigScale;
+            const drawHeight = embedded.height * sigScale;
+            ensureSpace(drawHeight + 16);
+            page.drawText("Signature:", {
+              x: leftMargin + 4, y, size: 7, font, color: rgb(0.35, 0.35, 0.35),
+            });
+            y -= 9;
+            page.drawImage(embedded, {
+              x: leftMargin + 4, y: y - drawHeight, width: drawWidth, height: drawHeight,
+            });
+            y -= drawHeight + 5;
+          } catch {
+            // skip on image decode failure
+          }
+        }
+      }
+
       drawDivider();
     }
 
@@ -315,6 +418,7 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const from = searchParams.get("from");
     const to = searchParams.get("to");
+    const userId = searchParams.get("user_id");
 
     let query = supabaseAdmin
       .from("attestation_rejections")
@@ -322,6 +426,7 @@ export async function GET(req: NextRequest) {
         id,
         rejection_reason,
         rejection_notes,
+        signature_data,
         created_at,
         user_id,
         event_id,
@@ -337,8 +442,9 @@ export async function GET(req: NextRequest) {
       `)
       .order("created_at", { ascending: false });
 
-    if (from) query = query.gte("created_at", `${from}T00:00:00.000Z`);
-    if (to)   query = query.lte("created_at", `${to}T23:59:59.999Z`);
+    if (from)   query = query.gte("created_at", `${from}T00:00:00.000Z`);
+    if (to)     query = query.lte("created_at", `${to}T23:59:59.999Z`);
+    if (userId) query = query.eq("user_id", userId);
 
     const { data: rows, error } = await query;
     if (error) throw new Error(error.message);
@@ -351,7 +457,7 @@ export async function GET(req: NextRequest) {
       .map(r => one(r.time_entries)?.timestamp || null)
       .filter((t): t is string => typeof t === "string" && t.length > 0);
 
-    const shiftByClockOutId = new Map<string, { clock_in: string | null; clock_out: string | null }>();
+    const shiftByClockOutId = new Map<string, ShiftData>();
 
     if (affectedUserIds.length > 0 && clockOutTimestamps.length > 0) {
       const minClockOut = new Date(clockOutTimestamps.reduce((min, cur) => (cur < min ? cur : min)));
@@ -362,7 +468,7 @@ export async function GET(req: NextRequest) {
         .from("time_entries")
         .select("id, user_id, event_id, action, timestamp")
         .in("user_id", affectedUserIds)
-        .in("action", ["clock_in", "clock_out"])
+        .in("action", ["clock_in", "clock_out", "meal_start", "meal_end"])
         .gte("timestamp", minClockOut.toISOString())
         .lte("timestamp", maxClockOut)
         .order("timestamp", { ascending: true });
@@ -378,14 +484,39 @@ export async function GET(req: NextRequest) {
 
       for (const userEntries of entriesByUser.values()) {
         let openClockIn: any = null;
+        let meals: Array<{ start: string | null; end: string | null }> = [];
+        let currentMealStart: string | null = null;
+
         for (const entry of userEntries) {
-          if (entry.action === "clock_in") { openClockIn = entry; continue; }
-          if (entry.action === "clock_out") {
+          if (entry.action === "clock_in") {
+            openClockIn = entry;
+            meals = [];
+            currentMealStart = null;
+            continue;
+          }
+          if (entry.action === "meal_start" && openClockIn) {
+            currentMealStart = entry.timestamp;
+            continue;
+          }
+          if (entry.action === "meal_end" && openClockIn) {
+            meals.push({ start: currentMealStart, end: entry.timestamp });
+            currentMealStart = null;
+            continue;
+          }
+          if (entry.action === "clock_out" && openClockIn) {
+            if (currentMealStart) { meals.push({ start: currentMealStart, end: null }); currentMealStart = null; }
             shiftByClockOutId.set(entry.id, {
-              clock_in: openClockIn?.timestamp || null,
-              clock_out: entry.timestamp || null,
+              clock_in:    openClockIn.timestamp || null,
+              clock_out:   entry.timestamp || null,
+              meal1_start: meals[0]?.start ?? null,
+              meal1_end:   meals[0]?.end   ?? null,
+              meal2_start: meals[1]?.start ?? null,
+              meal2_end:   meals[1]?.end   ?? null,
+              meal3_start: meals[2]?.start ?? null,
+              meal3_end:   meals[2]?.end   ?? null,
             });
             openClockIn = null;
+            meals = [];
           }
         }
       }
@@ -404,6 +535,7 @@ export async function GET(req: NextRequest) {
       return {
         id: row.id,
         user_id: row.user_id,
+        time_entry_id: row.time_entry_id,
         worker_name: fullName,
         worker_email: worker?.email || "",
         worker_role: worker?.role || "",
@@ -413,11 +545,28 @@ export async function GET(req: NextRequest) {
         event_city: event?.city || "",
         event_state: event?.state || "",
         event_date: event?.event_date || "",
-        clock_in: shift?.clock_in || null,
-        clock_out: shift?.clock_out || clockOutEntry?.timestamp || null,
+        clock_in:    shift?.clock_in    || null,
+        clock_out:   shift?.clock_out   || clockOutEntry?.timestamp || null,
+        meal1_start: shift?.meal1_start ?? null,
+        meal1_end:   shift?.meal1_end   ?? null,
+        meal2_start: shift?.meal2_start ?? null,
+        meal2_end:   shift?.meal2_end   ?? null,
+        meal3_start: shift?.meal3_start ?? null,
+        meal3_end:   shift?.meal3_end   ?? null,
+        total_hours: calcHours({
+          clock_in:    shift?.clock_in    || null,
+          clock_out:   shift?.clock_out   || clockOutEntry?.timestamp || null,
+          meal1_start: shift?.meal1_start ?? null,
+          meal1_end:   shift?.meal1_end   ?? null,
+          meal2_start: shift?.meal2_start ?? null,
+          meal2_end:   shift?.meal2_end   ?? null,
+          meal3_start: shift?.meal3_start ?? null,
+          meal3_end:   shift?.meal3_end   ?? null,
+        }),
         rejection_reason: row.rejection_reason,
         rejection_notes: row.rejection_notes || "",
         created_at: row.created_at,
+        signatureData: row.signature_data ? String(row.signature_data).trim() || null : null,
       };
     });
 
