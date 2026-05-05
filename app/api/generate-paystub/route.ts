@@ -7,6 +7,7 @@ import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
+import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -202,30 +203,6 @@ export async function POST(req: NextRequest) {
       return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
     };
 
-    // San Diego per-day OT/DT hour split: 0-8 regular, 8-12 OT, 12+ DT.
-    const splitSanDiegoHours = (hours: number): { reg: number; ot: number; dt: number } => ({
-      reg: Math.min(hours, 8),
-      ot: Math.max(0, Math.min(hours, 12) - 8),
-      dt: Math.max(0, hours - 12),
-    });
-
-    // Base hourly pay for SD applying per-day OT rules + optional weekly OT conversion.
-    // weeklyOTHoursToConvert = how many daily-regular hours to re-class as OT (weekly 40h rule).
-    const computeSanDiegoBasePay = (
-      hours: number,
-      baseRate: number,
-      weeklyOTHoursToConvert = 0
-    ): { basePay: number; regHours: number; otHours: number; dtHours: number } => {
-      const { reg, ot, dt } = splitSanDiegoHours(hours);
-      const extraOT = Math.min(reg, weeklyOTHoursToConvert);
-      const finalReg = reg - extraOT;
-      const finalOT = ot + extraOT;
-      const basePay = Math.round(
-        (finalReg * baseRate + finalOT * baseRate * 1.5 + dt * baseRate * 2) * 100
-      ) / 100;
-      return { basePay, regHours: finalReg, otHours: finalOT, dtHours: dt };
-    };
-
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
     const getTimesheetHoursForWorker = (event: any, worker: any): number => {
       const eventId = (event?.id || "").toString();
@@ -240,6 +217,7 @@ export async function POST(req: NextRequest) {
     const getPayrollInputsForEvent = (event: any) => {
       const eventPaymentSummary = event?.event_payment || event?.eventPayment || event?.event_payment_summary || null;
       const eventState = normalizeState(event?.state) || paystubState;
+      const isEventSD = isSanDiegoRegion(event);
       const fallbackRates: Record<string, number> = { CA: 17.28, NY: 17.0, AZ: 14.7, WI: 15.0 };
       const stateBaseRate = dbStateRates[eventState] || fallbackRates[eventState] || 17.28;
       const baseRate = Number(eventPaymentSummary?.base_rate || stateBaseRate);
@@ -247,6 +225,7 @@ export async function POST(req: NextRequest) {
       const configuredCommissionPoolPercent = Number(event?.commission_pool || 0);
       const fallbackCommissionPoolPercent = Number(getRegionFallbackCommissionPoolPercent(event) || 0);
       const resolvedCommissionPoolPercent =
+        isEventSD ? 0 :
         (Number.isFinite(savedCommissionPoolPercent) && savedCommissionPoolPercent > 0 ? savedCommissionPoolPercent : 0) ||
         (Number.isFinite(configuredCommissionPoolPercent) && configuredCommissionPoolPercent > 0 ? configuredCommissionPoolPercent : 0) ||
         (Number.isFinite(fallbackCommissionPoolPercent) && fallbackCommissionPoolPercent > 0 ? fallbackCommissionPoolPercent : 0);
@@ -259,12 +238,13 @@ export async function POST(req: NextRequest) {
       const memberCount = workersWithHours.length > 0 ? workersWithHours.length : workers.length;
 
       // Commission pool in dollars: event_payments first, then compute from events table.
-      let commissionPoolDollars =
-        Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
-        (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
-        0;
+      let commissionPoolDollars = isEventSD
+        ? 0
+        : Number(eventPaymentSummary?.commission_pool_dollars || 0) ||
+          (Number(eventPaymentSummary?.net_sales || 0) * resolvedCommissionPoolPercent) ||
+          0;
 
-      if (commissionPoolDollars === 0 && resolvedCommissionPoolPercent > 0) {
+      if (!isEventSD && commissionPoolDollars === 0 && resolvedCommissionPoolPercent > 0) {
         const ticketSales = Number(event?.ticket_sales || 0);
         const eventTips = Number(event?.tips || 0);
         const eventFees = Number(event?.fees || 0);
@@ -277,7 +257,7 @@ export async function POST(req: NextRequest) {
       }
 
       const totalTipsEvent = Number(eventPaymentSummary?.total_tips || 0) || Number(event?.tips || 0);
-      const commissionEligibleMembers = workers.flatMap((w: any) => {
+      const commissionEligibleMembers = isEventSD ? [] : workers.flatMap((w: any) => {
         const workerId = (w?.user_id || "").toString();
         const workerHours = getActualHoursForWorker(event, w);
         if (
@@ -1526,7 +1506,7 @@ export async function POST(req: NextRequest) {
         const usesPeriodRate = isPeriodRateState(eventState);
         const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[workerUserId];
         const distributedCommissionShare =
-          !isTrailersDivision(worker?.division) && workerUserId
+          !isEventSD && !isTrailersDivision(worker?.division) && workerUserId
             ? Number(commissionSharesByUser[workerUserId] || 0)
             : 0;
         const distributedTipsShare =
@@ -1545,32 +1525,26 @@ export async function POST(req: NextRequest) {
         let sdRegHours = 0;
         let sdOtHours = 0;
         let sdDtHours = 0;
+        let sdRegPay = 0;
+        let sdOtPay = 0;
+        let sdDtPay = 0;
 
         if (isEventSD) {
-          // SD daily OT rules: 0-8 reg, 8-12 OT (1.5x), 12+ DT (2x); no rest pay.
-          // Weekly rule: hours beyond 40/week convert daily-regular to OT.
-          const sdWeeklyOTToConvert = Math.max(
-            0,
-            Math.min(
-              Math.min(payrollHours, 8), // can only convert daily-regular hours
-              (priorWeeklyHours + payrollHours) > 40 ? (priorWeeklyHours + payrollHours) - 40 : 0
-            )
-          );
-          const { basePay, regHours, otHours, dtHours } = computeSanDiegoBasePay(
+          const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
             payrollHours,
             baseRate,
-            sdWeeklyOTToConvert
+            priorWeeklyHours
           );
-          sdRegHours = regHours;
-          sdOtHours = otHours;
-          sdDtHours = dtHours;
-          extAmtOnRegRate = basePay;
-          commissionAmt =
-            !isTrailersDivision(worker?.division) && payrollHours > 0 && commissionEligibleCount > 0
-              ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
-              : 0;
-          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
-          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionAmt / payrollHours) : baseRate;
+          sdRegHours = sanDiegoBreakdown.regularHours;
+          sdOtHours = sanDiegoBreakdown.overtimeHours;
+          sdDtHours = sanDiegoBreakdown.doubletimeHours;
+          sdRegPay = sanDiegoBreakdown.regularPay;
+          sdOtPay = sanDiegoBreakdown.overtimePay;
+          sdDtPay = sanDiegoBreakdown.doubletimePay;
+          extAmtOnRegRate = sanDiegoBreakdown.totalPay;
+          commissionAmt = 0;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate : 0;
+          loadedRateBase = payrollHours > 0 ? sanDiegoBreakdown.blendedRate : baseRate;
         } else if (azNyMode) {
           const isEligibleThisWorker =
             !!worker &&
@@ -1610,30 +1584,36 @@ export async function POST(req: NextRequest) {
             : null;
         const tips = roundPayrollAmount(distributedTipsShare);
         const reportCommissionShare = roundPayrollAmount(
-          usesPeriodRate
+          isEventSD
+            ? 0
+            : usesPeriodRate
             ? Number(periodWorker?.commissionPay || 0)
             : distributedCommissionShare
         );
-        const reportVariableIncentive = usesPeriodRate
+        const reportVariableIncentive = isEventSD
+          ? 0
+          : usesPeriodRate
           ? roundPayrollAmount(Number(periodWorker?.variableIncentive || 0))
           : storedVariableIncentive != null
             ? roundPayrollAmount(storedVariableIncentive)
             : roundPayrollAmount(Math.max(0, totalFinalCommissionAmt - distributedCommissionShare));
         // Commission report "Final Pay" should include commission pay plus tips/rest,
         // matching the paystub generator UI/export semantics.
-        const reportFinalCommissionAmt = usesPeriodRate
-          ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
-          : roundPayrollAmount(totalFinalCommissionAmt);
-        const commission = roundPayrollAmount(reportFinalCommissionAmt);
+        const reportFinalCommissionAmt = isEventSD
+          ? roundPayrollAmount(totalFinalCommissionAmt)
+          : usesPeriodRate
+            ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
+            : roundPayrollAmount(totalFinalCommissionAmt);
+        const commission = roundPayrollAmount(isEventSD ? 0 : reportFinalCommissionAmt);
         const other = Number(worker?.adjustment_amount || 0);
 
-        const regPay = Number(paymentData?.regular_pay || 0);
-        const otPay = Number(paymentData?.overtime_pay || 0);
-        const dtPay = Number(paymentData?.doubletime_pay || 0);
+        const regPay = isEventSD ? sdRegPay : Number(paymentData?.regular_pay || 0);
+        const otPay = isEventSD ? sdOtPay : Number(paymentData?.overtime_pay || 0);
+        const dtPay = isEventSD ? sdDtPay : Number(paymentData?.doubletime_pay || 0);
 
         const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD) : 0);
         const reportFinalPay = roundPayrollAmount(
-          reportCommissionShare + reportVariableIncentive + tips + restBreak
+          (isEventSD ? reportFinalCommissionAmt : reportCommissionShare + reportVariableIncentive) + tips + restBreak
         );
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
@@ -1674,24 +1654,26 @@ export async function POST(req: NextRequest) {
           commissionEligibleCount > 0 &&
           distributedCommissionShare > 0;
         const pdfCommissionShare = usesPeriodRate
-          ? reportCommissionShare
+          ? (isEventSD ? 0 : reportCommissionShare)
           : isEligibleForPool
             ? reportCommissionShare
-            : reportFinalCommissionAmt;
+            : isEventSD
+              ? 0
+              : reportFinalCommissionAmt;
         const pdfVariableIncentive = usesPeriodRate
-          ? reportVariableIncentive
+          ? (isEventSD ? 0 : reportVariableIncentive)
           : isEligibleForPool
             ? reportVariableIncentive
             : 0;
         totalCommission += pdfCommissionShare;
         totalVariableIncentive += pdfVariableIncentive;
-        totalFinalCommission += reportFinalCommissionAmt;
+        totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += computedTotalGrossPay;
-        totalRegularPayAmount += isEventSD ? roundPayrollAmount(sdRegHours * baseRate) : regPay;
-        totalOvertimePayAmount += isEventSD ? roundPayrollAmount(sdOtHours * baseRate * 1.5) : otPay;
-        totalDoubletimePayAmount += isEventSD ? roundPayrollAmount(sdDtHours * baseRate * 2) : dtPay;
+        totalRegularPayAmount += isEventSD ? sdRegPay : regPay;
+        totalOvertimePayAmount += isEventSD ? sdOtPay : otPay;
+        totalDoubletimePayAmount += isEventSD ? sdDtPay : dtPay;
         // Travel pay = (differentialMiles × 2 / 60) × loadedRate — mirrors HR dashboard formula
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
         const travelPay = (differentialMiles * 2 / 60) * loadedRateBase;

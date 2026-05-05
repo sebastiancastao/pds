@@ -4,7 +4,9 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
+import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
 import { supabase } from "@/lib/supabase";
 import { safeDecrypt } from "@/lib/encryption";
 import "@/app/global-calendar/dashboard-styles.css";
@@ -181,7 +183,8 @@ function HRDashboardContent() {
     return Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
   };
   const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
-  const getRestBreakAmount = (actualHours: number, stateCode: string) => {
+  const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false) => {
+    if (eventSanDiego) return 0;
     if (actualHours <= 0) return 0;
     return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
   };
@@ -535,12 +538,12 @@ function HRDashboardContent() {
 
       // AZ/NY: fetch prior weekly hours for OT rate display (Mon..day before event)
       let weeklyHoursMap: Record<string, Record<string, number>> = {};
-      const azNyEvents = filtered.filter((e: any) => {
+      const weeklyTrackedEvents = filtered.filter((e: any) => {
         const st = normalizeState(e.state);
-        return st === "AZ" || st === "NY";
+        return st === "AZ" || st === "NY" || isSanDiegoRegion(e);
       });
-      if (azNyEvents.length > 0) {
-        const weeklyHoursRequests = azNyEvents.map((e: any) => {
+      if (weeklyTrackedEvents.length > 0) {
+        const weeklyHoursRequests = weeklyTrackedEvents.map((e: any) => {
           const epd = paymentsByEventId[e.id];
           const userIds = epd?.vendorPayments
             ? epd.vendorPayments.map((vp: any) => vp.user_id).filter(Boolean)
@@ -584,7 +587,9 @@ function HRDashboardContent() {
         const adjustedGrossAmount = hasPersistedAdjustedGross
           ? Math.max(persistedAdjustedGrossRaw, 0)
           : Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
+        const isEventSD = isSanDiegoRegion(eventInfo);
         const commissionPoolPercent =
+          isEventSD ? 0 :
           Number(eventInfo.commission_pool ?? eventPaymentSummary.commission_pool_percent ?? 0) || 0;
         const eventCommissionDollarsRaw =
           adjustedGrossAmount * commissionPoolPercent;
@@ -686,6 +691,7 @@ function HRDashboardContent() {
                   id: eventId,
                   name: eventInfo.event_name,
                   date: eventInfo.event_date,
+                  isSanDiegoHourly: isEventSD,
                   commissionPerVendor,
                   vendorsWithHours,
                   state: eventInfo.state,
@@ -712,6 +718,7 @@ function HRDashboardContent() {
             id: eventId,
             name: eventInfo.event_name,
             date: eventInfo.event_date,
+            isSanDiegoHourly: isEventSD,
             commissionPerVendor: 0,
             vendorsWithHours: 0,
             state: eventInfo.state,
@@ -739,7 +746,9 @@ function HRDashboardContent() {
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
-        const commissionPoolDollars = eventCommissionDollars > 0
+        const commissionPoolDollars = isEventSD
+          ? 0
+          : eventCommissionDollars > 0
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
         const isAZorNY = eventState === "AZ" || eventState === "NY";
@@ -807,9 +816,9 @@ function HRDashboardContent() {
             const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
             const _divDisplay = normalizeDivision(memberDivision);
             const _isExplicitNonVendorDisplay = _divDisplay !== '' && !isVendorDivision(_divDisplay);
-            const commissionShare = _isExplicitNonVendorDisplay ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
+            const commissionShare = (isEventSD || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
-            const priorWeeklyHours = isAZorNY ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
+            const priorWeeklyHours = (isAZorNY || isEventSD) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
             const extAmtRegular = Math.round(roundedPayrollHours * baseRate * 100) / 100;
             const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * baseRate * 1.5 * 100) / 100;
@@ -820,8 +829,30 @@ function HRDashboardContent() {
             let extAmtOnRegRate = extAmtOnRegRateNonAzNy;
             let totalFinalCommissionAmt = 0;
             let loadedRate = 0;
+            let regularHours = roundedPayrollHours;
+            let overtimeHours = 0;
+            let overtimePay = 0;
+            let doubletimeHours = 0;
+            let doubletimePay = 0;
+            let regularPay = extAmtOnRegRateNonAzNy;
 
-            if (isAZorNY) {
+            if (isEventSD) {
+              const sanDiegoBreakdown = computeSanDiegoHourlyBreakdown(
+                roundedPayrollHours,
+                baseRate,
+                priorWeeklyHours
+              );
+              regularHours = sanDiegoBreakdown.regularHours;
+              overtimeHours = sanDiegoBreakdown.overtimeHours;
+              overtimePay = sanDiegoBreakdown.overtimePay;
+              doubletimeHours = sanDiegoBreakdown.doubletimeHours;
+              doubletimePay = sanDiegoBreakdown.doubletimePay;
+              regularPay = sanDiegoBreakdown.regularPay;
+              extAmtOnRegRate = sanDiegoBreakdown.totalPay;
+              totalFinalCommissionAmt = sanDiegoBreakdown.totalPay;
+              loadedRate = sanDiegoBreakdown.blendedRate;
+              commissionAmt = 0;
+            } else if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
               const prelimCommission = (!isTrailers && roundedPayrollHours > 0 && commissionShare > 0)
                 ? Math.max(0, commissionShare - extAmtOnRegRateNonAzNy)
@@ -863,14 +894,20 @@ function HRDashboardContent() {
               totalFinalCommissionAmt = roundedPayrollHours > 0 ? extAmtOnRegRateNonAzNy + commissionAmt : 0;
             }
 
+            if (!isEventSD) {
+              regularPay = extAmtOnRegRate;
+            }
+
             const totalFinalCommissionForLoadedRate =
               adjustmentAmount !== 0
                 ? (totalFinalCommissionAmt + adjustmentAmount)
                 : totalFinalCommissionAmt;
             const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
-            loadedRate = roundedPayrollHours > 0
-              ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
-              : 0;
+            loadedRate = isEventSD
+              ? (roundedPayrollHours > 0 ? totalFinalCommissionAmt / roundedPayrollHours : baseRate)
+              : roundedPayrollHours > 0
+                ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
+                : 0;
 
             // Tips: respect per-vendor overrides/deletions, then equal or prorated, then fall back to stored value
             const tips = payment.tips_deleted === true
@@ -881,7 +918,7 @@ function HRDashboardContent() {
               ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState);
+            const restBreak = getRestBreakAmount(actualHours, eventState, isEventSD);
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
@@ -891,14 +928,14 @@ function HRDashboardContent() {
               email: user?.email || 'N/A',
               division: memberDivision,
               actualHours,
-              regularHours: roundedPayrollHours,
+              regularHours,
               commissionShare,
-              regularPay: extAmtOnRegRate,
-              overtimeHours: 0,
-              overtimePay: 0,
+              regularPay,
+              overtimeHours,
+              overtimePay,
               otRate,
-              doubletimeHours: 0,
-              doubletimePay: 0,
+              doubletimeHours,
+              doubletimePay,
               commissions: commissionAmt,
               commissionDeleted: payment.commission_deleted === true,
               commissionOverride: payment.commission_override != null ? Number(payment.commission_override) : null,
@@ -914,6 +951,7 @@ function HRDashboardContent() {
               totalFinalCommissionAmt,
               restBreak,
               totalGrossPay: finalPay,
+              isSanDiegoHourly: isEventSD,
             };
           })
         );
@@ -940,6 +978,7 @@ function HRDashboardContent() {
           id: eventId,
           name: eventInfo.event_name,
           date: eventInfo.event_date,
+          isSanDiegoHourly: isEventSD,
           commissionPerVendor,
           vendorsWithHours,
           state: eventInfo.state,
@@ -1148,6 +1187,13 @@ function HRDashboardContent() {
     const regRate = Number(payment?.regRate ?? event?.baseRate ?? 0);
     const hours = Number(payment?.actualHours || 0);
     const isTrailers = (payment?.division || "").toString().toLowerCase().trim() === "trailers";
+    const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+    const regularHours = Number(payment?.regularHours || 0);
+    const regularPay = Number(payment?.regularPay || 0);
+    const overtimeHours = Number(payment?.overtimeHours || 0);
+    const overtimePay = Number(payment?.overtimePay || 0);
+    const doubletimeHours = Number(payment?.doubletimeHours || 0);
+    const doubletimePay = Number(payment?.doubletimePay || 0);
 
     if (usesPeriodRateBreakdown(stateCode)) {
       const periodWorker = payPeriodCommission.byEvent?.[event?.id]?.[payment?.userId];
@@ -1165,10 +1211,35 @@ function HRDashboardContent() {
         hours,
         isTrailers,
         usesPeriodRate: true,
+        regularHours,
+        regularPay,
+        overtimeHours,
+        overtimePay,
+        doubletimeHours,
+        doubletimePay,
       };
     }
 
     const totalFinalCommissionAmt = Number(payment?.totalFinalCommissionAmt ?? 0);
+    if (isEventSD) {
+      const hourlyPay = regularPay + overtimePay + doubletimePay;
+      return {
+        rateInEffect: hours > 0 ? (hourlyPay / hours) : Number(payment?.loadedRate ?? regRate),
+        commissionPay: 0,
+        variableIncentive: 0,
+        commissionPaidTotal: hourlyPay,
+        regRate,
+        hours,
+        isTrailers,
+        usesPeriodRate: false,
+        regularHours,
+        regularPay,
+        overtimeHours,
+        overtimePay,
+        doubletimeHours,
+        doubletimePay,
+      };
+    }
     const commissionPay = Number(payment?.commissionShare ?? event?.commissionPerVendor ?? 0);
     const variableIncentive = hours > 0 && !isTrailers
       ? Math.max(0, totalFinalCommissionAmt - commissionPay)
@@ -1183,6 +1254,12 @@ function HRDashboardContent() {
       hours,
       isTrailers,
       usesPeriodRate: false,
+      regularHours,
+      regularPay,
+      overtimeHours,
+      overtimePay,
+      doubletimeHours,
+      doubletimePay,
     };
   }, [payPeriodCommission]);
 
@@ -1394,6 +1471,7 @@ function HRDashboardContent() {
         if (eventPayments.length > 0) {
           eventPayments.forEach((p: any) => {
             const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
+            const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
             const hideRest = false;
             const breakdown = getDisplayedPaymentBreakdown(event, p);
             const regRate = breakdown.regRate;
@@ -1435,8 +1513,14 @@ function HRDashboardContent() {
               'Rate in Effect': formatPayrollMoney(loadedRate),
               'Hours': hoursHHMM,
               'Hours in Decimal': hoursInDecimal,
-              'Commission Pay': Number(displayedCommissionPay.toFixed(2)),
-              'Variable Incentive': Number(variableIncentive.toFixed(2)),
+              'Regular Time Hours': isEventSD ? Number(breakdown.regularHours.toFixed(2)) : 0,
+              'Regular Time Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.regularPay).toFixed(2)) : 0,
+              'Overtime Hours': isEventSD ? Number(breakdown.overtimeHours.toFixed(2)) : 0,
+              'Overtime Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2)) : 0,
+              'Double Time Hours': isEventSD ? Number(breakdown.doubletimeHours.toFixed(2)) : 0,
+              'Double Time Pay': isEventSD ? Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2)) : 0,
+              'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
+              'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
               'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
               'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
               'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -2447,6 +2531,14 @@ function HRDashboardContent() {
                     const approval = getMileageApproval(event.id, payment.userId);
                     return sum + breakdown.commissionPaidTotal + Number(payment.tips || 0) + Number(payment.restBreak || 0) + Number(payment.adjustmentAmount || 0) + (approval.mileage ? _mp : 0) + (approval.travel ? _tp : 0);
                   }, 0);
+                  const vendorHasSanDiegoEvents = vendor.events.some(({ event }) => event?.isSanDiegoHourly === true || isSanDiegoRegion(event));
+                  const vendorHasNonSanDiegoEvents = vendor.events.some(({ event }) => !(event?.isSanDiegoHourly === true || isSanDiegoRegion(event)));
+                  const showVendorHourlyColumns = vendorHasSanDiegoEvents;
+                  const showVendorCommissionColumns = vendorHasNonSanDiegoEvents;
+                  const vendorMiddleColSpan =
+                    (showVendorHourlyColumns ? 3 : 0) +
+                    (showVendorCommissionColumns ? 2 : 0) +
+                    5;
 
                   return (
                     <div key={vendor.userId || vendor.email} className="apple-card">
@@ -2468,8 +2560,19 @@ function HRDashboardContent() {
                               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Venue</th>
                               <th className="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Hours</th>
-                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
-                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
+                              {showVendorHourlyColumns && (
+                                <>
+                                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Regular Time</th>
+                                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Overtime</th>
+                                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Double Time</th>
+                                </>
+                              )}
+                              {showVendorCommissionColumns && (
+                                <>
+                                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
+                                  <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
+                                </>
+                              )}
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tips</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
@@ -2481,6 +2584,7 @@ function HRDashboardContent() {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {vendor.events.map(({ event, venue, city, state, payment }, idx) => {
                               const breakdown = getDisplayedPaymentBreakdown(event, payment);
+                              const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
                               const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
@@ -2497,8 +2601,31 @@ function HRDashboardContent() {
                                   <td className="px-4 py-2 text-sm text-gray-700">{venue}<span className="text-gray-400 ml-1">{city ? `· ${city}` : ''}{state ? `, ${state}` : ''}</span></td>
                                   <td className="px-4 py-2 text-sm text-gray-500">{event.date || '—'}</td>
                                   <td className="px-4 py-2 text-sm text-right">{formatHoursDecimal(Number(payment.actualHours || 0))}</td>
-                                  <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(breakdown.commissionPay)}</td>
-                                  <td className="px-4 py-2 text-sm text-right text-purple-600">${formatPayrollMoney(breakdown.variableIncentive)}</td>
+                                  {showVendorHourlyColumns && (
+                                    <>
+                                      <td className="px-4 py-2 text-sm text-right text-gray-900">
+                                        {isEventSD
+                                          ? `${formatHoursDecimal(breakdown.regularHours)}h / $${formatPayrollMoney(breakdown.regularPay)}`
+                                          : '—'}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-right text-orange-600">
+                                        {isEventSD
+                                          ? `${formatHoursDecimal(breakdown.overtimeHours)}h / $${formatPayrollMoney(breakdown.overtimePay)}`
+                                          : '—'}
+                                      </td>
+                                      <td className="px-4 py-2 text-sm text-right text-rose-600">
+                                        {isEventSD
+                                          ? `${formatHoursDecimal(breakdown.doubletimeHours)}h / $${formatPayrollMoney(breakdown.doubletimePay)}`
+                                          : '—'}
+                                      </td>
+                                    </>
+                                  )}
+                                  {showVendorCommissionColumns && (
+                                    <>
+                                      <td className="px-4 py-2 text-sm text-right text-blue-600">{isEventSD ? '—' : `$${formatPayrollMoney(breakdown.commissionPay)}`}</td>
+                                      <td className="px-4 py-2 text-sm text-right text-purple-600">{isEventSD ? '—' : `$${formatPayrollMoney(breakdown.variableIncentive)}`}</td>
+                                    </>
+                                  )}
                                   <td className="px-4 py-2 text-sm text-right text-orange-600">${formatPayrollMoney(Number(payment.tips || 0))}</td>
                                   <td className="px-4 py-2 text-sm text-right text-green-600">${formatPayrollMoney(Number(payment.restBreak || 0))}</td>
                                   <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(mileagePay)}</td>
@@ -2511,7 +2638,7 @@ function HRDashboardContent() {
                             <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                               <td className="px-4 py-2 uppercase tracking-wide" colSpan={3}>Total</td>
                               <td className="px-4 py-2 text-right">{formatHoursDecimal(vendor.totalHours)}</td>
-                              <td colSpan={7} className="px-4 py-2"></td>
+                              <td colSpan={vendorMiddleColSpan} className="px-4 py-2"></td>
                               <td className="px-4 py-2 text-right">${formatPayrollMoney(vendorDisplayedTotal)}</td>
                             </tr>
                           </tbody>
@@ -2616,18 +2743,30 @@ function HRDashboardContent() {
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
                                             const hideRest = false;
+                                            const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
                                             const showOT = st === "AZ" || st === "NY";
                                             return (
                                               <tr>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rate in Effect</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
-                                                {showOT && (
-                                                  <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
+                                                {isEventSD ? (
+                                                  <>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Regular Time</th>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Overtime</th>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Double Time</th>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rate in Effect</th>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
+                                                    {showOT && (
+                                                      <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
+                                                    )}
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
+                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
+                                                  </>
                                                 )}
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
-                                                <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
                                                 {!hideRest && (
                                                   <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Rest Break</th>
@@ -2663,6 +2802,7 @@ function HRDashboardContent() {
                                               {(() => {
                                                 const st = normalizeState(ev.state || v.state);
                                                 const hideRest = false;
+                                                const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
                                                 const showOT = st === "AZ" || st === "NY";
 
                                                 const breakdown = getDisplayedPaymentBreakdown(ev, p);
@@ -2696,13 +2836,24 @@ function HRDashboardContent() {
                                                 return (
                                                   <>
                                                     <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
-                                                    <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
-                                                    <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
-                                                    {showOT && (
-                                                      <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
+                                                    {isEventSD ? (
+                                                      <>
+                                                        <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
+                                                        <td className="p-2 text-sm text-gray-900">{`${formatHoursDecimal(breakdown.regularHours)}h / $${formatPayrollMoney(breakdown.regularPay)}`}</td>
+                                                        <td className="p-2 text-sm text-orange-600">{`${formatHoursDecimal(breakdown.overtimeHours)}h / $${formatPayrollMoney(breakdown.overtimePay)}`}</td>
+                                                        <td className="p-2 text-sm text-rose-600">{`${formatHoursDecimal(breakdown.doubletimeHours)}h / $${formatPayrollMoney(breakdown.doubletimePay)}`}</td>
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
+                                                        <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
+                                                        {showOT && (
+                                                          <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
+                                                        )}
+                                                        <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
+                                                        <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(variableIncentive)}</td>
+                                                      </>
                                                     )}
-                                                    <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
-                                                    <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(variableIncentive)}</td>
                                                     <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>

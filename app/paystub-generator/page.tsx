@@ -306,6 +306,10 @@ export default function PaystubGenerator() {
     adjustedGross: number,
     grossCommission: number
   ) => {
+    if (isSanDiegoRegion(event)) {
+      return 0;
+    }
+
     const persistedPercent = Number(event.event_payment?.commission_pool_percent);
     if (Number.isFinite(persistedPercent) && persistedPercent > 0) {
       return persistedPercent;
@@ -326,6 +330,10 @@ export default function PaystubGenerator() {
       : 0;
   };
   const getCommissionVendorCountForEvent = (event: Event) => {
+    if (isSanDiegoRegion(event)) {
+      return 0;
+    }
+
     const workers = Array.isArray(event.workers) ? event.workers : [];
     return workers.filter((worker) => {
       const workerId = (worker?.user_id || '').toString();
@@ -338,6 +346,7 @@ export default function PaystubGenerator() {
     }).length;
   };
   const getDistributedSharesForEvent = (event: Event) => {
+    const isEventSD = isSanDiegoRegion(event);
     const adjustedGross = roundMoney(getAdjustedGrossForEvent(event));
     const persistedGrossCommission = Number(event.event_payment?.commission_pool_dollars || 0);
     const adjustedGrossPercent = getCommissionPoolPercentForEvent(
@@ -346,8 +355,8 @@ export default function PaystubGenerator() {
       persistedGrossCommission
     );
     const rawGrossCommission =
-      persistedGrossCommission || adjustedGross * adjustedGrossPercent;
-    const commissionEligibleMembers = (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
+      isEventSD ? 0 : (persistedGrossCommission || adjustedGross * adjustedGrossPercent);
+    const commissionEligibleMembers = isEventSD ? [] : (Array.isArray(event.workers) ? event.workers : []).flatMap((worker) => {
       const workerId = (worker?.user_id || '').toString();
       const hoursWorked = getCommissionReportHours(worker);
       if (
@@ -1127,6 +1136,7 @@ export default function PaystubGenerator() {
             return [];
           }
 
+          const isEventSD = isSanDiegoRegion(event);
           const finalPayData = finalPayByEventId.get(event.id);
           const hoursWorked = roundHours(
             Number(finalPayData?.actualHours ?? getCommissionReportHours(worker))
@@ -1153,25 +1163,43 @@ export default function PaystubGenerator() {
             : roundMoney(Number(finalPayData?.tips ?? worker.payment_data?.tips ?? 0));
           const persistedCommissionPaidTotal =
             Number(worker.payment_data?.regular_pay || 0) +
+            Number(worker.payment_data?.overtime_pay || 0) +
+            Number(worker.payment_data?.doubletime_pay || 0) +
             Number(worker.payment_data?.commissions || 0);
           const storedVariableIncentive =
             worker.payment_data?.variable_incentive != null &&
             Number.isFinite(Number(worker.payment_data.variable_incentive))
               ? Number(worker.payment_data.variable_incentive)
               : null;
-          const commission = roundMoney(
-            Number(finalPayData?.commissionPay ?? commissionShareRaw)
-          );
-          const variableIncentive = roundMoney(
+          const hourlyPayFallback = roundMoney(
             Number(
-              finalPayData?.variableIncentive ??
-              (storedVariableIncentive != null
-                ? storedVariableIncentive
-                : Math.max(0, persistedCommissionPaidTotal - commissionShareRaw))
+              finalPayData?.commissionPaidTotal ??
+              (
+                Number(worker.payment_data?.regular_pay || 0) +
+                Number(worker.payment_data?.overtime_pay || 0) +
+                Number(worker.payment_data?.doubletime_pay || 0)
+              )
             )
           );
+          const commission = roundMoney(
+            isEventSD
+              ? 0
+              : Number(finalPayData?.commissionPay ?? commissionShareRaw)
+          );
+          const variableIncentive = roundMoney(
+            isEventSD
+              ? 0
+              : Number(
+                  finalPayData?.variableIncentive ??
+                  (storedVariableIncentive != null
+                    ? storedVariableIncentive
+                    : Math.max(0, persistedCommissionPaidTotal - commissionShareRaw))
+                )
+          );
           const commissionPaidTotal = roundMoney(
-            Number(finalPayData?.commissionPaidTotal ?? (commission + variableIncentive))
+            isEventSD
+              ? hourlyPayFallback
+              : Number(finalPayData?.commissionPaidTotal ?? (commission + variableIncentive))
           );
           const totalPay = roundMoney(commissionPaidTotal + tips + restPay);
           const rateInEffect = roundMoney(
@@ -2176,13 +2204,13 @@ export default function PaystubGenerator() {
                                               <span className="font-medium text-blue-700">${worker.payment_data.tips.toFixed(2)}</span>
                                             </div>
                                           )}
-                                          {worker.payment_data.variable_incentive !== null && worker.payment_data.variable_incentive > 0 && (
+                                          {!isSanDiegoRegion(event) && worker.payment_data.variable_incentive !== null && worker.payment_data.variable_incentive > 0 && (
                                             <div>
                                               <span className="text-slate-500">Variable Incentive:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.variable_incentive.toFixed(2)}</span>
                                             </div>
                                           )}
-                                          {worker.payment_data.commissions !== null && worker.payment_data.commissions > 0 && (
+                                          {!isSanDiegoRegion(event) && worker.payment_data.commissions !== null && worker.payment_data.commissions > 0 && (
                                             <div>
                                               <span className="text-slate-500">Commissions:</span>{' '}
                                               <span className="font-medium text-blue-700">${worker.payment_data.commissions.toFixed(2)}</span>

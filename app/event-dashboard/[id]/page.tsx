@@ -5,6 +5,7 @@ import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
+import { computeSanDiegoHourlyBreakdown } from "@/lib/san-diego-payroll";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
 
@@ -2603,6 +2604,12 @@ export default function EventDashboardPage() {
         finalCommissionRate,
         totalFinalCommission,
         variableIncentive,
+        regularHours,
+        overtimeHours,
+        doubletimeHours,
+        regularPay,
+        overtimePay,
+        doubletimePay,
       } = getDisplayedPaymentBreakdown({
         uid,
         division,
@@ -2621,16 +2628,24 @@ export default function EventDashboardPage() {
         Employee: fullName,
         Division: division || "N/A",
         "Reg Rate": money(baseRate),
-        "Loaded Rate": money(finalCommissionRate),
         "Hours (HH:MM)": actualHours > 0 ? hoursHHMM : "0:00",
         "Hours (Decimal)": Number(actualHours.toFixed(2)),
-        "Commission Pay": money(displayedCommissionPay),
-        "Variable Incentive": money(variableIncentive),
-        "Ext Amt on Reg Rate": money(extAmtOnRegRate),
-        "Commission Amt": money(commissionAmount),
-        "Total Final Commission": money(totalFinalCommission),
-        Tips: money(proratedTips),
       };
+
+      if (isEventSanDiego) {
+        row["Regular Time"] = `${regularHours.toFixed(2)}h | ${money(regularPay)}`;
+        row["Overtime"] = `${overtimeHours.toFixed(2)}h | ${money(overtimePay)}`;
+        row["Double Time"] = `${doubletimeHours.toFixed(2)}h | ${money(doubletimePay)}`;
+      } else {
+        row["Loaded Rate"] = money(finalCommissionRate);
+        row["Commission Pay"] = money(displayedCommissionPay);
+        row["Variable Incentive"] = money(variableIncentive);
+        row["Ext Amt on Reg Rate"] = money(extAmtOnRegRate);
+        row["Commission Amt"] = money(commissionAmount);
+        row["Total Final Commission"] = money(totalFinalCommission);
+      }
+
+      row.Tips = money(proratedTips);
 
       if (!hideRestBreakColumn) {
         row["Rest Break"] = money(restBreak);
@@ -2694,20 +2709,32 @@ export default function EventDashboardPage() {
       summarySheet["!cols"] = [{ wch: 24 }, { wch: 42 }];
 
       const paymentsSheet = XLSX.utils.json_to_sheet(rows);
-      const paymentColumns = [
-        { wch: 26 }, // Employee
-        { wch: 14 }, // Division
-        { wch: 12 }, // Reg Rate
-        { wch: 12 }, // Loaded Rate
-        { wch: 14 }, // Hours (HH:MM)
-        { wch: 14 }, // Hours (Decimal)
-        { wch: 16 }, // Commission Pay
-        { wch: 18 }, // Variable Incentive
-        { wch: 18 }, // Ext Amt on Reg Rate
-        { wch: 16 }, // Commission Amt
-        { wch: 20 }, // Total Final Commission
-        { wch: 10 }, // Tips
-      ];
+      const paymentColumns = isEventSanDiego
+        ? [
+            { wch: 26 }, // Employee
+            { wch: 14 }, // Division
+            { wch: 12 }, // Reg Rate
+            { wch: 14 }, // Hours (HH:MM)
+            { wch: 14 }, // Hours (Decimal)
+            { wch: 20 }, // Regular Time
+            { wch: 20 }, // Overtime
+            { wch: 20 }, // Double Time
+            { wch: 10 }, // Tips
+          ]
+        : [
+            { wch: 26 }, // Employee
+            { wch: 14 }, // Division
+            { wch: 12 }, // Reg Rate
+            { wch: 12 }, // Loaded Rate
+            { wch: 14 }, // Hours (HH:MM)
+            { wch: 14 }, // Hours (Decimal)
+            { wch: 16 }, // Commission Pay
+            { wch: 18 }, // Variable Incentive
+            { wch: 18 }, // Ext Amt on Reg Rate
+            { wch: 16 }, // Commission Amt
+            { wch: 20 }, // Total Final Commission
+            { wch: 10 }, // Tips
+          ];
       if (!hideRestBreakColumn) {
         paymentColumns.push({ wch: 12 }); // Rest Break
       }
@@ -3481,9 +3508,7 @@ export default function EventDashboardPage() {
 
   const calculateHoursByState = (actualHours: number, _state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
     if (isEventSanDiego) {
-      const regularHours = Math.min(actualHours, 8);
-      const overtimeHours = Math.max(0, Math.min(actualHours, 12) - 8);
-      const doubletimeHours = Math.max(0, actualHours - 12);
+      const { regularHours, overtimeHours, doubletimeHours } = computeSanDiegoHourlyBreakdown(actualHours, 0);
       return { regularHours, overtimeHours, doubletimeHours };
     }
     return { regularHours: actualHours, overtimeHours: 0, doubletimeHours: 0 };
@@ -3492,10 +3517,7 @@ export default function EventDashboardPage() {
   // Compute base hourly pay: SD uses per-day OT/DT rules; other states use flat 1.5x.
   const computeBaseHourlyPay = (actualHours: number, baseRate: number): number => {
     if (isEventSanDiego) {
-      const reg = Math.min(actualHours, 8) * baseRate;
-      const ot = Math.max(0, Math.min(actualHours, 12) - 8) * baseRate * 1.5;
-      const dt = Math.max(0, actualHours - 12) * baseRate * 2;
-      return Math.round((reg + ot + dt) * 100) / 100;
+      return computeSanDiegoHourlyBreakdown(actualHours, baseRate).totalPay;
     }
     return Math.round(actualHours * baseRate * 1.5 * 100) / 100;
   };
@@ -3757,6 +3779,29 @@ export default function EventDashboardPage() {
     const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
     const trailersDivision = isTrailersDivision(division);
     const commissionOverride = commissionsOverrides[uid];
+    const sanDiegoBreakdown = isEventSanDiego
+      ? computeSanDiegoHourlyBreakdown(actualHours, baseRate)
+      : null;
+
+    if (isEventSanDiego) {
+      return {
+        commissionAmount: 0,
+        commissionOverride,
+        displayedCommissionPay: 0,
+        totalFinalCommission: Number(sanDiegoBreakdown?.totalPay || 0),
+        trailersDivision,
+        variableIncentive: 0,
+        finalCommissionRate: Number(sanDiegoBreakdown?.blendedRate || baseRate),
+        extAmtOnRegRate,
+        isHourlySanDiego: true,
+        regularHours: Number(sanDiegoBreakdown?.regularHours || 0),
+        overtimeHours: Number(sanDiegoBreakdown?.overtimeHours || 0),
+        doubletimeHours: Number(sanDiegoBreakdown?.doubletimeHours || 0),
+        regularPay: Number(sanDiegoBreakdown?.regularPay || 0),
+        overtimePay: Number(sanDiegoBreakdown?.overtimePay || 0),
+        doubletimePay: Number(sanDiegoBreakdown?.doubletimePay || 0),
+      };
+    }
 
     if (eventId && isPeriodRateState(eventState)) {
       const periodWorker = payPeriodCommission.byEvent?.[eventId]?.[uid];
@@ -3774,6 +3819,13 @@ export default function EventDashboardPage() {
         variableIncentive,
         finalCommissionRate,
         extAmtOnRegRate,
+        isHourlySanDiego: false,
+        regularHours: actualHours,
+        overtimeHours: 0,
+        doubletimeHours: 0,
+        regularPay: extAmtOnRegRate,
+        overtimePay: 0,
+        doubletimePay: 0,
       };
     }
 
@@ -3801,8 +3853,15 @@ export default function EventDashboardPage() {
       variableIncentive,
       finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
       extAmtOnRegRate,
+      isHourlySanDiego: false,
+      regularHours: actualHours,
+      overtimeHours: 0,
+      doubletimeHours: 0,
+      regularPay: extAmtOnRegRate,
+      overtimePay: 0,
+      doubletimePay: 0,
     };
-  }, [commissionsOverrides, event?.state, event?.city, event?.venue, eventId, payPeriodCommission]);
+  }, [commissionsOverrides, event?.state, event?.city, event?.venue, eventId, isEventSanDiego, payPeriodCommission]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -6732,7 +6791,7 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
-              {/* Staff Schedule with Commission & Tips columns */}
+              {/* Staff Schedule with payroll columns */}
               <div className="bg-white border rounded-lg p-6">
                 <h3 className="text-xl font-semibold mb-4">Staff Schedule</h3>
 
@@ -6761,10 +6820,20 @@ export default function EventDashboardPage() {
                       <tr>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700 w-[18rem]">Employee</th>
                         <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Regular Rate">Reg</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Pay">Commission Pay</th>
-                        <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Ext @ Reg above Commission Pay)">Variable Incentive</th>
+                        {isEventSanDiego ? (
+                          <>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700">Regular Time</th>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700">Overtime</th>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700">Double Time</th>
+                          </>
+                        ) : (
+                          <>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Pay">Commission Pay</th>
+                            <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Ext @ Reg above Commission Pay)">Variable Incentive</th>
+                          </>
+                        )}
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
                         {!hideRestBreakColumn && (
                           <th className="text-left px-2 py-2 font-semibold text-gray-700">Rest</th>
@@ -6777,7 +6846,7 @@ export default function EventDashboardPage() {
                     <tbody className="divide-y">
                       {filteredTeamMembers.length === 0 ? (
                         <tr>
-                          <td colSpan={hideRestBreakColumn ? 10 : 11} className="p-8 text-center text-gray-500">
+                          <td colSpan={hideRestBreakColumn ? (isEventSanDiego ? 9 : 10) : (isEventSanDiego ? 10 : 11)} className="p-8 text-center text-gray-500">
                             No staff found matching filters
                           </td>
                         </tr>
@@ -6810,29 +6879,9 @@ export default function EventDashboardPage() {
                           const baseRate = getBaseRateForState(eventState);
                           console.log('[PAYROLL DEBUG] Event:', event?.event_name, 'State:', event?.state, 'Normalized:', eventState, 'Rate:', baseRate);
 
-                          // Loaded rate is always the base rate (no OT/DT logic)
-                          const loadedRate = baseRate;
-
-                          const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
-
                           // Commission pool (Net Sales × pool fraction)
                           const trailersDivision = isTrailersDivision(member.users?.division);
                           const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
-                          const {
-                            commissionOverride: commissionOverrideVal,
-                            displayedCommissionPay,
-                            totalFinalCommission,
-                            variableIncentive,
-                          } = getCommissionBreakdown({
-                            uid,
-                            division: member.users?.division,
-                            actualHours,
-                            extAmtOnRegRate,
-                            distributedCommissionShare,
-                          });
-                          const rawFinalCommissionRate = actualHours > 0 ? totalFinalCommission / actualHours : loadedRate;
-                          const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
-                          const finalCommissionRate = Math.max(minLoadedRate, rawFinalCommissionRate);
                           const displayedBreakdown = getDisplayedPaymentBreakdown({
                             uid,
                             division: member.users?.division,
@@ -6897,52 +6946,83 @@ export default function EventDashboardPage() {
                                 </div>
                               </td>
 
-                              {/* Loaded Rate */}
-                              <td className="px-2 py-2 align-top">
-                                <div className={`font-medium ${displayedBreakdown.finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
-                                  ${formatPayrollMoney(displayedBreakdown.finalCommissionRate)}/hr
-                                </div>
-                              </td>
+                              {isEventSanDiego ? (
+                                <>
+                                  <td className="px-2 py-2 align-top">
+                                    <div className="font-medium text-gray-900">
+                                      {displayedBreakdown.regularHours > 0 ? `${displayedBreakdown.regularHours.toFixed(2)}h` : "—"}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-1">
+                                      ${formatPayrollMoney(displayedBreakdown.regularPay)}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2 align-top">
+                                    <div className="font-medium text-orange-600">
+                                      {displayedBreakdown.overtimeHours > 0 ? `${displayedBreakdown.overtimeHours.toFixed(2)}h` : "—"}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-1">
+                                      ${formatPayrollMoney(displayedBreakdown.overtimePay)}
+                                    </div>
+                                  </td>
+                                  <td className="px-2 py-2 align-top">
+                                    <div className="font-medium text-rose-600">
+                                      {displayedBreakdown.doubletimeHours > 0 ? `${displayedBreakdown.doubletimeHours.toFixed(2)}h` : "—"}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-1">
+                                      ${formatPayrollMoney(displayedBreakdown.doubletimePay)}
+                                    </div>
+                                  </td>
+                                </>
+                              ) : (
+                                <>
+                                  {/* Loaded Rate */}
+                                  <td className="px-2 py-2 align-top">
+                                    <div className={`font-medium ${displayedBreakdown.finalCommissionRate > baseRate ? 'text-orange-600' : 'text-gray-900'}`}>
+                                      ${formatPayrollMoney(displayedBreakdown.finalCommissionRate)}/hr
+                                    </div>
+                                  </td>
 
-                              {/* Hours */}
-                              <td className="px-2 py-2 align-top">
-                                <div className="font-medium text-gray-900">
-                                  {actualHours > 0 ? hoursHHMM : "0:00"}
-                                </div>
-                              </td>
+                                  {/* Hours */}
+                                  <td className="px-2 py-2 align-top">
+                                    <div className="font-medium text-gray-900">
+                                      {actualHours > 0 ? hoursHHMM : "0:00"}
+                                    </div>
+                                  </td>
 
-                              {/* Commission Per Vendor */}
-                              <td className="px-2 py-2 align-top">
-                                {displayedBreakdown.commissionOverride === null ? (
-                                  <div className="flex flex-col gap-1">
-                                    <span className="text-xs text-red-500 line-through">$0.00</span>
-                                    <span className="text-[10px] text-red-400">Excluded</span>
-                                    {canEditTimesheets && (
-                                      <button
-                                        onClick={() => setCommissionsOverrides(prev => {
-                                          const next = { ...prev };
-                                          delete next[uid];
-                                          return next;
-                                        })}
-                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
-                                      >
-                                        Restore
-                                      </button>
+                                  {/* Commission Per Vendor */}
+                                  <td className="px-2 py-2 align-top">
+                                    {displayedBreakdown.commissionOverride === null ? (
+                                      <div className="flex flex-col gap-1">
+                                        <span className="text-xs text-red-500 line-through">$0.00</span>
+                                        <span className="text-[10px] text-red-400">Excluded</span>
+                                        {canEditTimesheets && (
+                                          <button
+                                            onClick={() => setCommissionsOverrides(prev => {
+                                              const next = { ...prev };
+                                              delete next[uid];
+                                              return next;
+                                            })}
+                                            className="text-[10px] text-blue-500 hover:text-blue-700 underline"
+                                          >
+                                            Restore
+                                          </button>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="text-sm font-medium text-blue-600">
+                                        ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
+                                      </div>
                                     )}
-                                  </div>
-                                ) : (
-                                  <div className="text-sm font-medium text-blue-600">
-                                    ${formatPayrollMoney(displayedBreakdown.displayedCommissionPay)}
-                                  </div>
-                                )}
-                              </td>
+                                  </td>
 
-                              {/* Variable Incentive */}
-                              <td className="px-2 py-2 align-top">
-                                <div className="text-sm font-medium text-purple-600">
-                                  ${formatPayrollMoney(displayedBreakdown.variableIncentive)}
-                                </div>
-                              </td>
+                                  {/* Variable Incentive */}
+                                  <td className="px-2 py-2 align-top">
+                                    <div className="text-sm font-medium text-purple-600">
+                                      ${formatPayrollMoney(displayedBreakdown.variableIncentive)}
+                                    </div>
+                                  </td>
+                                </>
+                              )}
 
                               {/* Tips */}
                               <td className="px-2 py-2 align-top">
