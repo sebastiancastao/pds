@@ -959,7 +959,7 @@ function HRDashboardContent() {
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isEventSD ? 0 : Number(p.restBreak || 0)), 0);
         const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const vendorsWithHoursByDivision = eventPayments.reduce((count: number, p: any) => {
           const hours = Number(p.actualHours || 0);
@@ -1265,8 +1265,27 @@ function HRDashboardContent() {
 
   const getDisplayedEventTotals = useCallback((event: any) => {
     const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
+    const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
     const eventHours = payments.reduce((sum: number, payment: any) => {
       return sum + Number(payment?.actualHours || 0);
+    }, 0);
+    const totalRegularHours = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).regularHours;
+    }, 0);
+    const totalRegularPay = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).regularPay;
+    }, 0);
+    const totalOvertimeHours = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).overtimeHours;
+    }, 0);
+    const totalOvertimePay = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).overtimePay;
+    }, 0);
+    const totalDoubletimeHours = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).doubletimeHours;
+    }, 0);
+    const totalDoubletimePay = payments.reduce((sum: number, payment: any) => {
+      return sum + getDisplayedPaymentBreakdown(event, payment).doubletimePay;
     }, 0);
     const totalCommissionPay = payments.reduce((sum: number, payment: any) => {
       return sum + getDisplayedPaymentBreakdown(event, payment).commissionPay;
@@ -1278,7 +1297,7 @@ function HRDashboardContent() {
       return sum + getDisplayedPaymentBreakdown(event, payment).commissionPaidTotal;
     }, 0);
     const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
-    const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + Number(payment?.restBreak || 0), 0);
+    const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isEventSD ? 0 : Number(payment?.restBreak || 0)), 0);
     const totalOther = payments.reduce((sum: number, payment: any) => sum + Number(payment?.adjustmentAmount || 0), 0);
     const totalMileagePay = payments.reduce((sum: number, payment: any) => {
       return sum + (getMileageApproval(event.id, payment.userId).mileage
@@ -1297,6 +1316,12 @@ function HRDashboardContent() {
 
     return {
       eventHours,
+      totalRegularHours,
+      totalRegularPay,
+      totalOvertimeHours,
+      totalOvertimePay,
+      totalDoubletimeHours,
+      totalDoubletimePay,
       totalCommissionPay,
       totalVariableIncentive,
       totalCommissionPaid,
@@ -1428,7 +1453,8 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.commissionPaidTotal;
         }, 0);
-        const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + Number(p.restBreak || 0), 0);
+        const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+        const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isEventSD ? 0 : Number(p.restBreak || 0)), 0);
         const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const totalDisplayedTravelPay = eventPayments.reduce((sum: number, p: any) => {
           const approval = getMileageApproval(event.id, p.userId);
@@ -1445,7 +1471,7 @@ function HRDashboardContent() {
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + breakdown.commissionPaidTotal + Number(p.tips || 0) + Number(p.restBreak || 0) + Number(p.adjustmentAmount || 0);
+          return sum + breakdown.commissionPaidTotal + Number(p.tips || 0) + (isEventSD ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
         }, 0) + totalDisplayedMileagePay + totalDisplayedTravelPay;
 
         summaryRows.push({
@@ -1472,7 +1498,7 @@ function HRDashboardContent() {
           eventPayments.forEach((p: any) => {
             const st = (event.state || venue.state || '').toString().toUpperCase().replace(/[^A-Z]/g, '');
             const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-            const hideRest = false;
+            const hideRest = isEventSD;
             const breakdown = getDisplayedPaymentBreakdown(event, p);
             const regRate = breakdown.regRate;
             const loadedRate = breakdown.rateInEffect;
@@ -2525,20 +2551,23 @@ function HRDashboardContent() {
                 paymentsByVendor.map(vendor => {
                   const vendorDisplayedTotal = vendor.events.reduce((sum, { event, payment }) => {
                     const breakdown = getDisplayedPaymentBreakdown(event, payment);
+                    const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
                     const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                     const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
                     const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
                     const approval = getMileageApproval(event.id, payment.userId);
-                    return sum + breakdown.commissionPaidTotal + Number(payment.tips || 0) + Number(payment.restBreak || 0) + Number(payment.adjustmentAmount || 0) + (approval.mileage ? _mp : 0) + (approval.travel ? _tp : 0);
+                    return sum + breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + (approval.mileage ? _mp : 0) + (approval.travel ? _tp : 0);
                   }, 0);
                   const vendorHasSanDiegoEvents = vendor.events.some(({ event }) => event?.isSanDiegoHourly === true || isSanDiegoRegion(event));
                   const vendorHasNonSanDiegoEvents = vendor.events.some(({ event }) => !(event?.isSanDiegoHourly === true || isSanDiegoRegion(event)));
                   const showVendorHourlyColumns = vendorHasSanDiegoEvents;
                   const showVendorCommissionColumns = vendorHasNonSanDiegoEvents;
+                  const showVendorRestBreakColumn = vendorHasNonSanDiegoEvents;
                   const vendorMiddleColSpan =
                     (showVendorHourlyColumns ? 3 : 0) +
                     (showVendorCommissionColumns ? 2 : 0) +
-                    5;
+                    (showVendorRestBreakColumn ? 1 : 0) +
+                    4;
 
                   return (
                     <div key={vendor.userId || vendor.email} className="apple-card">
@@ -2574,7 +2603,9 @@ function HRDashboardContent() {
                                 </>
                               )}
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Tips</th>
-                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                              {showVendorRestBreakColumn && (
+                                <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Rest Break</th>
+                              )}
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
@@ -2591,7 +2622,7 @@ function HRDashboardContent() {
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileagePay = approval.mileage ? _mp : 0;
                               const travelPay = approval.travel ? _tp : 0;
-                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + Number(payment.restBreak || 0) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay;
+                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               return (
                                 <tr key={`${event.id}-${idx}`} className="hover:bg-gray-50">
@@ -2627,7 +2658,9 @@ function HRDashboardContent() {
                                     </>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-orange-600">${formatPayrollMoney(Number(payment.tips || 0))}</td>
-                                  <td className="px-4 py-2 text-sm text-right text-green-600">${formatPayrollMoney(Number(payment.restBreak || 0))}</td>
+                                  {showVendorRestBreakColumn && (
+                                    <td className="px-4 py-2 text-sm text-right text-green-600">{isEventSD ? '—' : `$${formatPayrollMoney(Number(payment.restBreak || 0))}`}</td>
+                                  )}
                                   <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(mileagePay)}</td>
                                   <td className="px-4 py-2 text-sm text-right text-indigo-600">${formatPayrollMoney(travelPay)}</td>
                                   <td className="px-4 py-2 text-sm text-right">${formatPayrollMoney(Number(payment.adjustmentAmount || 0))}</td>
@@ -2742,8 +2775,8 @@ function HRDashboardContent() {
                                         <thead className="bg-gray-50">
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const hideRest = false;
                                             const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
+                                            const hideRest = isEventSD;
                                             const showOT = st === "AZ" || st === "NY";
                                             return (
                                               <tr>
@@ -2801,8 +2834,8 @@ function HRDashboardContent() {
                                               </td>
                                               {(() => {
                                                 const st = normalizeState(ev.state || v.state);
-                                                const hideRest = false;
                                                 const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
+                                                const hideRest = isEventSD;
                                                 const showOT = st === "AZ" || st === "NY";
 
                                                 const breakdown = getDisplayedPaymentBreakdown(ev, p);
@@ -2813,7 +2846,7 @@ function HRDashboardContent() {
                                                 const displayedCommissionPay = breakdown.commissionPay;
                                                 const variableIncentive = breakdown.variableIncentive;
                                                 const tips = Number(p.tips || 0);
-                                                const restBreak = Number(p.restBreak || 0);
+                                                const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
                                                 const _travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
@@ -2948,18 +2981,30 @@ function HRDashboardContent() {
                                           ))}
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const hideRest = false;
+                                            const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
+                                            const hideRest = isEventSD;
                                             const showOT = st === "AZ" || st === "NY";
                                             const eventTotals = getDisplayedEventTotals(ev);
                                             return (
                                               <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                                                 <td className="p-2 uppercase tracking-wide">Total</td>
                                                 <td className="p-2"></td>
-                                                <td className="p-2"></td>
-                                                <td className="p-2">{eventTotals.eventHours.toFixed(2)}</td>
-                                                {showOT && <td className="p-2"></td>}
-                                                <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPay)}</td>
-                                                <td className="p-2 text-purple-600">${formatPayrollMoney(eventTotals.totalVariableIncentive)}</td>
+                                                {isEventSD ? (
+                                                  <>
+                                                    <td className="p-2">{formatHoursDecimal(eventTotals.eventHours)}</td>
+                                                    <td className="p-2 text-gray-900">{`${formatHoursDecimal(eventTotals.totalRegularHours)}h / $${formatPayrollMoney(eventTotals.totalRegularPay)}`}</td>
+                                                    <td className="p-2 text-orange-600">{`${formatHoursDecimal(eventTotals.totalOvertimeHours)}h / $${formatPayrollMoney(eventTotals.totalOvertimePay)}`}</td>
+                                                    <td className="p-2 text-rose-600">{`${formatHoursDecimal(eventTotals.totalDoubletimeHours)}h / $${formatPayrollMoney(eventTotals.totalDoubletimePay)}`}</td>
+                                                  </>
+                                                ) : (
+                                                  <>
+                                                    <td className="p-2"></td>
+                                                    <td className="p-2">{formatHoursDecimal(eventTotals.eventHours)}</td>
+                                                    {showOT && <td className="p-2"></td>}
+                                                    <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPay)}</td>
+                                                    <td className="p-2 text-purple-600">${formatPayrollMoney(eventTotals.totalVariableIncentive)}</td>
+                                                  </>
+                                                )}
                                                 <td className="p-2 text-orange-600">${formatPayrollMoney(eventTotals.totalTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
                                                 <td className="p-2 text-blue-600">${formatPayrollMoney(eventTotals.totalMileagePay)}</td>
