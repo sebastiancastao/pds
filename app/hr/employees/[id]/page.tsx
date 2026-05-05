@@ -20,6 +20,8 @@ type Employee = {
   profile_photo_url?: string | null;
   state: string | null;
   city: string | null;
+  region_id?: string | null;
+  region_name?: string | null;
   performance_score?: number | null;
   projects_completed?: number | null;
   attendance_rate?: number | null;
@@ -295,6 +297,7 @@ export default function EmployeeProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [refreshTick, setRefreshTick] = useState(0);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
@@ -633,6 +636,29 @@ export default function EmployeeProfilePage() {
     loadInvitations();
   }, [employeeId]);
 
+  useEffect(() => {
+    if (!employeeId) return;
+    const loadRegionEvents = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/employees/${employeeId}/region-events`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: "no-store",
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setRegionEvents(data.events || []);
+        } else {
+          setRegionEvents([]);
+        }
+      } catch (e) {
+        console.error("Error loading region events:", e);
+        setRegionEvents([]);
+      }
+    };
+    loadRegionEvents();
+  }, [employeeId, employee?.region_id, refreshTick]);
+
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
     // Re-compute locally as a guard (API already provides total_hours)
@@ -666,15 +692,20 @@ export default function EmployeeProfilePage() {
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
 
   // Build calendar dot map
-  const { calDots, calEventDetails } = useMemo(() => {
-    const map = new Map<string, Set<"event" | "shift" | "sick" | "available" | "unavailable">>();
+  const { calDots, calEventDetails, calRegionEventDetails } = useMemo(() => {
+    const map = new Map<string, Set<"event" | "shift" | "sick" | "available" | "unavailable" | "region_event">>();
     const events = new Map<string, { name: string; start_time: string | null }[]>();
-    const mark = (dateStr: string | null | undefined, type: "event" | "shift" | "sick" | "available" | "unavailable") => {
+    const regionEvMap = new Map<string, { name: string; start_time: string | null }[]>();
+    const mark = (
+      dateStr: string | null | undefined,
+      type: "event" | "shift" | "sick" | "available" | "unavailable" | "region_event"
+    ) => {
       if (!dateStr) return;
       const d = dateStr.slice(0, 10);
       if (!map.has(d)) map.set(d, new Set());
       map.get(d)!.add(type);
     };
+    const personalEventIds = new Set(eventInvitations.map(inv => inv.event_id));
     eventInvitations.filter(inv => inv.status === "confirmed").forEach(inv => {
       mark(inv.event_date, "event");
       if (inv.event_date) {
@@ -682,6 +713,14 @@ export default function EmployeeProfilePage() {
         if (!events.has(d)) events.set(d, []);
         events.get(d)!.push({ name: inv.event_name ?? "Event", start_time: inv.start_time ?? null });
       }
+    });
+    regionEvents.forEach(ev => {
+      if (!ev.event_date) return;
+      if (personalEventIds.has(ev.id)) return;
+      mark(ev.event_date, "region_event");
+      const d = ev.event_date.slice(0, 10);
+      if (!regionEvMap.has(d)) regionEvMap.set(d, []);
+      regionEvMap.get(d)!.push({ name: ev.event_name ?? "Event", start_time: ev.start_time ?? null });
     });
     entries.forEach(e => {
       if (e.clock_in) mark(e.clock_in.slice(0, 10), "shift");
@@ -697,8 +736,8 @@ export default function EmployeeProfilePage() {
     submittedAvailability.forEach((day) => {
       mark(day.date, day.available ? "available" : "unavailable");
     });
-    return { calDots: map, calEventDetails: events };
-  }, [eventInvitations, entries, sickLeaveEntries, submittedAvailability]);
+    return { calDots: map, calEventDetails: events, calRegionEventDetails: regionEvMap };
+  }, [eventInvitations, regionEvents, entries, sickLeaveEntries, submittedAvailability]);
 
   const sickLeaveTotalHours = sickLeaveSummary?.total_hours ?? 0;
   const sickLeaveAccruedHours = sickLeaveSummary?.accrued_hours ?? 0;
@@ -1264,6 +1303,7 @@ export default function EmployeeProfilePage() {
                         const dateStr = `${calYear}-${String(calMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
                         const dots = calDots.get(dateStr);
                         const evs = calEventDetails.get(dateStr) ?? [];
+                        const regionEvs = calRegionEventDetails.get(dateStr) ?? [];
                         const isToday = dateStr === todayStr;
                         const hasAvailableSubmission = dots?.has("available");
                         const hasUnavailableSubmission = dots?.has("unavailable");
@@ -1293,6 +1333,18 @@ export default function EmployeeProfilePage() {
                                 )}
                               </div>
                             ))}
+                            {regionEvs.map((ev, ei) => (
+                              <div key={`r${ei}`} className="mt-0.5 w-full text-center">
+                                <div className="bg-violet-100 text-violet-800 rounded text-[9px] font-medium leading-tight px-0.5 truncate">
+                                  {ev.name}
+                                </div>
+                                {ev.start_time && (
+                                  <div className="text-[9px] text-violet-500 leading-tight">
+                                    {formatEventTime(ev.start_time)}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
                             {dots && (dots.has("shift") || dots.has("sick")) && (
                               <div className="flex gap-0.5 mt-0.5">
                                 {dots.has("shift") && <span className="w-1.5 h-1.5 rounded-full bg-cyan-500" />}
@@ -1303,8 +1355,9 @@ export default function EmployeeProfilePage() {
                         );
                       })}
                     </div>
-                    <div className="flex gap-4 mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
-                      <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500 inline-block"/>Event</span>
+                    <div className="flex flex-wrap gap-4 mt-3 pt-3 border-t border-gray-100 text-xs text-gray-500">
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-blue-100 text-blue-800 text-[10px] font-semibold">Event</span>My events</span>
+                      <span className="flex items-center gap-1"><span className="px-1 rounded bg-violet-100 text-violet-800 text-[10px] font-semibold">Event</span>Region events</span>
                       <span className="flex items-center gap-1"><span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[10px] font-semibold">Available</span>Submitted availability</span>
                       <span className="flex items-center gap-1"><span className="px-1 rounded bg-rose-100 text-rose-800 text-[10px] font-semibold">Unavailable</span>Submitted availability</span>
                       <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-cyan-500 inline-block"/>Shift</span>
