@@ -613,6 +613,7 @@ export async function GET(
           phone,
           city,
           state,
+          region_id,
           latitude,
           longitude
         )
@@ -878,6 +879,7 @@ export async function GET(
               ? safeDecrypt(String(profile.last_name))
               : '',
             phone: profilePhone || employeeInfoPhone,
+            region_id: profile?.region_id || null,
             profile_photo_url: null,
           }
         }

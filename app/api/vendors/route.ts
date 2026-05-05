@@ -131,6 +131,7 @@ export async function GET(req: NextRequest) {
     const venueCity = searchParams.get('city');
     const venueState = searchParams.get('state');
     const slim = searchParams.get('slim') === 'true';
+    const useVenueRegion = searchParams.get('use_venue_region') === 'true';
 
     if (!venueName) {
       return NextResponse.json({ error: 'Venue name is required' }, { status: 400 });
@@ -175,6 +176,8 @@ export async function GET(req: NextRequest) {
     const { latitude: venueLat, longitude: venueLon } = venueData;
     const resolvedVenueCity = normalizedVenueCity || normalizeText(venueData?.city);
     const resolvedVenueState = normalizedVenueState || normalizeStateKey(venueData?.state);
+    const venueRegionId =
+      typeof venueData?.region_id === 'string' ? venueData.region_id.trim() : '';
 
     const venueHasCoordinates = Boolean(venueLat && venueLon);
     if (!venueHasCoordinates) {
@@ -203,8 +206,16 @@ export async function GET(req: NextRequest) {
       .in('division', ['vendor', 'both', 'trailers'])
       .eq('is_active', true);
 
-    // Only apply a region filter when the caller explicitly requests one.
-    const effectiveRegionId = (regionId && regionId !== 'all') ? regionId : null;
+    // Only apply a region filter when the caller explicitly requests one,
+    // or when the caller wants the venue's configured region.
+    const explicitRegionId = (regionId && regionId !== 'all') ? regionId : null;
+    const effectiveRegionId = explicitRegionId || (useVenueRegion ? venueRegionId || null : null);
+    if (useVenueRegion && !effectiveRegionId) {
+      return NextResponse.json(
+        { error: 'This venue does not have a region configured in venue_reference.' },
+        { status: 422 }
+      );
+    }
     if (effectiveRegionId) {
       vendorQuery = vendorQuery.eq('profiles.region_id', effectiveRegionId);
     }

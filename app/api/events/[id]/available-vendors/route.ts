@@ -643,10 +643,9 @@ export async function GET(
         // Simple region_id filtering
         console.log('[AVAILABLE-VENDORS] 🔍 Filtering by region_id field');
         filteredVendors = filteredVendors.filter((vendor: any) => {
-          // Check if vendor has region_id in profiles or users table
-          const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
+          const vendorRegionId = vendor.profiles?.region_id;
           const matches = vendorRegionId === regionId;
-          console.log(`  ${matches ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: region_id=${vendorRegionId}`);
+          console.log(`  ${matches ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: profiles.region_id=${vendorRegionId}`);
           return matches;
         });
         console.log('[AVAILABLE-VENDORS] ✅ After region_id filter:', filteredVendors.length, 'vendors');
@@ -687,7 +686,7 @@ export async function GET(
           role: vendor.role,
           division: vendor.division,
           is_active: vendor.is_active,
-          region_id: vendor.region_id,
+          region_id: vendor.profiles?.region_id || null,
           profiles: {
             first_name: firstName,
             last_name: lastName,

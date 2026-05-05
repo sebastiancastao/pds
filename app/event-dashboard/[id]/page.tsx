@@ -319,6 +319,7 @@ export default function EventDashboardPage() {
   const [showCloseEventModal, setShowCloseEventModal] = useState(false);
   const [closeEventVendors, setCloseEventVendors] = useState<TeamVendorOption[]>([]);
   const [loadingCloseEvent, setLoadingCloseEvent] = useState(false);
+  const [closeEventLoadError, setCloseEventLoadError] = useState("");
   const [sendingCloseEventEmail, setSendingCloseEventEmail] = useState(false);
   const [closeEventEmailResult, setCloseEventEmailResult] = useState<{ success: boolean; message: string } | null>(null);
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
@@ -527,9 +528,8 @@ export default function EventDashboardPage() {
     return addVendorOptions.filter((vendor) => {
       if (addVendorState !== "all" && vendor.profiles?.state !== addVendorState) return false;
       if (addVendorCity !== "all" && vendor.profiles?.city !== addVendorCity) return false;
-      if (addVendorRegion !== "all") {
-        const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
-        if (vendorRegionId !== addVendorRegion) return false;
+      if (addVendorRegion !== "all" && vendor.profiles?.region_id !== addVendorRegion) {
+        return false;
       }
       if (!query) return true;
       const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
@@ -566,9 +566,8 @@ export default function EventDashboardPage() {
       .filter((vendor) => {
         if (locationTeamState !== "all" && vendor.profiles?.state !== locationTeamState) return false;
         if (locationTeamCity !== "all" && vendor.profiles?.city !== locationTeamCity) return false;
-        if (locationTeamRegion !== "all") {
-          const vendorRegionId = vendor.region_id || vendor.profiles?.region_id;
-          if (vendorRegionId !== locationTeamRegion) return false;
+        if (locationTeamRegion !== "all" && vendor.profiles?.region_id !== locationTeamRegion) {
+          return false;
         }
         if (!query) return true;
         const firstName = (vendor.profiles?.first_name || "").toString().toLowerCase();
@@ -685,9 +684,8 @@ export default function EventDashboardPage() {
   const regionFilteredAssignableMembers = useMemo(() => {
     const query = locationCardSearch.trim().toLowerCase();
     return locationAssignableMembers.filter((m) => {
-      if (locationRegionFilter !== "all") {
-        const vendorRegionId = m.region_id || m.profiles?.region_id;
-        if (vendorRegionId !== locationRegionFilter) return false;
+      if (locationRegionFilter !== "all" && m.profiles?.region_id !== locationRegionFilter) {
+        return false;
       }
       if (locationCityFilter !== "all" && m.profiles?.city !== locationCityFilter) return false;
       if (query) {
@@ -1578,12 +1576,19 @@ export default function EventDashboardPage() {
   const openCloseEventModal = async () => {
     setShowCloseEventModal(true);
     setCloseEventVendors([]);
+    setCloseEventLoadError("");
     setCloseEventEmailResult(null);
     if (!event?.venue) return;
     setLoadingCloseEvent(true);
     try {
       const token = await getSessionToken();
-      const query = new URLSearchParams({ venue: event.venue, slim: 'true' });
+      const query = new URLSearchParams({
+        venue: event.venue,
+        slim: 'true',
+        use_venue_region: 'true',
+      });
+      if (event.city) query.append("city", event.city);
+      if (event.state) query.append("state", event.state);
       const res = await fetch(`/api/vendors?${query.toString()}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
@@ -1591,14 +1596,18 @@ export default function EventDashboardPage() {
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
         allVendors = Array.isArray(data?.vendors) ? data.vendors : [];
+      } else {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData?.error || "Failed to load vendors in this venue's region.");
       }
       const invitedIds = new Set(
         (teamMembers || []).map((m: any) => (m?.vendor_id || m?.user_id || m?.users?.id || "").toString()).filter(Boolean)
       );
       const notInvited = allVendors.filter((v) => !invitedIds.has(v.id.toString()));
       setCloseEventVendors(notInvited);
-    } catch {
+    } catch (err: any) {
       setCloseEventVendors([]);
+      setCloseEventLoadError(err?.message || "Failed to load vendors in this venue's region.");
     } finally {
       setLoadingCloseEvent(false);
     }
@@ -7539,6 +7548,10 @@ export default function EventDashboardPage() {
                 <div className="py-10 text-center">
                   <div className="inline-block w-7 h-7 border-4 border-gray-800 border-t-transparent rounded-full animate-spin"></div>
                   <p className="mt-3 text-sm text-gray-500">Loading vendors in region...</p>
+                </div>
+              ) : closeEventLoadError ? (
+                <div className="py-10 text-center bg-red-50 rounded-lg border border-red-200">
+                  <p className="text-sm text-red-700 font-medium">{closeEventLoadError}</p>
                 </div>
               ) : closeEventVendors.length === 0 ? (
                 <div className="py-10 text-center bg-green-50 rounded-lg border border-green-200">
