@@ -41,6 +41,67 @@ function normalizeText(value: unknown): string {
   return typeof value === 'string' ? value.trim().toLowerCase() : '';
 }
 
+const STATE_NAME_TO_CODE: Record<string, string> = {
+  alabama: 'al',
+  alaska: 'ak',
+  arizona: 'az',
+  arkansas: 'ar',
+  california: 'ca',
+  colorado: 'co',
+  connecticut: 'ct',
+  delaware: 'de',
+  florida: 'fl',
+  georgia: 'ga',
+  hawaii: 'hi',
+  idaho: 'id',
+  illinois: 'il',
+  indiana: 'in',
+  iowa: 'ia',
+  kansas: 'ks',
+  kentucky: 'ky',
+  louisiana: 'la',
+  maine: 'me',
+  maryland: 'md',
+  massachusetts: 'ma',
+  michigan: 'mi',
+  minnesota: 'mn',
+  mississippi: 'ms',
+  missouri: 'mo',
+  montana: 'mt',
+  nebraska: 'ne',
+  nevada: 'nv',
+  'new hampshire': 'nh',
+  'new jersey': 'nj',
+  'new mexico': 'nm',
+  'new york': 'ny',
+  'north carolina': 'nc',
+  'north dakota': 'nd',
+  ohio: 'oh',
+  oklahoma: 'ok',
+  oregon: 'or',
+  pennsylvania: 'pa',
+  'rhode island': 'ri',
+  'south carolina': 'sc',
+  'south dakota': 'sd',
+  tennessee: 'tn',
+  texas: 'tx',
+  utah: 'ut',
+  vermont: 'vt',
+  virginia: 'va',
+  washington: 'wa',
+  'west virginia': 'wv',
+  wisconsin: 'wi',
+  wyoming: 'wy',
+  'district of columbia': 'dc',
+};
+
+function normalizeStateKey(value: unknown): string {
+  const normalized = normalizeText(value).replace(/\./g, '').replace(/\s+/g, ' ');
+  if (!normalized) return '';
+  if (/^[a-z]{2}$/.test(normalized)) return normalized;
+  return STATE_NAME_TO_CODE[normalized] || normalized;
+}
+
 export async function GET(req: NextRequest) {
   try {
     const supabase = createRouteHandlerClient({ cookies });
@@ -67,7 +128,10 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const venueName = searchParams.get('venue');
     const regionId = searchParams.get('region_id');
+    const venueCity = searchParams.get('city');
+    const venueState = searchParams.get('state');
     const slim = searchParams.get('slim') === 'true';
+    const useVenueRegion = searchParams.get('use_venue_region') === 'true';
 
     if (!venueName) {
       return NextResponse.json({ error: 'Venue name is required' }, { status: 400 });
@@ -88,11 +152,25 @@ export async function GET(req: NextRequest) {
       }, { status: 404 });
     }
 
-    const venueData =
-      venueMatches.find((candidate: any) => normalizeText(candidate?.venue_name) === normalizeText(venueName)) ||
-      venueMatches[0];
+    const normalizedVenueName = normalizeText(venueName);
+    const normalizedVenueCity = normalizeText(venueCity);
+    const normalizedVenueState = normalizeStateKey(venueState);
+    const sameNameVenueMatches = venueMatches.filter(
+      (candidate: any) => normalizeText(candidate?.venue_name) === normalizedVenueName
+    );
+    const exactVenueMatches = sameNameVenueMatches.filter((candidate: any) => {
+      const cityMatches =
+        !normalizedVenueCity || normalizeText(candidate?.city) === normalizedVenueCity;
+      const stateMatches =
+        !normalizedVenueState || normalizeStateKey(candidate?.state) === normalizedVenueState;
+      return cityMatches && stateMatches;
+    });
+    const venueCandidates = exactVenueMatches.length > 0 ? exactVenueMatches : sameNameVenueMatches;
+    const venueData = venueCandidates[0] || venueMatches[0];
 
-    const { latitude: venueLat, longitude: venueLon, region_id: venueRegionId } = venueData;
+    const { latitude: venueLat, longitude: venueLon } = venueData;
+    const venueRegionId =
+      typeof venueData?.region_id === 'string' ? venueData.region_id.trim() : '';
 
     if (!venueLat || !venueLon) {
       console.error('Venue coordinates missing for:', venueName, { latitude: venueLat, longitude: venueLon });
@@ -125,8 +203,16 @@ export async function GET(req: NextRequest) {
       .in('division', ['vendor', 'both', 'trailers'])
       .eq('is_active', true);
 
-    // Apply region filter: explicit param takes priority, otherwise use the venue's own region
-    const effectiveRegionId = (regionId && regionId !== 'all') ? regionId : venueRegionId;
+    // Preserve the branch's default venue-region filtering, but allow callers
+    // to fail fast when they explicitly require a configured venue region.
+    const explicitRegionId = (regionId && regionId !== 'all') ? regionId : null;
+    const effectiveRegionId = explicitRegionId || venueRegionId || null;
+    if (useVenueRegion && !effectiveRegionId) {
+      return NextResponse.json(
+        { error: 'This venue does not have a region configured in venue_reference.' },
+        { status: 422 }
+      );
+    }
     if (effectiveRegionId) {
       vendorQuery = vendorQuery.eq('profiles.region_id', effectiveRegionId);
     }
@@ -179,9 +265,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Fetch in-venue vendors that are outside the venue's region (missed by the region filter above)
+    // Normal venue pickers on this branch include in-venue vendors even when they
+    // fall outside the venue's region. The close-event notification flow opts out
+    // by setting use_venue_region=true so recipients stay region-only.
     let allVendors = [...(vendors || [])];
-    const missingInVenueIds = Array.from(assignedToVenueIds).filter(id => !regionVendorIdSet.has(id));
+    const missingInVenueIds = useVenueRegion
+      ? []
+      : Array.from(assignedToVenueIds).filter(id => !regionVendorIdSet.has(id));
     if (missingInVenueIds.length > 0) {
       const { data: extraVendors } = await supabaseAdmin
         .from('users')
