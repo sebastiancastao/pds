@@ -6,7 +6,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
-import { getRegionFallbackCommissionPoolPercent } from '@/lib/commission-pool';
+import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 
 interface PaymentData {
   effective_hours?: number | null;
@@ -393,7 +393,12 @@ export default function PaystubGenerator() {
       tipsSharesByUser: tipsDistribution.amountsById,
     };
   };
-  const getRestPayForReport = (actualHours: number, stateCode: string | null | undefined) => {
+  const getRestPayForReport = (
+    actualHours: number,
+    stateCode: string | null | undefined,
+    event?: { city?: string | null; venue?: string | null } | null
+  ) => {
+    if (event && isSanDiegoRegion({ city: event.city, venue: event.venue })) return 0;
     const normalizedState = normalizeStateCode(stateCode);
     if (normalizedState === 'NV' || normalizedState === 'WI' || normalizedState === 'AZ' || normalizedState === 'NY') {
       return 0;
@@ -1137,12 +1142,10 @@ export default function PaystubGenerator() {
           const employeeCount = distributedEmployeeCount || getCommissionVendorCountForEvent(event);
           const commissionShareRaw = Number(commissionSharesByUser[reportUserId] || 0);
 
-          const restPayRaw =
-            Number(worker.payment_data?.rest_break_pay ?? 0) ||
-            getRestPayForReport(
-              hoursWorked,
-              formData.state || event.state
-            );
+          const restPayRaw = isSanDiegoRegion({ city: event.city, venue: event.venue })
+            ? 0
+            : Number(worker.payment_data?.rest_break_pay ?? 0) ||
+              getRestPayForReport(hoursWorked, formData.state || event.state, event);
           const restPay = roundMoney(restPayRaw);
           const distributedTips = roundMoney(Number(tipsSharesByUser[reportUserId] || 0));
           const tips = distributedTips > 0

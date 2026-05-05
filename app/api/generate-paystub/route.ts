@@ -6,7 +6,7 @@ import { calculateDistanceMiles } from "@/lib/geocoding";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { safeDecrypt } from "@/lib/encryption";
-import { getRegionFallbackCommissionPoolPercent } from "@/lib/commission-pool";
+import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -194,11 +194,36 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const getRestBreakAmount = (actualHours: number, stateCode: string): number => {
+    const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false): number => {
+      if (eventSanDiego) return 0;
       const st = normalizeState(stateCode);
       if (st === "NV" || st === "WI" || st === "AZ" || st === "NY") return 0;
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
       return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
+    };
+
+    // San Diego per-day OT/DT hour split: 0-8 regular, 8-12 OT, 12+ DT.
+    const splitSanDiegoHours = (hours: number): { reg: number; ot: number; dt: number } => ({
+      reg: Math.min(hours, 8),
+      ot: Math.max(0, Math.min(hours, 12) - 8),
+      dt: Math.max(0, hours - 12),
+    });
+
+    // Base hourly pay for SD applying per-day OT rules + optional weekly OT conversion.
+    // weeklyOTHoursToConvert = how many daily-regular hours to re-class as OT (weekly 40h rule).
+    const computeSanDiegoBasePay = (
+      hours: number,
+      baseRate: number,
+      weeklyOTHoursToConvert = 0
+    ): { basePay: number; regHours: number; otHours: number; dtHours: number } => {
+      const { reg, ot, dt } = splitSanDiegoHours(hours);
+      const extraOT = Math.min(reg, weeklyOTHoursToConvert);
+      const finalReg = reg - extraOT;
+      const finalOT = ot + extraOT;
+      const basePay = Math.round(
+        (finalReg * baseRate + finalOT * baseRate * 1.5 + dt * baseRate * 2) * 100
+      ) / 100;
+      return { basePay, regHours: finalReg, otHours: finalOT, dtHours: dt };
     };
 
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
@@ -1016,9 +1041,16 @@ export async function POST(req: NextRequest) {
       };
     };
 
-    // AZ/NY weekly OT needs prior weekly hours per worker per event (Mon..day before event)
+    // AZ/NY/SD weekly OT needs prior weekly hours per worker per event (Mon..day before event)
+    const sdEventIds = new Set<string>(
+      (Array.isArray(events) ? events : [])
+        .filter((e: any) => isSanDiegoRegion({ city: e?.city, venue: e?.venue }))
+        .map((e: any) => (e?.id ?? "").toString())
+        .filter((id: string) => !!id)
+    );
+    const needsWeeklyTracking = azNyMode || sdEventIds.size > 0;
     const weeklyPriorHoursByEventId: Record<string, Record<string, number>> = {};
-    if (azNyMode) {
+    if (needsWeeklyTracking) {
       for (const e of events || []) {
         const eventId = (e?.id ?? "").toString();
         if (!eventId) continue;
@@ -1487,7 +1519,8 @@ export async function POST(req: NextRequest) {
           },
           hoursComparison
         );
-        const priorWeeklyHours = azNyMode ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
+        const isEventSD = sdEventIds.has(eventId);
+        const priorWeeklyHours = (azNyMode || isEventSD) ? (weeklyPriorHoursByEventId[eventId]?.[worker?.user_id] || 0) : 0;
         const isWeeklyOT = azNyMode && (priorWeeklyHours + actualHours) > 40;
         const workerUserId = (worker?.user_id || "").toString();
         const usesPeriodRate = isPeriodRateState(eventState);
@@ -1509,8 +1542,36 @@ export async function POST(req: NextRequest) {
         let loadedRateBase = payrollHours > 0 ? baseRate : 0;
         let computedOtRate = 0;
         let extAmtOnRegRate = 0;
+        let sdRegHours = 0;
+        let sdOtHours = 0;
+        let sdDtHours = 0;
 
-        if (azNyMode) {
+        if (isEventSD) {
+          // SD daily OT rules: 0-8 reg, 8-12 OT (1.5x), 12+ DT (2x); no rest pay.
+          // Weekly rule: hours beyond 40/week convert daily-regular to OT.
+          const sdWeeklyOTToConvert = Math.max(
+            0,
+            Math.min(
+              Math.min(payrollHours, 8), // can only convert daily-regular hours
+              (priorWeeklyHours + payrollHours) > 40 ? (priorWeeklyHours + payrollHours) - 40 : 0
+            )
+          );
+          const { basePay, regHours, otHours, dtHours } = computeSanDiegoBasePay(
+            payrollHours,
+            baseRate,
+            sdWeeklyOTToConvert
+          );
+          sdRegHours = regHours;
+          sdOtHours = otHours;
+          sdDtHours = dtHours;
+          extAmtOnRegRate = basePay;
+          commissionAmt =
+            !isTrailersDivision(worker?.division) && payrollHours > 0 && commissionEligibleCount > 0
+              ? Math.max(0, distributedCommissionShare - extAmtOnRegRate)
+              : 0;
+          totalFinalCommissionAmt = payrollHours > 0 ? extAmtOnRegRate + commissionAmt : 0;
+          loadedRateBase = payrollHours > 0 ? (totalFinalCommissionAmt / payrollHours) : baseRate;
+        } else if (azNyMode) {
           const isEligibleThisWorker =
             !!worker &&
             !isTrailersDivision(worker?.division) &&
@@ -1570,7 +1631,7 @@ export async function POST(req: NextRequest) {
         const otPay = Number(paymentData?.overtime_pay || 0);
         const dtPay = Number(paymentData?.doubletime_pay || 0);
 
-        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState) : 0);
+        const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD) : 0);
         const reportFinalPay = roundPayrollAmount(
           reportCommissionShare + reportVariableIncentive + tips + restBreak
         );
@@ -1599,9 +1660,9 @@ export async function POST(req: NextRequest) {
           });
         }
 
-        totalRegHours += regHours;
-        totalOtHours += otHours;
-        totalDtHours += dtHours;
+        totalRegHours += isEventSD ? sdRegHours : regHours;
+        totalOtHours += isEventSD ? sdOtHours : otHours;
+        totalDtHours += isEventSD ? sdDtHours : dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
         // Split commission pay like HR dashboard:
@@ -1628,9 +1689,9 @@ export async function POST(req: NextRequest) {
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += computedTotalGrossPay;
-        totalRegularPayAmount += regPay;
-        totalOvertimePayAmount += otPay;
-        totalDoubletimePayAmount += dtPay;
+        totalRegularPayAmount += isEventSD ? roundPayrollAmount(sdRegHours * baseRate) : regPay;
+        totalOvertimePayAmount += isEventSD ? roundPayrollAmount(sdOtHours * baseRate * 1.5) : otPay;
+        totalDoubletimePayAmount += isEventSD ? roundPayrollAmount(sdDtHours * baseRate * 2) : dtPay;
         // Travel pay = (differentialMiles × 2 / 60) × loadedRate — mirrors HR dashboard formula
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
         const travelPay = (differentialMiles * 2 / 60) * loadedRateBase;

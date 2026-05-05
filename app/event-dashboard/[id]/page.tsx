@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
-import { getRegionFallbackCommissionPoolPercent } from "@/lib/commission-pool";
+import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
@@ -3477,20 +3477,31 @@ export default function EventDashboardPage() {
     }
   };
 
-  /**
-   * Calculate regular/overtime/doubletime hours based on state labor laws
-   * Note: Overtime logic is intentionally disabled in the Payment tab.
-   * All hours are treated as regular hours for all states.
-   */
+  const isEventSanDiego = isSanDiegoRegion({ city: event?.city, venue: event?.venue });
+
   const calculateHoursByState = (actualHours: number, _state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
-    return {
-      regularHours: actualHours,
-      overtimeHours: 0,
-      doubletimeHours: 0,
-    };
+    if (isEventSanDiego) {
+      const regularHours = Math.min(actualHours, 8);
+      const overtimeHours = Math.max(0, Math.min(actualHours, 12) - 8);
+      const doubletimeHours = Math.max(0, actualHours - 12);
+      return { regularHours, overtimeHours, doubletimeHours };
+    }
+    return { regularHours: actualHours, overtimeHours: 0, doubletimeHours: 0 };
+  };
+
+  // Compute base hourly pay: SD uses per-day OT/DT rules; other states use flat 1.5x.
+  const computeBaseHourlyPay = (actualHours: number, baseRate: number): number => {
+    if (isEventSanDiego) {
+      const reg = Math.min(actualHours, 8) * baseRate;
+      const ot = Math.max(0, Math.min(actualHours, 12) - 8) * baseRate * 1.5;
+      const dt = Math.max(0, actualHours - 12) * baseRate * 2;
+      return Math.round((reg + ot + dt) * 100) / 100;
+    }
+    return Math.round(actualHours * baseRate * 1.5 * 100) / 100;
   };
 
   const getRestBreakAmount = (actualHours: number, state: string): number => {
+    if (isEventSanDiego) return 0;
     return actualHours >= 14 ? 17 : actualHours > 10 ? 12.5 : actualHours > 0 ? 9 : 0;
   };
   const roundPayrollAmount = (amount: number): number => {
@@ -3743,7 +3754,7 @@ export default function EventDashboardPage() {
     distributedCommissionShare: number;
   }) => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
-    const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+    const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
     const trailersDivision = isTrailersDivision(division);
     const commissionOverride = commissionsOverrides[uid];
 
@@ -3791,7 +3802,7 @@ export default function EventDashboardPage() {
       finalCommissionRate: Math.max(minLoadedRate, rawFinalCommissionRate),
       extAmtOnRegRate,
     };
-  }, [commissionsOverrides, event?.state, eventId, payPeriodCommission]);
+  }, [commissionsOverrides, event?.state, event?.city, event?.venue, eventId, payPeriodCommission]);
   // Save Payment Data - Store payment calculations to database
   const handleSavePaymentData = async () => {
     if (!event || !eventId) return;
@@ -3830,14 +3841,16 @@ export default function EventDashboardPage() {
 
         // No OT/DT logic in Payment tab
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const overtimePay = 0;
-        const doubletimePay = 0;
+        const regularPay = isEventSanDiego
+          ? Math.round(regularHours * baseRate * 100) / 100
+          : 0; // for non-SD, regularPay stored as extAmtOnRegRate below
+        const overtimePay = isEventSanDiego ? Math.round(overtimeHours * baseRate * 1.5 * 100) / 100 : 0;
+        const doubletimePay = isEventSanDiego ? Math.round(doubletimeHours * baseRate * 2 * 100) / 100 : 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
         const trailersDivision = isTrailersDivision(memberDivision);
 
-        // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+        const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
         const restBreak = getRestBreakAmount(actualHours, eventState);
         const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
@@ -3868,7 +3881,7 @@ export default function EventDashboardPage() {
           regularHours,
           overtimeHours,
           doubletimeHours,
-          regularPay: extAmtOnRegRate,
+          regularPay: isEventSanDiego ? regularPay : extAmtOnRegRate,
           overtimePay,
           doubletimePay,
           commissions: commissionAmount,
@@ -3952,14 +3965,13 @@ export default function EventDashboardPage() {
 
         // Calculate pay
         const { regularHours, overtimeHours, doubletimeHours } = calculateHoursByState(actualHours, eventState);
-        const overtimePay = 0;
-        const doubletimePay = 0;
+        const overtimePay = isEventSanDiego ? Math.round(overtimeHours * baseRate * 1.5 * 100) / 100 : 0;
+        const doubletimePay = isEventSanDiego ? Math.round(doubletimeHours * baseRate * 2 * 100) / 100 : 0;
 
         // Users with division "trailers" should NOT receive commissions or tips
         const trailersDivision = isTrailersDivision(memberDivision);
 
-        // Ext Amt on Reg Rate = total hours × base rate × 1.5
-        const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+        const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
         const restBreak = getRestBreakAmount(actualHours, eventState);
         const distributedCommissionShare = trailersDivision ? 0 : Number(commissionSharesByUser[uid] || 0);
 
@@ -3987,7 +3999,9 @@ export default function EventDashboardPage() {
           firstName: profile?.first_name || "Team Member",
           lastName: profile?.last_name || "",
           regularHours: regularHours.toFixed(2),
-          regularPay: formatPayrollMoney(extAmtOnRegRate),
+          regularPay: isEventSanDiego
+            ? formatPayrollMoney(Math.round(regularHours * baseRate * 100) / 100)
+            : formatPayrollMoney(extAmtOnRegRate),
           overtimeHours: overtimeHours.toFixed(2),
           overtimePay: formatPayrollMoney(overtimePay),
           doubletimeHours: doubletimeHours.toFixed(2),
@@ -6646,14 +6660,15 @@ export default function EventDashboardPage() {
                   </div>
                   <div className="text-3xl font-bold text-purple-900">
                     ${(() => {
-                      const totalMs = getTotalDisplayedWorkedMs();
-                      const totalHours = totalMs / (1000 * 60 * 60);
-
-                      // Use rates from database based on venue state
                       const eventState = event?.state?.toUpperCase()?.trim() || 'CA';
                       const baseRate = getBaseRateForState(eventState);
-
-                      const totalPayment = totalHours * baseRate * 1.5;
+                      // Sum per-member base pay so SD OT/DT rules apply correctly per worker.
+                      const totalPayment = teamMembers.reduce((sum: number, member: any) => {
+                        const uid = (member.user_id || member.vendor_id || member.users?.id || '').toString();
+                        const ms = getDisplayedWorkedMs(uid);
+                        const hours = getActualHoursFromWorkedMs(ms, true);
+                        return sum + computeBaseHourlyPay(hours, baseRate);
+                      }, 0);
                       return formatPayrollMoney(totalPayment);
                     })()}
                   </div>
@@ -6798,8 +6813,7 @@ export default function EventDashboardPage() {
                           // Loaded rate is always the base rate (no OT/DT logic)
                           const loadedRate = baseRate;
 
-                          // Ext Amt on Reg Rate = total hours × base rate × 1.5
-                          const extAmtOnRegRate = Math.round(actualHours * baseRate * 1.5 * 100) / 100;
+                          const extAmtOnRegRate = computeBaseHourlyPay(actualHours, baseRate);
 
                           // Commission pool (Net Sales × pool fraction)
                           const trailersDivision = isTrailersDivision(member.users?.division);

@@ -1,4 +1,4 @@
-type CommissionPoolFallbackInput = {
+export type SanDiegoRegionInput = {
   venue?: string | null;
   city?: string | null;
   state?: string | null;
@@ -6,20 +6,17 @@ type CommissionPoolFallbackInput = {
   regionName?: string | null;
 };
 
+type CommissionPoolFallbackInput = SanDiegoRegionInput;
+
 const normalizeText = (value?: string | null) => (value || "").toString().trim().toLowerCase();
 const normalizeStateCode = (value?: string | null) => (value || "").toString().trim().toUpperCase();
 
-export function getRegionFallbackCommissionPoolPercent(
-  input: CommissionPoolFallbackInput | null | undefined
-): number | null {
-  if (!input) return null;
-
+export function isSanDiegoRegion(input: SanDiegoRegionInput | null | undefined): boolean {
+  if (!input) return false;
   const venue = normalizeText(input.venue);
   const city = normalizeText(input.city);
-  const state = normalizeStateCode(input.state);
   const regionName = normalizeText(input.region_name || input.regionName);
-
-  const isSanDiegoRegion =
+  return (
     regionName.includes("san diego") ||
     city === "san diego" ||
     city === "oceanside" ||
@@ -27,9 +24,20 @@ export function getRegionFallbackCommissionPoolPercent(
     city === "el cajon" ||
     venue.includes("viejas") ||
     venue.includes("cal coast") ||
-    venue.includes("frontwave");
+    venue.includes("frontwave")
+  );
+}
 
-  if (isSanDiegoRegion) return 0.03;
+export function getRegionFallbackCommissionPoolPercent(
+  input: CommissionPoolFallbackInput | null | undefined
+): number | null {
+  if (!input) return null;
+
+  const state = normalizeStateCode(input.state);
+  const regionName = normalizeText(input.region_name || input.regionName);
+  const venue = normalizeText(input.venue);
+
+  if (isSanDiegoRegion(input)) return 0.03;
 
   if (state === "AZ" || regionName.includes("phoenix")) {
     return 0.03;
