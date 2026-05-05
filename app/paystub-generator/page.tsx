@@ -1158,9 +1158,13 @@ export default function PaystubGenerator() {
               getRestPayForReport(hoursWorked, formData.state || event.state, event);
           const restPay = roundMoney(restPayRaw);
           const distributedTips = roundMoney(Number(tipsSharesByUser[reportUserId] || 0));
-          const tips = distributedTips > 0
-            ? distributedTips
-            : roundMoney(Number(finalPayData?.tips ?? worker.payment_data?.tips ?? 0));
+          const tips = roundMoney(
+            finalPayData?.tips != null
+              ? Number(finalPayData.tips)
+              : distributedTips > 0
+                ? distributedTips
+                : Number(worker.payment_data?.tips ?? 0)
+          );
           const persistedCommissionPaidTotal =
             Number(worker.payment_data?.regular_pay || 0) +
             Number(worker.payment_data?.overtime_pay || 0) +
@@ -1201,7 +1205,9 @@ export default function PaystubGenerator() {
               ? hourlyPayFallback
               : Number(finalPayData?.commissionPaidTotal ?? (commission + variableIncentive))
           );
-          const totalPay = roundMoney(commissionPaidTotal + tips + restPay);
+          const totalPay = roundMoney(
+            Number(finalPayData?.totalPay ?? (commissionPaidTotal + tips + restPay))
+          );
           const rateInEffect = roundMoney(
             Number(
               finalPayData?.rateInEffect ??

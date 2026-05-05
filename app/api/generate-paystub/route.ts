@@ -1456,6 +1456,7 @@ export async function POST(req: NextRequest) {
       let totalTravelPay = 0;
       let totalMileageReimbursement = 0;
       let totalFinalCommission = 0;
+      let hasSanDiegoEventHours = false;
       const caCommissionRows: CommissionReportRow[] = [];
 
       for (const event of events || []) {
@@ -1606,16 +1607,40 @@ export async function POST(req: NextRequest) {
           : usesPeriodRate
             ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
             : roundPayrollAmount(totalFinalCommissionAmt);
-        const commission = roundPayrollAmount(isEventSD ? 0 : reportFinalCommissionAmt);
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = isEventSD ? sdRegPay : Number(paymentData?.regular_pay || 0);
         const otPay = isEventSD ? sdOtPay : Number(paymentData?.overtime_pay || 0);
         const dtPay = isEventSD ? sdDtPay : Number(paymentData?.doubletime_pay || 0);
 
+        // Match HR dashboard payroll logic:
+        // When eligible + pool exists: Commission Pay = pool share, Variable Incentive = excess above pool.
+        // Otherwise (no pool or ineligible): Commission Pay = full final pay, Variable Incentive = 0.
+        const isEligibleForPool =
+          !isTrailersDivision(worker?.division) &&
+          payrollHours > 0 &&
+          commissionEligibleCount > 0 &&
+          distributedCommissionShare > 0;
+        const displayCommissionPay = roundPayrollAmount(
+          usesPeriodRate
+            ? (isEventSD ? 0 : reportCommissionShare)
+            : isEligibleForPool
+              ? reportCommissionShare
+              : isEventSD
+                ? 0
+                : reportFinalCommissionAmt
+        );
+        const displayVariableIncentive = roundPayrollAmount(
+          usesPeriodRate
+            ? (isEventSD ? 0 : reportVariableIncentive)
+            : isEligibleForPool
+              ? reportVariableIncentive
+              : 0
+        );
+        const commission = displayCommissionPay;
         const restBreak = roundPayrollAmount(includeRestBreakColumn ? getRestBreakAmount(actualHours, paystubState, isEventSD) : 0);
         const reportFinalPay = roundPayrollAmount(
-          (isEventSD ? reportFinalCommissionAmt : reportCommissionShare + reportVariableIncentive) + tips + restBreak
+          (isEventSD ? reportFinalCommissionAmt : displayCommissionPay + displayVariableIncentive) + tips + restBreak
         );
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
@@ -1632,43 +1657,24 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: commissionEligibleCount,
-            commissionPerEmployee: reportCommissionShare,
+            commissionPerEmployee: displayCommissionPay,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
-            variableIncentive: reportVariableIncentive,
+            variableIncentive: displayVariableIncentive,
             tips,
             restBreak,
             finalPay: reportFinalPay,
           });
         }
 
+        hasSanDiegoEventHours = hasSanDiegoEventHours || (isEventSD && payrollHours > 0);
         totalRegHours += isEventSD ? sdRegHours : regHours;
         totalOtHours += isEventSD ? sdOtHours : otHours;
         totalDtHours += isEventSD ? sdDtHours : dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        // Split commission pay like HR dashboard:
-        // When eligible + pool exists: Commission = pool share, Variable Incentive = excess above pool.
-        // Otherwise (no pool or ineligible): Commission = full final pay, Variable Incentive = 0.
-        const isEligibleForPool =
-          !isTrailersDivision(worker?.division) &&
-          payrollHours > 0 &&
-          commissionEligibleCount > 0 &&
-          distributedCommissionShare > 0;
-        const pdfCommissionShare = usesPeriodRate
-          ? (isEventSD ? 0 : reportCommissionShare)
-          : isEligibleForPool
-            ? reportCommissionShare
-            : isEventSD
-              ? 0
-              : reportFinalCommissionAmt;
-        const pdfVariableIncentive = usesPeriodRate
-          ? (isEventSD ? 0 : reportVariableIncentive)
-          : isEligibleForPool
-            ? reportVariableIncentive
-            : 0;
-        totalCommission += pdfCommissionShare;
-        totalVariableIncentive += pdfVariableIncentive;
+        totalCommission += displayCommissionPay;
+        totalVariableIncentive += displayVariableIncentive;
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
@@ -1713,6 +1719,7 @@ export async function POST(req: NextRequest) {
       const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0));
       const sickThisPeriod = round2(Math.abs(Number(sick) || 0));
       const grossPayThisPeriod = round2(
+        (hasSanDiegoEventHours ? totalRegularPayAmount : 0) +
         totalOvertimePayAmount +
         totalTips +
         totalCommission +
@@ -1873,7 +1880,7 @@ export async function POST(req: NextRequest) {
       const overtimeRateAvg = totalOtHours > 0 ? round2(totalOvertimePayRounded / totalOtHours) : 0;
 
       const earningsRows = [
-        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayRounded, ytd: ytdRegularPay, hideThisPeriod: true },
+        { y: 200, label: "Regular", color: black, rate: 0, hours: 0, thisPeriod: totalRegularPayRounded, ytd: ytdRegularPay, hideThisPeriod: !hasSanDiegoEventHours },
         { y: 208, label: "Overtime", color: black, rate: overtimeRateAvg, hours: totalOtHours, thisPeriod: totalOvertimePayRounded, ytd: ytdOvertimePay },
         { y: 216, label: "Commission", color: black, rate: effectiveRate, hours: totalHoursWorked, thisPeriod: totalCommissionRounded, ytd: ytdCommission },
         { y: 224, label: "Variable Incentive", color: black, rate: 0, hours: 0, thisPeriod: totalVariableIncentiveRounded, ytd: totalVariableIncentiveRounded },
@@ -2261,12 +2268,32 @@ export async function POST(req: NextRequest) {
         const reportFinalCommissionAmt = usesPeriodRate
           ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
           : roundPayrollAmount(totalFinalCommissionAmt);
-        const commission = roundPayrollAmount(reportFinalCommissionAmt);
         const other = Number(worker?.adjustment_amount || 0);
 
         const regPay = Number(paymentData?.regular_pay || 0);
         const otPay = Number(paymentData?.overtime_pay || 0);
         const dtPay = Number(paymentData?.doubletime_pay || 0);
+
+        const isEligibleForPool =
+          !isTrailersDivision(worker?.division) &&
+          payrollHours > 0 &&
+          commissionEligibleCount > 0 &&
+          distributedCommissionShare > 0;
+        const displayCommissionPay = roundPayrollAmount(
+          usesPeriodRate
+            ? reportCommissionShare
+            : isEligibleForPool
+              ? reportCommissionShare
+              : reportFinalCommissionAmt
+        );
+        const displayVariableIncentive = roundPayrollAmount(
+          usesPeriodRate
+            ? reportVariableIncentive
+            : isEligibleForPool
+              ? reportVariableIncentive
+              : 0
+        );
+        const commission = displayCommissionPay;
 
         // Vendor layout REG/OT rate display
         // AZ/NY: REG RATE shows the regular Loaded Rate; if weekly OT applies, show OT RATE instead (1.5x Loaded Rate).
@@ -2284,7 +2311,7 @@ export async function POST(req: NextRequest) {
         const persistedTotal = Number(paymentData?.total_pay || 0);
         const persistedTotalGrossPay = persistedTotal + other;
         const reportFinalPay = roundPayrollAmount(
-          reportCommissionShare + reportVariableIncentive + tips + restBreak
+          displayCommissionPay + displayVariableIncentive + tips + restBreak
         );
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
@@ -2302,10 +2329,10 @@ export async function POST(req: NextRequest) {
             adjGrossSales: adjustedGrossForReport,
             commissionPool: reportCommissionPool,
             numEmployees: commissionEligibleCount,
-            commissionPerEmployee: reportCommissionShare,
+            commissionPerEmployee: displayCommissionPay,
             hoursWorked: displayHours,
             rateInEffect: loadedRateBase,
-            variableIncentive: reportVariableIncentive,
+            variableIncentive: displayVariableIncentive,
             tips,
             restBreak,
             finalPay: reportFinalPay,
@@ -2317,21 +2344,8 @@ export async function POST(req: NextRequest) {
         totalDtHours += dtHours;
         totalHoursWorked += displayHours;
         totalTips += tips;
-        const isEligibleForPool =
-          !isTrailersDivision(worker?.division) &&
-          payrollHours > 0 &&
-          commissionEligibleCount > 0 &&
-          distributedCommissionShare > 0;
-        totalCommission += usesPeriodRate
-          ? reportCommissionShare
-          : isEligibleForPool
-            ? reportCommissionShare
-            : reportFinalCommissionAmt;
-        totalVariableIncentive += usesPeriodRate
-          ? reportVariableIncentive
-          : isEligibleForPool
-            ? reportVariableIncentive
-            : 0;
+        totalCommission += displayCommissionPay;
+        totalVariableIncentive += displayVariableIncentive;
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += total;
