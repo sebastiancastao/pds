@@ -26,9 +26,17 @@ const roundHoursForDebug = (value: number): number =>
   Number((Number.isFinite(value) ? value : 0).toFixed(6));
 const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
 const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
+const isExplicitNonVendorDivision = (value?: string | null) => {
+  const division = normalizeDivision(value);
+  return division !== '' && division !== 'vendor' && division !== 'both';
+};
 const normalizeState = (value?: string | null) => (value || '').toString().toUpperCase().trim();
 const roundMoney = (value: number): number =>
   Math.round(((Number.isFinite(value) ? value : 0) + Number.EPSILON) * 100) / 100;
+const roundHours = (value: number): number =>
+  Number((Number.isFinite(value) ? value : 0).toFixed(2));
+const getMinimumLoadedRate = (stateCode?: string | null): number =>
+  ['NY', 'WI', 'NV', 'AZ'].includes(normalizeState(stateCode)) ? 25.92 : 28.5;
 
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
@@ -351,9 +359,10 @@ export async function GET(req: NextRequest) {
       const totalTipsEvent = Number(ep.total_tips || 0) || Number(ev.tips || 0);
       const commissionEligibleMembers = isEventSD ? [] : eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();
-        const actualHours = getEffectiveHours(row);
+        const actualHours = roundHours(getEffectiveHours(row));
         if (
           !paymentUserId ||
+          isExplicitNonVendorDivision(row?.users?.division) ||
           isTrailersDivision(row?.users?.division) ||
           row?.commission_deleted === true ||
           actualHours <= 0
@@ -364,7 +373,7 @@ export async function GET(req: NextRequest) {
       });
       const tipsEligibleMembers = eventRows.flatMap((row: any) => {
         const paymentUserId = (row.user_id || '').toString();
-        const actualHours = getEffectiveHours(row);
+        const actualHours = roundHours(getEffectiveHours(row));
         if (
           !paymentUserId ||
           isTrailersDivision(row?.users?.division) ||
@@ -411,7 +420,7 @@ export async function GET(req: NextRequest) {
         workers: (allVendorPaymentsByEvent[ev.id] || []).map((row: any) => ({
           userId: (row?.user_id || '').toString(),
           division: row?.users?.division,
-          hours: getEffectiveHours(row),
+          hours: roundHours(getEffectiveHours(row)),
           commissionDeleted: row?.commission_deleted === true,
           commissionOverride:
             row?.commission_override != null && Number.isFinite(Number(row.commission_override))
@@ -467,10 +476,6 @@ export async function GET(req: NextRequest) {
           Number(vp.overtime_pay || 0) +
           Number(vp.doubletime_pay || 0) +
           Number(vp.commissions || 0);
-        const fallbackVariableIncentive =
-          vp.variable_incentive != null && Number.isFinite(Number(vp.variable_incentive))
-            ? Number(vp.variable_incentive)
-            : Math.max(0, persistedCommissionPaidTotal - distributedCommission);
         const sanDiegoHourlyBreakdown = isEventSD
           ? computeSanDiegoHourlyBreakdown(
               actualHours,
@@ -485,13 +490,6 @@ export async function GET(req: NextRequest) {
               ? Number(periodWorker?.commissionPay || 0)
               : distributedCommission
         );
-        const variableIncentive = roundMoney(
-          isEventSD
-            ? 0
-            : usesPeriodRate
-              ? Number(periodWorker?.variableIncentive || 0)
-              : fallbackVariableIncentive
-        );
         const commissionPaidTotal = roundMoney(
           isEventSD
             ? Number(sanDiegoHourlyBreakdown?.totalPay || 0)
@@ -499,12 +497,29 @@ export async function GET(req: NextRequest) {
               ? Number(periodWorker?.commissionPaidTotal || 0)
               : persistedCommissionPaidTotal
         );
+        const variableIncentive = roundMoney(
+          isEventSD
+            ? 0
+            : usesPeriodRate
+              ? Number(periodWorker?.variableIncentive || 0)
+              : Math.max(0, commissionPaidTotal - commissionPay)
+        );
+        const loadedRate = roundMoney(
+          isEventSD
+            ? Number(sanDiegoHourlyBreakdown?.blendedRate || baseRate)
+            : actualHours > 0
+              ? Math.max(
+                  getMinimumLoadedRate(eventState),
+                  (commissionPaidTotal + adjustmentAmount) / actualHours
+                )
+              : 0
+        );
         const rateInEffect = roundMoney(
           isEventSD
             ? Number(sanDiegoHourlyBreakdown?.blendedRate || baseRate)
             : usesPeriodRate
               ? Number(periodWorker?.rateInEffect || 0)
-              : (actualHours > 0 ? commissionPaidTotal / actualHours : 0)
+              : loadedRate
         );
         const commissions = isEventSD ? 0 : commissionPay;
         const regularPay = isEventSD

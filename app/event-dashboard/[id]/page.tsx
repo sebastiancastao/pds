@@ -6840,7 +6840,6 @@ export default function EventDashboardPage() {
                             <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Loaded Rate">Rate in Effect</th>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700">Hours</th>
                             <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Commission Pay">Commission Pay</th>
-                            <th className="text-left px-2 py-2 font-semibold text-gray-700" title="Variable Incentive (Ext @ Reg above Commission Pay)">Variable Incentive</th>
                           </>
                         )}
                         <th className="text-left px-2 py-2 font-semibold text-gray-700">Tips</th>
@@ -7024,12 +7023,6 @@ export default function EventDashboardPage() {
                                     )}
                                   </td>
 
-                                  {/* Variable Incentive */}
-                                  <td className="px-2 py-2 align-top">
-                                    <div className="text-sm font-medium text-purple-600">
-                                      ${formatPayrollMoney(displayedBreakdown.variableIncentive)}
-                                    </div>
-                                  </td>
                                 </>
                               )}
 
