@@ -34,8 +34,7 @@ export async function validateCheckinLinkToken(
     .from("checkin_link_tokens")
     .update({ last_used_at: new Date().toISOString() })
     .eq("token", token)
-    .then(() => {})
-    .catch(() => {});
+    .then(() => {}, () => {});
 
   return { eventId: data.event_id };
 }

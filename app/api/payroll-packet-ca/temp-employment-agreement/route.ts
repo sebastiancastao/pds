@@ -149,7 +149,7 @@ export async function GET(request: Request) {
     if (homeVenueName) homeVenueField.setText(homeVenueName);
     homeVenueField.addToPage(firstPage, {
       x: 180,
-      y: 480,
+      y: 485,
       width: 200,
       height: 10,
       borderColor: rgb(0, 0, 0),
