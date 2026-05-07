@@ -228,40 +228,45 @@ async function buildRejectionsPdf(
   });
   y -= 16;
 
-  // ── Column layout ──────────────────────────────────────────────────────────
+  // ── Column layout — matches timesheet tab column names exactly ─────────────
   const showThirdMeal = rows.some(r => r.meal3_start || r.meal3_end);
 
   const cols = [
-    { header: "Event",     width: 115 },
-    { header: "Date",      width: 62  },
-    { header: "In",        width: 62  },
-    { header: "M1 Start",  width: 50  },
-    { header: "M1 End",    width: 50  },
-    { header: "M2 Start",  width: 50  },
-    { header: "M2 End",    width: 50  },
-    ...(showThirdMeal ? [{ header: "M3 Start", width: 50 }, { header: "M3 End", width: 50 }] : []),
-    { header: "Out",       width: 62  },
-    { header: "Hrs",       width: 38, align: "right" as const },
-    { header: "Reason",    width: 80  },
-    { header: "Notes",     width: 85  },
+    { header: "Staff",     width: 108 },
+    { header: "Event",     width: 90  },
+    { header: "Date",      width: 55  },
+    { header: "In",        width: 48  },
+    { header: "M1 Start",  width: 42  },
+    { header: "M1 End",    width: 42  },
+    { header: "M2 Start",  width: 42  },
+    { header: "M2 End",    width: 42  },
+    ...(showThirdMeal ? [{ header: "M3 Start", width: 42 }, { header: "M3 End", width: 42 }] : []),
+    { header: "Out",       width: 48  },
+    { header: "Hrs",       width: 30, align: "right" as const },
+    { header: "Reason",    width: 90  },
+    { header: "Notes",     width: 75  },
   ];
   const totalColWidth = cols.reduce((s, c) => s + c.width, 0);
   const scale = contentWidth / totalColWidth;
   const sc = cols.map(c => ({ ...c, width: c.width * scale }));
 
+  const ROW_SIZE = 7.5;
+  const ROW_PAD = 5;
+
   const drawRow = (
     cells: Array<{ text: string; width: number; align?: "left" | "right" }>,
-    opts?: { bold?: boolean; size?: number; bg?: { r: number; g: number; b: number } }
+    opts?: { bold?: boolean; size?: number; bg?: { r: number; g: number; b: number }; textColor?: { r: number; g: number; b: number } }
   ) => {
-    const size = opts?.size ?? 7.5;
+    const size = opts?.size ?? ROW_SIZE;
     const rowFont = opts?.bold ? boldFont : font;
-    ensureSpace(size + 6);
+    const color = opts?.textColor ?? { r: 0.1, g: 0.1, b: 0.1 };
+    ensureSpace(size + ROW_PAD + 2);
     let x = leftMargin;
 
     if (opts?.bg) {
       const totalWidth = cells.reduce((s, c) => s + c.width, 0);
       page.drawRectangle({
-        x: leftMargin, y: y - 2, width: totalWidth, height: size + 4,
+        x: leftMargin, y: y - 2, width: totalWidth, height: size + ROW_PAD,
         color: rgb(opts.bg.r, opts.bg.g, opts.bg.b),
       });
     }
@@ -273,11 +278,11 @@ async function buildRejectionsPdf(
       }
       const textWidth = rowFont.widthOfTextAtSize(text, size);
       const drawX = cell.align === "right" ? x + cell.width - textWidth - 2 : x + 2;
-      page.drawText(text, { x: drawX, y, size, font: rowFont, color: rgb(0.1, 0.1, 0.1) });
+      page.drawText(text, { x: drawX, y, size, font: rowFont, color: rgb(color.r, color.g, color.b) });
       x += cell.width;
     }
 
-    y -= size + 5;
+    y -= size + ROW_PAD;
   };
 
   const drawDivider = (thickness = 0.5) => {
@@ -288,101 +293,73 @@ async function buildRejectionsPdf(
     });
   };
 
-  // ── Group rows by worker ───────────────────────────────────────────────────
-  const byWorker = new Map<string, { name: string; email: string; role: string; division: string; rows: MappedRow[] }>();
-  for (const row of rows) {
-    if (!byWorker.has(row.user_id)) {
-      byWorker.set(row.user_id, {
-        name: row.worker_name,
-        email: row.worker_email,
-        role: row.worker_role,
-        division: row.worker_division,
-        rows: [],
-      });
+  // ── Table header row (matches timesheet tab header style) ─────────────────
+  drawRow(
+    sc.map(c => ({ text: c.header.toUpperCase(), width: c.width, align: c.align })),
+    { bold: true, size: 7, bg: { r: 0.95, g: 0.96, b: 0.98 }, textColor: { r: 0.25, g: 0.3, b: 0.42 } }
+  );
+  drawDivider(1);
+
+  // ── Flat table rows (one per rejection, like timesheet tab) ───────────────
+  for (const r of rows) {
+    ensureSpace(ROW_SIZE + ROW_PAD + 2);
+
+    const nameCell = r.worker_name || "—";
+    const roleMeta = [r.worker_role, r.worker_division].filter(Boolean).join(" · ");
+
+    // Staff cell: name on first line, role/division meta in lighter text below
+    const staffDisplayText = roleMeta ? `${nameCell} (${roleMeta})` : nameCell;
+
+    const cells: Array<{ text: string; width: number; align?: "left" | "right" }> = [
+      { text: staffDisplayText,         width: sc[0].width },
+      { text: r.event_name || "—",      width: sc[1].width },
+      { text: fmtDate(r.event_date),    width: sc[2].width },
+      { text: fmtTime(r.clock_in),      width: sc[3].width },
+      { text: fmtTime(r.meal1_start),   width: sc[4].width },
+      { text: fmtTime(r.meal1_end),     width: sc[5].width },
+      { text: fmtTime(r.meal2_start),   width: sc[6].width },
+      { text: fmtTime(r.meal2_end),     width: sc[7].width },
+    ];
+    let idx = 8;
+    if (showThirdMeal) {
+      cells.push({ text: fmtTime(r.meal3_start), width: sc[idx].width });
+      cells.push({ text: fmtTime(r.meal3_end),   width: sc[idx + 1].width });
+      idx += 2;
     }
-    byWorker.get(row.user_id)!.rows.push(row);
-  }
+    cells.push({ text: fmtTime(r.clock_out),       width: sc[idx].width });
+    cells.push({ text: r.total_hours,              width: sc[idx + 1].width, align: "right" });
+    cells.push({ text: r.rejection_reason || "—",  width: sc[idx + 2].width });
+    cells.push({ text: r.rejection_notes  || "—",  width: sc[idx + 3].width });
+    drawRow(cells);
 
-  for (const worker of byWorker.values()) {
-    // Worker section header
-    ensureSpace(40);
-    page.drawRectangle({
-      x: leftMargin, y: y - 2, width: contentWidth, height: 14,
-      color: rgb(0.91, 0.94, 0.99),
-    });
-    page.drawText(worker.name, {
-      x: leftMargin + 4, y, size: 9, font: boldFont, color: rgb(0.04, 0.18, 0.48),
-    });
-    const meta = [worker.email, worker.role, worker.division].filter(Boolean).join("  ·  ");
-    if (meta) {
-      page.drawText(meta, {
-        x: leftMargin + 4 + boldFont.widthOfTextAtSize(worker.name, 9) + 12,
-        y, size: 7.5, font, color: rgb(0.4, 0.4, 0.4),
-      });
-    }
-    y -= 16;
-
-    // Column headers
-    drawRow(
-      sc.map(c => ({ text: c.header, width: c.width, align: c.align })),
-      { bold: true, size: 7.5, bg: { r: 0.94, g: 0.96, b: 0.99 } }
-    );
-    drawDivider(1);
-
-    // Data rows
-    for (const r of worker.rows) {
-      const cells: Array<{ text: string; width: number; align?: "left" | "right" }> = [
-        { text: r.event_name || "—",      width: sc[0].width },
-        { text: fmtDate(r.event_date),    width: sc[1].width },
-        { text: fmtTime(r.clock_in),      width: sc[2].width },
-        { text: fmtTime(r.meal1_start),   width: sc[3].width },
-        { text: fmtTime(r.meal1_end),     width: sc[4].width },
-        { text: fmtTime(r.meal2_start),   width: sc[5].width },
-        { text: fmtTime(r.meal2_end),     width: sc[6].width },
-      ];
-      let idx = 7;
-      if (showThirdMeal) {
-        cells.push({ text: fmtTime(r.meal3_start), width: sc[idx].width });
-        cells.push({ text: fmtTime(r.meal3_end),   width: sc[idx + 1].width });
-        idx += 2;
-      }
-      cells.push({ text: fmtTime(r.clock_out),        width: sc[idx].width });
-      cells.push({ text: r.total_hours,               width: sc[idx + 1].width, align: "right" });
-      cells.push({ text: r.rejection_reason || "—",   width: sc[idx + 2].width });
-      cells.push({ text: r.rejection_notes  || "—",   width: sc[idx + 3].width });
-      drawRow(cells);
-
-      if (r.signatureData) {
-        const parsed = parseSignatureDataUrl(r.signatureData);
-        if (parsed) {
-          try {
-            const embedded = parsed.format === "png"
-              ? await pdfDoc.embedPng(parsed.bytes)
-              : await pdfDoc.embedJpg(parsed.bytes);
-            const maxSigWidth = Math.min(220, contentWidth / 2);
-            const maxSigHeight = 44;
-            const sigScale = Math.min(maxSigWidth / embedded.width, maxSigHeight / embedded.height, 1);
-            const drawWidth = embedded.width * sigScale;
-            const drawHeight = embedded.height * sigScale;
-            ensureSpace(drawHeight + 16);
-            page.drawText("Signature:", {
-              x: leftMargin + 4, y, size: 7, font, color: rgb(0.35, 0.35, 0.35),
-            });
-            y -= 9;
-            page.drawImage(embedded, {
-              x: leftMargin + 4, y: y - drawHeight, width: drawWidth, height: drawHeight,
-            });
-            y -= drawHeight + 5;
-          } catch {
-            // skip on image decode failure
-          }
+    if (r.signatureData) {
+      const parsed = parseSignatureDataUrl(r.signatureData);
+      if (parsed) {
+        try {
+          const embedded = parsed.format === "png"
+            ? await pdfDoc.embedPng(parsed.bytes)
+            : await pdfDoc.embedJpg(parsed.bytes);
+          const maxSigWidth = Math.min(220, contentWidth / 2);
+          const maxSigHeight = 44;
+          const sigScale = Math.min(maxSigWidth / embedded.width, maxSigHeight / embedded.height, 1);
+          const drawWidth = embedded.width * sigScale;
+          const drawHeight = embedded.height * sigScale;
+          ensureSpace(drawHeight + 16);
+          page.drawText("Signature:", {
+            x: leftMargin + 4, y, size: 7, font, color: rgb(0.35, 0.35, 0.35),
+          });
+          y -= 9;
+          page.drawImage(embedded, {
+            x: leftMargin + 4, y: y - drawHeight, width: drawWidth, height: drawHeight,
+          });
+          y -= drawHeight + 5;
+        } catch {
+          // skip on image decode failure
         }
       }
-
-      drawDivider();
     }
 
-    y -= 10;
+    drawDivider();
   }
 
   // ── Page footers ───────────────────────────────────────────────────────────

@@ -94,6 +94,8 @@ export async function POST(req: NextRequest) {
       };
       return map[st] || st;
     };
+    const getMinimumRateInEffect = (stateCode?: string | null): number =>
+      ["NY", "WI", "NV", "AZ"].includes(normalizeStateCode(stateCode)) ? 25.92 : 28.5;
     const toFiniteNumber = (value: unknown): number | null => {
       const num = Number(value);
       return Number.isFinite(num) ? num : null;
@@ -845,44 +847,17 @@ export async function POST(req: NextRequest) {
       const roundedHours = Math.round((absHours + 1e-9) * 100) / 100;
       return decimalHours < 0 ? -roundedHours : roundedHours;
     };
-    const getMinimumLoadedRate = (stateCode?: string | null): number => {
-      const normalizedState = normalizeStateCode(stateCode);
-      return ["NY", "WI", "NV", "AZ"].includes(normalizedState) ? 25.92 : 28.5;
-    };
     const getReportRateInEffect = ({
-      stateCode,
-      payrollHours,
-      isEventSD,
-      usesPeriodRate,
-      loadedRateBase,
-      commissionPaidTotal,
-      adjustmentAmount,
-      periodRateInEffect,
+      commissionPay,
+      hoursWorked,
     }: {
-      stateCode?: string | null;
-      payrollHours: number;
-      isEventSD: boolean;
-      usesPeriodRate: boolean;
-      loadedRateBase: number;
-      commissionPaidTotal: number;
-      adjustmentAmount: number;
-      periodRateInEffect: number;
+      commissionPay: number;
+      hoursWorked: number;
     }): number => {
-      if (isEventSD) {
-        return roundPayrollAmount(loadedRateBase);
-      }
-      if (usesPeriodRate) {
-        return roundPayrollAmount(periodRateInEffect);
-      }
-      if (payrollHours <= 0) {
+      if (hoursWorked <= 0) {
         return 0;
       }
-      return roundPayrollAmount(
-        Math.max(
-          getMinimumLoadedRate(stateCode),
-          (Number(commissionPaidTotal || 0) + Number(adjustmentAmount || 0)) / payrollHours
-        )
-      );
+      return roundPayrollAmount(Number(commissionPay || 0) / hoursWorked);
     };
 
     const computeSickAccrualSnapshotForPayPeriod = async (
@@ -1181,7 +1156,8 @@ export async function POST(req: NextRequest) {
       show: string;
       stadium: string;
       adjGrossSales: number;
-      commissionPool: number;
+      commissionPoolDollars: number;
+      commissionPoolPercent: number;
       numEmployees: number;
       commissionPerEmployee: number;
       hoursWorked: number;
@@ -1199,6 +1175,20 @@ export async function POST(req: NextRequest) {
       const reportPage = pdfDoc.addPage([612, 792]);
       const fmtMoney = (n: number) =>
         `$${Number(n || 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const fmtPercent = (n: number) => {
+        const percentValue = Number(n || 0) * 100;
+        const roundedPercent = Math.round((percentValue + Number.EPSILON) * 100) / 100;
+        return `${roundedPercent.toFixed(2).replace(/\.?0+$/, "")}%`;
+      };
+      const uniqueCommissionPoolPercents = Array.from(
+        new Set(
+          rows.map((row) => Number(row.commissionPoolPercent || 0).toFixed(6))
+        )
+      );
+      const commissionPoolHeader =
+        uniqueCommissionPoolPercents.length === 1
+          ? `${fmtPercent(Number(uniqueCommissionPoolPercents[0]))} of Adj.`
+          : "% of Adj.";
       const fmtDate = (ds: string) => {
         if (!ds) return "";
         const [yy, mm, dd] = ds.split("-");
@@ -1253,7 +1243,7 @@ export async function POST(req: NextRequest) {
       drawR("Event Name /", C.show, y, { bold: true, size: 6 });
       drawR("Venue /", C.venue, y, { bold: true, size: 6 });
       drawR("Adjusted", C.adjGross, y, { bold: true, size: 6 });
-      drawR("% of Adj.", C.pool, y, { bold: true, size: 6 });
+      drawR(commissionPoolHeader, C.pool, y, { bold: true, size: 6 });
       drawR("# of", C.numEmp, y, { bold: true, size: 6 });
       drawR("Commission", C.comm, y, { bold: true, size: 6 });
       drawR("Hours", C.hours, y, { bold: true, size: 6 });
@@ -1282,8 +1272,7 @@ export async function POST(req: NextRequest) {
       let grandEmployees = 0;
       let grandCommission = 0;
       let grandHoursWorked = 0;
-      let grandCommissionPaid = 0;
-      let grandVariableIncentive = 0;
+      let grandRowVariableIncentive = 0;
       let grandTips = 0;
       let grandRestPay = 0;
       let grandFinalPay = 0;
@@ -1294,7 +1283,7 @@ export async function POST(req: NextRequest) {
         drawR(showT, C.show, y, { size: 6 });
         drawR(venueT, C.venue, y, { size: 6 });
         drawR(fmtMoney(row.adjGrossSales), C.adjGross, y, { size: 6 });
-        drawR(fmtMoney(row.commissionPool), C.pool, y, { size: 6 });
+        drawR(fmtMoney(row.commissionPoolDollars), C.pool, y, { size: 6 });
         drawR(row.numEmployees.toString(), C.numEmp, y, { size: 6 });
         drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
         drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
@@ -1304,19 +1293,41 @@ export async function POST(req: NextRequest) {
         drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
         drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
         grandAdjustedGross += row.adjGrossSales;
-        grandCommissionPool += row.commissionPool;
+        grandCommissionPool += row.commissionPoolDollars;
         grandEmployees += row.numEmployees;
         grandCommission += row.commissionPerEmployee;
         grandHoursWorked += row.hoursWorked;
-        grandCommissionPaid += row.commissionPerEmployee + row.variableIncentive;
-        grandVariableIncentive += row.variableIncentive;
+        grandRowVariableIncentive += row.variableIncentive;
         grandTips += row.tips;
         grandRestPay += row.restBreak;
         grandFinalPay += row.finalPay;
         y -= 11;
       }
       drawRL(20, y + 9, 592);
-      const averageRateInEffect = grandHoursWorked > 0 ? (grandCommissionPaid / grandHoursWorked) : 0;
+      const averageRateInEffect =
+        grandHoursWorked > 0 ? roundPayrollAmount(grandCommission / grandHoursWorked) : 0;
+      const totalVariableIncentive = roundPayrollAmount(
+        grandHoursWorked > 0
+          ? grandHoursWorked * Math.max(0, getMinimumRateInEffect(paystubState) - averageRateInEffect)
+          : 0
+      );
+      const totalFinalPay = roundPayrollAmount(
+        grandFinalPay - grandRowVariableIncentive + totalVariableIncentive
+      );
+      if (debugEnabled || process.env.NODE_ENV !== "production") {
+        console.log("[GENERATE-PAYSTUB][debug] commission report totals", {
+          paystubState,
+          rowCount: rows.length,
+          minimumRateInEffect: getMinimumRateInEffect(paystubState),
+          totalCommission: roundPayrollAmount(grandCommission),
+          totalHoursWorked: roundPayrollAmount(grandHoursWorked),
+          totalRateInEffect: averageRateInEffect,
+          summedRowVariableIncentive: roundPayrollAmount(grandRowVariableIncentive),
+          recalculatedVariableIncentive: totalVariableIncentive,
+          summedRowFinalPay: roundPayrollAmount(grandFinalPay),
+          recalculatedTotalFinalPay: totalFinalPay,
+        });
+      }
       drawR("Total for Pay Period", C.date, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandAdjustedGross), C.adjGross, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandCommissionPool), C.pool, y, { bold: true, size: 6 });
@@ -1324,10 +1335,10 @@ export async function POST(req: NextRequest) {
       drawR(fmtMoney(grandCommission), C.comm, y, { bold: true, size: 6 });
       drawR(Number(grandHoursWorked).toFixed(2), C.hours, y, { bold: true, size: 6 });
       drawR(`$${averageRateInEffect.toFixed(2)}`, C.rate, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandVariableIncentive), C.varInc, y, { bold: true, size: 6 });
+      drawR(fmtMoney(totalVariableIncentive), C.varInc, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandTips), C.tips, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandRestPay), C.restPay, y, { bold: true, size: 6 });
-      drawR(fmtMoney(grandFinalPay), C.finalPay, y, { bold: true, size: 6 });
+      drawR(fmtMoney(totalFinalPay), C.finalPay, y, { bold: true, size: 6 });
     };
 
     if (paystubState === "CA") {
@@ -1517,6 +1528,7 @@ export async function POST(req: NextRequest) {
           eventState,
           baseRate,
           commissionEligibleCount,
+          commissionPoolPercent,
           commissionPoolDollars,
           workers: eventWorkers,
           totalTipsEvent,
@@ -1661,14 +1673,8 @@ export async function POST(req: NextRequest) {
         const computedTotalPay = reportFinalPay;
         const computedTotalGrossPay = computedTotalPay + other;
         const reportRateInEffect = getReportRateInEffect({
-          stateCode: eventState,
-          payrollHours,
-          isEventSD,
-          usesPeriodRate,
-          loadedRateBase,
-          commissionPaidTotal: reportFinalCommissionAmt,
-          adjustmentAmount: other,
-          periodRateInEffect: Number(periodWorker?.rateInEffect || 0),
+          commissionPay: displayCommissionPay,
+          hoursWorked: displayHours,
         });
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
@@ -1681,7 +1687,8 @@ export async function POST(req: NextRequest) {
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: adjustedGrossForReport,
-            commissionPool: reportCommissionPool,
+            commissionPoolDollars: reportCommissionPool,
+            commissionPoolPercent: Number(commissionPoolPercent || 0),
             numEmployees: commissionEligibleCount,
             commissionPerEmployee: displayCommissionPay,
             hoursWorked: displayHours,
@@ -2185,6 +2192,7 @@ export async function POST(req: NextRequest) {
           eventState,
           baseRate,
           commissionEligibleCount,
+          commissionPoolPercent,
           commissionPoolDollars,
           workers: eventWorkers,
           totalTipsEvent,
@@ -2320,14 +2328,8 @@ export async function POST(req: NextRequest) {
         const computedTotalGrossPay = computedTotalPay + other;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
         const reportRateInEffect = getReportRateInEffect({
-          stateCode: eventState,
-          payrollHours,
-          isEventSD: false,
-          usesPeriodRate,
-          loadedRateBase,
-          commissionPaidTotal: reportFinalCommissionAmt,
-          adjustmentAmount: other,
-          periodRateInEffect: Number(periodWorker?.rateInEffect || 0),
+          commissionPay: displayCommissionPay,
+          hoursWorked: displayHours,
         });
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
@@ -2340,7 +2342,8 @@ export async function POST(req: NextRequest) {
             show: (event?.event_name ?? event?.name ?? event?.artist ?? '').toString(),
             stadium: (event?.venue ?? '').toString(),
             adjGrossSales: adjustedGrossForReport,
-            commissionPool: reportCommissionPool,
+            commissionPoolDollars: reportCommissionPool,
+            commissionPoolPercent: Number(commissionPoolPercent || 0),
             numEmployees: commissionEligibleCount,
             commissionPerEmployee: displayCommissionPay,
             hoursWorked: displayHours,

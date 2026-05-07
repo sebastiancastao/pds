@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { PDFDocument, rgb, PDFName, PDFString, PDFArray } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFArray, StandardFonts } from 'pdf-lib';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createClient } from '@supabase/supabase-js';
@@ -17,8 +17,8 @@ const supabaseAdmin = createClient(
 function resolveSourcePdfPath(regionName: string) {
   const fileName =
     regionName === 'San Diego'
-      ? SAN_DIEGO_TEMP_EMPLOYMENT_FILE
-      : LA_NORCAL_TEMP_EMPLOYMENT_FILE;
+      ? LA_NORCAL_TEMP_EMPLOYMENT_FILE
+      : SAN_DIEGO_TEMP_EMPLOYMENT_FILE;
 
   const candidatePaths = [
     join(process.cwd(), fileName),
@@ -105,6 +105,15 @@ export async function GET(request: Request) {
       }
     }
 
+    // Explicit region override from the form storage path (e.g. ?region=san-diego or ?region=la-norcal)
+    // takes priority over the user's DB region so the correct variant is always served.
+    const regionOverride = new URL(request.url).searchParams.get('region');
+    if (regionOverride === 'san-diego') {
+      regionName = 'San Diego';
+    } else if (regionOverride === 'la-norcal') {
+      regionName = 'LA Region';
+    }
+
     console.log('[CA] Final user name:', userName);
     console.log('[CA] Region name:', regionName);
 
@@ -118,19 +127,24 @@ export async function GET(request: Request) {
     console.log('CA - Page size:', lastPageSize);
     console.log('CA - Total pages:', pages.length);
     const form = pdfDoc.getForm();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // Printed name input on the first page (replaces drawn text)
+    // Sets annotation flag 2 (Hidden) and removes AP so the viewer never renders
+    // the widget — the field value stays in the form data for backend capture.
+    const hideWidget = (field: any) => {
+      for (const widget of field.acroField.getWidgets()) {
+        widget.dict.delete(PDFName.of('AP'));
+        widget.dict.set(PDFName.of('F'), pdfDoc.context.obj(2));
+      }
+    };
+
+    // Pre-filled values drawn directly onto the page — no widget visible.
+    if (userName) firstPage.drawText(userName, { x: 132, y: 636, size: 10, font });
     const printedNameField = form.createTextField('printed_name');
     printedNameField.enableRequired();
     if (userName) printedNameField.setText(userName);
-    printedNameField.addToPage(firstPage, {
-      x: 130,
-      y: 632,
-      width: 200,
-      height: 18,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
+    printedNameField.addToPage(firstPage, { x: 130, y: 632, width: 200, height: 18, borderWidth: 0 });
+    hideWidget(printedNameField);
 
     // BACK BUTTON
     const backButtonX = 50, backButtonY = 100, backButtonWidth = 100, backButtonHeight = 32;
@@ -144,42 +158,19 @@ export async function GET(request: Request) {
     if (annotsArray instanceof PDFArray) { annotsArray.push(pdfDoc.context.register(backLinkAnnot)); annotsArray.push(pdfDoc.context.register(continueLinkAnnot)); }
     else { lastPage.node.set(PDFName.of('Annots'), pdfDoc.context.obj([pdfDoc.context.register(backLinkAnnot), pdfDoc.context.register(continueLinkAnnot)])); }
 
-    // Home venue field on the first page, below the printed name field
-    const homeVenueField = form.createTextField('home_venue');
-    if (homeVenueName) homeVenueField.setText(homeVenueName);
-    homeVenueField.addToPage(firstPage, {
-      x: 180,
-      y: 485,
-      width: 200,
-      height: 10,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
+    if (homeVenueName) firstPage.drawText(homeVenueName, { x: 182, y: 488, size: 9, font });
 
-    // Employee signature date field
+    // Employee signature date — interactive, user types here.
     const employeeSignatureDateField = form.createTextField('employee_signature_date');
     employeeSignatureDateField.enableRequired();
-    employeeSignatureDateField.addToPage(lastPage, {
-      x: 370,
-      y: 125,
-      width: 80,
-      height: 18,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
+    employeeSignatureDateField.addToPage(lastPage, { x: 370, y: 125, width: 80, height: 18, borderWidth: 0 });
 
-    // Second input at the bottom of the last page
+    if (userName) lastPage.drawText(userName, { x: 82, y: 94, size: 10, font });
     const bottomNameField = form.createTextField('printed_name_bottom');
     bottomNameField.enableRequired();
     if (userName) bottomNameField.setText(userName);
-    bottomNameField.addToPage(lastPage, {
-      x: 80,
-      y: 90,
-      width: 200,
-      height: 18,
-      borderColor: rgb(0, 0, 0),
-      borderWidth: 1,
-    });
+    bottomNameField.addToPage(lastPage, { x: 80, y: 90, width: 200, height: 18, borderWidth: 0 });
+    hideWidget(bottomNameField);
 
     const pdfBytes = await pdfDoc.save();
     return new NextResponse(Buffer.from(pdfBytes), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'inline; filename="CA_Temporary_Employment_Services_Agreement.pdf"', 'Content-Security-Policy': "default-src 'self'", 'X-Content-Type-Options': 'nosniff' } });

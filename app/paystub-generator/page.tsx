@@ -227,6 +227,8 @@ export default function PaystubGenerator() {
     };
     return map[st] || st;
   };
+  const getMinimumRateInEffect = (stateCode?: string | null) =>
+    ['NY', 'WI', 'NV', 'AZ'].includes(normalizeStateCode(stateCode)) ? 25.92 : 28.5;
   const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
   const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
   const isVendorDivision = (value?: string | null) => {
@@ -1223,10 +1225,7 @@ export default function PaystubGenerator() {
                   getRestPayForReport(hoursWorked, formData.state || event.state, event)
           );
           const rateInEffect = roundMoney(
-            Number(
-              finalPayData?.rateInEffect ??
-              (hoursWorked > 0 ? commissionPaidTotal / hoursWorked : 0)
-            )
+            hoursWorked > 0 ? commission / hoursWorked : 0
           );
           const variableRate =
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
@@ -1336,13 +1335,26 @@ export default function PaystubGenerator() {
       }));
 
       const wb = XLSX.utils.book_new();
+      const uniqueAdjustedGrossPercents = Array.from(
+        new Set(
+          commissionReportRows.map((row) =>
+            Number(row.adjustedGrossPercent || 0).toFixed(6)
+          )
+        )
+      );
+      const adjustedGrossPercentHeader =
+        uniqueAdjustedGrossPercents.length === 1
+          ? `${(Number(uniqueAdjustedGrossPercents[0]) * 100)
+              .toFixed(2)
+              .replace(/\.?0+$/, '')}% of Adjusted Gross`
+          : '% of Adjusted Gross';
       const commissionReportSheetData: Array<Array<string | number>> = [
         [
           'Show Date/Event Date',
           'Event Name',
           'Venue/Stadium',
           'Adjusted Gross',
-          '% of Adjusted Gross',
+          adjustedGrossPercentHeader,
           'Gross Commission',
           '# of Employees',
           'Commission',
@@ -1374,17 +1386,14 @@ export default function PaystubGenerator() {
       ];
 
       const totals = commissionReportRows.reduce((acc, row) => {
-        const variableIncentive =
+        const rowVariableIncentive =
           typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
-        const commissionPaid = row.commissionPaidTotal;
-
         return {
           commission: acc.commission + row.commission,
           hoursWorked: acc.hoursWorked + row.hoursWorked,
-          commissionPaid: acc.commissionPaid + commissionPaid,
-          variableIncentive: acc.variableIncentive + variableIncentive,
+          rowVariableIncentive: acc.rowVariableIncentive + rowVariableIncentive,
           tips: acc.tips + tips,
           restPay: acc.restPay + restPay,
           finalPay: acc.finalPay + row.finalPay,
@@ -1392,12 +1401,22 @@ export default function PaystubGenerator() {
       }, {
         commission: 0,
         hoursWorked: 0,
-        commissionPaid: 0,
-        variableIncentive: 0,
+        rowVariableIncentive: 0,
         tips: 0,
         restPay: 0,
         finalPay: 0,
       });
+      const totalRateInEffect =
+        totals.hoursWorked > 0 ? roundMoney(totals.commission / totals.hoursWorked) : 0;
+      const minimumRateInEffect = getMinimumRateInEffect(formData.state);
+      const totalVariableRate =
+        totals.hoursWorked > 0
+          ? roundMoney(Math.max(0, minimumRateInEffect - totalRateInEffect))
+          : 0;
+      const totalVariableIncentive = roundMoney(totals.hoursWorked * totalVariableRate);
+      const totalFinalPay = roundMoney(
+        totals.finalPay - totals.rowVariableIncentive + totalVariableIncentive
+      );
 
       commissionReportSheetData.push([
         '',
@@ -1409,12 +1428,12 @@ export default function PaystubGenerator() {
         'TOTALS',
         roundMoney(totals.commission),
         roundHours(totals.hoursWorked),
-        totals.hoursWorked > 0 ? roundMoney(totals.commissionPaid / totals.hoursWorked) : 0,
-        totals.hoursWorked > 0 ? roundMoney(totals.variableIncentive / totals.hoursWorked) : 0,
-        roundMoney(totals.variableIncentive),
+        totalRateInEffect,
+        totalVariableRate,
+        totalVariableIncentive,
         roundMoney(totals.tips),
         roundMoney(totals.restPay),
-        roundMoney(totals.finalPay),
+        totalFinalPay,
       ]);
 
       const commissionReportSheet = XLSX.utils.aoa_to_sheet(commissionReportSheetData);
@@ -1451,7 +1470,7 @@ export default function PaystubGenerator() {
         }
         const percentCell = commissionReportSheet[`E${rowIndex}`] as XLSX.CellObject | undefined;
         if (percentCell && typeof percentCell.v === 'number') {
-          percentCell.z = '0.00%';
+          percentCell.z = '0.##%';
         }
         for (const column of numericColumns) {
           const cell = commissionReportSheet[`${column}${rowIndex}`] as XLSX.CellObject | undefined;

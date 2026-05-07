@@ -1132,7 +1132,7 @@ function FormViewerContent() {
       }
     }
 
-    // Validate required fields for Temporary Employment Commission Agreement
+    // Validate required fields for Temporary Employment Agreement
     if (formName === 'temp-employment-agreement' && currentPdfBytes) {
       try {
         const { PDFDocument } = await import('pdf-lib');
@@ -1140,29 +1140,37 @@ function FormViewerContent() {
         const form = pdfDoc.getForm();
         const lastPageNumber = pdfDoc.getPages().length;
 
-        try {
-          const field = form.getTextField('employee_signature_date');
-          const value = field.getText();
+        const tempRequiredFields = [
+          { name: 'printed_name',            friendly: 'Printed Name',  page: 1 },
+          { name: 'employee_signature_date', friendly: 'Date',          page: lastPageNumber },
+          { name: 'printed_name_bottom',     friendly: 'Printed Name (bottom)', page: lastPageNumber },
+        ];
 
-          if (!value || value.trim() === '') {
-            setMissingRequiredFields(['employee_signature_date']);
-            setValidationError(`Please fill in the required field: "Date" on page ${lastPageNumber} of the PDF`);
-            setEmptyFieldPage(lastPageNumber);
-            void handleManualSave();
+        for (const fieldInfo of tempRequiredFields) {
+          try {
+            const field = form.getTextField(fieldInfo.name);
+            const value = field.getText();
 
-            setTimeout(() => {
-              const canvas = document.querySelector(`canvas[data-page-number="${lastPageNumber}"]`);
-              if (canvas) {
-                canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              } else {
-                window.scrollTo({ top: 0, behavior: 'smooth' });
-              }
-            }, 100);
+            if (!value || value.trim() === '') {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
+              setEmptyFieldPage(fieldInfo.page);
+              void handleManualSave();
 
-            return;
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+          } catch (err) {
+            console.warn(`Field ${fieldInfo.name} not found or error checking:`, err);
           }
-        } catch (err) {
-          console.warn('Field employee_signature_date not found or error checking:', err);
         }
 
         setValidationError(null);
