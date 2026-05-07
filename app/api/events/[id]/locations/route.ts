@@ -93,7 +93,11 @@ function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
 function normalizeDateKey(value: unknown): string {
   const raw = String(value ?? "").trim();
   if (!raw) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+
+  // Preserve the stored calendar date for ISO-like strings so location
+  // assignment validation matches the available-vendors loader.
+  const directDateMatch = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (directDateMatch) return directDateMatch[1];
 
   const parsed = new Date(raw);
   if (Number.isNaN(parsed.getTime())) return "";
@@ -453,6 +457,19 @@ export async function PUT(
           return NextResponse.json({ error: teamMembersError.message }, { status: 500 });
         }
 
+        // Also allow vendors already assigned to any location for this event —
+        // they are visible in the assignment UI and should remain reassignable.
+        const { data: anyLocationAssignments, error: anyLocationAssignmentsError } =
+          await supabaseAdmin
+            .from("event_location_assignments")
+            .select("vendor_id")
+            .eq("event_id", eventId)
+            .in("vendor_id", uniqueMemberIds);
+
+        if (anyLocationAssignmentsError) {
+          return NextResponse.json({ error: anyLocationAssignmentsError.message }, { status: 500 });
+        }
+
         const validSet = new Set<string>(
           (teamMembersForEvent || [])
             .map((row) => normalizeText(row.vendor_id))
@@ -460,14 +477,38 @@ export async function PUT(
         );
         currentMemberIds.forEach((vendorId) => validSet.add(vendorId));
         availableVendorIds.forEach((vendorId) => validSet.add(vendorId));
+        (anyLocationAssignments || [])
+          .map((row) => normalizeText(row.vendor_id))
+          .filter(Boolean)
+          .forEach((vendorId) => validSet.add(vendorId));
 
         const invalidIds = uniqueMemberIds.filter((id) => !validSet.has(id));
         if (invalidIds.length > 0) {
+          // The location UI only exposes active users. Allow those users even if
+          // the event-team or availability snapshot has not caught up yet.
+          const { data: activeUsers, error: activeUsersError } = await supabaseAdmin
+            .from("users")
+            .select("id")
+            .eq("is_active", true)
+            .in("id", invalidIds);
+
+          if (activeUsersError) {
+            return NextResponse.json({ error: activeUsersError.message }, { status: 500 });
+          }
+
+          (activeUsers || [])
+            .map((row) => normalizeText((row as any)?.id))
+            .filter(Boolean)
+            .forEach((userId) => validSet.add(userId));
+        }
+
+        const unresolvedIds = uniqueMemberIds.filter((id) => !validSet.has(id));
+        if (unresolvedIds.length > 0) {
           return NextResponse.json(
             {
               error:
                 "Some users are not on this event team and are not currently available for this event date.",
-              invalidIds,
+              invalidIds: unresolvedIds,
             },
             { status: 400 }
           );

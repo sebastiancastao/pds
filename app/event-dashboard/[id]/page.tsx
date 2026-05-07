@@ -1870,9 +1870,9 @@ export default function EventDashboardPage() {
   const startLocationAssignmentEdit = async (locationId: string) => {
     if (!locationId) return;
 
-    if (locationTeamVendors.length === 0 && !loadingLocationTeamVendors) {
-      await loadLocationCreateTeamModalData();
-    }
+    // Refresh assignable users each time edit opens so we do not offer stale
+    // team/availability candidates that the API will reject on save.
+    await loadLocationCreateTeamModalData();
     if (regions.length === 0) {
       void loadRegions();
     }
@@ -2069,6 +2069,19 @@ export default function EventDashboardPage() {
 
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        const invalidIds = Array.isArray(data?.invalidIds)
+          ? data.invalidIds.map((id: unknown) => String(id || "").trim()).filter(Boolean)
+          : [];
+        if (invalidIds.length > 0) {
+          const invalidLabels = invalidIds.map((id: string) => {
+            const member = locationAssignableMemberById.get(id);
+            const firstName = member?.profiles?.first_name || "";
+            const lastName = member?.profiles?.last_name || "";
+            const fullName = `${firstName} ${lastName}`.trim();
+            return fullName || member?.email || id;
+          });
+          throw new Error(`${data?.error || "Failed to save location assignments"} Blocked: ${invalidLabels.join(", ")}.`);
+        }
         throw new Error(data?.error || "Failed to save location assignments");
       }
 
