@@ -71,8 +71,9 @@ const normalizeStreetAddress = (address: string): string => {
 
 /**
  * GET /api/employees
- * Returns a list of all employees (mock data for now)
- * Supports optional ?state=XX filter
+ * Supports optional:
+ * - ?state=XX
+ * - ?status=active|inactive|all
  */
 export async function GET(req: NextRequest) {
   try {
@@ -104,6 +105,10 @@ export async function GET(req: NextRequest) {
     const stateFilter = searchParams.get("state");
     const regionId = searchParams.get("region_id");
     const useGeoFilter = searchParams.get("geo_filter") === "true";
+    const statusFilterParam = (searchParams.get("status") || "active").toLowerCase();
+    const statusFilter = statusFilterParam === "inactive" || statusFilterParam === "all"
+      ? statusFilterParam
+      : "active";
 
     console.log("[EMPLOYEES] 🔍 Query parameters:", { stateFilter, regionId, useGeoFilter });
 
@@ -155,8 +160,13 @@ export async function GET(req: NextRequest) {
           longitude,
           region_id
         )
-      `)
-      .eq("is_active", true);
+      `);
+
+    if (statusFilter === "active") {
+      query = query.eq("is_active", true);
+    } else if (statusFilter === "inactive") {
+      query = query.eq("is_active", false);
+    }
 
     // Apply state filter if provided
     if (stateFilter && stateFilter !== "all") {
@@ -341,7 +351,7 @@ export async function GET(req: NextRequest) {
         department: salaryRecord?.department || "General",
         position: salaryRecord?.position || "Vendor",
         hire_date: user.created_at || new Date().toISOString(),
-        status: "active",
+        status: user.is_active === false ? "inactive" : "active",
         salary: salaryRecord ? Number(salaryRecord.annual_salary) : 0,
         employment_type: salaryRecord?.employment_type || 'hourly',
         profile_photo_url: null,
@@ -727,4 +737,3 @@ export async function GET(req: NextRequest) {
     );
   }
 }
-

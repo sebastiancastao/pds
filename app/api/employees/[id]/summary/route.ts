@@ -224,6 +224,7 @@ export async function GET(
         id,
         email,
         role,
+        is_active,
         created_at,
         profiles!inner (
           first_name,
@@ -300,7 +301,7 @@ export async function GET(
       department: "General",
       position: "Vendor",
       hire_date: employeeCreatedAt,
-      status: "active" as const,
+      status: user?.is_active === false ? "inactive" as const : "active" as const,
       salary: null,
       region_id: profile.region_id || null,
       region_name: region?.name || null,

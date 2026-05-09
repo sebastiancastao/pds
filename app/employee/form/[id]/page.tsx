@@ -69,6 +69,7 @@ export default function EmployeeFormPage() {
   // When opened from an admin's employee profile page, asUser holds the employee's ID.
   // The form is then saved under that employee's ID rather than the logged-in admin's ID.
   const asUserId = searchParams.get('asUser') ?? undefined;
+  const entryPoint = searchParams.get('entryPoint')?.trim() || undefined;
 
   const [meta, setMeta] = useState<FormMeta | null>(null);
   const [pdfUrl, setPdfUrl] = useState('');
@@ -420,6 +421,7 @@ export default function EmployeeFormPage() {
           formName: `custom-form-${formId}`,
           formData: base64,
           ...(asUserId ? { targetUserId: asUserId } : {}),
+          ...(entryPoint ? { entryPoint } : {}),
           ...(docSummary ? { notes: docSummary } : {}),
           ...(meta?.allow_date_input && formDate ? { formDate } : {}),
         }),
@@ -437,6 +439,7 @@ export default function EmployeeFormPage() {
             signatureData: signatureDataUrl,
             formData: base64,
             ...(asUserId ? { targetUserId: asUserId } : {}),
+            ...(entryPoint ? { entryPoint } : {}),
           }),
         });
         const signatureJson = await signatureRes.json();

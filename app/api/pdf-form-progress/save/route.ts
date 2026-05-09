@@ -4,10 +4,13 @@ import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import {
   I9_ENTRY_POINTS,
+  isMissingFormAuditTrailError,
   isI9FormName,
   logI9AuditEvent,
   normalizeI9EntryPoint,
 } from '@/lib/i9-proxy-audit';
+import { safeDecrypt } from '@/lib/encryption';
+import { getPdfFormDisplayName } from '@/lib/pdf-forms';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,6 +19,153 @@ const supabaseAdmin = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
   { auth: { persistSession: false } }
 );
+
+const CUSTOM_FORM_NAME_PATTERN = /^custom-form-([a-f0-9-]{36})$/i;
+
+function normalizeFormEntryPoint(value: unknown, isProxySave: boolean): string {
+  const normalized = String(value || '').trim();
+  if (!normalized) {
+    return isProxySave ? 'proxy-save' : 'self-save';
+  }
+
+  const lower = normalized.toLowerCase();
+  if (lower === 'hr-employees' || lower === 'hr/employees' || lower === '/hr/employees') {
+    return 'hr-employees';
+  }
+
+  return normalized;
+}
+
+function getActorDisplayName(
+  profile: any,
+  fallbackEmail?: string | null,
+  fallbackUserId?: string | null,
+): string | null {
+  const firstName = profile?.first_name ? safeDecrypt(String(profile.first_name)).trim() : '';
+  const lastName = profile?.last_name ? safeDecrypt(String(profile.last_name)).trim() : '';
+  const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+  return fullName || fallbackEmail || fallbackUserId || null;
+}
+
+function getFormAuditType(formName: string): string {
+  const normalized = formName.trim().toLowerCase();
+  if (CUSTOM_FORM_NAME_PATTERN.test(normalized)) return 'custom-form';
+  if (normalized === 'i9' || normalized.endsWith('-i9')) return 'i9';
+  return normalized;
+}
+
+async function resolveFormDisplayName(formName: string): Promise<string> {
+  const customFormId = formName.match(CUSTOM_FORM_NAME_PATTERN)?.[1];
+  if (customFormId) {
+    const { data: customForm, error } = await supabaseAdmin
+      .from('custom_pdf_forms')
+      .select('title')
+      .eq('id', customFormId)
+      .maybeSingle();
+
+    if (!error && customForm?.title?.trim()) {
+      return customForm.title.trim();
+    }
+  }
+
+  return getPdfFormDisplayName(formName);
+}
+
+async function logProxyFormSaveAudit(params: {
+  actorUserId: string;
+  actorEmail?: string | null;
+  actorRole?: string | null;
+  actorName?: string | null;
+  ownerUserId: string;
+  formName: string;
+  action: 'created' | 'edited';
+  formDate?: string | null;
+  entryPoint?: unknown;
+  ipAddress: string;
+  userAgent: string;
+  timestamp: string;
+}) {
+  const {
+    actorUserId,
+    actorEmail,
+    actorRole,
+    actorName,
+    ownerUserId,
+    formName,
+    action,
+    formDate,
+    entryPoint,
+    ipAddress,
+    userAgent,
+    timestamp,
+  } = params;
+
+  const formType = getFormAuditType(formName);
+  const formDisplayName = await resolveFormDisplayName(formName);
+  const resolvedEntryPoint = normalizeFormEntryPoint(entryPoint, true);
+
+  const actionDetails = {
+    origin: 'pdf-form-progress/save',
+    entry_point: resolvedEntryPoint,
+    entryPoint: resolvedEntryPoint,
+    action,
+    occurred_at: timestamp,
+    actor_user_id: actorUserId,
+    actor_email: actorEmail || null,
+    actor_role: actorRole || null,
+    actor_name: actorName || null,
+    performed_by_user_id: actorUserId,
+    performed_for_user_id: ownerUserId,
+    owner_user_id: ownerUserId,
+    is_proxy_edit: true,
+    form_id: formName,
+    form_name: formName,
+    form_display_name: formDisplayName,
+    form_type: formType,
+    form_date: formDate || null,
+  };
+
+  let loggedToFormAuditTrail = false;
+  const { error: formAuditError } = await supabaseAdmin
+    .from('form_audit_trail')
+    .insert({
+      form_id: formName,
+      form_type: formType,
+      user_id: ownerUserId,
+      action,
+      action_details: actionDetails,
+      ip_address: ipAddress,
+      user_agent: userAgent,
+      session_id: `proxy-form-save-${Date.now()}`,
+      timestamp,
+    });
+
+  if (!formAuditError) {
+    loggedToFormAuditTrail = true;
+  } else if (!isMissingFormAuditTrailError(formAuditError)) {
+    console.error('[SAVE API] Failed to write form_audit_trail row:', formAuditError);
+  }
+
+  const { error: auditLogError } = await supabaseAdmin
+    .from('audit_logs')
+    .insert({
+      user_id: actorUserId,
+      ip_address: ipAddress === 'unknown' ? null : ipAddress,
+      user_agent: userAgent,
+      action: action === 'created' ? 'form.proxy_create' : 'form.proxy_edit',
+      resource_type: 'form',
+      resource_id: `${ownerUserId}:${formName}`,
+      metadata: actionDetails,
+      success: true,
+      error_message: null,
+    });
+
+  if (auditLogError) {
+    console.error('[SAVE API] Failed to write audit_logs row:', auditLogError);
+  }
+
+  return loggedToFormAuditTrail;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,35 +211,45 @@ export async function POST(request: NextRequest) {
     // If an admin is submitting on behalf of an employee, verify the caller has exec/admin role
     // before allowing them to save under a different user's ID.
     let saveUserId = userId;
+    let actorRole: string | null = null;
+    let actorName: string | null = null;
+    let actorEmail: string | null = authUser?.email || null;
     if (targetUserId && targetUserId !== userId) {
       const { data: caller } = await supabaseAdmin
         .from('users')
-        .select('role')
+        .select('role, email, profiles(first_name, last_name)')
         .eq('id', userId)
         .single();
       if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
         return NextResponse.json({ error: 'Forbidden: cannot save for another user' }, { status: 403 });
       }
+      const callerProfile = Array.isArray((caller as any)?.profiles)
+        ? (caller as any).profiles[0]
+        : (caller as any)?.profiles;
+      actorRole = caller.role || null;
+      actorEmail = authUser?.email || (caller as any)?.email || null;
+      actorName = getActorDisplayName(callerProfile, actorEmail, userId);
       saveUserId = targetUserId;
     }
 
     const resolvedFormName = formName;
     const isProxySave = saveUserId !== userId;
     const shouldLogI9Save = isI9FormName(resolvedFormName);
-    let hadExistingI9Record = false;
+    let hadExistingFormRecord = false;
 
-    if (shouldLogI9Save) {
-      const { data: existingI9Record } = await supabaseAdmin
+    if (shouldLogI9Save || isProxySave) {
+      const { data: existingFormRecord } = await supabaseAdmin
         .from('pdf_form_progress')
         .select('id')
         .eq('user_id', saveUserId)
         .eq('form_name', resolvedFormName)
         .maybeSingle();
 
-      hadExistingI9Record = !!existingI9Record;
+      hadExistingFormRecord = !!existingFormRecord;
     }
 
     console.log('[SAVE API] Upserting form:', resolvedFormName, 'for user:', saveUserId);
+    const occurredAt = new Date().toISOString();
 
     const { error } = await supabaseAdmin
       .from('pdf_form_progress')
@@ -97,7 +257,7 @@ export async function POST(request: NextRequest) {
         user_id: saveUserId,
         form_name: resolvedFormName,
         form_data: formData,
-        updated_at: new Date().toISOString(),
+        updated_at: occurredAt,
         ...(formDate ? { form_date: formDate } : {}),
       }, { onConflict: 'user_id,form_name' });
 
@@ -107,20 +267,20 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[SAVE API] Saved successfully');
+    const auditAction = hadExistingFormRecord ? 'edited' : 'created';
+    const ipAddress = request.headers.get('x-forwarded-for') ||
+      request.headers.get('x-real-ip') ||
+      'unknown';
+    const userAgent = request.headers.get('user-agent') || 'unknown';
 
     if (shouldLogI9Save) {
-      const ipAddress = request.headers.get('x-forwarded-for') ||
-        request.headers.get('x-real-ip') ||
-        'unknown';
-      const userAgent = request.headers.get('user-agent') || 'unknown';
-
       await logI9AuditEvent({
         supabase: supabaseAdmin,
         actorUserId: userId,
-        actorEmail: authUser?.email || null,
+        actorEmail,
         ownerUserId: saveUserId,
         formId: resolvedFormName,
-        action: hadExistingI9Record ? 'edited' : 'created',
+        action: auditAction,
         origin: 'pdf-form-progress/save',
         entryPoint: normalizeI9EntryPoint(
           entryPoint,
@@ -129,9 +289,25 @@ export async function POST(request: NextRequest) {
         editKind: 'form_save',
         ipAddress,
         userAgent,
+        timestamp: occurredAt,
         extraDetails: {
           form_date: formDate || null,
         },
+      });
+    } else if (isProxySave) {
+      await logProxyFormSaveAudit({
+        actorUserId: userId,
+        actorEmail,
+        actorRole,
+        actorName,
+        ownerUserId: saveUserId,
+        formName: resolvedFormName,
+        action: auditAction,
+        formDate: formDate || null,
+        entryPoint,
+        ipAddress,
+        userAgent,
+        timestamp: occurredAt,
       });
     }
 

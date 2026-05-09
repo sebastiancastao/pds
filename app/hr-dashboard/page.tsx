@@ -35,6 +35,8 @@ type Employee = {
   customer_satisfaction: number;
 };
 
+type EmployeeStatusFilter = "active" | "inactive" | "all";
+
 type BackgroundCheck = {
   id: string;
   vendor_id: string;
@@ -126,6 +128,7 @@ function HRDashboardContent() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState<string>("");
   const [backgroundChecks, setBackgroundChecks] = useState<BackgroundCheck[]>([]);
+  const [selectedEmployeeStatus, setSelectedEmployeeStatus] = useState<EmployeeStatusFilter>("active");
   const [selectedState, setSelectedState] = useState<string>("all");
   const [selectedEmployeeRegion, setSelectedEmployeeRegion] = useState<string>("all");
   const [regions, setRegions] = useState<Array<{ id: string; name: string; vendor_count?: number }>>([]);
@@ -347,7 +350,11 @@ function HRDashboardContent() {
     }
   };
 
-  const loadEmployees = useCallback(async (stateFilter?: string, regionFilter?: string) => {
+  const loadEmployees = useCallback(async (
+    stateFilter?: string,
+    regionFilter?: string,
+    statusFilter?: EmployeeStatusFilter
+  ) => {
     setLoadingEmployees(true);
     setEmployeesError("");
     try {
@@ -355,11 +362,13 @@ function HRDashboardContent() {
       const params = new URLSearchParams();
       const s = stateFilter ?? selectedState;
       const r = regionFilter ?? selectedEmployeeRegion;
+      const status = statusFilter ?? selectedEmployeeStatus;
       if (s && s !== "all") params.append("state", s);
       if (r && r !== "all") {
         params.append("region_id", r);
         params.append("geo_filter", "true");
       }
+      if (status !== "active") params.append("status", status);
 
       const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}` , {
         method: 'GET',
@@ -377,7 +386,7 @@ function HRDashboardContent() {
       setEmployeesError(err.message || "Failed to load employees");
     }
     setLoadingEmployees(false);
-  }, [selectedState, selectedEmployeeRegion]);
+  }, [selectedState, selectedEmployeeRegion, selectedEmployeeStatus]);
 
   const submitCreateSalariedUser = useCallback(async () => {
     const { firstName, lastName, email, role, division, annualSalary, department, position } = createSalariedForm;
@@ -2507,12 +2516,24 @@ function HRDashboardContent() {
 
   const handleStateFilterChange = async (newState: string) => {
     setSelectedState(newState);
-    await loadEmployees(newState, selectedEmployeeRegion);
+    await loadEmployees(newState, selectedEmployeeRegion, selectedEmployeeStatus);
   };
 
   const handleEmployeeRegionChange = async (newRegion: string) => {
     setSelectedEmployeeRegion(newRegion);
-    await loadEmployees(selectedState, newRegion);
+    await loadEmployees(selectedState, newRegion, selectedEmployeeStatus);
+  };
+
+  const handleEmployeeStatusChange = async (newStatus: EmployeeStatusFilter) => {
+    setSelectedEmployeeStatus(newStatus);
+    await loadEmployees(selectedState, selectedEmployeeRegion, newStatus);
+  };
+
+  const resetEmployeeFilters = async () => {
+    setSelectedEmployeeStatus("active");
+    setSelectedState("all");
+    setSelectedEmployeeRegion("all");
+    await loadEmployees("all", "all", "active");
   };
 
   // Derived counts for state dropdown labels (from currently loaded employees)
@@ -3802,6 +3823,20 @@ function HRDashboardContent() {
                   )}
                 </div>
 
+                <label className="apple-label" htmlFor="employee-status-filter">Status</label>
+                <select
+                  id="employee-status-filter"
+                  value={selectedEmployeeStatus}
+                  onChange={(e) => handleEmployeeStatusChange(e.target.value as EmployeeStatusFilter)}
+                  disabled={loadingEmployees}
+                  className="apple-select min-w-[12rem]"
+                  title="Filter employees by activation status"
+                >
+                  <option value="active">Active Only</option>
+                  <option value="inactive">Deactivated Only</option>
+                  <option value="all">Active + Deactivated</option>
+                </select>
+
                 <label className="apple-label" htmlFor="state-filter">State</label>
                 <select
                   id="state-filter"
@@ -3838,9 +3873,9 @@ function HRDashboardContent() {
                   ))}
                 </select>
 
-                {(selectedState !== 'all' || selectedEmployeeRegion !== 'all') && (
+                {(selectedEmployeeStatus !== 'active' || selectedState !== 'all' || selectedEmployeeRegion !== 'all') && (
                   <button
-                    onClick={() => { handleStateFilterChange('all'); handleEmployeeRegionChange('all'); }}
+                    onClick={resetEmployeeFilters}
                     className="apple-button apple-button-secondary"
                     disabled={loadingEmployees}
                     title="Clear all filters"

@@ -17,18 +17,13 @@ export async function POST(
       return NextResponse.json({ error: 'Employee ID is required' }, { status: 400 });
     }
 
-    // Get auth token
     const authHeader = request.headers.get('authorization');
     const token = authHeader?.replace('Bearer ', '');
 
-    // Create auth client for user authentication
     const cookieStore = await cookies();
     const supabase = createRouteHandlerClient({ cookies: () => cookieStore });
-
-    // Use admin client for operations
     const adminClient = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Verify user is authenticated and has HR role
     let user;
     if (token) {
       const { data: { user: tokenUser }, error: userError } = await supabase.auth.getUser(token);
@@ -44,7 +39,6 @@ export async function POST(
       user = cookieUser;
     }
 
-    // Check if user has HR role using admin client
     const { data: userProfile, error: profileError } = await adminClient
       .from('users')
       .select('role')
@@ -59,31 +53,29 @@ export async function POST(
       return NextResponse.json({ error: 'Forbidden - HR/Admin/Exec access required' }, { status: 403 });
     }
 
-    console.log('[DEACTIVATE] Deactivating user:', employeeId);
+    console.log('[ACTIVATE] Activating user:', employeeId);
 
-    // Update user is_active status to false
     const { error: updateError } = await adminClient
       .from('users')
       .update({
-        is_active: false,
+        is_active: true,
         updated_at: new Date().toISOString()
       })
       .eq('id', employeeId);
 
     if (updateError) {
-      console.error('[DEACTIVATE] Error updating profile:', updateError);
-      return NextResponse.json({ error: 'Failed to deactivate user' }, { status: 500 });
+      console.error('[ACTIVATE] Error updating profile:', updateError);
+      return NextResponse.json({ error: 'Failed to activate user' }, { status: 500 });
     }
 
-    console.log('[DEACTIVATE] User deactivated successfully');
+    console.log('[ACTIVATE] User activated successfully');
 
     return NextResponse.json({
       success: true,
-      message: 'User deactivated successfully'
+      message: 'User activated successfully'
     });
-
   } catch (error: any) {
-    console.error('[DEACTIVATE] Error:', error);
+    console.error('[ACTIVATE] Error:', error);
     return NextResponse.json({
       error: error.message || 'Internal server error'
     }, { status: 500 });

@@ -304,6 +304,7 @@ export default function EmployeeProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
+  const [showActivateModal, setShowActivateModal] = useState(false);
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -1245,11 +1246,44 @@ export default function EmployeeProfilePage() {
 
       alert('User deactivated successfully');
       setShowDeactivateModal(false);
-      // Reload employee data
-      window.location.reload();
+      setEmployee((current) => (current ? { ...current, status: 'inactive' } : current));
+      setRefreshTick((current) => current + 1);
     } catch (error) {
       console.error('Error deactivating user:', error);
       alert(error instanceof Error ? error.message : 'Failed to deactivate user');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Activate user
+  const handleActivateUser = async () => {
+    if (!employee) return;
+
+    setActionLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const response = await fetch(`/api/employees/${employee.id}/activate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to activate user');
+      }
+
+      alert('User activated successfully');
+      setShowActivateModal(false);
+      setEmployee((current) => (current ? { ...current, status: 'active' } : current));
+      setRefreshTick((current) => current + 1);
+    } catch (error) {
+      console.error('Error activating user:', error);
+      alert(error instanceof Error ? error.message : 'Failed to activate user');
     } finally {
       setActionLoading(false);
     }
@@ -1308,6 +1342,14 @@ export default function EmployeeProfilePage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {employee && employee.status === 'inactive' && (
+              <button
+                onClick={() => setShowActivateModal(true)}
+                className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium text-sm"
+              >
+                Activate User
+              </button>
+            )}
             {employee && employee.status === 'active' && (
               <button
                 onClick={() => setShowDeactivateModal(true)}
@@ -2327,7 +2369,7 @@ export default function EmployeeProfilePage() {
                           </div>
                           <div className="flex gap-2">
                             <button
-                              onClick={() => router.push(`/employee/form/${form.id}?asUser=${employeeId}`)}
+                              onClick={() => router.push(`/employee/form/${form.id}?asUser=${employeeId}&entryPoint=hr-employees`)}
                               className="flex-1 inline-flex items-center justify-center gap-1 px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors text-xs font-medium"
                             >
                               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2391,6 +2433,42 @@ export default function EmployeeProfilePage() {
           )}
 
           </>
+        )}
+
+        {/* Activate User Modal */}
+        {showActivateModal && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center">
+                  <svg className="w-6 h-6 text-emerald-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-900">Activate User</h3>
+              </div>
+              <p className="text-gray-600 mb-6">
+                Activate <strong>{employee?.first_name} {employee?.last_name}</strong> again?
+                They will be able to log in, clock in, and access the system.
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setShowActivateModal(false)}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors font-medium disabled:opacity-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleActivateUser}
+                  disabled={actionLoading}
+                  className="flex-1 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {actionLoading ? 'Activating...' : 'Activate'}
+                </button>
+              </div>
+            </div>
+          </div>
         )}
 
         {/* Deactivate User Modal */}
