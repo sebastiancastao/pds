@@ -74,6 +74,8 @@ type SickLeaveAccrual = {
   employee_state: string | null;
   employee_city: string | null;
   worked_hours: number;
+  period_worked_hours: number | null;
+  period_earned_hours: number | null;
   accrued_months: number;
   accrued_hours: number;
   accrued_days: number;
@@ -86,6 +88,11 @@ type SickLeaveAccrual = {
   balance_hours: number;
   balance_days: number;
   request_count: number;
+};
+
+type SickLeavePeriodFilter = {
+  start: string;
+  end: string;
 };
 
 type SickLeaveStats = {
@@ -103,6 +110,7 @@ const sickLeaveStatusStyles: Record<SickLeaveStatus, string> = {
 };
 
 const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200";
+const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 
 function HRDashboardContent() {
   const router = useRouter();
@@ -313,6 +321,10 @@ function HRDashboardContent() {
   const [sickLeavesError, setSickLeavesError] = useState("");
   const [sickLeaveStatusFilter, setSickLeaveStatusFilter] = useState<"all" | SickLeaveStatus>("all");
   const [sickLeaveSearch, setSickLeaveSearch] = useState("");
+  const [sickLeavePeriodStart, setSickLeavePeriodStart] = useState("");
+  const [sickLeavePeriodEnd, setSickLeavePeriodEnd] = useState("");
+  const [appliedSickLeavePeriod, setAppliedSickLeavePeriod] =
+    useState<SickLeavePeriodFilter>(emptySickLeavePeriod);
   const [updatingSickLeaveId, setUpdatingSickLeaveId] = useState<string | null>(null);
   const [addingUsedHoursUserId, setAddingUsedHoursUserId] = useState<string | null>(null);
   const [removingUsedHoursUserId, setRemovingUsedHoursUserId] = useState<string | null>(null);
@@ -2199,12 +2211,16 @@ function HRDashboardContent() {
     }
   }, [supabase, loadOnboardingForms]);
 
-  const loadSickLeaves = useCallback(async () => {
+  const loadSickLeaves = useCallback(async (period: SickLeavePeriodFilter = emptySickLeavePeriod) => {
     setLoadingSickLeaves(true);
     setSickLeavesError("");
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch("/api/hr/sick-leaves", {
+      const params = new URLSearchParams();
+      if (period.start) params.set("accrual_start", period.start);
+      if (period.end) params.set("accrual_end", period.end);
+      const url = `/api/hr/sick-leaves${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, {
         method: "GET",
         headers: {
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
@@ -2237,9 +2253,9 @@ function HRDashboardContent() {
 
   useEffect(() => {
     if (hrView === "sickleave") {
-      loadSickLeaves();
+      loadSickLeaves(appliedSickLeavePeriod);
     }
-  }, [hrView, loadSickLeaves]);
+  }, [hrView, appliedSickLeavePeriod, loadSickLeaves]);
 
   useEffect(() => {
     if (hrView === "payments") {
@@ -2265,13 +2281,13 @@ function HRDashboardContent() {
         throw new Error(data.error || "Failed to update sick leave status");
       }
 
-      await loadSickLeaves();
+      await loadSickLeaves(appliedSickLeavePeriod);
     } catch (err: any) {
       alert(err?.message || "Failed to update sick leave status");
     } finally {
       setUpdatingSickLeaveId(null);
     }
-  }, [loadSickLeaves]);
+  }, [appliedSickLeavePeriod, loadSickLeaves]);
 
   const addUsedHours = useCallback(
     async (userId: string, employeeName: string) => {
@@ -2305,14 +2321,14 @@ function HRDashboardContent() {
           throw new Error(data.error || "Failed to add used sick leave hours");
         }
 
-        await loadSickLeaves();
+        await loadSickLeaves(appliedSickLeavePeriod);
       } catch (err: any) {
         alert(err?.message || "Failed to add used sick leave hours");
       } finally {
         setAddingUsedHoursUserId(null);
       }
     },
-    [loadSickLeaves]
+    [appliedSickLeavePeriod, loadSickLeaves]
   );
 
   const removeUsedHours = useCallback(
@@ -2356,14 +2372,14 @@ function HRDashboardContent() {
           throw new Error(data.error || "Failed to remove used sick leave hours");
         }
 
-        await loadSickLeaves();
+        await loadSickLeaves(appliedSickLeavePeriod);
       } catch (err: any) {
         alert(err?.message || "Failed to remove used sick leave hours");
       } finally {
         setRemovingUsedHoursUserId(null);
       }
     },
-    [loadSickLeaves]
+    [appliedSickLeavePeriod, loadSickLeaves]
   );
 
   const editSickAccrualHours = useCallback(
@@ -2409,15 +2425,34 @@ function HRDashboardContent() {
           throw new Error(data.error || `Failed to update ${fieldLabel} hours`);
         }
 
-        await loadSickLeaves();
+        await loadSickLeaves(appliedSickLeavePeriod);
       } catch (err: any) {
         alert(err?.message || `Failed to update ${fieldLabel} hours`);
       } finally {
         setEditingSickAccrualKey(null);
       }
     },
-    [loadSickLeaves]
+    [appliedSickLeavePeriod, loadSickLeaves]
   );
+
+  const handleApplySickLeavePeriod = useCallback(() => {
+    if (sickLeavePeriodStart && sickLeavePeriodEnd && sickLeavePeriodStart > sickLeavePeriodEnd) {
+      setSickLeavesError("Accrual period start date must be on or before the end date.");
+      return;
+    }
+
+    setAppliedSickLeavePeriod({
+      start: sickLeavePeriodStart,
+      end: sickLeavePeriodEnd,
+    });
+  }, [sickLeavePeriodEnd, sickLeavePeriodStart]);
+
+  const handleClearSickLeavePeriod = useCallback(() => {
+    setSickLeavePeriodStart("");
+    setSickLeavePeriodEnd("");
+    setAppliedSickLeavePeriod(emptySickLeavePeriod);
+    setSickLeavesError("");
+  }, []);
 
   const formatSickLeaveDate = (value?: string | null) => {
     if (!value) return "-";
@@ -2430,6 +2465,10 @@ function HRDashboardContent() {
     if (!Number.isFinite(hours)) return "0.00";
     return Number(hours).toFixed(2);
   };
+
+  const hasAppliedSickLeavePeriod = Boolean(
+    appliedSickLeavePeriod.start || appliedSickLeavePeriod.end
+  );
 
   const hrStats = {
     totalEmployees: employees.length,
@@ -2584,8 +2623,15 @@ function HRDashboardContent() {
 
   const filteredSickLeaveAccruals = useMemo(() => {
     const q = sickLeaveSearch.trim().toLowerCase();
-    if (!q) return sickLeaveAccruals;
     return sickLeaveAccruals.filter((record) => {
+      if (
+        hasAppliedSickLeavePeriod &&
+        Number(record.period_worked_hours || 0) <= 0 &&
+        Number(record.period_earned_hours || 0) <= 0
+      ) {
+        return false;
+      }
+      if (!q) return true;
       const text = [
         record.employee_name,
         record.employee_email,
@@ -2597,7 +2643,7 @@ function HRDashboardContent() {
         .toLowerCase();
       return text.includes(q);
     });
-  }, [sickLeaveAccruals, sickLeaveSearch]);
+  }, [hasAppliedSickLeavePeriod, sickLeaveAccruals, sickLeaveSearch]);
 
   const sickLeaveAccrualTotals = useMemo(() => {
     return sickLeaveAccruals.reduce(
@@ -2610,6 +2656,21 @@ function HRDashboardContent() {
       { totalAccruedHours: 0, totalCarryOverHours: 0, totalBalanceHours: 0 }
     );
   }, [sickLeaveAccruals]);
+
+  const sickLeavePeriodTotals = useMemo(() => {
+    if (!hasAppliedSickLeavePeriod) return null;
+    return filteredSickLeaveAccruals.reduce(
+      (acc, row) => {
+        acc.employees += 1;
+        acc.totalWorkedHours += Number(row.period_worked_hours || 0);
+        acc.totalEarnedHours += Number(row.period_earned_hours || 0);
+        return acc;
+      },
+      { employees: 0, totalWorkedHours: 0, totalEarnedHours: 0 }
+    );
+  }, [filteredSickLeaveAccruals, hasAppliedSickLeavePeriod]);
+
+  const sickLeaveAccrualColumnCount = hasAppliedSickLeavePeriod ? 11 : 9;
 
   const filteredSickLeaveRecords = useMemo(() => {
     const q = sickLeaveSearch.trim().toLowerCase();
@@ -3044,12 +3105,17 @@ function HRDashboardContent() {
                             {vendor.events.map(({ event, venue, city, state, payment }, idx) => {
                               const breakdown = getDisplayedPaymentBreakdown(event, payment);
                               const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+                              const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0;
+                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * loadedRate : 0;
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileagePay = approval.mileage ? _mp : 0;
                               const travelPay = approval.travel ? _tp : 0;
+                              const currentAdjustmentType = normalizeOtherAdjustmentType(
+                                ((adjustmentTypes[event.id] ?? {})[payment.userId] ?? payment.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
+                              );
+                              const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
                               const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               return (
@@ -3089,9 +3155,106 @@ function HRDashboardContent() {
                                   {showVendorRestBreakColumn && (
                                     <td className="px-4 py-2 text-sm text-right text-green-600">{isEventSD ? '—' : `$${formatPayrollMoney(Number(payment.restBreak || 0))}`}</td>
                                   )}
-                                  <td className="px-4 py-2 text-sm text-right text-blue-600">${formatPayrollMoney(mileagePay)}</td>
-                                  <td className="px-4 py-2 text-sm text-right text-indigo-600">${formatPayrollMoney(travelPay)}</td>
-                                  <td className="px-4 py-2 text-sm text-right">${formatPayrollMoney(Number(payment.adjustmentAmount || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right text-blue-600">
+                                    {_mp > 0 ? (
+                                      <div className="flex flex-col gap-0.5 items-end">
+                                        <span className={approval.mileage ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.mileage ? _mp : 0)}</span>
+                                        {diffMiles !== null && diffMiles > 0 && (
+                                          <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 x $0.71</div>
+                                        )}
+                                      </div>
+                                    ) : '\u2014'}
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-right text-indigo-600">
+                                    {(_mp > 0 || _tp > 0) ? (
+                                      <div className="flex flex-col gap-0.5 items-end">
+                                        {_tp > 0 ? (
+                                          <>
+                                            <span className={approval.travel ? '' : 'line-through text-gray-400'}>${formatPayrollMoney(approval.travel ? _tp : 0)}</span>
+                                            {diffMiles !== null && diffMiles > 0 && (
+                                              <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 / 60 x ${formatPayrollMoney(loadedRate)}/hr</div>
+                                            )}
+                                          </>
+                                        ) : <span className="text-gray-400">&mdash;</span>}
+                                        <div className="flex gap-1 mt-0.5 justify-end">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMileageApproval(event.id, payment.userId, 'mileage', true);
+                                              setMileageApproval(event.id, payment.userId, 'travel', true);
+                                            }}
+                                            className={`text-[10px] px-1.5 py-0.5 rounded border ${(approval.mileage && approval.travel) ? 'bg-green-100 border-green-400 text-green-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-green-400 hover:text-green-600'}`}
+                                          >Approve</button>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setMileageApproval(event.id, payment.userId, 'mileage', false);
+                                              setMileageApproval(event.id, payment.userId, 'travel', false);
+                                            }}
+                                            className={`text-[10px] px-1.5 py-0.5 rounded border ${(!approval.mileage && !approval.travel) ? 'bg-red-100 border-red-400 text-red-700 font-semibold' : 'border-gray-300 text-gray-400 hover:border-red-400 hover:text-red-600'}`}
+                                          >Deny</button>
+                                        </div>
+                                      </div>
+                                    ) : '\u2014'}
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-right">
+                                    {editingCell && editingCell.eventId === event.id && editingCell.userId === payment.userId ? (
+                                      <div className="flex flex-col items-end gap-1">
+                                        <div className="flex items-center justify-end gap-2">
+                                          <span className="text-gray-500">$</span>
+                                          <input
+                                            type="number"
+                                            className="w-24 px-2 py-1 border rounded text-sm"
+                                            value={Number(((adjustments[event.id] ?? {})[payment.userId] ?? (payment.adjustmentAmount ?? 0)))}
+                                            onChange={(e) => {
+                                              const val = Number(e.target.value) || 0;
+                                              setAdjustments(prev => ({
+                                                ...prev,
+                                                [event.id]: { ...(prev[event.id] || {}), [payment.userId]: val },
+                                              }));
+                                            }}
+                                            step="1"
+                                          />
+                                        </div>
+                                        <select
+                                          className="w-32 px-2 py-1 border rounded text-xs text-right"
+                                          value={currentAdjustmentType}
+                                          onChange={(e) => {
+                                            const nextType = normalizeOtherAdjustmentType(e.target.value);
+                                            setAdjustmentTypes(prev => ({
+                                              ...prev,
+                                              [event.id]: { ...(prev[event.id] || {}), [payment.userId]: nextType },
+                                            }));
+                                          }}
+                                        >
+                                          <option value="reimbursement_1">Reimbursement 1</option>
+                                          <option value="meal_break">Meal Break</option>
+                                          <option value="bonus">Bonus</option>
+                                        </select>
+                                        <div className="flex items-center gap-2">
+                                          <button
+                                            type="button"
+                                            onClick={async () => {
+                                              const saved = await saveAdjustment(event.id, payment.userId);
+                                              if (saved) setEditingCell(null);
+                                            }}
+                                            className="text-green-600 hover:text-green-700 text-xs font-medium"
+                                          >Save</button>
+                                          <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        className={`text-right ${Number(payment.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
+                                        onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId })}
+                                        title="Click to edit"
+                                      >
+                                        <div>{`$${formatPayrollMoney(Number(payment.adjustmentAmount || 0))}`}</div>
+                                        <div className="text-[10px] text-gray-400">{currentAdjustmentTypeLabel}</div>
+                                      </button>
+                                    )}
+                                  </td>
                                   <td className="px-4 py-2 text-sm text-right font-semibold">${formatPayrollMoney(rowTotal)}</td>
                                 </tr>
                               );
@@ -3884,7 +4047,7 @@ function HRDashboardContent() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Sick Leave Management</h2>
               <button
-                onClick={loadSickLeaves}
+                onClick={() => loadSickLeaves(appliedSickLeavePeriod)}
                 disabled={loadingSickLeaves}
                 className="apple-button apple-button-secondary"
               >
@@ -3977,17 +4140,97 @@ function HRDashboardContent() {
                   <option value="approved">Approved</option>
                   <option value="denied">Denied</option>
                 </select>
+
+                <div className="flex flex-wrap items-end gap-3 ml-auto">
+                  <div>
+                    <label className="apple-label" htmlFor="sick-leave-period-start">Earned Hours From</label>
+                    <input
+                      id="sick-leave-period-start"
+                      type="date"
+                      value={sickLeavePeriodStart}
+                      onChange={(e) => setSickLeavePeriodStart(e.target.value)}
+                      className="apple-input min-w-[10rem]"
+                    />
+                  </div>
+                  <div>
+                    <label className="apple-label" htmlFor="sick-leave-period-end">Earned Hours To</label>
+                    <input
+                      id="sick-leave-period-end"
+                      type="date"
+                      value={sickLeavePeriodEnd}
+                      onChange={(e) => setSickLeavePeriodEnd(e.target.value)}
+                      className="apple-input min-w-[10rem]"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleApplySickLeavePeriod}
+                    disabled={loadingSickLeaves}
+                    className="apple-button apple-button-primary"
+                  >
+                    Apply Period
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearSickLeavePeriod}
+                    disabled={loadingSickLeaves || !hasAppliedSickLeavePeriod}
+                    className="apple-button apple-button-secondary"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
+              {hasAppliedSickLeavePeriod && (
+                <p className="mt-3 text-sm text-gray-500">
+                  Showing employees with earned sick leave activity from{" "}
+                  <span className="font-medium text-gray-700">
+                    {appliedSickLeavePeriod.start
+                      ? formatSickLeaveDate(appliedSickLeavePeriod.start)
+                      : "the beginning"}
+                  </span>{" "}
+                  to{" "}
+                  <span className="font-medium text-gray-700">
+                    {appliedSickLeavePeriod.end
+                      ? formatSickLeaveDate(appliedSickLeavePeriod.end)
+                      : "today"}
+                  </span>
+                  .
+                </p>
+              )}
             </div>
 
             {sickLeavesError && (
               <div className="apple-error-banner">{sickLeavesError}</div>
             )}
 
+            {hasAppliedSickLeavePeriod && sickLeavePeriodTotals && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="apple-card p-5">
+                  <p className="text-sm text-sky-700">Employees In Period</p>
+                  <p className="text-3xl font-semibold text-sky-700">{sickLeavePeriodTotals.employees}</p>
+                </div>
+                <div className="apple-card p-5">
+                  <p className="text-sm text-cyan-700">Worked Hours In Period</p>
+                  <p className="text-3xl font-semibold text-cyan-700">
+                    {formatSickLeaveHours(sickLeavePeriodTotals.totalWorkedHours)}
+                  </p>
+                </div>
+                <div className="apple-card p-5">
+                  <p className="text-sm text-blue-700">Earned Hours In Period</p>
+                  <p className="text-3xl font-semibold text-blue-700">
+                    {formatSickLeaveHours(sickLeavePeriodTotals.totalEarnedHours)}
+                  </p>
+                </div>
+              </div>
+            )}
+
             <div className="apple-card overflow-hidden">
               <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
                 <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Employee Sick Leave Balances</h3>
-                <p className="text-xs text-gray-500 mt-1">Users with earned hours, calculated as 1 hour per 30 worked.</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Users with earned hours, calculated as 1 hour per 30 worked.
+                  {hasAppliedSickLeavePeriod ? " Period columns reflect the selected date range." : ""}
+                </p>
               </div>
               <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200">
@@ -3997,7 +4240,13 @@ function HRDashboardContent() {
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Carry Over</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Year to Date</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Worked</th>
+                      {hasAppliedSickLeavePeriod && (
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Worked In Period</th>
+                      )}
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Earned</th>
+                      {hasAppliedSickLeavePeriod && (
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Earned In Period</th>
+                      )}
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Requested</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Balance</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Requests</th>
@@ -4007,7 +4256,7 @@ function HRDashboardContent() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {loadingSickLeaves && (
                       <tr>
-                        <td colSpan={9} className="px-4 py-8 text-center text-sm text-gray-500">
+                        <td colSpan={sickLeaveAccrualColumnCount} className="px-4 py-8 text-center text-sm text-gray-500">
                           Loading earned sick leave balances...
                         </td>
                       </tr>
@@ -4061,9 +4310,19 @@ function HRDashboardContent() {
                         <td className="px-4 py-3 align-top text-sm text-gray-700">
                           {formatSickLeaveHours(record.worked_hours)}
                         </td>
+                        {hasAppliedSickLeavePeriod && (
+                          <td className="px-4 py-3 align-top text-sm text-sky-700">
+                            {formatSickLeaveHours(Number(record.period_worked_hours || 0))}
+                          </td>
+                        )}
                         <td className="px-4 py-3 align-top text-sm text-indigo-700 font-semibold">
                           {formatSickLeaveHours(record.accrued_hours)}
                         </td>
+                        {hasAppliedSickLeavePeriod && (
+                          <td className="px-4 py-3 align-top text-sm text-blue-700 font-semibold">
+                            {formatSickLeaveHours(Number(record.period_earned_hours || 0))}
+                          </td>
+                        )}
                         <td className="px-4 py-3 align-top text-sm text-gray-700">
                           {formatSickLeaveHours(record.used_hours)}
                         </td>
@@ -4106,8 +4365,8 @@ function HRDashboardContent() {
                     ))}
                     {!loadingSickLeaves && filteredSickLeaveAccruals.length === 0 && (
                       <tr>
-                        <td colSpan={9} className="px-4 py-12 text-center text-sm text-gray-500">
-                          No employees with earned sick leave hours match the current search.
+                        <td colSpan={sickLeaveAccrualColumnCount} className="px-4 py-12 text-center text-sm text-gray-500">
+                          No employees with earned sick leave hours match the current filters.
                         </td>
                       </tr>
                     )}

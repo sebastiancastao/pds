@@ -49,6 +49,17 @@ export async function GET(
       targetUserId = requestedUserId;
     }
 
+    const { data: formMeta } = await supabase
+      .from('custom_pdf_forms')
+      .select('title')
+      .eq('id', params.id)
+      .maybeSingle();
+
+    const formTitle = (formMeta?.title || '').toString();
+    if (!/i-?9/i.test(formTitle)) {
+      return NextResponse.json({ docs: [] });
+    }
+
     // Read from i9_documents table — populated by the upload-doc route
     const { data: row } = await supabase
       .from('i9_documents')

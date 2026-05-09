@@ -64,7 +64,7 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { formId, formType, signatureData, formData, entryPoint } = body;
+    const { formId, formType, signatureData, formData, entryPoint, targetUserId } = body;
 
     if (!formId || !formType || !signatureData) {
       return NextResponse.json({
@@ -78,6 +78,19 @@ export async function POST(request: NextRequest) {
                       'unknown';
     const userAgent = request.headers.get('user-agent') || 'unknown';
 
+    let saveUserId = user.id;
+    if (targetUserId && targetUserId !== user.id) {
+      const { data: caller } = await supabaseAdmin
+        .from('users')
+        .select('role')
+        .eq('id', user.id)
+        .single();
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden: cannot save signature for another user' }, { status: 403 });
+      }
+      saveUserId = targetUserId;
+    }
+
     // Generate hashes for signature verification
     const timestamp = new Date().toISOString();
 
@@ -86,31 +99,31 @@ export async function POST(request: NextRequest) {
       ? createHash('sha256').update(formData).digest('hex')
       : createHash('sha256').update('no-form-data').digest('hex');
 
-    // Hash of signature + timestamp + user + IP
+    // Hash of signature + timestamp + saved user + IP
     const signatureHash = createHash('sha256')
-      .update(`${signatureData}${timestamp}${user.id}${ipAddress}`)
+      .update(`${signatureData}${timestamp}${saveUserId}${ipAddress}`)
       .digest('hex');
 
     // Binding hash combines form data + signature for verification
     const bindingHash = createHash('sha256')
-      .update(`${formDataHash}${signatureHash}${user.id}`)
+      .update(`${formDataHash}${signatureHash}${saveUserId}`)
       .digest('hex');
 
     console.log('[SIGNATURE SAVE] Saving signature:', {
       formId,
       formType,
-      userId: user.id,
+      userId: saveUserId,
       ipAddress,
       signatureDataLength: signatureData.length
     });
 
     // Insert signature into form_signatures table
-    const { data, error } = await supabase
+    const { data, error } = await supabaseAdmin
       .from('form_signatures')
       .insert({
         form_id: formId,
         form_type: formType,
-        user_id: user.id,
+        user_id: saveUserId,
         signature_role: 'employee',
         signature_data: signatureData,
         signature_type: 'drawn',
@@ -139,7 +152,7 @@ export async function POST(request: NextRequest) {
         supabase: supabaseAdmin,
         actorUserId: user.id,
         actorEmail: user.email || null,
-        ownerUserId: user.id,
+        ownerUserId: saveUserId,
         formId,
         action: 'signed',
         origin: 'form-signatures/save',

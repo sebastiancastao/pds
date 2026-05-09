@@ -65,6 +65,9 @@ interface Event {
   fees?: number | null;
   other_income?: number | null;
   tax_rate_percent?: number | null;
+  region_id?: string | null;
+  region_name?: string | null;
+  regionName?: string | null;
   event_payment?: EventPaymentSummary | null;
   workers?: Worker[];
 }
@@ -229,7 +232,18 @@ export default function PaystubGenerator() {
   };
   const getMinimumRateInEffect = (stateCode?: string | null) =>
     ['NY', 'WI', 'NV', 'AZ'].includes(normalizeStateCode(stateCode)) ? 25.92 : 28.5;
+  const isPeriodRateCommissionState = (stateCode?: string | null) =>
+    ['CA', 'NV', 'WI'].includes(normalizeStateCode(stateCode));
   const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
+  const normalizeEmployeeLookupName = (value?: string | null) =>
+    (value || '')
+      .toString()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]+/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+      .toLowerCase();
   const isTrailersDivision = (value?: string | null) => normalizeDivision(value) === 'trailers';
   const isVendorDivision = (value?: string | null) => {
     const division = normalizeDivision(value);
@@ -701,6 +715,34 @@ export default function PaystubGenerator() {
     return out;
   }, [events]);
 
+  const eventWorkerUserIdsByName = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+
+    for (const event of events || []) {
+      for (const worker of event.workers || []) {
+        const normalizedName = normalizeEmployeeLookupName(worker?.user_name);
+        const userId = (worker?.user_id || '').toString().trim();
+        if (!normalizedName || !userId) continue;
+
+        const existing = map.get(normalizedName) ?? new Set<string>();
+        existing.add(userId);
+        map.set(normalizedName, existing);
+      }
+    }
+
+    return map;
+  }, [events]);
+
+  const resolveEmployeeUserIdFromLoadedEvents = (nameRaw: string): string | null => {
+    const normalizedName = normalizeEmployeeLookupName(nameRaw);
+    if (!normalizedName) return null;
+
+    const matchingUserIds = eventWorkerUserIdsByName.get(normalizedName);
+    if (!matchingUserIds || matchingUserIds.size !== 1) return null;
+
+    return Array.from(matchingUserIds)[0] || null;
+  };
+
   const getFilteredEvents = () => {
     // Only include events the employee worked, but keep ALL workers for those events.
     // AZ/NY commission logic needs other workers' hours to compute the per-vendor commission.
@@ -733,6 +775,11 @@ export default function PaystubGenerator() {
     return events.filter((event) => (event.workers || []).some((w) => w.user_id === userId));
   };
 
+  const hasCommissionReportEventsForUserId = (userId: string | null) => {
+    if (!userId) return false;
+    return filterEventsForUserId(userId).some((event) => !isSanDiegoRegion(event));
+  };
+
   const resolveEmployeeUserIdByOfficialName = async (
     officialNameRaw: string,
     options?: { debug?: boolean }
@@ -744,14 +791,57 @@ export default function PaystubGenerator() {
       const response = await fetch(
         `/api/match-employee?name=${encodeURIComponent(officialName)}${options?.debug ? '&debug=true' : ''}`
       );
-      if (!response.ok) return null;
+      if (!response.ok) return resolveEmployeeUserIdFromLoadedEvents(officialName);
       const data = await response.json();
-      return data?.user_id || null;
+      return data?.user_id || resolveEmployeeUserIdFromLoadedEvents(officialName);
     } catch (error) {
       console.error('Error matching employee:', error);
-      return null;
+      return resolveEmployeeUserIdFromLoadedEvents(officialName);
     }
   };
+
+  useEffect(() => {
+    if (eventWorkerUserIdsByName.size === 0) return;
+
+    let firstResolvedUserId: string | null = null;
+    let importedDidChange = false;
+
+    const rematchedEmployees = importedEmployees.map((employee) => {
+      if (employee.matchedUserId || !employee.employeeName) {
+        return employee;
+      }
+
+      const fallbackUserId = resolveEmployeeUserIdFromLoadedEvents(employee.employeeName);
+      if (!fallbackUserId) {
+        return employee;
+      }
+
+      importedDidChange = true;
+      if (!firstResolvedUserId) firstResolvedUserId = fallbackUserId;
+
+      return {
+        ...employee,
+        matchedUserId: fallbackUserId,
+        matchError: undefined,
+      };
+    });
+
+    if (importedDidChange) {
+      setImportedEmployees(rematchedEmployees);
+    }
+
+    if (!matchedUserId && formData.employeeName) {
+      const fallbackUserId = resolveEmployeeUserIdFromLoadedEvents(formData.employeeName);
+      if (fallbackUserId) {
+        setMatchedUserId(fallbackUserId);
+        return;
+      }
+    }
+
+    if (!matchedUserId && firstResolvedUserId) {
+      setMatchedUserId(firstResolvedUserId);
+    }
+  }, [eventWorkerUserIdsByName, formData.employeeName, importedEmployees, matchedUserId]);
 
   const sanitizeFilePart = (value: string) =>
     value
@@ -1095,6 +1185,9 @@ export default function PaystubGenerator() {
       }
 
       const filteredEvents = filterEventsForUserId(reportUserId);
+      if (!hasCommissionReportEventsForUserId(reportUserId)) {
+        throw new Error('San Diego hourly employees do not have a commission report.');
+      }
       const generatedAt = new Date().toISOString();
       const latestFinalPay = await fetchFinalPayData(reportUserId, { debugMode });
       setFinalPayEvents(latestFinalPay.events || []);
@@ -1103,9 +1196,12 @@ export default function PaystubGenerator() {
       const finalPayByEventId = new Map((latestFinalPay.events || []).map((event) => [event.eventId, event]));
 
       type CommissionReportRow = {
+        eventId: string;
         showDate: string;
         eventName: string;
         venueStadium: string;
+        stateCode: string;
+        usesPeriodRate: boolean;
         adjustedGross: number;
         adjustedGrossPercent: number;
         grossCommission: number;
@@ -1138,8 +1234,11 @@ export default function PaystubGenerator() {
         ['Net Pay', netPay],
       ];
 
-      const totalCommissionHours = (latestFinalPay.events || []).reduce((sum, ev) => sum + (ev.actualHours || 0), 0);
-      const totalVariableIncentiveForRate = (latestFinalPay.events || []).reduce((sum, ev) => sum + (ev.variableIncentive || 0), 0);
+      const commissionFinalPayEvents = (latestFinalPay.events || []).filter(
+        (ev) => !isSanDiegoRegion(ev)
+      );
+      const totalCommissionHours = commissionFinalPayEvents.reduce((sum, ev) => sum + (ev.actualHours || 0), 0);
+      const totalVariableIncentiveForRate = commissionFinalPayEvents.reduce((sum, ev) => sum + (ev.variableIncentive || 0), 0);
       const variableIncentiveRate = totalCommissionHours > 0
         ? roundMoney(totalVariableIncentiveForRate / totalCommissionHours)
         : 0;
@@ -1175,6 +1274,8 @@ export default function PaystubGenerator() {
           if (!worker) return [];
 
           const isEventSD = isSanDiegoRegion(event);
+          if (isEventSD) return [];
+          const usesPeriodRate = !isEventSD && isPeriodRateCommissionState(event.state);
           const finalPayData = finalPayByEventId.get(event.id);
           const hoursWorked = roundHours(
             Number(finalPayData?.actualHours ?? getCommissionReportHours(worker))
@@ -1225,7 +1326,11 @@ export default function PaystubGenerator() {
                   getRestPayForReport(hoursWorked, formData.state || event.state, event)
           );
           const rateInEffect = roundMoney(
-            hoursWorked > 0 ? commission / hoursWorked : 0
+            usesPeriodRate && finalPayData?.rateInEffect != null
+              ? Number(finalPayData.rateInEffect)
+              : hoursWorked > 0
+                ? commission / hoursWorked
+                : 0
           );
           const variableRate =
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
@@ -1236,9 +1341,12 @@ export default function PaystubGenerator() {
           );
 
           return [{
+            eventId: String(event.id || ''),
             showDate: formatCommissionReportDate(event.event_date),
             eventName: (event.event_name ?? event.name ?? '').toString(),
             venueStadium: (event.venue ?? '').toString(),
+            stateCode: normalizeStateCode(event.state || formData.state),
+            usesPeriodRate,
             adjustedGross,
             adjustedGrossPercent,
             grossCommission,
@@ -1255,7 +1363,40 @@ export default function PaystubGenerator() {
           }];
         }) ?? [];
 
-      if (commissionReportRows.length === 0) {
+      const payPeriodRateInEffect = (() => {
+        const totals = commissionReportRows.reduce(
+          (acc, row) => ({
+            commission: acc.commission + row.commission,
+            hoursWorked: acc.hoursWorked + row.hoursWorked,
+          }),
+          { commission: 0, hoursWorked: 0 }
+        );
+        return totals.hoursWorked > 0
+          ? roundMoney(totals.commission / totals.hoursWorked)
+          : 0;
+      })();
+
+      const normalizedCommissionReportRows = commissionReportRows.map((row) => {
+        if (!row.usesPeriodRate || row.hoursWorked <= 0) return row;
+        const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || formData.state);
+        const variableRateValue = roundMoney(
+          Math.max(0, minimumRateInEffect - payPeriodRateInEffect)
+        );
+        const variableIncentiveValue = roundMoney(
+          variableRateValue * row.hoursWorked
+        );
+        const tips = typeof row.tips === 'number' ? row.tips : 0;
+        const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
+        return {
+          ...row,
+          variableRate: variableRateValue,
+          commissionPaidTotal: roundMoney(row.commission + variableIncentiveValue),
+          variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
+          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay),
+        };
+      });
+
+      if (normalizedCommissionReportRows.length === 0) {
         throw new Error('No commission-report rows were found for this employee in the selected pay period.');
       }
 
@@ -1316,7 +1457,7 @@ export default function PaystubGenerator() {
           ]
         : [];
 
-      const finalCommissionRows = commissionReportRows.map((row) => ({
+      const finalCommissionRows = normalizedCommissionReportRows.map((row) => ({
         show_date: row.showDate,
         event_name: row.eventName,
         venue_stadium: row.venueStadium,
@@ -1337,7 +1478,7 @@ export default function PaystubGenerator() {
       const wb = XLSX.utils.book_new();
       const uniqueAdjustedGrossPercents = Array.from(
         new Set(
-          commissionReportRows.map((row) =>
+          normalizedCommissionReportRows.map((row) =>
             Number(row.adjustedGrossPercent || 0).toFixed(6)
           )
         )
@@ -1366,7 +1507,7 @@ export default function PaystubGenerator() {
           'Rest Pay',
           'Final Pay (incl. tips/rest)',
         ],
-        ...commissionReportRows.map((row) => [
+        ...normalizedCommissionReportRows.map((row) => [
           row.showDate,
           row.eventName,
           row.venueStadium,
@@ -1385,7 +1526,7 @@ export default function PaystubGenerator() {
         ]),
       ];
 
-      const totals = commissionReportRows.reduce((acc, row) => {
+      const totals = normalizedCommissionReportRows.reduce((acc, row) => {
         const rowVariableIncentive =
           typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
         const tips = typeof row.tips === 'number' ? row.tips : 0;
@@ -1408,15 +1549,57 @@ export default function PaystubGenerator() {
       });
       const totalRateInEffect =
         totals.hoursWorked > 0 ? roundMoney(totals.commission / totals.hoursWorked) : 0;
-      const minimumRateInEffect = getMinimumRateInEffect(formData.state);
       const totalVariableRate =
         totals.hoursWorked > 0
-          ? roundMoney(Math.max(0, minimumRateInEffect - totalRateInEffect))
+          ? roundMoney(totals.rowVariableIncentive / totals.hoursWorked)
           : 0;
-      const totalVariableIncentive = roundMoney(totals.hoursWorked * totalVariableRate);
-      const totalFinalPay = roundMoney(
-        totals.finalPay - totals.rowVariableIncentive + totalVariableIncentive
-      );
+      const totalVariableIncentive = roundMoney(totals.rowVariableIncentive);
+      const totalFinalPay = roundMoney(totals.finalPay);
+
+      if (debugMode) {
+        const debugRows = normalizedCommissionReportRows.map((row) => {
+          const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || formData.state);
+          const payPeriodRateInEffect = totalRateInEffect;
+          const variableRateGap = roundMoney(
+            Math.max(0, minimumRateInEffect - payPeriodRateInEffect)
+          );
+          const expectedVariableIncentive = roundMoney(variableRateGap * row.hoursWorked);
+          return {
+            eventId: row.eventId,
+            eventName: row.eventName,
+            state: row.stateCode,
+            commissionPay: row.commission,
+            rowHoursWorked: row.hoursWorked,
+            rowDisplayRateInEffect: row.rateInEffect,
+            payPeriodRateInEffect,
+            minimumRateInEffect,
+            variableRateGap,
+            expectedVariableIncentive,
+            actualVariableIncentive:
+              typeof row.variableIncentive === 'number' ? row.variableIncentive : 0,
+            variableIncentiveDifference: roundMoney(
+              (typeof row.variableIncentive === 'number' ? row.variableIncentive : 0) -
+              expectedVariableIncentive
+            ),
+            finalPay: row.finalPay,
+          };
+        });
+
+        console.groupCollapsed('[PAYSTUB-GEN][debug] commission report calculations');
+        console.log('[PAYSTUB-GEN][debug] pay period totals', {
+          employeeName: formData.employeeName,
+          matchedUserId: reportUserId,
+          payPeriodStart: formData.payPeriodStart,
+          payPeriodEnd: formData.payPeriodEnd,
+          totalCommission: roundMoney(totals.commission),
+          totalHoursWorked: roundHours(totals.hoursWorked),
+          totalPayPeriodRateInEffect: totalRateInEffect,
+          totalVariableIncentive,
+          totalFinalPay,
+        });
+        console.table(debugRows);
+        console.groupEnd();
+      }
 
       commissionReportSheetData.push([
         '',
@@ -2400,7 +2583,11 @@ export default function PaystubGenerator() {
               {/* Create Report Button */}
               <button
                 onClick={handleCreateReport}
-                disabled={creatingReport || !formData.employeeName}
+                disabled={
+                  creatingReport ||
+                  !formData.employeeName ||
+                  (!!matchedUserId && !hasCommissionReportEventsForUserId(matchedUserId))
+                }
                 className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-slate-200 text-slate-800 rounded-lg text-sm font-semibold shadow-sm hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
               >
                 {creatingReport ? (
@@ -2418,7 +2605,9 @@ export default function PaystubGenerator() {
                         d="M9 17v-6a2 2 0 012-2h2a2 2 0 012 2v6m-8 0h8m-8 0a2 2 0 01-2-2V7a2 2 0 012-2h5.586a1 1 0 01.707.293l3.414 3.414a1 1 0 01.293.707V15a2 2 0 01-2 2"
                       />
                     </svg>
-                    Download commission report
+                    {!!matchedUserId && !hasCommissionReportEventsForUserId(matchedUserId)
+                      ? 'No commission report for SD hourly employee'
+                      : 'Download commission report'}
                   </>
                 )}
               </button>

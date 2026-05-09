@@ -17,8 +17,8 @@ const supabaseAdmin = createClient(
 function resolveSourcePdfPath(regionName: string) {
   const fileName =
     regionName === 'San Diego'
-      ? LA_NORCAL_TEMP_EMPLOYMENT_FILE
-      : SAN_DIEGO_TEMP_EMPLOYMENT_FILE;
+      ? SAN_DIEGO_TEMP_EMPLOYMENT_FILE
+      : LA_NORCAL_TEMP_EMPLOYMENT_FILE;
 
   const candidatePaths = [
     join(process.cwd(), fileName),

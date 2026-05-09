@@ -4,6 +4,8 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { useRouter, useParams, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import PDFFormEditor from '@/app/components/PDFFormEditor';
+import { isCaTempAgreementCustomFormTitle } from '@/app/lib/temp-agreement';
+import { getTempAgreementSignaturePlacement } from '@/app/lib/temp-agreement-signature-placement';
 
 type FormMeta = {
   id: string;
@@ -29,6 +31,7 @@ type UploadedDoc = {
 
 // Slot IDs match the I-9 naming convention
 type SlotId = 'list_a' | 'list_b' | 'list_c';
+type EmbeddedFieldElement = HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement;
 
 const LIST_A_EXAMPLES = [
   'U.S. Passport or Passport Card',
@@ -50,6 +53,13 @@ const LIST_C_EXAMPLES = [
   'Native American tribal document',
   'U.S. Citizen ID card (I-197)',
 ];
+
+const TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX =
+  'Please complete all embedded PDF fields before submitting the temp agreement.';
+
+const isTempAgreementTitle = (title?: string | null) => isCaTempAgreementCustomFormTitle(title);
+
+const isI9Title = (title?: string | null) => /i-?9/i.test(title ?? '');
 
 export default function EmployeeFormPage() {
   const router = useRouter();
@@ -84,6 +94,7 @@ export default function EmployeeFormPage() {
 
   // PDF bytes (updated by PDFFormEditor on each field change)
   const currentPdfBytesRef = useRef<Uint8Array | null>(null);
+  const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
 
   // Document uploads — List A or List B+C
   const [docMode, setDocMode] = useState<'A' | 'BC'>('A');
@@ -110,6 +121,7 @@ export default function EmployeeFormPage() {
     setAlreadySubmitted(false);
     setSubmittedAt(null);
     setSubmittedDocs([]);
+    setMissingRequiredFields([]);
 
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) { router.push('/login'); return; }
@@ -188,6 +200,17 @@ export default function EmployeeFormPage() {
     currentPdfBytesRef.current = bytes;
   }, []);
 
+  const clearTempAgreementValidation = useCallback(() => {
+    setMissingRequiredFields([]);
+    setError((current) =>
+      current.startsWith(TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX) ? '' : current
+    );
+  }, []);
+
+  const handleEditorFieldChange = useCallback(() => {
+    clearTempAgreementValidation();
+  }, [clearTempAgreementValidation]);
+
   // ─── Document upload ───────────────────────────────────────────────────────
   const refForSlot = (slot: SlotId) =>
     slot === 'list_a' ? listARef : slot === 'list_b' ? listBRef : listCRef;
@@ -258,8 +281,76 @@ export default function EmployeeFormPage() {
     setHasSig(false);
   };
 
+  const validateTempAgreementEmbeddedFields = useCallback(() => {
+    if (!isTempAgreementTitle(meta?.title)) {
+      return { isValid: true, missingFieldNames: [] as string[], firstMissingPage: null as number | null };
+    }
+
+    const editorRoot = document.querySelector('[data-pdf-scroll-container="true"]');
+    if (!editorRoot) {
+      return { isValid: true, missingFieldNames: [] as string[], firstMissingPage: null as number | null };
+    }
+
+    const fieldContainers = Array.from(
+      editorRoot.querySelectorAll<HTMLDivElement>('div[data-field-name][data-field-page]')
+    );
+    const fieldGroups = new Map<
+      string,
+      { page: number; type: 'checkbox' | 'text'; elements: EmbeddedFieldElement[] }
+    >();
+
+    for (const container of fieldContainers) {
+      const fieldName = container.dataset.fieldName?.trim();
+      if (!fieldName) continue;
+
+      const page = Number.parseInt(container.dataset.fieldPage || '1', 10) || 1;
+      const checkbox = container.querySelector<HTMLInputElement>('input[type="checkbox"]');
+      const textInput = container.querySelector<EmbeddedFieldElement>(
+        'input:not([type="checkbox"]), select, textarea'
+      );
+
+      if (!checkbox && !textInput) continue;
+
+      const entry = fieldGroups.get(fieldName) || {
+        page,
+        type: checkbox ? 'checkbox' : 'text',
+        elements: [],
+      };
+
+      entry.page = Math.min(entry.page, page);
+      entry.type = checkbox ? 'checkbox' : 'text';
+      entry.elements.push(checkbox || textInput!);
+      fieldGroups.set(fieldName, entry);
+    }
+
+    const missingFieldNames: string[] = [];
+    let firstMissingPage: number | null = null;
+
+    for (const [fieldName, entry] of fieldGroups.entries()) {
+      const isMissing =
+        entry.type === 'checkbox'
+          ? !entry.elements.some((element) => (element as HTMLInputElement).checked)
+          : !entry.elements.some((element) => String(element.value || '').trim() !== '');
+
+      if (!isMissing) continue;
+
+      missingFieldNames.push(fieldName);
+      if (firstMissingPage == null) {
+        firstMissingPage = entry.page;
+      }
+    }
+
+    return {
+      isValid: missingFieldNames.length === 0,
+      missingFieldNames,
+      firstMissingPage,
+    };
+  }, [meta?.title]);
+
   // ─── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    clearTempAgreementValidation();
+
     if (!currentPdfBytesRef.current) {
       setError('PDF not loaded yet. Please wait a moment and try again.'); return;
     }
@@ -272,15 +363,44 @@ export default function EmployeeFormPage() {
     if (meta?.allow_print_name && !printName.trim()) {
       setError('Please print your name before submitting.'); return;
     }
+    if (isTempAgreementTitle(meta?.title)) {
+      const validation = validateTempAgreementEmbeddedFields();
+      if (!validation.isValid) {
+        setMissingRequiredFields(validation.missingFieldNames);
+        setError(
+          validation.firstMissingPage != null
+            ? `${TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX} The first incomplete field is on page ${validation.firstMissingPage}.`
+            : TEMP_AGREEMENT_VALIDATION_ERROR_PREFIX
+        );
+
+        if (validation.missingFieldNames.length > 0) {
+          window.setTimeout(() => {
+            const selectorFieldName = validation.missingFieldNames[0]
+              .replace(/\\/g, '\\\\')
+              .replace(/"/g, '\\"');
+            const firstField = document.querySelector<HTMLElement>(
+              `[data-field-name="${selectorFieldName}"]`
+            );
+            firstField?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 50);
+        }
+        return;
+      }
+    }
 
     setSaving(true); setError('');
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { router.push('/login'); return; }
 
+      const isTempAgreementForm = isTempAgreementTitle(meta?.title);
       let finalBytes = currentPdfBytesRef.current;
+      let signatureDataUrl: string | null = null;
       if (meta?.requires_signature && hasSig && canvasRef.current) {
-        finalBytes = await embedSignatureIntoPdf(finalBytes, canvasRef.current.toDataURL('image/png'));
+        signatureDataUrl = canvasRef.current.toDataURL('image/png');
+        if (!isTempAgreementForm) {
+          finalBytes = await embedSignatureIntoPdf(finalBytes, signatureDataUrl);
+        }
       }
       if (meta?.allow_date_input && formDate) {
         finalBytes = await embedDateIntoPdf(finalBytes, formDate);
@@ -306,6 +426,23 @@ export default function EmployeeFormPage() {
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to save');
+
+      if (isTempAgreementForm && signatureDataUrl) {
+        const signatureRes = await fetch('/api/form-signatures/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({
+            formId: `custom-form-${formId}`,
+            formType: meta?.title || 'custom-form',
+            signatureData: signatureDataUrl,
+            formData: base64,
+            ...(asUserId ? { targetUserId: asUserId } : {}),
+          }),
+        });
+        const signatureJson = await signatureRes.json();
+        if (!signatureRes.ok) throw new Error(signatureJson.error || 'Failed to save signature');
+      }
+
       const redirectUserId = asUserId ?? session.user.id;
       router.push(`/employees/${redirectUserId}`);
     } catch (err: any) {
@@ -328,12 +465,21 @@ export default function EmployeeFormPage() {
     const lastPage = pdfDoc.getPages().at(-1)!;
     const base64 = sigDataUrl.replace(/^data:image\/png;base64,/, '');
     const sigImage = await pdfDoc.embedPng(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
-    const x = 40, y = 40, w = 200, h = 60;
+    const isTempAgreementForm = isTempAgreementTitle(meta?.title);
+    const placement = isTempAgreementForm
+      ? await getTempAgreementSignaturePlacement(pdfBytes)
+      : { x: 40, y: 40, width: 200, height: 60 };
+    const x = placement.x;
+    const y = placement.y;
+    const w = placement.width;
+    const h = placement.height;
     lastPage.drawImage(sigImage, { x, y, width: w, height: h });
-    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    lastPage.drawText('Employee Signature', { x, y: y + h + 4, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    // Underline baseline shared with the date field
-    lastPage.drawLine({ start: { x, y: y - 2 }, end: { x: x + w, y: y - 2 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    if (!isTempAgreementForm) {
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      lastPage.drawText('Employee Signature', { x, y: y + h + 4, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      // Underline baseline shared with the date field
+      lastPage.drawLine({ start: { x, y: y - 2 }, end: { x: x + w, y: y - 2 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    }
     return pdfDoc.save();
   };
 
@@ -483,7 +629,7 @@ export default function EmployeeFormPage() {
         </div>
 
         {/* Supporting documents — read-only after submission */}
-        {submittedDocs.length > 0 && (
+        {isI9Title(meta?.title) && submittedDocs.length > 0 && (
           <div className="bg-white border border-gray-200 rounded-xl p-5">
             <h3 className="font-semibold text-gray-900 mb-3">Supporting Documents</h3>
             <div className="space-y-2">
@@ -585,7 +731,10 @@ export default function EmployeeFormPage() {
             pdfUrl={pdfUrl}
             formId={meta ? `${meta.title} ${new Date().getFullYear()}` : `custom-form-${formId}`}
             onSave={handleSave}
+            onFieldChange={handleEditorFieldChange}
             skipButtonDetection={true}
+            requiredFieldNames={missingRequiredFields}
+            showRequiredFieldErrors={missingRequiredFields.length > 0}
             assignedVenueName={assignedVenueName}
           />
         )}

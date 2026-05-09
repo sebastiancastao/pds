@@ -5,6 +5,15 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import {
+  isCaTempAgreementCustomFormTitle,
+  isTempAgreementForm as isTempAgreementFormRecord,
+} from "@/app/lib/temp-agreement";
+import {
+  getTempAgreementSignaturePlacement,
+  LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT,
+} from "@/app/lib/temp-agreement-signature-placement";
+import { mergeSavedPdfFieldsOntoTemplate } from "@/app/lib/pdf-template-field-merge";
 
 type Employee = {
   id: string;
@@ -117,6 +126,11 @@ type PDFForm = {
   created_at: string;
   form_date: string | null;
 };
+
+const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
+  isTempAgreementFormRecord(form);
+
+const isI9CustomFormTitle = (title?: string | null) => /i-?9/i.test(title ?? '');
 
 type AssignedVenue = {
   id: string;
@@ -568,6 +582,7 @@ export default function EmployeeProfilePage() {
   useEffect(() => {
     if (!customFormsList.length || !pdfForms.length || !employeeId) return;
     const submittedFormIds = customFormsList
+      .filter((f) => isI9CustomFormTitle(f.title))
       .filter((f) => {
         const byId = pdfForms.some((p) => p.form_name === `custom-form-${f.id}`);
         if (byId) return true;
@@ -576,7 +591,10 @@ export default function EmployeeProfilePage() {
         return pdfForms.some((p) => titlePattern.test(p.form_name));
       })
       .map(f => f.id);
-    if (!submittedFormIds.length) return;
+    if (!submittedFormIds.length) {
+      setCustomFormDocs({});
+      return;
+    }
 
     const loadDocs = async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -822,18 +840,106 @@ export default function EmployeeProfilePage() {
     return btoa(b);
   };
 
+  const withTempAgreementSignatureRedrawn = async (
+    base64Data: string,
+    signatureData?: string | null,
+    signatureType?: string | null
+  ): Promise<string> => {
+    const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1);
+    if (!lastPage) return base64Data;
+
+    const trimmedSignature = signatureData?.trim();
+    if (!trimmedSignature) return base64Data;
+
+    const placement = await getTempAgreementSignaturePlacement(pdfBytes);
+    const normalizedType = (signatureType || '').toLowerCase();
+    const isImageDataUrl = trimmedSignature.toLowerCase().startsWith('data:image/');
+    const isTyped = normalizedType === 'typed' || normalizedType === 'type' || !isImageDataUrl;
+
+    lastPage.drawRectangle({
+      x: LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT.x,
+      y: LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT.y,
+      width: LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT.width,
+      height: LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT.height,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+
+    if (isTyped) {
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      lastPage.drawText(trimmedSignature, {
+        x: placement.x,
+        y: placement.y + 22,
+        size: 12,
+        font,
+      });
+    } else {
+      const match = trimmedSignature.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/i);
+      const format = (match?.[1] || 'png').toLowerCase();
+      const imageBase64 = match?.[2] || trimmedSignature;
+      const imageBytes = Uint8Array.from(atob(imageBase64), (c) => c.charCodeAt(0));
+      const signatureImage =
+        format === 'jpg' || format === 'jpeg'
+          ? await pdfDoc.embedJpg(imageBytes)
+          : await pdfDoc.embedPng(imageBytes);
+      const scale = Math.min(placement.width / signatureImage.width, placement.height / signatureImage.height, 1);
+      const drawWidth = signatureImage.width * scale;
+      const drawHeight = signatureImage.height * scale;
+
+      lastPage.drawImage(signatureImage, {
+        x: placement.x,
+        y: placement.y + (placement.height - drawHeight) / 2,
+        width: drawWidth,
+        height: drawHeight,
+      });
+    }
+
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
+  };
+
+  const matchesCustomFormSubmission = (
+    form: Pick<PDFForm, 'form_name' | 'display_name'>,
+    customForm: { id: string; title: string }
+  ) => {
+    const titlePattern = new RegExp(
+      `^${customForm.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?: \\d{4})?$`,
+      'i'
+    );
+    return [form.form_name, form.display_name]
+      .filter(Boolean)
+      .some((value) => value === `custom-form-${customForm.id}` || titlePattern.test(value));
+  };
+
+  const getMatchingCustomFormForPdf = (form: Pick<PDFForm, 'form_name' | 'display_name'>) =>
+    customFormsList.find((customForm) => {
+      return matchesCustomFormSubmission(form, customForm);
+    });
+
+  const getTempAgreementCustomFormForPdf = (form: Pick<PDFForm, 'form_name' | 'display_name'>) => {
+    const matchingCustomForm = getMatchingCustomFormForPdf(form);
+    if (!matchingCustomForm) return null;
+    return isCaTempAgreementCustomFormTitle(matchingCustomForm.title) ? matchingCustomForm : null;
+  };
+
   const getVenueForCompletedOnboardingForm = (form: PDFForm): string | undefined => {
     const venueName = employeeHomeVenue?.venue_name;
     if (!venueName) return undefined;
 
-    const matchingCustomForm = customFormsList.find((customForm) => {
-      if (form.form_name === `custom-form-${customForm.id}`) return true;
-      // Backward compat: old submissions were saved as "Title Year"
-      const titlePattern = new RegExp(`^${customForm.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
-      return titlePattern.test(form.form_name);
-    });
+    const matchingCustomForm = getMatchingCustomFormForPdf(form);
 
     if (matchingCustomForm) {
+      if (
+        !matchingCustomForm.allow_venue_display ||
+        isCaTempAgreementCustomFormTitle(matchingCustomForm.title)
+      ) {
+        return undefined;
+      }
       return venueName;
     }
 
@@ -849,6 +955,40 @@ export default function EmployeeProfilePage() {
     }
 
     return undefined;
+  };
+
+  const rebuildTempAgreementFromTemplate = async (
+    customFormId: string | undefined,
+    base64Data: string
+  ): Promise<string> => {
+    if (!customFormId || !employeeId) return base64Data;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const templateRes = await fetch(`/api/custom-forms/${customFormId}/pdf`, {
+        cache: 'no-store',
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      });
+
+      if (!templateRes.ok) {
+        return base64Data;
+      }
+
+      const templateBytes = new Uint8Array(await templateRes.arrayBuffer());
+      const savedBytes = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+      const rebuiltBytes = await mergeSavedPdfFieldsOntoTemplate(templateBytes, savedBytes);
+
+      if (!rebuiltBytes) {
+        return base64Data;
+      }
+
+      let binary = '';
+      for (let i = 0; i < rebuiltBytes.length; i++) binary += String.fromCharCode(rebuiltBytes[i]);
+      return btoa(binary);
+    } catch (error) {
+      console.warn('Failed to rebuild temp agreement from template, falling back to saved PDF data', error);
+      return base64Data;
+    }
   };
 
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
@@ -869,12 +1009,71 @@ export default function EmployeeProfilePage() {
     return form.form_data;
   };
 
+  const getTempAgreementRenderData = async (
+    form: PDFForm
+  ): Promise<{ formData: string; signatureData: string | null; signatureType: string | null }> => {
+    if (!employeeId) {
+      return { formData: form.form_data, signatureData: null, signatureType: null };
+    }
+
+    try {
+      const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
+      const signatureFormId = tempAgreementCustomForm ? `custom-form-${tempAgreementCustomForm.id}` : null;
+      const { data: { session } } = await supabase.auth.getSession();
+      // Only CA temp-agree custom forms do not use the generic server-side embed branch.
+      // View/download intentionally fetch the raw saved PDF plus the separate signature
+      // and then rebuild/redraw in a dedicated temp-agreement pipeline below.
+      const res = await fetch(
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}&returnSignatureData=1${signatureFormId ? `&signatureFormId=${encodeURIComponent(signatureFormId)}` : ''}`,
+        { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        return {
+          formData: json.formData || form.form_data,
+          signatureData: json.signatureData || null,
+          signatureType: json.signatureType || null,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to fetch temp agreement signature data, falling back to raw PDF data', e);
+    }
+
+    return { formData: form.form_data, signatureData: null, signatureType: null };
+  };
+
   // Download a single PDF form
   const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = await getFormDataWithSignature(form);
-      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
+      const matchingCustomForm = getMatchingCustomFormForPdf(form);
+      const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
+      const isTempAgreementForm =
+        !!tempAgreementCustomForm ||
+        (!matchingCustomForm &&
+          isTempAgreementPdfForm({
+          form_name: form.form_name,
+          display_name: form.display_name,
+        }));
+      let data: string;
+      if (isTempAgreementForm) {
+        const tempAgreementData = await getTempAgreementRenderData(form);
+        const rebuiltFormData = tempAgreementData.signatureData?.trim()
+          ? await rebuildTempAgreementFromTemplate(
+              tempAgreementCustomForm?.id || matchingCustomForm?.id,
+              tempAgreementData.formData
+            )
+          : tempAgreementData.formData;
+        data = await withTempAgreementSignatureRedrawn(
+          rebuiltFormData,
+          tempAgreementData.signatureData,
+          tempAgreementData.signatureType
+        );
+      } else {
+        data = await getFormDataWithSignature(form);
+      }
+      const shouldEmbedProfileFields = !isTempAgreementForm;
+      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -891,9 +1090,35 @@ export default function EmployeeProfilePage() {
 
   const viewPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
-      let data = await getFormDataWithSignature(form);
-      if (form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
+      const matchingCustomForm = getMatchingCustomFormForPdf(form);
+      const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
+      const isTempAgreementForm =
+        !!tempAgreementCustomForm ||
+        (!matchingCustomForm &&
+          isTempAgreementPdfForm({
+          form_name: form.form_name,
+          display_name: form.display_name,
+        }));
+      let data: string;
+      if (isTempAgreementForm) {
+        const tempAgreementData = await getTempAgreementRenderData(form);
+        const rebuiltFormData = tempAgreementData.signatureData?.trim()
+          ? await rebuildTempAgreementFromTemplate(
+              tempAgreementCustomForm?.id || matchingCustomForm?.id,
+              tempAgreementData.formData
+            )
+          : tempAgreementData.formData;
+        data = await withTempAgreementSignatureRedrawn(
+          rebuiltFormData,
+          tempAgreementData.signatureData,
+          tempAgreementData.signatureType
+        );
+      } else {
+        data = await getFormDataWithSignature(form);
+      }
+      const shouldEmbedProfileFields = !isTempAgreementForm;
+      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
       openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
@@ -2046,13 +2271,15 @@ export default function EmployeeProfilePage() {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
-                      const submitted = pdfForms.find((p) => {
-                        if (p.form_name === `custom-form-${form.id}`) return true;
-                        // Backward compat: old submissions were saved as "Title Year"
-                        const titlePattern = new RegExp(`^${form.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\d{4}$`);
-                        return titlePattern.test(p.form_name);
-                      });
-                      const venueForForm = (!submitted?.form_name.includes('home-venue-assignment') && employeeHomeVenue) ? employeeHomeVenue.venue_name : undefined;
+                      const submitted = pdfForms.find((p) => matchesCustomFormSubmission(p, form));
+                      const venueForForm =
+                        submitted &&
+                        !submitted.form_name.includes('home-venue-assignment') &&
+                        employeeHomeVenue &&
+                        form.allow_venue_display &&
+                        !isCaTempAgreementCustomFormTitle(form.title)
+                          ? employeeHomeVenue.venue_name
+                          : undefined;
                       return (
                         <div
                           key={form.id}

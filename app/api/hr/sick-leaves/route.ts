@@ -110,6 +110,28 @@ function toDateSafe(v: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+function parseIsoDateInput(value: string | null): Date | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  const [year, month, day] = trimmed.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function addUtcDays(date: Date, days: number): Date {
+  return new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + days)
+  );
+}
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   const a = toDateSafe(clock_in);
   const b = toDateSafe(clock_out);
@@ -188,6 +210,34 @@ export async function GET(req: NextRequest) {
 
     const { searchParams } = new URL(req.url);
     const requestedStatus = String(searchParams.get("status") || "").toLowerCase();
+    const accrualStartInput = searchParams.get("accrual_start");
+    const accrualEndInput = searchParams.get("accrual_end");
+    const accrualPeriodStart = parseIsoDateInput(accrualStartInput);
+    const accrualPeriodEnd = parseIsoDateInput(accrualEndInput);
+
+    if (accrualStartInput && !accrualPeriodStart) {
+      return NextResponse.json(
+        { error: "Invalid accrual_start date. Expected YYYY-MM-DD." },
+        { status: 400 }
+      );
+    }
+
+    if (accrualEndInput && !accrualPeriodEnd) {
+      return NextResponse.json(
+        { error: "Invalid accrual_end date. Expected YYYY-MM-DD." },
+        { status: 400 }
+      );
+    }
+
+    if (accrualPeriodStart && accrualPeriodEnd && accrualPeriodStart > accrualPeriodEnd) {
+      return NextResponse.json(
+        { error: "Accrual period start date must be on or before the end date." },
+        { status: 400 }
+      );
+    }
+
+    const accrualPeriodEndExclusive = accrualPeriodEnd ? addUtcDays(accrualPeriodEnd, 1) : null;
+    const hasAccrualPeriodFilter = Boolean(accrualPeriodStart || accrualPeriodEndExclusive);
 
     let query = supabaseAdmin
       .from("sick_leaves")
@@ -398,6 +448,7 @@ export async function GET(req: NextRequest) {
 
     const workedHoursByUser = new Map<string, number>();
     const workedHoursYtdByUser = new Map<string, number>();
+    const workedHoursInPeriodByUser = new Map<string, number>();
     for (const [key, entries] of entriesByUserEvent.entries()) {
       const [entryUserId] = key.split("::");
       entries.sort((a, b) => {
@@ -410,6 +461,7 @@ export async function GET(req: NextRequest) {
       let clockIn: string | null = null;
       let totalForUserEvent = 0;
       let totalForUserEventYtd = 0;
+      let totalForUserEventPeriod = 0;
       for (const row of entries) {
         if (row.action === "clock_in") {
           clockIn = row.timestamp;
@@ -421,6 +473,14 @@ export async function GET(req: NextRequest) {
           const clockOutAt = toDateSafe(row.timestamp);
           if (clockOutAt && clockOutAt >= currentYearStart) {
             totalForUserEventYtd += shiftHours;
+          }
+          if (
+            hasAccrualPeriodFilter &&
+            clockOutAt &&
+            (!accrualPeriodStart || clockOutAt >= accrualPeriodStart) &&
+            (!accrualPeriodEndExclusive || clockOutAt < accrualPeriodEndExclusive)
+          ) {
+            totalForUserEventPeriod += shiftHours;
           }
           clockIn = null;
         }
@@ -434,6 +494,12 @@ export async function GET(req: NextRequest) {
         entryUserId,
         (workedHoursYtdByUser.get(entryUserId) || 0) + totalForUserEventYtd
       );
+      if (hasAccrualPeriodFilter) {
+        workedHoursInPeriodByUser.set(
+          entryUserId,
+          (workedHoursInPeriodByUser.get(entryUserId) || 0) + totalForUserEventPeriod
+        );
+      }
     }
 
     const sickHoursByUser = new Map<string, number>();
@@ -517,6 +583,15 @@ export async function GET(req: NextRequest) {
         const profile = profileMap.get(id);
         const worked_hours = Number((workedHoursByUser.get(id) || 0).toFixed(3));
         const worked_hours_ytd = Number((workedHoursYtdByUser.get(id) || 0).toFixed(3));
+        const rawPeriodWorkedHours = workedHoursInPeriodByUser.get(id) || 0;
+        const period_worked_hours = hasAccrualPeriodFilter
+          ? Number(rawPeriodWorkedHours.toFixed(3))
+          : null;
+        const period_earned_hours = hasAccrualPeriodFilter
+          ? Number(
+              (rawPeriodWorkedHours / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2)
+            )
+          : null;
         const worked_hours_before_year = Number(Math.max(0, worked_hours - worked_hours_ytd).toFixed(3));
         const base_year_to_date_hours = Number(
           (worked_hours_ytd / SICK_LEAVE_ACCRUAL_HOURS_WORKED).toFixed(2)
@@ -554,6 +629,8 @@ export async function GET(req: NextRequest) {
           employee_state: profile?.employee_state ?? null,
           employee_city: profile?.employee_city ?? null,
           worked_hours,
+          period_worked_hours,
+          period_earned_hours,
           accrued_months,
           accrued_hours,
           accrued_days,

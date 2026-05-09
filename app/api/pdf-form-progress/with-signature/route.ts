@@ -12,6 +12,7 @@ const STATE_CODE_PREFIXES = ['ca', 'ny', 'wi', 'az', 'nv', 'tx', 'fl', 'il', 'oh
 const STATE_CODE_PREFIX_SET = new Set(STATE_CODE_PREFIXES);
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const SIGNATURE_Y_SHIFT = 80;
+const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
 const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9', 'ca-de4', 'de4', 'wi-state-tax', 'state-tax']);
@@ -36,6 +37,11 @@ type SignatureEntry = {
   signature_data: string;
   signature_type?: string | null;
   signed_at?: string | null;
+};
+
+type PayrollPacketStorageInfo = {
+  stateCode: string | null;
+  formType: string | null;
 };
 
 function toBase64(data: any): string {
@@ -130,6 +136,101 @@ function buildFormIdCandidates(formName: string, preferredState?: string | null)
 
   for (const prefix of STATE_CODE_PREFIXES) {
     pushUnique(`${prefix}-${normalized}`);
+  }
+
+  return candidates;
+}
+
+function isCustomFormId(value?: string | null) {
+  return (value || '').trim().toLowerCase().startsWith('custom-form-');
+}
+
+function getCustomFormRecordId(value?: string | null) {
+  if (!isCustomFormId(value)) return null;
+  return value!.trim().slice('custom-form-'.length) || null;
+}
+
+function parsePayrollPacketStoragePath(storagePath?: string | null): PayrollPacketStorageInfo | null {
+  const trimmed = (storagePath || '').trim();
+  if (!trimmed.toLowerCase().startsWith('payroll-packet:')) {
+    return null;
+  }
+
+  const parts = trimmed.split(':');
+  if (parts.length < 3) {
+    return null;
+  }
+
+  const rawStateCode = parts[1] || '';
+  const rawFormType = parts.slice(2).join(':');
+  const [pathFormType] = rawFormType.split('?');
+  const formType = normalizeFormKey(pathFormType);
+
+  return {
+    stateCode: normalizeStateCode(rawStateCode),
+    formType: formType || null,
+  };
+}
+
+function getLegacyCustomFormSignatureIds(storagePath?: string | null) {
+  const parsed = parsePayrollPacketStoragePath(storagePath);
+  if (!parsed?.formType) return [];
+
+  const legacyIds: string[] = [];
+  const pushUnique = (value?: string | null) => {
+    const normalized = value?.trim().toLowerCase();
+    if (normalized && !legacyIds.includes(normalized)) {
+      legacyIds.push(normalized);
+    }
+  };
+
+  if (parsed.formType === 'temp-employment-agreement') {
+    if (parsed.stateCode === 'ca') {
+      pushUnique('temp-employment-agreement');
+      return legacyIds;
+    }
+
+    if (parsed.stateCode) {
+      pushUnique(`${parsed.stateCode}-${parsed.formType}`);
+    }
+    pushUnique(parsed.formType);
+  }
+
+  return legacyIds;
+}
+
+async function getCustomFormSignatureCandidates(
+  formIdentifier: string | null,
+  preferredState?: string | null
+) {
+  const candidates: string[] = [];
+  const pushUnique = (value?: string | null) => {
+    const normalized = value?.trim().toLowerCase();
+    if (normalized && !candidates.includes(normalized)) {
+      candidates.push(normalized);
+    }
+  };
+
+  const baseIdentifier = formIdentifier?.trim() || '';
+  if (!baseIdentifier) return candidates;
+
+  pushUnique(baseIdentifier);
+
+  const customFormRecordId = getCustomFormRecordId(baseIdentifier);
+  if (customFormRecordId) {
+    const { data: customForm } = await supabaseAdmin
+      .from('custom_pdf_forms')
+      .select('storage_path')
+      .eq('id', customFormRecordId)
+      .maybeSingle();
+
+    for (const legacyId of getLegacyCustomFormSignatureIds(customForm?.storage_path)) {
+      pushUnique(legacyId);
+    }
+  }
+
+  for (const candidate of buildFormIdCandidates(baseIdentifier, preferredState)) {
+    pushUnique(candidate);
   }
 
   return candidates;
@@ -253,6 +354,8 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const userId = searchParams.get('userId');
     const formName = searchParams.get('formName');
+    const signatureFormId = searchParams.get('signatureFormId')?.trim() || null;
+    const returnSignatureData = searchParams.get('returnSignatureData') === '1';
 
     if (!userId || !formName) {
       return NextResponse.json({ error: 'Missing userId or formName' }, { status: 400 });
@@ -290,7 +393,10 @@ export async function GET(request: NextRequest) {
     const preferredState = normalizeStateCode(profileData?.state);
     const normalizedUserState = (employeeInfo?.state || profileData?.state || '').toString().toLowerCase().trim();
     const normalizedName = normalizeFormKey(formName);
-    const formIdsToTry = buildFormIdCandidates(formName, preferredState);
+    const signatureLookupFormId = signatureFormId || formName;
+    const formIdsToTry = isCustomFormId(signatureLookupFormId)
+      ? await getCustomFormSignatureCandidates(signatureLookupFormId, preferredState)
+      : buildFormIdCandidates(signatureLookupFormId, preferredState);
     const signatureByForm = new Map<string, SignatureEntry>();
     const fallbackEntries: SignatureEntry[] = [];
 
@@ -401,6 +507,12 @@ export async function GET(request: NextRequest) {
 
     const signatureData = selectedSignature?.signature_data || null;
     const signatureType = selectedSignature?.signature_type || null;
+    const isTempEmploymentAgreement = normalizedName === 'temp-employment-agreement';
+    if (returnSignatureData || isTempEmploymentAgreement) {
+      // Temp-agreement custom-form view/download requests raw form data here and
+      // completes signature placement in the dedicated client-side redraw pipeline.
+      return NextResponse.json({ formData: base64Data, signatureData, signatureType });
+    }
 
     if (!signatureData) {
       return NextResponse.json({ formData: base64Data });
@@ -419,7 +531,6 @@ export async function GET(request: NextRequest) {
       (normalizedName === 'state-tax' && preferredState === 'wi') ||
       formName.toLowerCase() === 'wi-state-tax';
     const isStateTaxForm = normalizedName === 'state-tax';
-    const isTempEmploymentAgreement = normalizedName === 'temp-employment-agreement';
     const isCaliforniaTempEmploymentAgreement =
       isTempEmploymentAgreement &&
       (normalizedUserState === 'ca' || normalizedUserState === 'california');
@@ -626,7 +737,10 @@ export async function GET(request: NextRequest) {
                   caDE4OffsetY +
                   stateTaxOffsetY
               );
-        const y = Math.min(height - signatureHeight, rawY + SIGNATURE_Y_SHIFT);
+        const y = Math.min(
+          height - signatureHeight,
+          rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+        );
 
         if (isTyped && font) {
           page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });

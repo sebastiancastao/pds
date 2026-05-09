@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { safeDecrypt } from "@/lib/encryption";
+import { attachRegionMetadataToEvents } from "@/lib/event-region";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,7 +57,7 @@ export async function GET(req: NextRequest) {
     const endDateExclusive = endDatePlusOne.toISOString().slice(0, 10);
 
     // Fetch events
-    const { data: events, error: eventsError } = await supabaseAdmin
+    const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
       .select('*')
       .gte('event_date', startDate)
@@ -67,6 +68,7 @@ export async function GET(req: NextRequest) {
       console.error('SUPABASE SELECT ERROR:', eventsError);
       return NextResponse.json({ error: eventsError.message || eventsError.code || eventsError }, { status: 500 });
     }
+    const events = await attachRegionMetadataToEvents(supabaseAdmin, rawEvents || []);
     if (debug) {
       console.log('[EVENTS-BY-DATE][debug] request', {
         startDate,

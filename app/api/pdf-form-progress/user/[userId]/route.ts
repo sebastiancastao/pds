@@ -18,6 +18,7 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_REP_NAME = 'Dawn M. Kaplan Lister';
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'image001.png';
 // PDF coordinates: larger Y is higher on page. Negative values move content down.
 const SIGNATURE_Y_SHIFT = 80;
+const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA = 0;
 // Positive values move content right.
@@ -2530,7 +2531,10 @@ export async function GET(
                     height - signatureHeight,
                     baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
                   );
-              const y = Math.min(height - signatureHeight, rawY + SIGNATURE_Y_SHIFT);
+              const y = Math.min(
+                height - signatureHeight,
+                rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+              );
 
               if (isTyped && !isDataUrl) {
                 page.drawText(signatureValue, {

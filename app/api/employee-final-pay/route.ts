@@ -5,6 +5,7 @@ import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
+import { attachRegionMetadataToEvents } from '@/lib/event-region';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -144,7 +145,7 @@ export async function GET(req: NextRequest) {
     endDatePlusOne.setUTCDate(endDatePlusOne.getUTCDate() + 1);
     const endDateExclusive = endDatePlusOne.toISOString().slice(0, 10);
 
-    const { data: events, error: eventsError } = await supabaseAdmin
+    const { data: rawEvents, error: eventsError } = await supabaseAdmin
       .from('events')
       .select('id, name, event_date, venue, city, state, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income')
       .gte('event_date', startDate)
@@ -155,12 +156,14 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: eventsError.message }, { status: 500 });
     }
 
-    if (!events || events.length === 0) {
+    if (!rawEvents || rawEvents.length === 0) {
       return NextResponse.json({
         events: [],
         totals: { commissions: 0, commissionPaidTotal: 0, tips: 0, totalPay: 0, finalPay: 0 },
       });
     }
+
+    const events = await attachRegionMetadataToEvents(supabaseAdmin, rawEvents || []);
 
     const eventIds = events.map((e: any) => e.id);
 
@@ -518,7 +521,7 @@ export async function GET(req: NextRequest) {
           isEventSD
             ? Number(sanDiegoHourlyBreakdown?.blendedRate || baseRate)
             : usesPeriodRate
-              ? Number(periodWorker?.rateInEffect || 0)
+              ? Number(periodWorker?.rowRateInEffect || 0)
               : loadedRate
         );
         const commissions = isEventSD ? 0 : commissionPay;
@@ -545,6 +548,7 @@ export async function GET(req: NextRequest) {
           venue: ev.venue,
           city: ev.city,
           state: ev.state,
+          usesPeriodRate,
           actualHours,
           regularPay,
           overtimePay,
@@ -566,6 +570,62 @@ export async function GET(req: NextRequest) {
         };
       });
 
+    const normalizedEventResults = (() => {
+      const payPeriodRows = eventResults.filter(
+        (ev: any) => ev.usesPeriodRate === true && Number(ev.actualHours || 0) > 0
+      );
+      const payPeriodTotals = payPeriodRows.reduce(
+        (acc: any, ev: any) => ({
+          commission: acc.commission + Number(ev.commissionPay || 0),
+          hoursWorked: acc.hoursWorked + Number(ev.actualHours || 0),
+        }),
+        { commission: 0, hoursWorked: 0 }
+      );
+      const payPeriodRateInEffect =
+        payPeriodTotals.hoursWorked > 0
+          ? roundMoney(payPeriodTotals.commission / payPeriodTotals.hoursWorked)
+          : 0;
+
+      const normalizedRows = eventResults.map((ev: any) => {
+        if (ev.usesPeriodRate !== true || Number(ev.actualHours || 0) <= 0) {
+          return ev;
+        }
+
+        const minimumRateInEffect = getMinimumLoadedRate(ev.state);
+        const variableIncentive = roundMoney(
+          Math.max(0, minimumRateInEffect - payPeriodRateInEffect) * Number(ev.actualHours || 0)
+        );
+        const commissionPaidTotal = roundMoney(Number(ev.commissionPay || 0) + variableIncentive);
+        const restPay = roundMoney(
+          Math.max(0, Number(ev.totalPay || 0) - Number(ev.commissionPaidTotal || 0) - Number(ev.tips || 0))
+        );
+        const totalPay = roundMoney(commissionPaidTotal + Number(ev.tips || 0) + restPay);
+        const finalPay = roundMoney(
+          totalPay + Number(ev.adjustmentAmount || 0) + Number(ev.reimbursementAmount || 0)
+        );
+
+        return {
+          ...ev,
+          variableIncentive,
+          commissionPaidTotal,
+          totalPay,
+          finalPay,
+        };
+      });
+
+      if (debugEnabled) {
+        console.log('[employee-final-pay][debug] period-rate normalization', {
+          userId,
+          rowCount: payPeriodRows.length,
+          totalCommission: roundMoney(payPeriodTotals.commission),
+          totalHoursWorked: roundHours(payPeriodTotals.hoursWorked),
+          payPeriodRateInEffect,
+        });
+      }
+
+      return normalizedRows;
+    })();
+
     const standaloneResults = (standaloneReimbursements || []).map((row: any) => ({
       id: row.id,
       approvedAmount: Number(row.approved_amount || 0),
@@ -580,7 +640,7 @@ export async function GET(req: NextRequest) {
       0
     );
 
-    const totals = eventResults.reduce(
+    const totals = normalizedEventResults.reduce(
       (acc: any, ev: any) => ({
         commissions: acc.commissions + ev.commissions,
         commissionPaidTotal: acc.commissionPaidTotal + ev.commissionPaidTotal,
@@ -596,7 +656,7 @@ export async function GET(req: NextRequest) {
     totals.finalPay += standaloneTotal;
 
     return NextResponse.json({
-      events: eventResults,
+      events: normalizedEventResults,
       standaloneReimbursements: standaloneResults,
       totals,
     });
