@@ -676,6 +676,49 @@ export async function GET(request: NextRequest) {
           });
         }
       }
+
+      // Flatten the name and date text fields so their values render as static text.
+      try {
+        const { StandardFonts: AttestSF } = await import('pdf-lib');
+        const attestFont = await pdfDoc.embedFont(AttestSF.Helvetica);
+        const attestPdfForm = pdfDoc.getForm();
+        const flattenAttestField = (fieldName: string) => {
+          try {
+            const tf = attestPdfForm.getTextField(fieldName) as any;
+            const tfWidgets = tf?.acroField?.getWidgets?.() || [];
+            if (!tfWidgets.length) return;
+            const tfWidget = tfWidgets[0];
+            const tfRect = tfWidget.getRectangle();
+            const tfPageRef = tfWidget.P?.();
+            const tfPage = tfPageRef
+              ? pages.find((p: any) => p.ref === tfPageRef)
+              : fallbackPage;
+            if (!tfPage) return;
+            const value = tf.getText() || '';
+            tfPage.drawRectangle({
+              x: tfRect.x,
+              y: tfRect.y,
+              width: tfRect.width,
+              height: tfRect.height,
+              color: rgb(1, 1, 1),
+            });
+            if (value) {
+              tfPage.drawText(value, {
+                x: tfRect.x + 2,
+                y: tfRect.y + tfRect.height / 2 - 4,
+                size: 10,
+                font: attestFont,
+              });
+            }
+          } catch (e) {
+            console.warn(`[WITH_SIGNATURE] Could not flatten attestation field ${fieldName}:`, e);
+          }
+        };
+        flattenAttestField('employee_attestation_name');
+        flattenAttestField('employee_attestation_date');
+      } catch (e) {
+        console.warn('[WITH_SIGNATURE] Could not flatten attestation name/date fields:', e);
+      }
     } else {
       const defaultPageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedName)
         ? 0

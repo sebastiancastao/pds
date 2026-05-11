@@ -1176,8 +1176,9 @@ export default function WorkerProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,
@@ -1229,8 +1230,9 @@ export default function WorkerProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,

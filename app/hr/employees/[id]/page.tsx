@@ -334,6 +334,7 @@ export default function EmployeeProfilePage() {
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth());
 
   const [customFormsList, setCustomFormsList] = useState<{ id: string; title: string; requires_signature: boolean; target_state: string | null; target_region: string | null; allow_venue_display?: boolean | null; created_at?: string | null; assigned_at?: string | null }[]>([]);
+  const [assignedFormIds, setAssignedFormIds] = useState<Set<string>>(new Set());
   const [customFormsLoading, setCustomFormsLoading] = useState(false);
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
@@ -627,6 +628,7 @@ export default function EmployeeProfilePage() {
           specificIds.has(f.id) ? { ...f, assigned_at: assignedAtMap[f.id] } : f
         );
 
+        setAssignedFormIds(specificIds);
         setCustomFormsList([...mergedStateForms, ...specificForms]);
       } catch (e) {
         console.error('Error loading custom forms list:', e);
@@ -1167,8 +1169,9 @@ export default function EmployeeProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,
@@ -1220,8 +1223,9 @@ export default function EmployeeProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,
@@ -2477,6 +2481,7 @@ export default function EmployeeProfilePage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                     {customFormsList.map((form) => {
                       const submitted = pdfForms.find((p) => matchesCustomFormSubmission(p, form));
+                      const isDirectlyAssigned = assignedFormIds.has(form.id);
                       const venueForForm =
                         submitted &&
                         !submitted.form_name.includes('home-venue-assignment') &&
@@ -2507,9 +2512,16 @@ export default function EmployeeProfilePage() {
                             <div className="flex-1 min-w-0">
                               <h3 className="font-semibold text-gray-900 text-sm truncate">{form.title}</h3>
                               <div className="flex flex-wrap gap-1 mt-1">
-                                <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
-                                  {form.target_state ? `State: ${form.target_state}` : "All States"}
-                                </span>
+                                {isDirectlyAssigned && (
+                                  <span className="text-xs font-medium text-purple-700 bg-purple-100 border border-purple-200 rounded-full px-2 py-0.5">
+                                    Assigned
+                                  </span>
+                                )}
+                                {!isDirectlyAssigned && (
+                                  <span className="text-xs font-medium text-blue-700 bg-blue-100 border border-blue-200 rounded-full px-2 py-0.5">
+                                    {form.target_state ? `State: ${form.target_state}` : "All States"}
+                                  </span>
+                                )}
                                 {form.target_region && (
                                   <span className="text-xs font-medium text-teal-700 bg-teal-100 border border-teal-200 rounded-full px-2 py-0.5">
                                     Region restricted
