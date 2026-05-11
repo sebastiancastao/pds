@@ -64,18 +64,11 @@ export async function POST(req: NextRequest) {
     if (!user?.id) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
 
     const body = await req.json().catch(() => ({}));
-    const { event_id, user_id, adjustment_amount, adjustment_note, adjustment_type } = body || {};
+    const { event_id, user_id, adjustment_amount, adjustment_note } = body || {};
 
     if (!event_id || !user_id || typeof adjustment_amount !== 'number') {
       return NextResponse.json({ error: 'event_id, user_id and adjustment_amount are required' }, { status: 400 });
     }
-
-    const inferredAdjustmentType =
-      typeof adjustment_type === 'string' && adjustment_type.trim()
-        ? adjustment_type.trim()
-        : typeof adjustment_note === 'string' && ['reimbursement_1', 'meal_break', 'bonus'].includes(adjustment_note.trim())
-          ? adjustment_note.trim()
-          : null;
 
     // If adjustment is zero, remove any existing row to keep table lean
     if (adjustment_amount === 0) {
@@ -87,7 +80,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: true, removed: true });
     }
 
-    // Upsert non-zero adjustment
+    // Upsert non-zero adjustment — note is either a JSON string (new) or legacy type string
     const { data, error } = await supabaseAdmin
       .from('payment_adjustments')
       .upsert(
@@ -95,8 +88,7 @@ export async function POST(req: NextRequest) {
           event_id,
           user_id,
           adjustment_amount,
-          adjustment_note: adjustment_note || null,
-          adjustment_type: inferredAdjustmentType,
+          adjustment_note: adjustment_note ?? null,
         },
         { onConflict: 'event_id,user_id' }
       )

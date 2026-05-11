@@ -307,7 +307,7 @@ function HRDashboardContent() {
   };
 
   type OtherAdjustmentType = "reimbursement_1" | "meal_break" | "bonus";
-  const DEFAULT_OTHER_ADJUSTMENT_TYPE: OtherAdjustmentType = "reimbursement_1";
+  const DEFAULT_OTHER_ADJUSTMENT_TYPE: OtherAdjustmentType = "meal_break";
   const normalizeOtherAdjustmentType = (value?: string | null): OtherAdjustmentType => {
     const normalized = (value || "")
       .toString()
@@ -325,11 +325,36 @@ function HRDashboardContent() {
     if (t === "bonus") return "Bonus";
     return "Reimbursement 1";
   };
+  const parseAdjustmentNote = (note: string | null | undefined, totalAmount: number): {
+    reimbursementAmount: number;
+    otherAmount: number;
+    otherType: OtherAdjustmentType;
+  } => {
+    if (note) {
+      try {
+        const parsed = JSON.parse(note);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            reimbursementAmount: Number(parsed.reimbursement || 0),
+            otherAmount: Number(parsed.otherAmount || 0),
+            otherType: normalizeOtherAdjustmentType(parsed.otherType),
+          };
+        }
+      } catch {}
+    }
+    const t = normalizeOtherAdjustmentType(note);
+    return {
+      reimbursementAmount: t === 'reimbursement_1' ? totalAmount : 0,
+      otherAmount: t !== 'reimbursement_1' ? totalAmount : 0,
+      otherType: t !== 'reimbursement_1' ? t : 'meal_break',
+    };
+  };
 
   // Editable adjustments: eventId -> (userId -> amount)
   const [adjustments, setAdjustments] = useState<Record<string, Record<string, number>>>({});
+  const [reimbursementAmounts, setReimbursementAmounts] = useState<Record<string, Record<string, number>>>({});
   const [adjustmentTypes, setAdjustmentTypes] = useState<Record<string, Record<string, OtherAdjustmentType>>>({});
-  const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string } | null>(null);
+  const [editingCell, setEditingCell] = useState<{ eventId: string; userId: string; column: 'reimbursement' | 'other' } | null>(null);
   const [savingAdjustment, setSavingAdjustment] = useState(false);
   const [mileagePayOverrides, setMileagePayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [travelPayOverrides, setTravelPayOverrides] = useState<Record<string, Record<string, number>>>({});
@@ -937,6 +962,7 @@ function HRDashboardContent() {
             const paymentUserId = (payment.user_id || payment.userId || user?.id || '').toString();
             const adjustmentAmount = Number(payment.adjustment_amount || 0);
             const adjustmentType = normalizeOtherAdjustmentType(payment.adjustment_note);
+            const parsedAdj = parseAdjustmentNote(payment.adjustment_note, adjustmentAmount);
             const actualHours = getEffectiveHours(payment);
             const roundedPayrollHours = roundHoursToTwoDecimals(actualHours);
 
@@ -1071,6 +1097,8 @@ function HRDashboardContent() {
               totalPay,
               adjustmentAmount,
               adjustmentType,
+              reimbursementAmount: parsedAdj.reimbursementAmount,
+              otherAmount: parsedAdj.otherAmount,
               finalPay,
               regRate: baseRate,
               loadedRate,
@@ -1176,20 +1204,24 @@ function HRDashboardContent() {
 
       // Seed editable adjustments map from loaded data
       const initialAdjustments: Record<string, Record<string, number>> = {};
+      const initialReimbursements: Record<string, Record<string, number>> = {};
       const initialAdjustmentTypes: Record<string, Record<string, OtherAdjustmentType>> = {};
       venuesArr.forEach((v) => {
         v.events.forEach((ev: any) => {
           if (!initialAdjustments[ev.id]) initialAdjustments[ev.id] = {};
+          if (!initialReimbursements[ev.id]) initialReimbursements[ev.id] = {};
           if (!initialAdjustmentTypes[ev.id]) initialAdjustmentTypes[ev.id] = {};
           (ev.payments || []).forEach((p: any) => {
             const paymentUserId = (p.userId || '').toString();
             if (!paymentUserId) return;
-            initialAdjustments[ev.id][paymentUserId] = Number(p.adjustmentAmount || 0);
+            initialAdjustments[ev.id][paymentUserId] = Number(p.otherAmount ?? p.adjustmentAmount ?? 0);
+            initialReimbursements[ev.id][paymentUserId] = Number(p.reimbursementAmount || 0);
             initialAdjustmentTypes[ev.id][paymentUserId] = normalizeOtherAdjustmentType(p.adjustmentType);
           });
         });
       });
       setAdjustments(initialAdjustments);
+      setReimbursementAmounts(initialReimbursements);
       setAdjustmentTypes(initialAdjustmentTypes);
     } catch (e: any) {
       setPaymentsError(e.message || 'Failed to load payments');
@@ -1206,53 +1238,42 @@ function HRDashboardContent() {
         throw new Error('Missing event or user id for adjustment save');
       }
 
-      const amount = Number(adjustments[eventId]?.[userId] || 0);
-      const adjustmentType = normalizeOtherAdjustmentType(adjustmentTypes[eventId]?.[userId]);
+      const reimbursementAmt = Number(reimbursementAmounts[eventId]?.[userId] || 0);
+      const otherAmt = Number(adjustments[eventId]?.[userId] || 0);
+      const otherType = normalizeOtherAdjustmentType(adjustmentTypes[eventId]?.[userId]);
+      const totalAmount = reimbursementAmt + otherAmt;
+      const notePayload = JSON.stringify({ reimbursement: reimbursementAmt, otherAmount: otherAmt, otherType });
       const { data: { session } } = await supabase.auth.getSession();
       const headers = {
         'Content-Type': 'application/json',
         ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
       };
 
-      const basePayload = {
-        event_id: eventId,
-        user_id: userId,
-        adjustment_amount: amount,
-      };
-
-      // Backward-compatible save: try with type metadata first, then retry without note.
-      let res = await fetch('/api/payment-adjustments', {
+      const res = await fetch('/api/payment-adjustments', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ ...basePayload, adjustment_note: adjustmentType }),
+        body: JSON.stringify({ event_id: eventId, user_id: userId, adjustment_amount: totalAmount, adjustment_note: notePayload }),
       });
-
-      if (!res.ok) {
-        res = await fetch('/api/payment-adjustments', {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(basePayload),
-        });
-      }
 
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || 'Failed to save adjustment');
       }
 
-      // Update local payments state to reflect saved amount
+      // Update local payments state to reflect saved amounts
       setPaymentsByVenue(prev => prev.map(v => {
         const events = v.events.map((ev: any) => {
           if (ev.id !== eventId) return ev;
           const payments = (ev.payments || []).map((p: any) => {
             if (p.userId !== userId) return p;
-            const newAdj = amount;
             return {
               ...p,
-              adjustmentAmount: newAdj,
-              adjustmentType,
-              finalPay: Number(p.totalPay || 0) + newAdj,
-              totalGrossPay: Number(p.totalPay || 0) + newAdj,
+              adjustmentAmount: totalAmount,
+              adjustmentType: notePayload,
+              reimbursementAmount: reimbursementAmt,
+              otherAmount: otherAmt,
+              finalPay: Number(p.totalPay || 0) + totalAmount,
+              totalGrossPay: Number(p.totalPay || 0) + totalAmount,
             };
           });
           const eventTotal = payments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
@@ -1273,7 +1294,7 @@ function HRDashboardContent() {
     } finally {
       setSavingAdjustment(false);
     }
-  }, [adjustments, adjustmentTypes, supabase]);
+  }, [adjustments, reimbursementAmounts, adjustmentTypes, supabase]);
 
   const payPeriodCommission = useMemo(() => {
     const events = paymentsByVenue.flatMap((venue) => venue.events || []);
@@ -1440,7 +1461,12 @@ function HRDashboardContent() {
     }, 0);
     const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
     const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isEventSD ? 0 : Number(payment?.restBreak || 0)), 0);
-    const totalOther = payments.reduce((sum: number, payment: any) => sum + Number(payment?.adjustmentAmount || 0), 0);
+    const totalReimbursement = payments.reduce((sum: number, payment: any) => {
+      return sum + (reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment?.reimbursementAmount || 0));
+    }, 0);
+    const totalOther = payments.reduce((sum: number, payment: any) => {
+      return sum + (adjustments[event.id]?.[payment.userId] ?? Number(payment?.otherAmount || 0));
+    }, 0);
     const totalMileagePay = payments.reduce((sum: number, payment: any) => {
       const override = (mileagePayOverrides[event.id] || {})[payment.userId];
       if (override !== undefined) return sum + override;
@@ -1456,7 +1482,7 @@ function HRDashboardContent() {
       const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
       if (diffMiles === null) return sum;
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
-      return sum + ((diffMiles * 2) / 60) * breakdown.rateInEffect;
+      return sum + diffMiles * 1.0717;
     }, 0);
     const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalOther + totalMileagePay + totalTravelPay;
 
@@ -1473,12 +1499,13 @@ function HRDashboardContent() {
       totalCommissionPaid,
       totalTips,
       totalRestBreak,
+      totalReimbursement,
       totalOther,
       totalMileagePay,
       totalTravelPay,
       totalGross,
     };
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes]);
 
   const getDisplayedVendorTotals = useCallback((vendor: {
     userId?: string;
@@ -1500,7 +1527,7 @@ function HRDashboardContent() {
       const mileagePay = mileageOverrideV !== undefined ? mileageOverrideV
         : (approval.mileage ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0) : 0);
       const travelPay = travelOverrideV !== undefined ? travelOverrideV
-        : (approval.travel && diffMiles !== null ? ((diffMiles * 2) / 60) * breakdown.rateInEffect : 0);
+        : (approval.travel && diffMiles !== null ? diffMiles * 1.0717 : 0);
 
       totals.totalHours += Number(payment?.actualHours || 0);
       totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
@@ -1509,6 +1536,8 @@ function HRDashboardContent() {
       totals.totalOvertimePay += isEventSD ? breakdown.overtimePay : 0;
       totals.totalDoubletimeHours += isEventSD ? breakdown.doubletimeHours : 0;
       totals.totalDoubletimePay += isEventSD ? breakdown.doubletimePay : 0;
+      const rowReimbursement = reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment?.reimbursementAmount || 0);
+      const rowOther = adjustments[event.id]?.[payment.userId] ?? Number(payment?.otherAmount || 0);
       totals.totalCommissionPay += isEventSD ? 0 : breakdown.commissionPay;
       totals.totalVariableIncentive += isEventSD ? 0 : breakdown.variableIncentive;
       totals.totalCommissionPaid += breakdown.commissionPaidTotal;
@@ -1516,7 +1545,8 @@ function HRDashboardContent() {
       totals.totalRestBreak += restBreak;
       totals.totalMileagePay += mileagePay;
       totals.totalTravelPay += travelPay;
-      totals.totalOther += other;
+      totals.totalReimbursement += rowReimbursement;
+      totals.totalOther += rowOther;
       totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + other + mileagePay + travelPay;
 
       return totals;
@@ -1535,6 +1565,7 @@ function HRDashboardContent() {
       totalRestBreak: 0,
       totalMileagePay: 0,
       totalTravelPay: 0,
+      totalReimbursement: 0,
       totalOther: 0,
       totalGross: 0,
     });
@@ -1543,7 +1574,7 @@ function HRDashboardContent() {
       result.totalVariableIncentive = periodUserTotals.totalVariableIncentive;
     }
     return result;
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -1678,22 +1709,23 @@ function HRDashboardContent() {
       const hoursInDecimal = roundHoursToTwoDecimals(hours);
       const displayedCommissionPay = breakdown.commissionPay;
       const variableIncentive = breakdown.variableIncentive;
-      const other = Number(payment.adjustmentAmount || 0);
+      const reimbursementExport = reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment.reimbursementAmount || 0);
+      const other = adjustments[event.id]?.[payment.userId] ?? Number(payment.otherAmount || 0);
+      const adjustmentAmt = reimbursementExport + other;
       const tips = Number(payment.tips || 0);
       const restBreak = hideRest ? 0 : Number(payment.restBreak || 0);
       const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
       const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
       const diffMilesExport = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-      const rawTravelHours = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
       const exportApproval = getMileageApproval(event.id, payment.userId);
       const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
-      const travelHoursExport = exportApproval.travel ? rawTravelHours : 0;
-      const travelPayExport = exportApproval.travel ? rawTravelHours * loadedRate : 0;
+      const travelHoursExport = 0;
+      const travelPayExport = exportApproval.travel && diffMilesExport !== null ? diffMilesExport * 1.0717 : 0;
       const totalGrossPay =
         breakdown.commissionPaidTotal +
         tips +
         restBreak +
-        other +
+        adjustmentAmt +
         mileagePay +
         travelPayExport;
       const category = isEventSD
@@ -1701,9 +1733,9 @@ function HRDashboardContent() {
         : travelPayExport > 0
           ? 'Commission - Travel Pay'
           : 'Commission - No Travel Pay';
-      const vendorName = `${vendor.firstName || payment.firstName || ''} ${vendor.lastName || payment.lastName || ''}`.trim();
       const baseRow = {
-        'Vendor': vendorName,
+        'First Name': vendor.firstName || payment.firstName || '',
+        'Last Name': vendor.lastName || payment.lastName || '',
         'Vendor Email': vendor.email || payment.email || '',
         'Category': category,
         'Venue': venue,
@@ -1724,6 +1756,7 @@ function HRDashboardContent() {
         'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMilesExport !== null ? diffMilesExport : 'N/A'),
         'Travel Hours': !exportApproval.travel ? 0 : (diffMilesExport !== null ? Number(travelHoursExport.toFixed(4)) : 'N/A'),
         'Travel Pay': Number(roundUpThousandsToNextHundred(travelPayExport).toFixed(2)),
+        'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementExport).toFixed(2)),
         'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
         'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
       };
@@ -1749,7 +1782,8 @@ function HRDashboardContent() {
         rowsToSum.some((row) => Object.prototype.hasOwnProperty.call(row, key))
       );
       const totalRow: any = {
-        'Vendor': label,
+        'First Name': label,
+        'Last Name': '',
         'Vendor Email': '',
         'Category': '',
         'Venue': '',
@@ -1770,6 +1804,7 @@ function HRDashboardContent() {
         'Travel Differential Miles': '',
         'Travel Hours': '',
         'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
+        'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
         'Other': Number(sumNum('Other').toFixed(2)),
         'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
       };
@@ -1787,7 +1822,8 @@ function HRDashboardContent() {
     };
 
     const detailColumnConfig = [
-      { key: 'Vendor', wch: 25 },
+      { key: 'First Name', wch: 18 },
+      { key: 'Last Name', wch: 18 },
       { key: 'Vendor Email', wch: 30 },
       { key: 'Category', wch: 26 },
       { key: 'Venue', wch: 25 },
@@ -1814,6 +1850,7 @@ function HRDashboardContent() {
       { key: 'Travel Differential Miles', wch: 22 },
       { key: 'Travel Hours', wch: 12 },
       { key: 'Travel Pay', wch: 12 },
+      { key: 'Reimbursement', wch: 15 },
       { key: 'Other', wch: 10 },
       { key: 'Total Gross Pay', wch: 15 },
     ];
@@ -1945,7 +1982,7 @@ function HRDashboardContent() {
 
     // Build By Venue & Event sheet: venue/event first, employee columns, financial columns, grand total
     const byVenueEventRows: any[] = [];
-    const bveTotals = { hoursDecimal: 0, commissionPay: 0, variableIncentive: 0, tips: 0, restBreak: 0, mileagePay: 0, travelPay: 0, other: 0, totalGrossPay: 0 };
+    const bveTotals = { hoursDecimal: 0, commissionPay: 0, variableIncentive: 0, tips: 0, restBreak: 0, mileagePay: 0, travelPay: 0, reimbursement: 0, other: 0, totalGrossPay: 0 };
     paymentsByVenue.forEach((venueGroup: any) => {
       venueGroup.events.forEach((event: any) => {
         const eventPayments = Array.isArray(event.payments) ? event.payments : [];
@@ -1965,10 +2002,12 @@ function HRDashboardContent() {
           const mileagePay = exportApproval.mileage ? Number(roundUpThousandsToNextHundred(rawMileagePay).toFixed(2)) : 0;
           const rawTravelHours = diffMiles !== null ? (diffMiles * 2) / 60 : 0;
           const travelHours = exportApproval.travel ? rawTravelHours : 0;
-          const travelPay = exportApproval.travel ? Number(roundUpThousandsToNextHundred(rawTravelHours * loadedRate).toFixed(2)) : 0;
-          const other = Number(roundUpThousandsToNextHundred(Number(payment.adjustmentAmount || 0)).toFixed(2));
+          const travelPay = exportApproval.travel ? Number(roundUpThousandsToNextHundred(rawTravelHours * 28.50).toFixed(2)) : 0;
+          const reimbursementBve = Number(roundUpThousandsToNextHundred(reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment.reimbursementAmount || 0)).toFixed(2));
+          const other = Number(roundUpThousandsToNextHundred(adjustments[event.id]?.[payment.userId] ?? Number(payment.otherAmount || 0)).toFixed(2));
+          const adjAmtBve = reimbursementBve + other;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
-            breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay
+            breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
           ).toFixed(2));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
@@ -1977,6 +2016,7 @@ function HRDashboardContent() {
           bveTotals.restBreak += typeof restBreak === 'number' ? restBreak : 0;
           bveTotals.mileagePay += mileagePay;
           bveTotals.travelPay += travelPay;
+          bveTotals.reimbursement += reimbursementBve;
           bveTotals.other += other;
           bveTotals.totalGrossPay += totalGrossPay;
           byVenueEventRows.push({
@@ -1985,7 +2025,8 @@ function HRDashboardContent() {
             'State': venueGroup.state || '',
             'Event Name': event.name,
             'Event Date': event.date || '',
-            'Employee': `${payment.firstName || ''} ${payment.lastName || ''}`.trim(),
+            'First Name': payment.firstName || '',
+            'Last Name': payment.lastName || '',
             'Email': payment.email || '',
             'Reg Rate': formatPayrollMoney(breakdown.regRate),
             'Rate in Effect': formatPayrollMoney(loadedRate),
@@ -2000,6 +2041,7 @@ function HRDashboardContent() {
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
             'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
             'Travel Pay': travelPay,
+            'Reimbursement': reimbursementBve,
             'Other': other,
             'Total Gross Pay': totalGrossPay,
           });
@@ -2009,7 +2051,7 @@ function HRDashboardContent() {
     if (byVenueEventRows.length > 0) {
       byVenueEventRows.push({
         'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
-        'Employee': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '', 'Hours': '',
+        'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '', 'Hours': '',
         'Hours in Decimal': Number(bveTotals.hoursDecimal.toFixed(2)),
         'Commission Pay': Number(bveTotals.commissionPay.toFixed(2)),
         'Variable Incentive': Number(bveTotals.variableIncentive.toFixed(2)),
@@ -2020,6 +2062,7 @@ function HRDashboardContent() {
         'Travel Differential Miles': '',
         'Travel Hours': '',
         'Travel Pay': Number(bveTotals.travelPay.toFixed(2)),
+        'Reimbursement': Number(bveTotals.reimbursement.toFixed(2)),
         'Other': Number(bveTotals.other.toFixed(2)),
         'Total Gross Pay': Number(bveTotals.totalGrossPay.toFixed(2)),
       });
@@ -2055,14 +2098,14 @@ function HRDashboardContent() {
       const bveCols = [
         { key: 'Venue', wch: 25 }, { key: 'City', wch: 15 }, { key: 'State', wch: 8 },
         { key: 'Event Name', wch: 30 }, { key: 'Event Date', wch: 12 },
-        { key: 'Employee', wch: 25 }, { key: 'Email', wch: 30 },
+        { key: 'First Name', wch: 18 }, { key: 'Last Name', wch: 18 }, { key: 'Email', wch: 30 },
         { key: 'Reg Rate', wch: 10 }, { key: 'Rate in Effect', wch: 14 },
         { key: 'Hours', wch: 8 }, { key: 'Hours in Decimal', wch: 16 },
         { key: 'Commission Pay', wch: 16 }, { key: 'Variable Incentive', wch: 18 },
         { key: 'Tips', wch: 10 }, { key: 'Rest Break', wch: 12 },
         { key: 'Mileage Miles', wch: 14 }, { key: 'Mileage Pay', wch: 12 },
         { key: 'Travel Differential Miles', wch: 22 }, { key: 'Travel Hours', wch: 12 },
-        { key: 'Travel Pay', wch: 12 }, { key: 'Other', wch: 10 }, { key: 'Total Gross Pay', wch: 15 },
+        { key: 'Travel Pay', wch: 12 }, { key: 'Reimbursement', wch: 15 }, { key: 'Other', wch: 10 }, { key: 'Total Gross Pay', wch: 15 },
       ];
       const bveSheet = XLSX.utils.json_to_sheet(byVenueEventRows, { header: bveCols.map(c => c.key) });
       bveSheet['!cols'] = bveCols.map(({ wch }) => ({ wch }));
@@ -2126,16 +2169,18 @@ function HRDashboardContent() {
           const overtimePay = Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2));
           const doubletimeHours = Number(breakdown.doubletimeHours.toFixed(2));
           const doubletimePay = Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2));
-          const other = Number(p.adjustmentAmount || 0);
+          const reimbursementNe = reimbursementAmounts[event.id]?.[p.userId] ?? Number(p.reimbursementAmount || 0);
+          const other = adjustments[event.id]?.[p.userId] ?? Number(p.otherAmount || 0);
+          const adjAmtNe = reimbursementNe + other;
           const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
           const _mileagePayRaw = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
           const exportApproval = getMileageApproval(event.id, p.userId);
           const mileagePay = exportApproval.mileage ? _mileagePayRaw : 0;
           const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
           const travelHours = exportApproval.travel && diffMiles !== null ? (diffMiles * 2) / 60 : 0;
-          const travelPay = exportApproval.travel && diffMiles !== null ? travelHours * rateInEffect : 0;
+          const travelPay = exportApproval.travel && diffMiles !== null ? travelHours * 28.50 : 0;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
-            breakdown.commissionPaidTotal + Number(p.tips || 0) + other + mileagePay + travelPay
+            breakdown.commissionPaidTotal + Number(p.tips || 0) + adjAmtNe + mileagePay + travelPay
           ).toFixed(2));
 
           rows.push({
@@ -2144,7 +2189,8 @@ function HRDashboardContent() {
             'State': venue.state || '',
             'Event Name': event.name,
             'Event Date': event.date || '',
-            'Employee': `${p.firstName || ''} ${p.lastName || ''}`.trim(),
+            'First Name': p.firstName || '',
+            'Last Name': p.lastName || '',
             'Email': p.email || '',
             'Reg Rate': formatPayrollMoney(regRate),
             'Rate in Effect': formatPayrollMoney(rateInEffect),
@@ -2162,6 +2208,7 @@ function HRDashboardContent() {
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
             'Travel Hours': !exportApproval.travel ? 0 : (diffMiles !== null ? Number(travelHours.toFixed(4)) : 'N/A'),
             'Travel Pay': Number(roundUpThousandsToNextHundred(travelPay).toFixed(2)),
+            'Reimbursement': Number(roundUpThousandsToNextHundred(reimbursementNe).toFixed(2)),
             'Other': Number(roundUpThousandsToNextHundred(other).toFixed(2)),
             'Total Gross Pay': totalGrossPay,
           });
@@ -2177,7 +2224,7 @@ function HRDashboardContent() {
     const sumNum = (key: string) => rows.reduce((s, r) => s + (typeof r[key] === 'number' ? r[key] : 0), 0);
     rows.push({
       'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
-      'Employee': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '',
+      'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '',
       'Hours': '', 'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
       'Regular Time Hours': Number(sumNum('Regular Time Hours').toFixed(2)),
       'Regular Time Pay': Number(sumNum('Regular Time Pay').toFixed(2)),
@@ -2189,6 +2236,7 @@ function HRDashboardContent() {
       'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
       'Travel Differential Miles': '', 'Travel Hours': '',
       'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
+      'Reimbursement': Number(sumNum('Reimbursement').toFixed(2)),
       'Other': Number(sumNum('Other').toFixed(2)),
       'Total Gross Pay': Number(sumNum('Total Gross Pay').toFixed(2)),
     });
@@ -2196,17 +2244,17 @@ function HRDashboardContent() {
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [
       { wch: 25 }, { wch: 15 }, { wch: 8 }, { wch: 30 }, { wch: 12 },
-      { wch: 25 }, { wch: 30 }, { wch: 10 }, { wch: 12 }, { wch: 8 },
-      { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 13 },
-      { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 }, { wch: 12 },
-      { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 15 },
+      { wch: 18 }, { wch: 18 }, { wch: 30 }, { wch: 10 }, { wch: 12 },
+      { wch: 8 }, { wch: 16 }, { wch: 18 }, { wch: 16 }, { wch: 14 },
+      { wch: 13 }, { wch: 16 }, { wch: 15 }, { wch: 10 }, { wch: 14 },
+      { wch: 12 }, { wch: 22 }, { wch: 13 }, { wch: 12 }, { wch: 15 }, { wch: 10 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Non Event Payroll');
     const startStr = paymentsStartDate || 'start';
     const endStr = paymentsEndDate || 'end';
     XLSX.writeFile(wb, `non_event_payroll_${startStr}_to_${endStr}.xlsx`);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getMileageApproval]);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getMileageApproval, adjustmentTypes]);
 
   const exportSalariedPayroll = useCallback(() => {
     const salariedEmployees = employees.filter(e => e.salary > 0);
@@ -3271,6 +3319,7 @@ function HRDashboardContent() {
                               )}
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                             </tr>
@@ -3282,7 +3331,7 @@ function HRDashboardContent() {
                               const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * loadedRate : 0;
+                              const _tp = diffMiles !== null ? diffMiles * 1.0717 : 0;
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileageOverrideS1 = (mileagePayOverrides[event.id] || {})[payment.userId];
                               const travelOverrideS1 = (travelPayOverrides[event.id] || {})[payment.userId];
@@ -3373,7 +3422,7 @@ function HRDashboardContent() {
                                             <button type="button" onClick={() => { setEditingMileageCell({ eventId: event.id, userId: payment.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col items-end gap-0.5 hover:text-indigo-800" title="Click to edit">
                                               <span>{travelOverrideS1 !== undefined ? <span className="text-orange-500">${formatVendorMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : `$${formatVendorMoney(travelPay)}`}</span>
                                               {diffMiles !== null && diffMiles > 0 && (
-                                                <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 / 60 x ${formatVendorMoney(loadedRate)}/hr</div>
+                                                <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 / 60 x $28.50/hr</div>
                                               )}
                                             </button>
                                           ) : <span className="text-gray-400">&mdash;</span>}
@@ -3394,62 +3443,49 @@ function HRDashboardContent() {
                                     ) : '\u2014'}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-right">
-                                    {editingCell && editingCell.eventId === event.id && editingCell.userId === payment.userId ? (
+                                    {editingCell?.eventId === event.id && editingCell?.userId === payment.userId && editingCell?.column === 'reimbursement' ? (
                                       <div className="flex flex-col items-end gap-1">
                                         <div className="flex items-center justify-end gap-2">
                                           <span className="text-gray-500">$</span>
-                                          <input
-                                            type="number"
-                                            className="w-24 px-2 py-1 border rounded text-sm"
-                                            value={Number(((adjustments[event.id] ?? {})[payment.userId] ?? (payment.adjustmentAmount ?? 0)))}
-                                            onChange={(e) => {
-                                              const val = Number(e.target.value) || 0;
-                                              setAdjustments(prev => ({
-                                                ...prev,
-                                                [event.id]: { ...(prev[event.id] || {}), [payment.userId]: val },
-                                              }));
-                                            }}
-                                            step="1"
-                                          />
+                                          <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((reimbursementAmounts[event.id] ?? {})[payment.userId] ?? payment.reimbursementAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setReimbursementAmounts(prev => ({ ...prev, [event.id]: { ...(prev[event.id] || {}), [payment.userId]: val } })); }} step="1" />
                                         </div>
-                                        <select
-                                          className="w-32 px-2 py-1 border rounded text-xs text-right"
-                                          value={currentAdjustmentType}
-                                          onChange={(e) => {
-                                            const nextType = normalizeOtherAdjustmentType(e.target.value);
-                                            setAdjustmentTypes(prev => ({
-                                              ...prev,
-                                              [event.id]: { ...(prev[event.id] || {}), [payment.userId]: nextType },
-                                            }));
-                                          }}
-                                        >
-                                          <option value="reimbursement_1">Reimbursement 1</option>
+                                        <div className="flex items-center gap-2">
+                                          <button type="button" onClick={async () => { const saved = await saveAdjustment(event.id, payment.userId); if (saved) setEditingCell(null); }} className="text-green-600 hover:text-green-700 text-xs font-medium">Save</button>
+                                          <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                        </div>
+                                      </div>
+                                    ) : (() => { const v = reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment.reimbursementAmount || 0); return v !== 0 ? (
+                                      <button type="button" className={`text-right ${v >= 0 ? 'text-green-600' : 'text-red-600'}`} onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId, column: 'reimbursement' })} title="Click to edit">
+                                        <div>{`$${formatVendorMoney(v)}`}</div>
+                                      </button>
+                                    ) : (
+                                      <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add reimbursement" onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId, column: 'reimbursement' })}>+</button>
+                                    ); })()}
+                                  </td>
+                                  <td className="px-4 py-2 text-sm text-right">
+                                    {editingCell?.eventId === event.id && editingCell?.userId === payment.userId && editingCell?.column === 'other' ? (
+                                      <div className="flex flex-col items-end gap-1">
+                                        <div className="flex items-center justify-end gap-2">
+                                          <span className="text-gray-500">$</span>
+                                          <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((adjustments[event.id] ?? {})[payment.userId] ?? payment.otherAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setAdjustments(prev => ({ ...prev, [event.id]: { ...(prev[event.id] || {}), [payment.userId]: val } })); }} step="1" />
+                                        </div>
+                                        <select className="w-32 px-2 py-1 border rounded text-xs text-right" value={currentAdjustmentType} onChange={(e) => { const nextType = normalizeOtherAdjustmentType(e.target.value); setAdjustmentTypes(prev => ({ ...prev, [event.id]: { ...(prev[event.id] || {}), [payment.userId]: nextType } })); }}>
                                           <option value="meal_break">Meal Break</option>
                                           <option value="bonus">Bonus</option>
                                         </select>
                                         <div className="flex items-center gap-2">
-                                          <button
-                                            type="button"
-                                            onClick={async () => {
-                                              const saved = await saveAdjustment(event.id, payment.userId);
-                                              if (saved) setEditingCell(null);
-                                            }}
-                                            className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                          >Save</button>
+                                          <button type="button" onClick={async () => { const saved = await saveAdjustment(event.id, payment.userId); if (saved) setEditingCell(null); }} className="text-green-600 hover:text-green-700 text-xs font-medium">Save</button>
                                           <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
                                         </div>
                                       </div>
-                                    ) : (
-                                      <button
-                                        type="button"
-                                        className={`text-right ${Number(payment.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
-                                        onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId })}
-                                        title="Click to edit"
-                                      >
-                                        <div>{`$${formatVendorMoney(Number(payment.adjustmentAmount || 0))}`}</div>
+                                    ) : (() => { const v = adjustments[event.id]?.[payment.userId] ?? Number(payment.otherAmount || 0); return v !== 0 ? (
+                                      <button type="button" className={`text-right ${v >= 0 ? 'text-green-600' : 'text-red-600'}`} onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId, column: 'other' })} title="Click to edit">
+                                        <div>{`$${formatVendorMoney(v)}`}</div>
                                         <div className="text-[10px] text-gray-400">{currentAdjustmentTypeLabel}</div>
                                       </button>
-                                    )}
+                                    ) : (
+                                      <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add other" onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId, column: 'other' })}>+</button>
+                                    ); })()}
                                   </td>
                                   <td className="px-4 py-2 text-sm text-right font-semibold">${formatVendorMoney(rowTotal)}</td>
                                 </tr>
@@ -3489,6 +3525,7 @@ function HRDashboardContent() {
                               )}
                               <td className="px-4 py-2 text-right text-blue-600">${formatVendorMoney(vendorTotals.totalMileagePay)}</td>
                               <td className="px-4 py-2 text-right text-indigo-600">${formatVendorMoney(vendorTotals.totalTravelPay)}</td>
+                              <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalReimbursement)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalOther)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorDisplayedTotal)}</td>
                             </tr>
@@ -3624,6 +3661,7 @@ function HRDashboardContent() {
                                                 )}
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Mileage Pay</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                                               </tr>
@@ -3668,7 +3706,7 @@ function HRDashboardContent() {
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
                                                 const _travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
-                                                const _travelPay = _travelHours * loadedRate;
+                                                const _travelPay = _travelHours * 28.50;
                                                 const approval = getMileageApproval(ev.id, p.userId);
                                                 const mileageOverrideS2 = (mileagePayOverrides[ev.id] || {})[p.userId];
                                                 const travelOverrideS2 = (travelPayOverrides[ev.id] || {})[p.userId];
@@ -3750,7 +3788,7 @@ function HRDashboardContent() {
                                                             {_travelPay > 0 ? (
                                                               <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-indigo-800 text-left" title="Click to edit">
                                                                 {travelOverrideS2 !== undefined ? <span className="text-orange-500">${formatPayrollMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatPayrollMoney(travelPay)}</span>}
-                                                                {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff ? 2 ? 60 ? ${formatPayrollMoney(loadedRate)}/hr</div>}
+                                                                {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff x 2 / 60 x $28.50/hr</div>}
                                                               </button>
                                                             ) : <span className="text-gray-400">&mdash;</span>}
                                                             <div className="flex gap-1 mt-0.5">
@@ -3761,62 +3799,49 @@ function HRDashboardContent() {
                                                       ) : '\u2014'}
                                                     </td>
                                                     <td className="p-2 text-sm text-right">
-                                                      {editingCell && editingCell.eventId === ev.id && editingCell.userId === p.userId ? (
+                                                      {editingCell?.eventId === ev.id && editingCell?.userId === p.userId && editingCell?.column === 'reimbursement' ? (
                                                         <div className="flex flex-col items-end gap-1">
                                                           <div className="flex items-center justify-end gap-2">
                                                             <span className="text-gray-500">$</span>
-                                                            <input
-                                                              type="number"
-                                                              className="w-24 px-2 py-1 border rounded text-sm"
-                                                              value={Number(((adjustments[ev.id] ?? {})[p.userId] ?? (p.adjustmentAmount ?? 0)))}
-                                                              onChange={(e) => {
-                                                                const val = Number(e.target.value) || 0;
-                                                                setAdjustments(prev => ({
-                                                                  ...prev,
-                                                                  [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val },
-                                                                }));
-                                                              }}
-                                                              step="1"
-                                                            />
+                                                            <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((reimbursementAmounts[ev.id] ?? {})[p.userId] ?? p.reimbursementAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setReimbursementAmounts(prev => ({ ...prev, [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val } })); }} step="1" />
                                                           </div>
-                                                          <select
-                                                            className="w-32 px-2 py-1 border rounded text-xs text-right"
-                                                            value={currentAdjustmentType}
-                                                            onChange={(e) => {
-                                                              const nextType = normalizeOtherAdjustmentType(e.target.value);
-                                                              setAdjustmentTypes(prev => ({
-                                                                ...prev,
-                                                                [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: nextType },
-                                                              }));
-                                                            }}
-                                                          >
-                                                            <option value="reimbursement_1">Reimbursement 1</option>
+                                                          <div className="flex items-center gap-2">
+                                                            <button type="button" onClick={async () => { const saved = await saveAdjustment(ev.id, p.userId); if (saved) setEditingCell(null); }} className="text-green-600 hover:text-green-700 text-xs font-medium">Save</button>
+                                                            <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
+                                                          </div>
+                                                        </div>
+                                                      ) : (() => { const v = reimbursementAmounts[ev.id]?.[p.userId] ?? Number(p.reimbursementAmount || 0); return v !== 0 ? (
+                                                        <button type="button" className={`text-right ${v >= 0 ? 'text-green-600' : 'text-red-600'}`} onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'reimbursement' })} title="Click to edit">
+                                                          <div>{`$${formatPayrollMoney(v)}`}</div>
+                                                        </button>
+                                                      ) : (
+                                                        <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add reimbursement" onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'reimbursement' })}>+</button>
+                                                      ); })()}
+                                                    </td>
+                                                    <td className="p-2 text-sm text-right">
+                                                      {editingCell?.eventId === ev.id && editingCell?.userId === p.userId && editingCell?.column === 'other' ? (
+                                                        <div className="flex flex-col items-end gap-1">
+                                                          <div className="flex items-center justify-end gap-2">
+                                                            <span className="text-gray-500">$</span>
+                                                            <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((adjustments[ev.id] ?? {})[p.userId] ?? p.otherAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setAdjustments(prev => ({ ...prev, [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val } })); }} step="1" />
+                                                          </div>
+                                                          <select className="w-32 px-2 py-1 border rounded text-xs text-right" value={currentAdjustmentType} onChange={(e) => { const nextType = normalizeOtherAdjustmentType(e.target.value); setAdjustmentTypes(prev => ({ ...prev, [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: nextType } })); }}>
                                                             <option value="meal_break">Meal Break</option>
                                                             <option value="bonus">Bonus</option>
                                                           </select>
                                                           <div className="flex items-center gap-2">
-                                                            <button
-                                                              type="button"
-                                                              onClick={async () => {
-                                                                const saved = await saveAdjustment(ev.id, p.userId);
-                                                                if (saved) setEditingCell(null);
-                                                              }}
-                                                              className="text-green-600 hover:text-green-700 text-xs font-medium"
-                                                            >Save</button>
+                                                            <button type="button" onClick={async () => { const saved = await saveAdjustment(ev.id, p.userId); if (saved) setEditingCell(null); }} className="text-green-600 hover:text-green-700 text-xs font-medium">Save</button>
                                                             <button type="button" onClick={() => setEditingCell(null)} className="text-gray-500 hover:text-gray-600 text-xs">Cancel</button>
                                                           </div>
                                                         </div>
-                                                      ) : (
-                                                        <button
-                                                          type="button"
-                                                          className={`text-right ${Number(p.adjustmentAmount || 0) >= 0 ? 'text-green-600' : 'text-red-600'}`}
-                                                          onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId })}
-                                                          title="Click to edit"
-                                                        >
-                                                          <div>{`$${formatPayrollMoney(Number(p.adjustmentAmount || 0))}`}</div>
+                                                      ) : (() => { const v = adjustments[ev.id]?.[p.userId] ?? Number(p.otherAmount || 0); return v !== 0 ? (
+                                                        <button type="button" className={`text-right ${v >= 0 ? 'text-green-600' : 'text-red-600'}`} onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'other' })} title="Click to edit">
+                                                          <div>{`$${formatPayrollMoney(v)}`}</div>
                                                           <div className="text-[10px] text-gray-400">{currentAdjustmentTypeLabel}</div>
                                                         </button>
-                                                      )}
+                                                      ) : (
+                                                        <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add other" onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'other' })}>+</button>
+                                                      ); })()}
                                                     </td>
                                                     <td className="p-2 text-sm font-semibold text-right">${formatPayrollMoney(totalGrossPay)}</td>
                                                   </>
@@ -3854,6 +3879,7 @@ function HRDashboardContent() {
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
                                                 <td className="p-2 text-blue-600">${formatPayrollMoney(eventTotals.totalMileagePay)}</td>
                                                 <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
+                                                <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalReimbursement)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalGross)}</td>
                                               </tr>
@@ -3878,6 +3904,7 @@ function HRDashboardContent() {
                             <td className="px-4 py-2"></td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalTips, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalRestBreak, 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalReimbursement, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalOther, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalGross, 0))}</td>
                           </tr>

@@ -1821,9 +1821,9 @@ export async function POST(req: NextRequest) {
           hourlySummaryOvertimePay += sdOtPay;
           hourlySummaryDoubletimePay += sdDtPay;
         }
-        // Travel pay = (differentialMiles × 2 / 60) × loadedRate — mirrors HR dashboard formula
+        // Travel pay = (differentialMiles × 2 / 60) × 28.50
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
-        const travelPay = (differentialMiles * 2 / 60) * loadedRateBase;
+        const travelPay = (differentialMiles * 2 / 60) * 28.50;
         totalTravelPay += travelPay;
         // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
         const mileageApproved = mileageApprovedByEvent[eventId] ?? true;
