@@ -1481,9 +1481,10 @@ function HRDashboardContent() {
   }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides]);
 
   const getDisplayedVendorTotals = useCallback((vendor: {
+    userId?: string;
     events: Array<{ event: any; venue: string; city: string | null; state: string | null; payment: any }>;
   }) => {
-    return vendor.events.reduce((totals, { event, payment }) => {
+    const result = vendor.events.reduce((totals, { event, payment }) => {
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
       const isEventSD =
         event?.isSanDiegoHourly === true ||
@@ -1537,7 +1538,12 @@ function HRDashboardContent() {
       totalOther: 0,
       totalGross: 0,
     });
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides]);
+    const periodUserTotals = vendor.userId ? payPeriodCommission.byUser?.[vendor.userId] : undefined;
+    if (periodUserTotals) {
+      result.totalVariableIncentive = periodUserTotals.totalVariableIncentive;
+    }
+    return result;
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];

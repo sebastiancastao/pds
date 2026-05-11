@@ -197,10 +197,11 @@ export function computePayPeriodCommission({
     const totalCommissionShare = roundMoney(
       rows.reduce((sum, row) => sum + row.commissionShare, 0)
     );
-    const rateInEffect = totalHours > 0 ? roundMoney(totalCommissionShare / totalHours) : 0;
+    const rawRateInEffect = totalHours > 0 ? totalCommissionShare / totalHours : 0;
+    const rateInEffect = roundMoney(rawRateInEffect);
 
     let totalCommissionPay = 0;
-    let totalVariableIncentive = 0;
+    let totalRawVariableIncentive = 0;
 
     for (const row of rows) {
       const eventEntry = byEvent[row.eventId]?.[userId];
@@ -211,9 +212,8 @@ export function computePayPeriodCommission({
         row.hours > 0 ? roundMoney(baseCommissionPay / row.hours) : 0;
       const minimumRateForEvent = getPeriodRateMinimum(eventEntry?.stateCode, minimumRate);
       const commissionPayCents = toCents(baseCommissionPay);
-      const baseVariableCents = toCents(
-        Math.max(0, (minimumRateForEvent - rateInEffect) * row.hours)
-      );
+      const rawRowVariableIncentive = Math.max(0, (minimumRateForEvent - rawRateInEffect) * row.hours);
+      const baseVariableCents = toCents(rawRowVariableIncentive);
       const overrideCents =
         eventEntry.commissionOverride != null ? toCents(eventEntry.commissionOverride) : 0;
       const variableIncentive = fromCents(baseVariableCents + overrideCents);
@@ -228,15 +228,16 @@ export function computePayPeriodCommission({
       eventEntry.commissionPaidTotal = commissionPaidTotal;
 
       totalCommissionPay += commissionPay;
-      totalVariableIncentive += variableIncentive;
+      totalRawVariableIncentive += rawRowVariableIncentive;
     }
 
+    const totalVariableIncentive = roundMoney(totalRawVariableIncentive);
     byUser[userId] = {
       rateInEffect,
       totalHours,
       totalCommissionShare,
       totalCommissionPay: roundMoney(totalCommissionPay),
-      totalVariableIncentive: roundMoney(totalVariableIncentive),
+      totalVariableIncentive,
       totalCommissionPaidTotal: roundMoney(totalCommissionPay + totalVariableIncentive),
     };
   }
