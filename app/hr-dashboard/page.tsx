@@ -1482,7 +1482,7 @@ function HRDashboardContent() {
       const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
       if (diffMiles === null) return sum;
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
-      return sum + diffMiles * 1.0717;
+      return sum + ((diffMiles * 2) / 60) * 28.50;
     }, 0);
     const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalOther + totalMileagePay + totalTravelPay;
 
@@ -1527,7 +1527,7 @@ function HRDashboardContent() {
       const mileagePay = mileageOverrideV !== undefined ? mileageOverrideV
         : (approval.mileage ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0) : 0);
       const travelPay = travelOverrideV !== undefined ? travelOverrideV
-        : (approval.travel && diffMiles !== null ? diffMiles * 1.0717 : 0);
+        : (approval.travel && diffMiles !== null ? ((diffMiles * 2) / 60) * 28.50 : 0);
 
       totals.totalHours += Number(payment?.actualHours || 0);
       totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
@@ -1717,10 +1717,11 @@ function HRDashboardContent() {
       const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
       const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
       const diffMilesExport = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
+      const rawTravelHours = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
       const exportApproval = getMileageApproval(event.id, payment.userId);
       const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
-      const travelHoursExport = 0;
-      const travelPayExport = exportApproval.travel && diffMilesExport !== null ? diffMilesExport * 1.0717 : 0;
+      const travelHoursExport = exportApproval.travel ? rawTravelHours : 0;
+      const travelPayExport = exportApproval.travel ? rawTravelHours * 28.50 : 0;
       const totalGrossPay =
         breakdown.commissionPaidTotal +
         tips +
@@ -3331,7 +3332,7 @@ function HRDashboardContent() {
                               const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                              const _tp = diffMiles !== null ? diffMiles * 1.0717 : 0;
+                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * 28.50 : 0;
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileageOverrideS1 = (mileagePayOverrides[event.id] || {})[payment.userId];
                               const travelOverrideS1 = (travelPayOverrides[event.id] || {})[payment.userId];
