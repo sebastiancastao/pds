@@ -1943,7 +1943,8 @@ function HRDashboardContent() {
       });
 
       if (vendorDetailRows.length > 0) {
-        appendTotalsRow(vendorRows, vendorDetailRows, `TOTAL - ${String(vendorDetailRows[0]['Vendor'] || 'Vendor')}`);
+        const vendorLabel = [vendor.firstName, vendor.lastName].filter(Boolean).join(' ') || 'Vendor';
+        appendTotalsRow(vendorRows, vendorDetailRows, `TOTAL - ${vendorLabel}`);
       }
     });
 
