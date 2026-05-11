@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { deleteEventAssociations } from "@/lib/event-associations";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -577,54 +578,19 @@ export async function DELETE(
       return NextResponse.json({ error: "Failed to verify user role" }, { status: 403 });
     }
 
-    const userRole = userData.role as string;
-    const canDeleteEvents =
-      userRole === "manager" || userRole === "supervisor" || userRole === "supervisor2" || userRole === "exec";
-
-    if (!canDeleteEvents) {
+    const userRole = String(userData.role || "");
+    if (userRole !== "exec") {
       return NextResponse.json(
-        { error: "Access denied. Only manager, supervisor, and exec users can delete events." },
+        { error: "Access denied. Only exec users can delete events." },
         { status: 403 }
       );
     }
 
-    // Managers can delete their own events.
-    // Supervisors can also delete events from assigned lead managers.
-    // Exec can delete any event.
-    const allowedCreatorIds: string[] = [user.id];
-    const isExec = userRole === "exec";
-
-    if (userRole === "supervisor" || userRole === "supervisor2") {
-      const { data: teamLinks, error: teamLinksError } = await supabaseAdmin
-        .from("manager_team_members")
-        .select("manager_id")
-        .eq("member_id", user.id)
-        .eq("is_active", true);
-
-      if (teamLinksError) {
-        console.error("SUPABASE MANAGER_TEAM_MEMBERS SELECT ERROR:", teamLinksError);
-        return NextResponse.json({ error: teamLinksError.message }, { status: 500 });
-      }
-
-      if (teamLinks) {
-        for (const link of teamLinks) {
-          if (!allowedCreatorIds.includes(link.manager_id)) {
-            allowedCreatorIds.push(link.manager_id);
-          }
-        }
-      }
-    }
-
-    let eventQuery = supabaseAdmin
+    const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
       .select("id")
-      .eq("id", eventId);
-
-    if (!isExec) {
-      eventQuery = eventQuery.in("created_by", allowedCreatorIds);
-    }
-
-    const { data: event, error: eventError } = await eventQuery.maybeSingle();
+      .eq("id", eventId)
+      .maybeSingle();
 
     if (eventError) {
       console.error("SUPABASE EVENT SELECT ERROR:", eventError);
@@ -632,53 +598,16 @@ export async function DELETE(
     }
 
     if (!event) {
-      return NextResponse.json(
-        { error: "Event not found or you do not have permission to delete it" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
 
-    const [teamCountResult, timeEntriesCountResult] = await Promise.all([
-      supabaseAdmin
-        .from("event_teams")
-        .select("id", { count: "exact", head: true })
-        .eq("event_id", eventId),
-      supabaseAdmin
-        .from("time_entries")
-        .select("id", { count: "exact", head: true })
-        .eq("event_id", eventId),
-    ]);
+    await deleteEventAssociations(supabaseAdmin, eventId);
 
-    if (teamCountResult.error) {
-      console.error("SUPABASE EVENT_TEAMS COUNT ERROR:", teamCountResult.error);
-      return NextResponse.json({ error: teamCountResult.error.message }, { status: 500 });
-    }
-
-    if (timeEntriesCountResult.error) {
-      console.error("SUPABASE TIME_ENTRIES COUNT ERROR:", timeEntriesCountResult.error);
-      return NextResponse.json({ error: timeEntriesCountResult.error.message }, { status: 500 });
-    }
-
-    const teamCount = teamCountResult.count ?? 0;
-    const timeEntriesCount = timeEntriesCountResult.count ?? 0;
-
-    if (teamCount > 0 || timeEntriesCount > 0) {
-      return NextResponse.json(
-        { error: "Only empty events can be deleted." },
-        { status: 400 }
-      );
-    }
-
-    let deleteQuery = supabaseAdmin
+    const { data: deletedRows, error: deleteError } = await supabaseAdmin
       .from("events")
       .delete()
-      .eq("id", eventId);
-
-    if (!isExec) {
-      deleteQuery = deleteQuery.in("created_by", allowedCreatorIds);
-    }
-
-    const { data: deletedRows, error: deleteError } = await deleteQuery.select("id");
+      .eq("id", eventId)
+      .select("id");
 
     if (deleteError) {
       console.error("SUPABASE EVENT DELETE ERROR:", deleteError);
@@ -686,10 +615,7 @@ export async function DELETE(
     }
 
     if (!deletedRows || deletedRows.length === 0) {
-      return NextResponse.json(
-        { error: "Event not found or you do not have permission to delete it" },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
     }
 
     return NextResponse.json({ success: true }, { status: 200 });

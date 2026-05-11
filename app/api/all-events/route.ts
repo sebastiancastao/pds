@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
+import { getEventAssociationMap } from "@/lib/event-associations";
 
 export const dynamic = 'force-dynamic';
 
@@ -112,38 +113,11 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ events }, { status: 200 });
     }
 
-    const emptyByEventId = new Map<string, boolean>();
-
-    for (const eventId of eventIds) {
-      const [teamCountResult, timeEntriesCountResult] = await Promise.all([
-        supabaseAdmin
-          .from('event_teams')
-          .select('id', { count: 'exact', head: true })
-          .eq('event_id', eventId),
-        supabaseAdmin
-          .from('time_entries')
-          .select('id', { count: 'exact', head: true })
-          .eq('event_id', eventId),
-      ]);
-
-      if (teamCountResult.error) {
-        console.error('[ALL-EVENTS] EVENT_TEAMS COUNT ERROR:', teamCountResult.error);
-        return NextResponse.json({ error: teamCountResult.error.message || teamCountResult.error.code || teamCountResult.error }, { status: 500 });
-      }
-
-      if (timeEntriesCountResult.error) {
-        console.error('[ALL-EVENTS] TIME_ENTRIES COUNT ERROR:', timeEntriesCountResult.error);
-        return NextResponse.json({ error: timeEntriesCountResult.error.message || timeEntriesCountResult.error.code || timeEntriesCountResult.error }, { status: 500 });
-      }
-
-      const teamCount = teamCountResult.count ?? 0;
-      const timeEntriesCount = timeEntriesCountResult.count ?? 0;
-      emptyByEventId.set(eventId, teamCount === 0 && timeEntriesCount === 0);
-    }
+    const associationByEventId = await getEventAssociationMap(supabaseAdmin, eventIds);
 
     const eventsWithEmptyFlag = events.map((event: any) => ({
       ...event,
-      is_empty: emptyByEventId.get(event.id) ?? false,
+      is_empty: associationByEventId.get(event.id)?.isEmpty ?? true,
     }));
 
     console.log(`[ALL-EVENTS] Returning ${eventsWithEmptyFlag.length} events for ${userRole} user (include_empty=true)`);

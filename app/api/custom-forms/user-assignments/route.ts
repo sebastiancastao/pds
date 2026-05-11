@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
     // Only exec/admin can query other users; employees can query themselves
     if (userId !== user.id) {
       const { data: userRecord } = await supabase.from('users').select('role').eq('id', user.id).single();
-      if (!userRecord || !['exec', 'admin', 'hr'].includes(userRecord.role)) {
+      if (!userRecord || !['exec', 'admin', 'hr', 'hr_admin'].includes(userRecord.role)) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
     }

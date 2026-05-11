@@ -144,7 +144,7 @@ export async function logI9AuditEvent(
       user_agent: userAgent,
       action: isProxyEdit ? 'i9.proxy_edit' : 'i9.edit',
       resource_type: 'i9',
-      resource_id: `${ownerUserId}:${formId}`,
+      resource_id: ownerUserId,
       metadata: {
         ...actionDetails,
         form_id: formId,

@@ -79,6 +79,7 @@ async function logProxyFormSaveAudit(params: {
   ownerUserId: string;
   formName: string;
   action: 'created' | 'edited';
+  isProxyEdit: boolean;
   formDate?: string | null;
   entryPoint?: unknown;
   ipAddress: string;
@@ -93,6 +94,7 @@ async function logProxyFormSaveAudit(params: {
     ownerUserId,
     formName,
     action,
+    isProxyEdit,
     formDate,
     entryPoint,
     ipAddress,
@@ -117,7 +119,7 @@ async function logProxyFormSaveAudit(params: {
     performed_by_user_id: actorUserId,
     performed_for_user_id: ownerUserId,
     owner_user_id: ownerUserId,
-    is_proxy_edit: true,
+    is_proxy_edit: isProxyEdit,
     form_id: formName,
     form_name: formName,
     form_display_name: formDisplayName,
@@ -152,9 +154,11 @@ async function logProxyFormSaveAudit(params: {
       user_id: actorUserId,
       ip_address: ipAddress === 'unknown' ? null : ipAddress,
       user_agent: userAgent,
-      action: action === 'created' ? 'form.proxy_create' : 'form.proxy_edit',
+      action: isProxyEdit
+        ? (action === 'created' ? 'form.proxy_create' : 'form.proxy_edit')
+        : (action === 'created' ? 'form.hr_create' : 'form.hr_edit'),
       resource_type: 'form',
-      resource_id: `${ownerUserId}:${formName}`,
+      resource_id: ownerUserId,
       metadata: actionDetails,
       success: true,
       error_message: null,
@@ -234,10 +238,12 @@ export async function POST(request: NextRequest) {
 
     const resolvedFormName = formName;
     const isProxySave = saveUserId !== userId;
+    const normalizedEntryPoint = normalizeFormEntryPoint(entryPoint, isProxySave);
     const shouldLogI9Save = isI9FormName(resolvedFormName);
+    const shouldLogHrFormSave = !shouldLogI9Save && (isProxySave || normalizedEntryPoint === 'hr-employees');
     let hadExistingFormRecord = false;
 
-    if (shouldLogI9Save || isProxySave) {
+    if (shouldLogI9Save || shouldLogHrFormSave) {
       const { data: existingFormRecord } = await supabaseAdmin
         .from('pdf_form_progress')
         .select('id')
@@ -294,7 +300,23 @@ export async function POST(request: NextRequest) {
           form_date: formDate || null,
         },
       });
-    } else if (isProxySave) {
+    } else if (shouldLogHrFormSave) {
+      if (!actorRole || !actorName) {
+        const { data: callerIdentity } = await supabaseAdmin
+          .from('users')
+          .select('role, email, profiles(first_name, last_name)')
+          .eq('id', userId)
+          .maybeSingle();
+        if (callerIdentity) {
+          const callerProfile = Array.isArray((callerIdentity as any)?.profiles)
+            ? (callerIdentity as any).profiles[0]
+            : (callerIdentity as any)?.profiles;
+          actorRole = (callerIdentity as any)?.role || actorRole;
+          actorEmail = actorEmail || (callerIdentity as any)?.email || null;
+          actorName = getActorDisplayName(callerProfile, actorEmail, userId);
+        }
+      }
+
       await logProxyFormSaveAudit({
         actorUserId: userId,
         actorEmail,
@@ -303,8 +325,9 @@ export async function POST(request: NextRequest) {
         ownerUserId: saveUserId,
         formName: resolvedFormName,
         action: auditAction,
+        isProxyEdit: isProxySave,
         formDate: formDate || null,
-        entryPoint,
+        entryPoint: normalizedEntryPoint,
         ipAddress,
         userAgent,
         timestamp: occurredAt,

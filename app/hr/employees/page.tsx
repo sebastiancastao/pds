@@ -42,7 +42,37 @@ type User = {
   vendor_onboarding_completed: boolean | null;
 };
 
+type LatestFormEdit = {
+  userId: string;
+  formId: string;
+  formDisplayName: string;
+  action: string;
+  editedAt: string | null;
+  editorUserId: string | null;
+  editorName: string | null;
+  editorEmail: string | null;
+  editorRole: string | null;
+};
+
 type UserRoleRow = Pick<User, "role">;
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatActionLabel(action?: string | null) {
+  if (!action) return "";
+  return action.charAt(0).toUpperCase() + action.slice(1);
+}
 
 export default function HREmployeesPage() {
   const router = useRouter();
@@ -53,9 +83,12 @@ export default function HREmployeesPage() {
   const [searchTerm, setSearchTerm] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [auditError, setAuditError] = useState("");
   const [updatingUser, setUpdatingUser] = useState<string | null>(null);
   const [resettingDownloads, setResettingDownloads] = useState<string | null>(null);
   const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
+  const [latestFormEditsByUser, setLatestFormEditsByUser] = useState<Record<string, LatestFormEdit>>({});
+  const [recentFormEdits, setRecentFormEdits] = useState<LatestFormEdit[]>([]);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -74,7 +107,7 @@ export default function HREmployeesPage() {
 
         const userRole = (userData?.role ?? "").toString().trim().toLowerCase();
 
-        if (userError || !userRole || !['exec', 'admin', 'hr'].includes(userRole)) {
+        if (userError || !userRole || !['exec', 'admin', 'hr', 'hr_admin'].includes(userRole)) {
           alert('Unauthorized: HR/Admin/Exec access required');
           router.push('/dashboard');
           return;
@@ -116,27 +149,54 @@ export default function HREmployeesPage() {
   const loadUsers = async () => {
     setLoading(true);
     setError("");
+    setAuditError("");
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         throw new Error('No session found');
       }
 
-      const res = await fetch('/api/users/all', {
-        method: 'GET',
-        headers: {
-          Authorization: `Bearer ${session.access_token}`,
-        },
-      });
+      const [usersResponse, editsResponse] = await Promise.all([
+        fetch('/api/users/all', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        }),
+        fetch('/api/hr/employees/form-edits', {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        }),
+      ]);
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to load users');
+      const usersData = await usersResponse.json();
+      let editsData: any = null;
+      try {
+        editsData = await editsResponse.json();
+      } catch {
+        editsData = null;
       }
 
-      setUsers(data.users || []);
+      if (!usersResponse.ok) {
+        throw new Error(usersData.error || 'Failed to load users');
+      }
+
+      setUsers(usersData.users || []);
+
+      if (editsResponse.ok) {
+        setLatestFormEditsByUser(editsData?.latestByUser || {});
+        setRecentFormEdits(editsData?.recentEdits || []);
+      } else {
+        setLatestFormEditsByUser({});
+        setRecentFormEdits([]);
+        setAuditError(editsData?.error || 'Failed to load HR form edit history');
+      }
     } catch (err: any) {
       console.error('[HR-EMPLOYEES] Error loading users:', err);
+      setLatestFormEditsByUser({});
+      setRecentFormEdits([]);
       setError(err.message || 'Failed to load users');
     } finally {
       setLoading(false);
@@ -284,7 +344,9 @@ export default function HREmployeesPage() {
       return;
     }
 
-    const data = filteredUsers.map(user => ({
+    const data = filteredUsers.map(user => {
+      const latestEdit = latestFormEditsByUser[user.id];
+      return ({
       'ID': user.id,
       'Email': user.email,
       'First Name': user.first_name,
@@ -304,7 +366,12 @@ export default function HREmployeesPage() {
       'Onboarding Completed': user.onboarding_completed_at ? new Date(user.onboarding_completed_at).toLocaleString() : '',
       'Background Check Completed': user.background_check_completed ? 'Yes' : 'No',
       'Background Check Completed At': user.background_check_completed_at ? new Date(user.background_check_completed_at).toLocaleString() : '',
-    }));
+      'Latest HR Form Edit': latestEdit?.formDisplayName || '',
+      'Latest HR Form Edit Action': formatActionLabel(latestEdit?.action) || '',
+      'Latest HR Form Edited By': latestEdit?.editorName || latestEdit?.editorEmail || '',
+      'Latest HR Form Edited At': latestEdit?.editedAt ? new Date(latestEdit.editedAt).toLocaleString() : '',
+      });
+    });
 
     const worksheet = XLSX.utils.json_to_sheet(data);
     const workbook = XLSX.utils.book_new();
@@ -314,7 +381,8 @@ export default function HREmployeesPage() {
       { wch: 36 }, { wch: 30 }, { wch: 20 }, { wch: 20 }, { wch: 15 },
       { wch: 30 }, { wch: 15 }, { wch: 8 }, { wch: 10 }, { wch: 15 },
       { wch: 15 }, { wch: 10 }, { wch: 20 }, { wch: 20 }, { wch: 12 },
-      { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 },
+      { wch: 15 }, { wch: 20 }, { wch: 15 }, { wch: 25 }, { wch: 30 },
+      { wch: 18 }, { wch: 28 }, { wch: 24 },
     ];
     worksheet['!cols'] = columnWidths;
 
@@ -343,6 +411,13 @@ export default function HREmployeesPage() {
   if (!isAuthorized) {
     return null;
   }
+
+  const userDisplayNameById = new Map(
+    users.map((user) => [
+      user.id,
+      `${user.first_name} ${user.last_name}`.trim() || user.email || user.id,
+    ])
+  );
 
   return (
     <div style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
@@ -426,10 +501,101 @@ export default function HREmployeesPage() {
         </div>
       )}
 
+      {auditError && !error && (
+        <div style={{
+          padding: '1rem',
+          backgroundColor: '#fef3c7',
+          color: '#92400e',
+          borderRadius: '0.375rem',
+          marginBottom: '1.5rem'
+        }}>
+          {auditError}
+        </div>
+      )}
+
       {/* Loading State */}
       {loading && (
         <div style={{ textAlign: 'center', padding: '2rem' }}>
           <p>Loading employees...</p>
+        </div>
+      )}
+
+      {!loading && (
+        <div style={{
+          marginBottom: '1.5rem',
+          border: '1px solid #e5e7eb',
+          borderRadius: '0.5rem',
+          padding: '1rem',
+          backgroundColor: 'white'
+        }}>
+          <div style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            gap: '1rem',
+            marginBottom: '1rem'
+          }}>
+            <div>
+              <h2 style={{ margin: 0, fontSize: '1.125rem', fontWeight: '600', color: '#111827' }}>
+                Recent HR Form Edits
+              </h2>
+              <p style={{ margin: '0.25rem 0 0', color: '#6b7280', fontSize: '0.875rem' }}>
+                Latest form edits saved from the HR employee pages.
+              </p>
+            </div>
+            <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+              {recentFormEdits.length} recent record{recentFormEdits.length === 1 ? '' : 's'}
+            </span>
+          </div>
+
+          {recentFormEdits.length === 0 ? (
+            <p style={{ margin: 0, color: '#6b7280' }}>No HR form edits recorded yet.</p>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f9fafb' }}>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                      Employee
+                    </th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                      Form
+                    </th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                      Edited By
+                    </th>
+                    <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                      When
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {recentFormEdits.map((edit, index) => (
+                    <tr key={`${edit.userId}-${edit.formId}-${edit.editedAt}-${index}`} style={{ borderBottom: '1px solid #e5e7eb' }}>
+                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
+                        {userDisplayNameById.get(edit.userId) || edit.userId}
+                      </td>
+                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
+                        <div style={{ fontWeight: '600', color: '#111827' }}>{edit.formDisplayName}</div>
+                        <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>{formatActionLabel(edit.action)}</div>
+                      </td>
+                      <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
+                        <div style={{ fontWeight: '500', color: '#111827' }}>
+                          {edit.editorName || edit.editorEmail || 'Unknown'}
+                        </div>
+                        <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+                          {edit.editorRole || edit.editorEmail || edit.editorUserId || '-'}
+                        </div>
+                      </td>
+                      <td style={{ padding: '0.75rem', verticalAlign: 'top', color: '#374151' }}>
+                        {formatDateTime(edit.editedAt)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       )}
 
@@ -455,6 +621,9 @@ export default function HREmployeesPage() {
                   Onboarding Status
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                  Latest HR Form Edit
+                </th>
+                <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
                   Actions
                 </th>
               </tr>
@@ -462,7 +631,7 @@ export default function HREmployeesPage() {
             <tbody>
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                  <td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
                     {searchTerm ? 'No employees found matching your search' : 'No employees found'}
                   </td>
                 </tr>
@@ -521,6 +690,28 @@ export default function HREmployeesPage() {
                           fontWeight: '500'
                         }}>
                           Not Submitted
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ padding: '0.75rem', verticalAlign: 'top' }}>
+                      {latestFormEditsByUser[user.id] ? (
+                        <div style={{ display: 'grid', gap: '0.25rem' }}>
+                          <div style={{ fontWeight: '600', color: '#111827' }}>
+                            {latestFormEditsByUser[user.id].formDisplayName}
+                          </div>
+                          <div style={{ fontSize: '0.875rem', color: '#374151' }}>
+                            {formatActionLabel(latestFormEditsByUser[user.id].action)}
+                          </div>
+                          <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                            By {latestFormEditsByUser[user.id].editorName || latestFormEditsByUser[user.id].editorEmail || 'Unknown'}
+                          </div>
+                          <div style={{ fontSize: '0.875rem', color: '#6b7280' }}>
+                            {formatDateTime(latestFormEditsByUser[user.id].editedAt)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>
+                          No HR form edits
                         </span>
                       )}
                     </td>

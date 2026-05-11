@@ -54,23 +54,39 @@ export async function GET(req: NextRequest) {
     const eventIds = eventIdsParam.split(',').map(s => s.trim()).filter(Boolean);
     if (eventIds.length === 0) return NextResponse.json({ approvals: {} });
 
-    const { data, error } = await supabaseAdmin
+    // Try to include amount override columns (may not exist in DB yet — fall back gracefully)
+    let data: any[] | null = null;
+    let fetchError: any = null;
+    const withAmounts = await supabaseAdmin
       .from('event_payment_approvals')
-      .select('event_id, user_id, mileage_approved, travel_approved')
+      .select('event_id, user_id, mileage_approved, travel_approved, mileage_amount_override, travel_amount_override')
       .in('event_id', eventIds);
-
-    if (error) {
-      console.error('[MILEAGE-APPROVALS GET]', error.message);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+    if (withAmounts.error) {
+      // Amount override columns may not exist yet; fall back to base columns
+      const base = await supabaseAdmin
+        .from('event_payment_approvals')
+        .select('event_id, user_id, mileage_approved, travel_approved')
+        .in('event_id', eventIds);
+      data = base.data;
+      fetchError = base.error;
+    } else {
+      data = withAmounts.data;
     }
 
-    const approvals: Record<string, Record<string, { mileage: boolean | null; travel: boolean | null }>> = {};
+    if (fetchError) {
+      console.error('[MILEAGE-APPROVALS GET]', fetchError.message);
+      return NextResponse.json({ error: fetchError.message }, { status: 500 });
+    }
+
+    const approvals: Record<string, Record<string, { mileage: boolean | null; travel: boolean | null; mileage_amount?: number | null; travel_amount?: number | null }>> = {};
     for (const row of data || []) {
       if (!row.event_id || !row.user_id) continue;
       if (!approvals[row.event_id]) approvals[row.event_id] = {};
       approvals[row.event_id][row.user_id] = {
         mileage: row.mileage_approved ?? null,
         travel: row.travel_approved ?? null,
+        mileage_amount: row.mileage_amount_override ?? null,
+        travel_amount: row.travel_amount_override ?? null,
       };
     }
 
@@ -92,7 +108,7 @@ export async function POST(req: NextRequest) {
     if (!(await checkAdminRole(user.id))) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
 
     const body = await req.json().catch(() => ({}));
-    const { event_id, user_id, field, approved } = body || {};
+    const { event_id, user_id, field, approved, amount_override } = body || {};
 
     if (!event_id || !user_id || !field || typeof approved !== 'boolean') {
       return NextResponse.json({ error: 'event_id, user_id, field and approved are required' }, { status: 400 });
@@ -102,14 +118,31 @@ export async function POST(req: NextRequest) {
     }
 
     const column = field === 'mileage' ? 'mileage_approved' : 'travel_approved';
+    const amountColumn = field === 'mileage' ? 'mileage_amount_override' : 'travel_amount_override';
 
-    // Upsert into dedicated approvals table
-    const { error } = await supabaseAdmin
+    const upsertData: Record<string, any> = {
+      event_id,
+      user_id,
+      [column]: approved,
+      updated_at: new Date().toISOString(),
+    };
+    if (typeof amount_override === 'number') {
+      upsertData[amountColumn] = amount_override;
+    }
+
+    // Upsert into dedicated approvals table; if amount column doesn't exist, retry without it
+    let { error } = await supabaseAdmin
       .from('event_payment_approvals')
-      .upsert(
-        { event_id, user_id, [column]: approved, updated_at: new Date().toISOString() },
-        { onConflict: 'event_id,user_id' }
-      );
+      .upsert(upsertData, { onConflict: 'event_id,user_id' });
+
+    if (error && typeof amount_override === 'number') {
+      // Amount override columns may not exist in DB yet — retry without them
+      const baseData = { event_id, user_id, [column]: approved, updated_at: new Date().toISOString() };
+      const retry = await supabaseAdmin
+        .from('event_payment_approvals')
+        .upsert(baseData, { onConflict: 'event_id,user_id' });
+      error = retry.error;
+    }
 
     if (error) {
       console.error('[MILEAGE-APPROVALS POST]', error.message);

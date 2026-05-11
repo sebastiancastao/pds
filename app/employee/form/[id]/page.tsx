@@ -158,17 +158,24 @@ export default function EmployeeFormPage() {
       setMeta(form);
       setPdfUrl(`/api/custom-forms/${formId}/pdf?token=${session.access_token}`);
 
-      // Build the canonical form name: "{Title} {Year}"
-      const savedFormName = `${form.title} ${new Date().getFullYear()}`;
+      // Check if already submitted — try the canonical "custom-form-{id}" key first,
+      // then fall back to the legacy "{Title} {Year}" key for older submissions.
+      const targetUserParam = asUserId ? `&targetUserId=${encodeURIComponent(asUserId)}` : '';
+      const canonicalFormName = `custom-form-${formId}`;
+      const legacyFormName = `${form.title} ${new Date().getFullYear()}`;
 
-      // Check if already submitted using the title-based key
-      const progressRes = await fetch(
-        `/api/pdf-form-progress/retrieve?formName=${encodeURIComponent(savedFormName)}`,
-        { headers: { Authorization: `Bearer ${session.access_token}` } },
-      );
-      if (loadRequestIdRef.current !== requestId) return;
-      const progressData = await progressRes.json();
-      if (loadRequestIdRef.current !== requestId) return;
+      let progressData: any = { found: false };
+      for (const name of [canonicalFormName, legacyFormName]) {
+        const res = await fetch(
+          `/api/pdf-form-progress/retrieve?formName=${encodeURIComponent(name)}${targetUserParam}`,
+          { headers: { Authorization: `Bearer ${session.access_token}` } },
+        );
+        if (loadRequestIdRef.current !== requestId) return;
+        const data = await res.json();
+        if (loadRequestIdRef.current !== requestId) return;
+        if (data.found) { progressData = data; break; }
+      }
+
       if (progressData.found) {
         setAlreadySubmitted(true);
         setSubmittedAt(progressData.updatedAt ?? null);
@@ -447,7 +454,7 @@ export default function EmployeeFormPage() {
       }
 
       const redirectUserId = asUserId ?? session.user.id;
-      router.push(`/employees/${redirectUserId}`);
+      router.push(asUserId ? `/hr/employees/${redirectUserId}` : `/employees/${redirectUserId}`);
     } catch (err: any) {
       setError(err.message);
     } finally {

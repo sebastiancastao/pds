@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    if (userRecord && ['exec', 'admin', 'hr'].includes(userRecord.role)) {
+    if (userRecord && ['exec', 'admin', 'hr', 'hr_admin'].includes(userRecord.role)) {
       // Include per-form assignment counts so admins can see which forms are restricted
       const { data: allAssignmentsForAdmin, error: adminAssignmentsError } =
         await fetchAllCustomFormAssignments(adminClient, 'form_id');

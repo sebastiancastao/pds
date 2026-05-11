@@ -1228,7 +1228,7 @@ export default function DashboardPage() {
   };
 
   const openDeleteConfirmModal = (event: EventItem) => {
-    if (userRole !== "exec" || !event.is_empty || deletingEventId) return;
+    if (userRole !== "exec" || deletingEventId) return;
     setDeleteConfirmEvent(event);
   };
 
@@ -2144,7 +2144,7 @@ export default function DashboardPage() {
                           </div>
                         )}
                       </div>
-                      {userRole === "exec" && ev.is_empty && (
+                      {userRole === "exec" && (
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={() => openDeleteConfirmModal(ev)}
@@ -3363,7 +3363,11 @@ export default function DashboardPage() {
               <p className="text-sm text-gray-700 mb-2">
                 Are you sure you want to delete <strong>{deleteConfirmEvent.event_name}</strong>?
               </p>
-              <p className="text-xs text-gray-500 mb-4">This action cannot be undone.</p>
+              <p className="text-xs text-gray-500 mb-4">
+                {deleteConfirmEvent.is_empty
+                  ? "This action cannot be undone."
+                  : "This will also permanently delete associated team, time, location, invitation, and payment data. This action cannot be undone."}
+              </p>
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   className="apple-button apple-button-secondary"

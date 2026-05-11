@@ -12,6 +12,7 @@ const STATE_CODE_PREFIXES = ['ca', 'ny', 'wi', 'az', 'nv', 'tx', 'fl', 'il', 'oh
 const STATE_CODE_PREFIX_SET = new Set(STATE_CODE_PREFIXES);
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const SIGNATURE_Y_SHIFT = 80;
+const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
@@ -704,7 +705,7 @@ export async function GET(request: NextRequest) {
         const caDE4OffsetX = isCaDE4Form ? -300 : 0;
         const caDE4OffsetY = isCaDE4Form ? 320 : 0;
         const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
-        const i9OffsetX = isI9 ? -400 : 0;
+        const i9OffsetX = isI9 ? -300 : 0;
         const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
         const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
         const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
@@ -739,7 +740,10 @@ export async function GET(request: NextRequest) {
               );
         const y = Math.min(
           height - signatureHeight,
-          rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+          rawY +
+            SIGNATURE_Y_SHIFT +
+            (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
+            (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
         );
 
         if (isTyped && font) {

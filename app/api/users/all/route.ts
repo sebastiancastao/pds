@@ -33,8 +33,8 @@ export async function GET(request: NextRequest) {
       .eq('id', user.id)
       .single();
 
-    if (userError || !userData || !['exec', 'admin'].includes(userData.role)) {
-      return NextResponse.json({ error: 'Forbidden: Exec/Admin access required' }, { status: 403 });
+    if (userError || !userData || !['exec', 'admin', 'hr', 'hr_admin'].includes(userData.role)) {
+      return NextResponse.json({ error: 'Forbidden: Exec/Admin/HR access required' }, { status: 403 });
     }
 
     // Use service role to bypass RLS

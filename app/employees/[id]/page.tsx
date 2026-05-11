@@ -892,18 +892,56 @@ export default function WorkerProfilePage() {
     return btoa(b);
   };
 
-  // Embed the home venue name on the bottom of the last PDF page.
-  const withVenueEmbedded = async (base64Data: string, venueName: string, employeeName?: string): Promise<string> => {
+  // Embed the home venue footer fields and, for the home venue assignment form,
+  // also fill the opening "I, ___" line on page 1.
+  const withVenueEmbedded = async (
+    base64Data: string,
+    venueName: string,
+    employeeName?: string,
+    includeOpeningPrintName = false
+  ): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pdfDoc = await PDFDocument.load(pdfBytes);
-    const lastPage = pdfDoc.getPages().at(-1)!;
+    const pages = pdfDoc.getPages();
+    const firstPage = pages[0];
+    const lastPage = pages.at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    try { pdfDoc.getForm().flatten(); } catch {}
     lastPage.drawRectangle({ x: 35, y: 150, width: 445, height: 60, color: rgb(1, 1, 1), borderWidth: 0 });
-    if (employeeName) {
+    const trimmedEmployeeName = employeeName?.trim();
+    if (trimmedEmployeeName) {
       lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-      lastPage.drawText(employeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+      lastPage.drawText(trimmedEmployeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
       lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+      if (includeOpeningPrintName) {
+        const openingLineX = 80;
+        const openingLineY = 523;
+        const openingLineWidth = 120;
+        const preferredOpeningSize = 10.5;
+        const measuredOpeningWidth = font.widthOfTextAtSize(trimmedEmployeeName, preferredOpeningSize);
+        const openingSize =
+          measuredOpeningWidth > openingLineWidth
+            ? Math.max(8, preferredOpeningSize * (openingLineWidth / measuredOpeningWidth))
+            : preferredOpeningSize;
+
+        // Match the opening underline on the scanned template.
+        firstPage.drawRectangle({
+          x: openingLineX - 2,
+          y: openingLineY - 4,
+          width: openingLineWidth + 4,
+          height: 16,
+          color: rgb(1, 1, 1),
+          borderWidth: 0,
+        });
+        firstPage.drawText(trimmedEmployeeName, {
+          x: openingLineX,
+          y: openingLineY + 2,
+          size: openingSize,
+          font,
+          color: rgb(0, 0, 0),
+        });
+      }
     }
     lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
     lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
@@ -1138,8 +1176,16 @@ export default function WorkerProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (shouldEmbedProfileFields && venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
+      if (shouldEmbedProfileFields && venueName) {
+        data = await withVenueEmbedded(
+          data,
+          venueName,
+          employee ? `${employee.first_name} ${employee.last_name}` : undefined,
+          shouldEmbedOpeningPrintName
+        );
+      }
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -1183,8 +1229,16 @@ export default function WorkerProfilePage() {
         data = await getFormDataWithSignature(form);
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (shouldEmbedProfileFields && form.form_date) data = await withDateEmbedded(data, form.form_date);
-      if (shouldEmbedProfileFields && venueName) data = await withVenueEmbedded(data, venueName, employee ? `${employee.first_name} ${employee.last_name}` : undefined);
+      if (shouldEmbedProfileFields && venueName) {
+        data = await withVenueEmbedded(
+          data,
+          venueName,
+          employee ? `${employee.first_name} ${employee.last_name}` : undefined,
+          shouldEmbedOpeningPrintName
+        );
+      }
       openPdfInNewTab(data);
     } catch (error) {
       console.error('Error viewing PDF:', error);
