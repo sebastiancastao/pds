@@ -219,12 +219,6 @@ function HRDashboardContent() {
     const st = normalizeState(s);
     return st === "CA" || st === "NV" || st === "WI";
   };
-  const GATE_PHONE_OFFSET_HOURS = 0.5;
-  const addGatePhoneLeadHours = (hours: number): number => {
-    if (!Number.isFinite(hours) || hours <= 0) return 0;
-    return Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
-  };
-  const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
   const getRestBreakAmount = (actualHours: number, stateCode: string, eventSanDiego = false) => {
     if (eventSanDiego) return 0;
     if (actualHours <= 0) return 0;
@@ -271,21 +265,20 @@ function HRDashboardContent() {
     return (diffMiles / 30) * travelRate;
   };
   const getEffectiveHours = (payment: any): number => {
-    // Payroll tab: when hours are computed from timesheet effective_hours,
-    // include the Gate/Phone lead time (30 minutes).
+    // `effective_hours` already reflects the canonical HR timesheet payable hours.
     if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
       const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
-      if (Number.isFinite(effective) && effective >= 0) return addLongShiftBonus(addGatePhoneLeadHours(effective));
+      if (Number.isFinite(effective) && effective >= 0) return effective;
     }
     const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
-    if (actual > 0) return addLongShiftBonus(actual);
+    if (actual > 0) return actual;
     const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
-    if (worked > 0) return addLongShiftBonus(worked);
+    if (worked > 0) return worked;
     const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
     const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
     const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
     const summed = reg + ot + dt;
-    return summed > 0 ? addLongShiftBonus(summed) : 0;
+    return summed > 0 ? summed : 0;
   };
   const sortPaymentsAlphabetically = (payments: any[]) => {
     return [...payments].sort((a, b) => {
@@ -638,9 +631,13 @@ function HRDashboardContent() {
       const eventIds = filteredEventIds.join(',');
       if (!eventIds) { setPaymentsByVenue([]); setLoadingPayments(false); return; }
       // Fetch vendor payments for filtered events (same data model as Global Calendar)
-      const payRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}`, {
+      const payRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}&ts=${Date.now()}`, {
         method: 'GET',
-        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
       });
       if (!payRes.ok) {
         const err = await payRes.json().catch(() => ({}));
@@ -1221,14 +1218,13 @@ function HRDashboardContent() {
             const paymentUserId = (p.userId || '').toString();
             if (!paymentUserId) return;
             const _initParsed = parseAdjustmentNote(p.adjustmentNote ?? p.adjustmentType, Number(p.adjustmentAmount || 0));
-            initialAdjustments[ev.id][paymentUserId] = _initParsed.otherAmount;
-            initialReimbursements[ev.id][paymentUserId] = _initParsed.reimbursementAmount;
+            // Don't seed amounts into state — state starts undefined so display falls back to
+            // payment object fields (reimbursementAmount/otherAmount) which are always correct.
+            // State is only populated when the user explicitly edits or after a save.
             initialAdjustmentTypes[ev.id][paymentUserId] = _initParsed.otherType;
           });
         });
       });
-      setAdjustments(initialAdjustments);
-      setReimbursementAmounts(initialReimbursements);
       setAdjustmentTypes(initialAdjustmentTypes);
     } catch (e: any) {
       setPaymentsError(e.message || 'Failed to load payments');
@@ -1487,10 +1483,12 @@ function HRDashboardContent() {
     const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
     const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isEventSD ? 0 : Number(payment?.restBreak || 0)), 0);
     const totalReimbursement = payments.reduce((sum: number, payment: any) => {
-      return sum + Number(payment?.reimbursementAmount || 0);
+      const stateVal = reimbursementAmounts[event.id]?.[payment.userId];
+      return sum + (stateVal !== undefined ? Number(stateVal || 0) : Number(payment?.reimbursementAmount || 0));
     }, 0);
     const totalOther = payments.reduce((sum: number, payment: any) => {
-      return sum + Number(payment?.otherAmount || 0);
+      const stateVal = adjustments[event.id]?.[payment.userId];
+      return sum + (stateVal !== undefined ? Number(stateVal || 0) : Number(payment?.otherAmount || 0));
     }, 0);
     const totalMileagePay = payments.reduce((sum: number, payment: any) => {
       const override = (mileagePayOverrides[event.id] || {})[payment.userId];
@@ -1530,7 +1528,7 @@ function HRDashboardContent() {
       totalTravelPay,
       totalGross,
     };
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes, reimbursementAmounts, adjustments]);
 
   const getDisplayedVendorTotals = useCallback((vendor: {
     userId?: string;
@@ -1561,8 +1559,10 @@ function HRDashboardContent() {
       totals.totalOvertimePay += isEventSD ? breakdown.overtimePay : 0;
       totals.totalDoubletimeHours += isEventSD ? breakdown.doubletimeHours : 0;
       totals.totalDoubletimePay += isEventSD ? breakdown.doubletimePay : 0;
-      const rowReimbursement = Number(payment?.reimbursementAmount || 0);
-      const rowOther = Number(payment?.otherAmount || 0);
+      const stateReimb = reimbursementAmounts[event.id]?.[payment.userId];
+      const stateOther = adjustments[event.id]?.[payment.userId];
+      const rowReimbursement = stateReimb !== undefined ? Number(stateReimb || 0) : Number(payment?.reimbursementAmount || 0);
+      const rowOther = stateOther !== undefined ? Number(stateOther || 0) : Number(payment?.otherAmount || 0);
       totals.totalCommissionPay += isEventSD ? 0 : breakdown.commissionPay;
       totals.totalVariableIncentive += isEventSD ? 0 : breakdown.variableIncentive;
       totals.totalCommissionPaid += breakdown.commissionPaidTotal;
@@ -1599,7 +1599,7 @@ function HRDashboardContent() {
       result.totalVariableIncentive = periodUserTotals.totalVariableIncentive;
     }
     return result;
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];

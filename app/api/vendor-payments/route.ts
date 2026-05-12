@@ -5,6 +5,7 @@ import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decrypt } from '@/lib/encryption';
 import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -15,6 +16,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
@@ -87,6 +90,244 @@ function timeToSeconds(value: unknown): number | null {
   if (![hh, mm, ss].every((n) => Number.isFinite(n))) return null;
   if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return null;
   return hh * 3600 + mm * 60 + ss;
+}
+
+function createEmptyTimesheetSpan() {
+  return {
+    firstIn: null as string | null,
+    lastOut: null as string | null,
+    firstMealStart: null as string | null,
+    lastMealEnd: null as string | null,
+    secondMealStart: null as string | null,
+    secondMealEnd: null as string | null,
+    thirdMealStart: null as string | null,
+    thirdMealEnd: null as string | null,
+  };
+}
+
+function roundHoursFromMs(totalMs: number): number {
+  return Math.round((Math.max(totalMs, 0) / (1000 * 60 * 60)) * 100) / 100;
+}
+
+async function fetchEventTimesheetEntries(params: {
+  eventId: string;
+  userIds: string[];
+  eventDate: string;
+  eventState: string | null | undefined;
+  endsNextDay: boolean;
+}) {
+  const { eventId, userIds, eventDate, eventState, endsNextDay } = params;
+  if (!eventId || userIds.length === 0) {
+    return [];
+  }
+
+  const normalizedDate = (eventDate || '').toString().split('T')[0];
+  const eventTimezone = getTimezoneForState(eventState);
+  const queryRange = getLocalDateRange(normalizedDate, eventTimezone, 2);
+  if (!queryRange) {
+    return [];
+  }
+
+  const { startIso, endExclusiveIso } = queryRange;
+
+  let { data: entries, error: teErr } = await supabaseAdmin
+    .from('time_entries')
+    .select('id, user_id, action, timestamp, started_at, event_id')
+    .in('user_id', userIds)
+    .eq('event_id', eventId)
+    .gte('timestamp', startIso)
+    .lt('timestamp', endExclusiveIso)
+    .order('timestamp', { ascending: true });
+
+  if (teErr) throw teErr;
+
+  if (endsNextDay) {
+    const { data: byTimestamp, error: tsErr } = await supabaseAdmin
+      .from('time_entries')
+      .select('id, user_id, action, timestamp, started_at, event_id')
+      .in('user_id', userIds)
+      .or(`event_id.eq.${eventId},event_id.is.null`)
+      .gte('timestamp', startIso)
+      .lt('timestamp', endExclusiveIso)
+      .order('timestamp', { ascending: true });
+    if (tsErr) throw tsErr;
+
+    const merged: any[] = [];
+    const seen = new Set<string>();
+    for (const row of [...(entries || []), ...(byTimestamp || [])]) {
+      if (row?.event_id && row.event_id !== eventId) continue;
+      const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp || row?.started_at || ''}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      merged.push(row);
+    }
+    entries = merged;
+  }
+
+  if (!entries || entries.length === 0) {
+    const { data: byTimestamp, error: tsErr } = await supabaseAdmin
+      .from('time_entries')
+      .select('id, user_id, action, timestamp, started_at, event_id')
+      .in('user_id', userIds)
+      .or(`event_id.eq.${eventId},event_id.is.null`)
+      .gte('timestamp', startIso)
+      .lt('timestamp', endExclusiveIso)
+      .order('timestamp', { ascending: true });
+    if (tsErr) throw tsErr;
+
+    if (byTimestamp && byTimestamp.length > 0) {
+      entries = byTimestamp;
+    } else {
+      const { data: byStarted, error: startedErr } = await supabaseAdmin
+        .from('time_entries')
+        .select('id, user_id, action, timestamp, started_at, event_id')
+        .in('user_id', userIds)
+        .or(`event_id.eq.${eventId},event_id.is.null`)
+        .gte('started_at', startIso)
+        .lt('started_at', endExclusiveIso)
+        .order('started_at', { ascending: true });
+      if (startedErr) throw startedErr;
+      entries = byStarted || [];
+    }
+  }
+
+  return entries || [];
+}
+
+function computeTimesheetTotalsAndSpans(userIds: string[], entries: any[]) {
+  const entriesByUser: Record<string, any[]> = {};
+  for (const uid of userIds) {
+    entriesByUser[uid] = [];
+  }
+  for (const entry of entries || []) {
+    if (entriesByUser[entry.user_id]) {
+      entriesByUser[entry.user_id].push(entry);
+    }
+  }
+
+  const totalsMsByUser: Record<string, number> = {};
+  const spansByUser: Record<string, ReturnType<typeof createEmptyTimesheetSpan>> = {};
+
+  for (const uid of userIds) {
+    const userEntries = entriesByUser[uid] || [];
+    const span = createEmptyTimesheetSpan();
+    totalsMsByUser[uid] = 0;
+    spansByUser[uid] = span;
+
+    const clockIns = userEntries.filter((entry) => entry.action === 'clock_in');
+    const clockOuts = userEntries.filter((entry) => entry.action === 'clock_out');
+    const mealStarts = userEntries.filter((entry) => entry.action === 'meal_start');
+    const mealEnds = userEntries.filter((entry) => entry.action === 'meal_end');
+
+    if (clockIns.length > 0) {
+      span.firstIn = clockIns[0].timestamp;
+    }
+    if (clockOuts.length > 0) {
+      span.lastOut = clockOuts[clockOuts.length - 1].timestamp;
+    }
+
+    if (mealStarts.length > 0) {
+      span.firstMealStart = mealStarts[0].timestamp;
+      if (mealStarts.length > 1) span.secondMealStart = mealStarts[1].timestamp;
+      if (mealStarts.length > 2) span.thirdMealStart = mealStarts[2].timestamp;
+    }
+    if (mealEnds.length > 0) {
+      span.lastMealEnd = mealEnds[0].timestamp;
+      if (mealEnds.length > 1) span.secondMealEnd = mealEnds[1].timestamp;
+      if (mealEnds.length > 2) span.thirdMealEnd = mealEnds[2].timestamp;
+    }
+
+    let currentClockIn: string | null = null;
+    const workIntervals: Array<{ start: Date; end: Date }> = [];
+
+    for (const entry of userEntries) {
+      if (entry.action === 'clock_in') {
+        if (!currentClockIn) {
+          currentClockIn = entry.timestamp;
+        }
+      } else if (entry.action === 'clock_out') {
+        if (currentClockIn) {
+          const startMs = new Date(currentClockIn).getTime();
+          const endMs = new Date(entry.timestamp).getTime();
+          const duration = endMs - startMs;
+          if (duration > 0) {
+            totalsMsByUser[uid] += duration;
+            workIntervals.push({ start: new Date(currentClockIn), end: new Date(entry.timestamp) });
+          }
+          currentClockIn = null;
+        }
+      }
+    }
+
+    const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
+    if (!hasExplicitMeals && workIntervals.length >= 2) {
+      workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+
+      const gaps: Array<{ start: Date; end: Date }> = [];
+      for (let i = 0; i < workIntervals.length - 1; i++) {
+        const gapStart = workIntervals[i].end;
+        const gapEnd = workIntervals[i + 1].start;
+        const gapMs = gapEnd.getTime() - gapStart.getTime();
+
+        if (gapMs > 0) {
+          gaps.push({ start: gapStart, end: gapEnd });
+        }
+        if (gaps.length >= 3) break;
+      }
+
+      if (gaps[0]) {
+        span.firstMealStart = gaps[0].start.toISOString();
+        span.lastMealEnd = gaps[0].end.toISOString();
+      }
+      if (gaps[1]) {
+        span.secondMealStart = gaps[1].start.toISOString();
+        span.secondMealEnd = gaps[1].end.toISOString();
+      }
+      if (gaps[2]) {
+        span.thirdMealStart = gaps[2].start.toISOString();
+        span.thirdMealEnd = gaps[2].end.toISOString();
+      }
+    }
+  }
+
+  return { totalsMsByUser, spansByUser };
+}
+
+function getMealDeductedWorkedMs(totalMs: number, span?: ReturnType<typeof createEmptyTimesheetSpan> | null): number {
+  if (!span) return Math.max(totalMs, 0);
+
+  const meal1Ms =
+    span.firstMealStart && span.lastMealEnd
+      ? Math.max(new Date(span.lastMealEnd).getTime() - new Date(span.firstMealStart).getTime(), 0)
+      : 0;
+  const meal2Ms =
+    span.secondMealStart && span.secondMealEnd
+      ? Math.max(new Date(span.secondMealEnd).getTime() - new Date(span.secondMealStart).getTime(), 0)
+      : 0;
+  const meal3Ms =
+    span.thirdMealStart && span.thirdMealEnd
+      ? Math.max(new Date(span.thirdMealEnd).getTime() - new Date(span.thirdMealStart).getTime(), 0)
+      : 0;
+  const mealMs = meal1Ms + meal2Ms + meal3Ms;
+
+  const firstInMs = span.firstIn ? new Date(span.firstIn).getTime() : NaN;
+  const lastOutMs = span.lastOut ? new Date(span.lastOut).getTime() : NaN;
+
+  let spanNetMs = 0;
+  if (Number.isFinite(firstInMs) && Number.isFinite(lastOutMs) && lastOutMs > firstInMs) {
+    spanNetMs = Math.max(lastOutMs - firstInMs - mealMs, 0);
+  }
+
+  if (totalMs > 0 && spanNetMs > 0) {
+    return Math.min(totalMs, spanNetMs);
+  }
+  if (spanNetMs > 0) {
+    return spanNetMs;
+  }
+  if (totalMs > 0) {
+    return Math.max(totalMs - mealMs, 0);
+  }
+  return 0;
 }
 
 export async function GET(req: NextRequest) {
@@ -226,144 +467,27 @@ export async function GET(req: NextRequest) {
       }
       if (vendorIds.length === 0) return [] as any[];
 
-      // 3) Pull time entries using the same strategy as Event Dashboard Time Sheet:
-      // prefer entries linked by event_id, then fall back to date windows.
+      // 3) Pull time entries using the same strategy as Event Dashboard Time Sheet.
       const dateStr = (eventRow.event_date || '').toString().split('T')[0];
       const startSec = timeToSeconds((eventRow as any)?.start_time);
       const endSec = timeToSeconds((eventRow as any)?.end_time);
       const endsNextDay =
         Boolean((eventRow as any)?.ends_next_day) ||
         (startSec !== null && endSec !== null && endSec <= startSec);
-      const startDate = new Date(`${dateStr}T00:00:00Z`);
-      const endDate = new Date(`${dateStr}T23:59:59.999Z`);
-      if (endsNextDay) endDate.setUTCDate(endDate.getUTCDate() + 1);
-      const startIso = startDate.toISOString();
-      const endIso = endDate.toISOString();
-
-      let entries: any[] = [];
-      const { data: byEventId } = await supabaseAdmin
-        .from('time_entries')
-        .select('user_id, action, timestamp, started_at, event_id')
-        .in('user_id', vendorIds)
-        .eq('event_id', eventId)
-        .order('timestamp', { ascending: true });
-      entries = byEventId || [];
-
-      if (endsNextDay || entries.length === 0) {
-        const { data: byTimestamp } = await supabaseAdmin
-          .from('time_entries')
-          .select('id, user_id, action, timestamp, started_at, event_id')
-          .in('user_id', vendorIds)
-          .gte('timestamp', startIso)
-          .lte('timestamp', endIso)
-          .order('timestamp', { ascending: true });
-        const merged: any[] = [];
-        const seen = new Set<string>();
-        for (const row of [...entries, ...(byTimestamp || [])]) {
-          if (row?.event_id && row.event_id !== eventId) continue;
-          const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp || row?.started_at || ''}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          merged.push(row);
-        }
-        entries = merged;
-      }
-
-      if (entries.length === 0) {
-        const { data: byStartedAt } = await supabaseAdmin
-          .from('time_entries')
-          .select('user_id, action, timestamp, started_at, event_id')
-          .in('user_id', vendorIds)
-          .gte('started_at', startIso)
-          .lte('started_at', endIso)
-          .order('started_at', { ascending: true });
-        entries = byStartedAt || [];
-      }
-
-      // 4) Compute total hours per user by pairing clock_in/out
-      const byUser: Record<string, any[]> = {};
-      for (const uid of vendorIds) byUser[uid] = [];
-      for (const e of entries || []) {
-        if (!byUser[e.user_id]) byUser[e.user_id] = [];
-        byUser[e.user_id].push(e);
-      }
-
+      const entries = await fetchEventTimesheetEntries({
+        eventId,
+        userIds: vendorIds,
+        eventDate: dateStr,
+        eventState: eventRow.state,
+        endsNextDay,
+      });
+      const { totalsMsByUser, spansByUser } = computeTimesheetTotalsAndSpans(vendorIds, entries);
       const totalsHours: Record<string, number> = {};
       for (const uid of vendorIds) {
-        const uEntries = [...(byUser[uid] || [])].sort((a, b) => {
-          const ta = new Date((a?.timestamp || a?.started_at || '') as any).getTime();
-          const tb = new Date((b?.timestamp || b?.started_at || '') as any).getTime();
-          if (!Number.isFinite(ta) && !Number.isFinite(tb)) return 0;
-          if (!Number.isFinite(ta)) return 1;
-          if (!Number.isFinite(tb)) return -1;
-          return ta - tb;
-        });
-        let currentIn: string | null = null;
-        let ms = 0;
-        for (const row of uEntries) {
-          const ts = row?.timestamp || row?.started_at || null;
-          if (!ts) continue;
-          if (row.action === 'clock_in') {
-            if (!currentIn) currentIn = ts as any;
-          } else if (row.action === 'clock_out') {
-            if (currentIn) {
-              const start = new Date(currentIn).getTime();
-              const end = new Date(ts as any).getTime();
-              const dur = end - start;
-              if (dur > 0) ms += dur;
-              currentIn = null;
-            }
-          }
-        }
-        // Detect meals (explicit or auto from gaps) and deduct from ms
-        const mealStarts = uEntries.filter(r => r.action === 'meal_start');
-        const mealEndsArr = uEntries.filter(r => r.action === 'meal_end');
-        let fMealStart: string | null = null;
-        let lMealEnd: string | null = null;
-        let sMealStart: string | null = null;
-        let sMealEnd: string | null = null;
-        if (mealStarts.length > 0) {
-          fMealStart = mealStarts[0]?.timestamp || mealStarts[0]?.started_at || null;
-          if (mealStarts.length > 1) sMealStart = mealStarts[1]?.timestamp || mealStarts[1]?.started_at || null;
-        }
-        if (mealEndsArr.length > 0) {
-          lMealEnd = mealEndsArr[0]?.timestamp || mealEndsArr[0]?.started_at || null;
-          if (mealEndsArr.length > 1) sMealEnd = mealEndsArr[1]?.timestamp || mealEndsArr[1]?.started_at || null;
-        }
-        // Auto-detect meals from gaps if no explicit meal actions
-        if (mealStarts.length === 0 && mealEndsArr.length === 0) {
-          const workIntervals: Array<{ start: Date; end: Date }> = [];
-          let ci: string | null = null;
-          for (const row of uEntries) {
-            const ts = row?.timestamp || row?.started_at || null;
-            if (!ts) continue;
-            if (row.action === 'clock_in') { if (!ci) ci = ts; }
-            else if (row.action === 'clock_out' && ci) {
-              workIntervals.push({ start: new Date(ci), end: new Date(ts) });
-              ci = null;
-            }
-          }
-          if (workIntervals.length >= 2) {
-            workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
-            const gaps: Array<{ start: Date; end: Date }> = [];
-            for (let gi = 0; gi < workIntervals.length - 1 && gaps.length < 2; gi++) {
-              const gapMs = workIntervals[gi + 1].start.getTime() - workIntervals[gi].end.getTime();
-              if (gapMs > 0) gaps.push({ start: workIntervals[gi].end, end: workIntervals[gi + 1].start });
-            }
-            if (gaps[0]) { fMealStart = gaps[0].start.toISOString(); lMealEnd = gaps[0].end.toISOString(); }
-            if (gaps[1]) { sMealStart = gaps[1].start.toISOString(); sMealEnd = gaps[1].end.toISOString(); }
-          }
-        }
-        if (fMealStart && lMealEnd) {
-          const m1 = new Date(lMealEnd).getTime() - new Date(fMealStart).getTime();
-          if (m1 > 0) ms = Math.max(ms - m1, 0);
-        }
-        if (sMealStart && sMealEnd) {
-          const m2 = new Date(sMealEnd).getTime() - new Date(sMealStart).getTime();
-          if (m2 > 0) ms = Math.max(ms - m2, 0);
-        }
-
-        totalsHours[uid] = Math.round((ms / (1000 * 60 * 60)) * 100) / 100;
+        const totalMs = Number(totalsMsByUser[uid] || 0);
+        const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
+        const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
+        totalsHours[uid] = roundHoursFromMs(payableMs);
       }
 
       // 5) Determine rates (matches event-dashboard logic)
@@ -510,7 +634,7 @@ export async function GET(req: NextRequest) {
       // Fetch events metadata for date windows
       const { data: eventsForMeals } = await supabaseAdmin
         .from('events')
-        .select('id, event_date, start_time, end_time, ends_next_day')
+        .select('id, event_date, state, start_time, end_time, ends_next_day')
         .in('id', allEventIdsForMeals);
 
       for (const evt of eventsForMeals || []) {
@@ -518,121 +642,45 @@ export async function GET(req: NextRequest) {
         const dateStr = (evt.event_date || '').toString().split('T')[0];
         if (!dateStr) continue;
 
+        const { data: teamRows } = await supabaseAdmin
+          .from('event_teams')
+          .select('vendor_id')
+          .eq('event_id', eid);
+        const userIds = Array.from(new Set((teamRows || []).map((row: any) => row.vendor_id).filter(Boolean)));
+
+        mealDeductionHours[eid] = {};
+        effectiveHoursFromTimesheet[eid] = {};
+        if (userIds.length === 0) continue;
+
         const startSec = timeToSeconds((evt as any)?.start_time);
         const endSec = timeToSeconds((evt as any)?.end_time);
         const endsNextDay = Boolean((evt as any)?.ends_next_day) ||
           (startSec !== null && endSec !== null && endSec <= startSec);
-        const startDate = new Date(`${dateStr}T00:00:00Z`);
-        const endDate = new Date(`${dateStr}T23:59:59.999Z`);
-        if (endsNextDay) endDate.setUTCDate(endDate.getUTCDate() + 1);
+        const entries = await fetchEventTimesheetEntries({
+          eventId: eid,
+          userIds,
+          eventDate: dateStr,
+          eventState: evt.state,
+          endsNextDay,
+        });
+        const { totalsMsByUser, spansByUser } = computeTimesheetTotalsAndSpans(userIds, entries);
 
-        // Fetch time entries for this event (by event_id + by date range)
-        const { data: byEventId } = await supabaseAdmin
-          .from('time_entries')
-          .select('id, user_id, action, timestamp, event_id')
-          .eq('event_id', eid)
-          .order('timestamp', { ascending: true });
-
-        let entries: any[] = byEventId || [];
-
-        if (endsNextDay || entries.length === 0) {
-          const { data: byTs } = await supabaseAdmin
-            .from('time_entries')
-            .select('id, user_id, action, timestamp, event_id')
-            .gte('timestamp', startDate.toISOString())
-            .lte('timestamp', endDate.toISOString())
-            .order('timestamp', { ascending: true });
-          const seen = new Set<string>();
-          const merged: any[] = [];
-          for (const row of [...entries, ...(byTs || [])]) {
-            if (row?.event_id && row.event_id !== eid) continue;
-            const key = row?.id ? `id:${row.id}` : `k:${row?.user_id}|${row?.action}|${row?.timestamp || ''}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            merged.push(row);
-          }
-          entries = merged;
-        }
-
-        // Group by user
-        const byUser: Record<string, any[]> = {};
-        for (const e of entries) {
-          if (!byUser[e.user_id]) byUser[e.user_id] = [];
-          byUser[e.user_id].push(e);
-        }
-
-        mealDeductionHours[eid] = {};
-        effectiveHoursFromTimesheet[eid] = {};
-
-        for (const [uid, userEntries] of Object.entries(byUser)) {
-          const sorted = [...userEntries].sort((a, b) =>
-            new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-          );
-          const clockEntries = sorted.filter(e => e.action === 'clock_in' || e.action === 'clock_out');
-          const workIntervals: Array<{ start: Date; end: Date }> = [];
-          let currentIn: string | null = null;
-          let workedMs = 0;
-          for (const ce of clockEntries) {
-            if (ce.action === 'clock_in') {
-              if (!currentIn) currentIn = ce.timestamp;
-            } else if (ce.action === 'clock_out' && currentIn) {
-              const startMs = new Date(currentIn).getTime();
-              const endMs = new Date(ce.timestamp).getTime();
-              const duration = endMs - startMs;
-              if (duration > 0) {
-                workedMs += duration;
-                workIntervals.push({ start: new Date(currentIn), end: new Date(ce.timestamp) });
-              }
-              currentIn = null;
-            }
-          }
-
-          const mealStarts = sorted.filter(e => e.action === 'meal_start');
-          const mealEnds = sorted.filter(e => e.action === 'meal_end');
-
-          let firstMealStart: string | null = null;
-          let lastMealEnd: string | null = null;
-          let secondMealStart: string | null = null;
-          let secondMealEnd: string | null = null;
-
-          if (mealStarts.length > 0) {
-            firstMealStart = mealStarts[0].timestamp;
-            if (mealStarts.length > 1) secondMealStart = mealStarts[1].timestamp;
-          }
-          if (mealEnds.length > 0) {
-            lastMealEnd = mealEnds[0].timestamp;
-            if (mealEnds.length > 1) secondMealEnd = mealEnds[1].timestamp;
-          }
-
-          // Auto-detect meals from gaps if no explicit meal actions
-          const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
-          if (!hasExplicitMeals) {
-            if (workIntervals.length >= 2) {
-              workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
-              const gaps: Array<{ start: Date; end: Date }> = [];
-              for (let i = 0; i < workIntervals.length - 1 && gaps.length < 2; i++) {
-                const gapMs = workIntervals[i + 1].start.getTime() - workIntervals[i].end.getTime();
-                if (gapMs > 0) gaps.push({ start: workIntervals[i].end, end: workIntervals[i + 1].start });
-              }
-              if (gaps[0]) { firstMealStart = gaps[0].start.toISOString(); lastMealEnd = gaps[0].end.toISOString(); }
-              if (gaps[1]) { secondMealStart = gaps[1].start.toISOString(); secondMealEnd = gaps[1].end.toISOString(); }
-            }
-          }
-
-          // Calculate deduction in hours
-          let deductMs = 0;
-          if (firstMealStart && lastMealEnd) {
-            const m1 = new Date(lastMealEnd).getTime() - new Date(firstMealStart).getTime();
-            if (m1 > 0) deductMs += m1;
-          }
-          if (secondMealStart && secondMealEnd) {
-            const m2 = new Date(secondMealEnd).getTime() - new Date(secondMealStart).getTime();
-            if (m2 > 0) deductMs += m2;
-          }
+        for (const uid of userIds) {
+          const totalMs = Number(totalsMsByUser[uid] || 0);
+          const effectiveMs = getMealDeductedWorkedMs(totalMs, spansByUser[uid]);
+          const deductMs = Math.max(totalMs - effectiveMs, 0);
+          const payableMs = effectiveMs > 0 ? effectiveMs + ADMIN_RESPONSE_ENTRY_PROCESSING_MS : 0;
           if (deductMs > 0) {
-            mealDeductionHours[eid][uid] = deductMs / (1000 * 60 * 60);
+            mealDeductionHours[eid][uid] = roundHoursFromMs(deductMs);
           }
-          effectiveHoursFromTimesheet[eid][uid] = Math.round((Math.max(workedMs - deductMs, 0) / (1000 * 60 * 60)) * 100) / 100;
+          if (
+            effectiveMs > 0 ||
+            totalMs > 0 ||
+            spansByUser[uid]?.firstIn ||
+            spansByUser[uid]?.lastOut
+          ) {
+            effectiveHoursFromTimesheet[eid][uid] = roundHoursFromMs(payableMs);
+          }
         }
       }
     }

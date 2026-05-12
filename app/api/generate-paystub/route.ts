@@ -325,12 +325,8 @@ export async function POST(req: NextRequest) {
       };
     };
 
-    // Mirror HR dashboard getEffectiveHours: use effective_hours + 0.5h gate/phone lead when available.
-    const GATE_PHONE_OFFSET_HOURS = 0.5;
+    // Mirror the HR timesheet/payroll source of truth: use canonical effective_hours when available.
     const HOURS_MISMATCH_THRESHOLD = 0.01;
-    const addGatePhoneLeadHours = (hours: number): number =>
-      Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
-    const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
     const roundHoursForDebug = (value: number): number =>
       Number((Number.isFinite(value) ? value : 0).toFixed(6));
     const getEffectiveHoursBreakdownFromPayment = (paymentData: any): {
@@ -357,7 +353,7 @@ export async function POST(req: NextRequest) {
       const effective = hasEffective ? Number(effectiveRaw) : 0;
       const effectivePlusGatePhone =
         hasEffective && Number.isFinite(effective) && effective >= 0
-          ? addGatePhoneLeadHours(effective)
+          ? effective
           : 0;
 
       const actual = Number(paymentData?.actual_hours ?? paymentData?.actualHours ?? 0);
@@ -368,16 +364,16 @@ export async function POST(req: NextRequest) {
       const summed = reg + ot + dt;
 
       if (effectivePlusGatePhone > 0) {
-        return { hours: addLongShiftBonus(effectivePlusGatePhone), source: "effective_hours+gate_phone", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: effectivePlusGatePhone, source: "effective_hours", effectivePlusGatePhone, actual, worked, summed };
       }
       if (actual > 0) {
-        return { hours: addLongShiftBonus(actual), source: "actual_hours", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: actual, source: "actual_hours", effectivePlusGatePhone, actual, worked, summed };
       }
       if (worked > 0) {
-        return { hours: addLongShiftBonus(worked), source: "worked_hours", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: worked, source: "worked_hours", effectivePlusGatePhone, actual, worked, summed };
       }
       if (summed > 0) {
-        return { hours: addLongShiftBonus(summed), source: "regular+ot+dt", effectivePlusGatePhone, actual, worked, summed };
+        return { hours: summed, source: "regular+ot+dt", effectivePlusGatePhone, actual, worked, summed };
       }
       return { hours: 0, source: "zero", effectivePlusGatePhone, actual, worked, summed };
     };
@@ -390,15 +386,15 @@ export async function POST(req: NextRequest) {
       if (hoursFromPayment > 0) return hoursFromPayment;
 
       const timesheetHours = getTimesheetHoursForWorker(event, worker);
-      if (timesheetHours > 0) return addLongShiftBonus(timesheetHours);
+      if (timesheetHours > 0) return timesheetHours;
 
       const workedHoursFromTimeEntries = Number(worker?.worked_hours || 0);
       const regHours = Number(paymentData?.regular_hours || 0);
       const otHours = Number(paymentData?.overtime_hours || 0);
       const dtHours = Number(paymentData?.doubletime_hours || 0);
       return workedHoursFromTimeEntries > 0
-        ? addLongShiftBonus(workedHoursFromTimeEntries)
-        : addLongShiftBonus(regHours + otHours + dtHours);
+        ? workedHoursFromTimeEntries
+        : regHours + otHours + dtHours;
     };
 
     const getDisplayHoursForWorker = (event: any, worker: any): number => getActualHoursForWorker(event, worker);
@@ -497,7 +493,7 @@ export async function POST(req: NextRequest) {
       });
     };
 
-    const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_HOURS * 60 * 60 * 1000;
+    const GATE_PHONE_OFFSET_MS = 30 * 60 * 1000;
     const parseEventTimeToSeconds = (value: unknown): number | null => {
       const raw = (value || "").toString().trim();
       if (!raw) return null;
@@ -1325,6 +1321,7 @@ export async function POST(req: NextRequest) {
       let grandTips = 0;
       let grandRestPay = 0;
       let grandFinalPay = 0;
+      const maskedCommissionRowValue = "-";
       for (const row of displayRows) {
         const showT = row.show.length > 12 ? row.show.substring(0, 12) + "..." : row.show;
         const venueT = row.stadium.length > 10 ? row.stadium.substring(0, 10) + "..." : row.stadium;
@@ -1336,9 +1333,9 @@ export async function POST(req: NextRequest) {
         drawR(row.numEmployees.toString(), C.numEmp, y, { size: 6 });
         drawR(fmtMoney(row.commissionPerEmployee), C.comm, y, { size: 6 });
         drawR(Number(row.hoursWorked).toFixed(2), C.hours, y, { size: 6 });
-        drawR(`$${Number(row.rateInEffect).toFixed(2)}`, C.rate, y, { size: 6 });
-        drawR(`$${Number(row.variableRate).toFixed(2)}`, C.varRate, y, { size: 6 });
-        drawR(fmtMoney(row.variableIncentive), C.varInc, y, { size: 6 });
+        drawR(maskedCommissionRowValue, C.rate, y, { size: 6 });
+        drawR(maskedCommissionRowValue, C.varRate, y, { size: 6 });
+        drawR(maskedCommissionRowValue, C.varInc, y, { size: 6 });
         drawR(fmtMoney(row.tips), C.tips, y, { size: 6 });
         drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
         drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
@@ -1504,6 +1501,7 @@ export async function POST(req: NextRequest) {
       // Pre-fetch differential miles per event for travel pay calculation (mirrors HR dashboard formula)
       const differentialMilesByEventId: Record<string, number> = {};
       const mileageApprovedByEvent: Record<string, boolean> = {};
+      const travelApprovedByEvent: Record<string, boolean> = {};
       if (matchedUserId) {
         const eventIds = (events || []).map((e: any) => String(e.id)).filter(Boolean);
         if (eventIds.length > 0) {
@@ -1520,7 +1518,6 @@ export async function POST(req: NextRequest) {
               .maybeSingle(),
           ]);
 
-          const travelApprovedByEvent: Record<string, boolean> = {};
           for (const row of approvalRows || []) {
             travelApprovedByEvent[String(row.event_id)] = row.travel_approved ?? true;
             mileageApprovedByEvent[String(row.event_id)] = row.mileage_approved ?? true;
@@ -1569,7 +1566,9 @@ export async function POST(req: NextRequest) {
               const evLng = Number(venue.longitude);
               if (!Number.isFinite(evLat) || !Number.isFinite(evLng)) continue;
               const distToEvent = calculateDistanceMiles(userLat, userLng, evLat, evLng);
-              differentialMilesByEventId[eventId] = Math.max(0, distToEvent - distToHomeVenue);
+              const rawDiff = distToEvent - distToHomeVenue;
+              const differentialMiles = rawDiff >= 2 ? Math.round(rawDiff * 10) / 10 : 0;
+              differentialMilesByEventId[eventId] = differentialMiles;
             }
           }
         }
@@ -1848,14 +1847,14 @@ export async function POST(req: NextRequest) {
           hourlySummaryOvertimePay += sdOtPay;
           hourlySummaryDoubletimePay += sdDtPay;
         }
-        // Travel pay = (differentialMiles ÷ 30) × max(stateMin, rateInEffect)
+        // Travel pay = (differentialMiles ÷ 30) × $28.50
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
-        const travelStateMin = ['CA'].includes((eventState || paystubState || '').toUpperCase()) ? 28.50 : 25.94;
-        const travelRate = Math.max(travelStateMin, loadedRateBase);
-        const travelPay = (differentialMiles / 30) * travelRate;
-        totalTravelPay += travelPay;
-        // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
+        const travelApproved = travelApprovedByEvent[eventId] ?? true;
         const mileageApproved = mileageApprovedByEvent[eventId] ?? true;
+        if (travelApproved && differentialMiles > 0) {
+          totalTravelPay += (differentialMiles / 30) * 28.50;
+        }
+        // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
         totalMileageReimbursement += mileageApproved ? differentialMiles * 2 * 0.71 : 0;
       }
 
@@ -2219,15 +2218,12 @@ export async function POST(req: NextRequest) {
       drawTopLine(109, deductionsBottomLineY, 332);
       drawTopText("Net Pay Adjustments", 112, netAdjustmentsHeaderY, { size: 8, bold: true });
       drawTopText("this period", 233, netAdjustmentsHeaderY, { size: 8 });
-      drawTopText("year to date", 289, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
       const totalMiscReimbursement = round2(reimbursement + adjustmentReimbursementRounded);
       drawTopText("Miscellaneous Reimbursement", 112, reimbursementRowY, { size: 8 });
       drawTopText(fmt(totalMiscReimbursement), 249, reimbursementRowY, { size: 8 });
-      drawTopText(fmt(totalMiscReimbursement), 299, reimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageRowY, { size: 8 });
       drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageRowY, { size: 8 });
-      drawTopText(fmt(totalMileageReimbursementRounded), 299, mileageRowY, { size: 8 });
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });

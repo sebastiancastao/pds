@@ -128,6 +128,20 @@ type PDFForm = {
   form_date: string | null;
 };
 
+type PaystubDistributionEntry = {
+  id: string;
+  employee_name: string;
+  pay_date: string | null;
+  pay_period_start: string | null;
+  pay_period_end: string | null;
+  triggered_by_email: string | null;
+  distribution_mode: "single" | "batch";
+  status: "sent" | "failed";
+  error_message: string | null;
+  pdf_storage_path: string | null;
+  sent_at: string;
+};
+
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
   isTempAgreementFormRecord(form);
 
@@ -305,6 +319,9 @@ export default function WorkerProfilePage() {
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth()); // 0-11
   const [refreshTick, setRefreshTick] = useState(0);
 
+  const [paystubHistory, setPaystubHistory] = useState<PaystubDistributionEntry[]>([]);
+  const [paystubHistoryLoading, setPaystubHistoryLoading] = useState(false);
+
   useEffect(() => {
     if (!employeeId) return;
 
@@ -406,6 +423,22 @@ export default function WorkerProfilePage() {
         .then((d) => setUploadedEmails(d.images ?? []));
     });
   }, [employee?.id, refreshTick]);
+
+  // Fetch paystub distribution history for this employee
+  useEffect(() => {
+    if (!employeeId) return;
+    setPaystubHistoryLoading(true);
+    supabase
+      .from("paystub_distribution_log")
+      .select("id, employee_name, pay_date, pay_period_start, pay_period_end, triggered_by_email, distribution_mode, status, error_message, pdf_storage_path, sent_at")
+      .eq("employee_user_id", employeeId)
+      .order("sent_at", { ascending: false })
+      .limit(50)
+      .then(({ data }) => {
+        setPaystubHistory((data as PaystubDistributionEntry[]) ?? []);
+        setPaystubHistoryLoading(false);
+      });
+  }, [employeeId, refreshTick]);
 
   // Fetch I-9 documents after worker is loaded
   useEffect(() => {
@@ -2354,6 +2387,81 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
+          {/* Paystub Distribution History */}
+          {(paystubHistoryLoading || paystubHistory.length > 0) && (
+            <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <h2 className="text-base font-semibold text-gray-900">Paystub Distribution History</h2>
+                <span className="ml-auto text-xs text-gray-400">{paystubHistory.length} record{paystubHistory.length !== 1 ? "s" : ""}</span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {paystubHistoryLoading && paystubHistory.length === 0 ? (
+                  <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+                ) : (
+                  paystubHistory.map((entry) => (
+                    <div key={entry.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+                      {/* Status badge */}
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border shrink-0 ${
+                        entry.status === "sent"
+                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                          : "bg-red-50 text-red-700 border-red-200"
+                      }`}>
+                        {entry.status === "sent" ? "Distributed" : "Failed"}
+                      </span>
+
+                      {/* Pay date / period */}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900">
+                          {entry.pay_date
+                            ? `Pay date: ${formatEventDate(entry.pay_date)}`
+                            : "Pay date not recorded"}
+                        </p>
+                        {(entry.pay_period_start || entry.pay_period_end) && (
+                          <p className="text-xs text-gray-500 mt-0.5">
+                            Period: {formatEventDate(entry.pay_period_start)} - {formatEventDate(entry.pay_period_end)}
+                          </p>
+                        )}
+                        {entry.status === "failed" && entry.error_message && (
+                          <p className="text-xs text-red-600 mt-0.5">{entry.error_message}</p>
+                        )}
+                      </div>
+
+                      {/* Right-side meta + download */}
+                      <div className="text-right shrink-0 space-y-1">
+                        {entry.pdf_storage_path && <p className="text-xs text-gray-500">Available in employee profile</p>}
+                        <p className="text-xs text-gray-400">
+                          By {entry.triggered_by_email ?? "unknown"} - {entry.distribution_mode === "batch" ? "batch" : "single"}
+                        </p>
+                        <p className="text-xs text-gray-400">
+                          {new Date(entry.sent_at).toLocaleString(undefined, {
+                            month: "short", day: "numeric", year: "numeric",
+                            hour: "numeric", minute: "2-digit", hour12: true,
+                          })}
+                        </p>
+                        {entry.pdf_storage_path && (
+                          <a
+                            href={`/api/distribute-paystub/download?logId=${entry.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            Download PDF
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          )}
+
           {/* Uploaded Emails */}
           {uploadedEmails.length > 0 && (
             <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
@@ -2386,3 +2494,4 @@ export default function WorkerProfilePage() {
     </div>
   );
 }
+

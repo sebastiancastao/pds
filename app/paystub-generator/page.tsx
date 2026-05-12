@@ -181,6 +181,11 @@ export default function PaystubGenerator() {
   });
 
   const [generating, setGenerating] = useState(false);
+  const [distributing, setDistributing] = useState(false);
+  const [distributeMessage, setDistributeMessage] = useState<string | null>(null);
+  const [batchDistributing, setBatchDistributing] = useState(false);
+  const [batchDistributeMessage, setBatchDistributeMessage] = useState<string | null>(null);
+  const [batchDistributeErrors, setBatchDistributeErrors] = useState<string[]>([]);
   const [creatingReport, setCreatingReport] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
@@ -259,7 +264,6 @@ export default function PaystubGenerator() {
   };
   const roundHours = (value: number) =>
     Number((Number.isFinite(value) ? value : 0).toFixed(2));
-  const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
   const formatCommissionReportDate = (rawValue: string) => {
     const raw = (rawValue || '').toString();
     const dateOnly = raw.split('T')[0];
@@ -277,21 +281,21 @@ export default function PaystubGenerator() {
     if (!worker) return 0;
     const effective = Number(worker.payment_data?.effective_hours ?? 0);
     if (Number.isFinite(effective) && effective > 0) {
-      return roundHours(addLongShiftBonus(effective + 0.5));
+      return roundHours(effective);
     }
     const actual = Number(worker.payment_data?.actual_hours ?? 0);
     if (Number.isFinite(actual) && actual > 0) {
-      return roundHours(addLongShiftBonus(actual));
+      return roundHours(actual);
     }
     const workedHours = Number(worker.worked_hours ?? 0);
     if (Number.isFinite(workedHours) && workedHours > 0) {
-      return roundHours(addLongShiftBonus(workedHours));
+      return roundHours(workedHours);
     }
     const regularHours = Number(worker.payment_data?.regular_hours ?? 0);
     const overtimeHours = Number(worker.payment_data?.overtime_hours ?? 0);
     const doubletimeHours = Number(worker.payment_data?.doubletime_hours ?? 0);
     const summed = regularHours + overtimeHours + doubletimeHours;
-    return summed > 0 ? roundHours(addLongShiftBonus(summed)) : 0;
+    return summed > 0 ? roundHours(summed) : 0;
   };
   const getAdjustedGrossForEvent = (event: Event): number => {
     const eventPaymentSummary = event.event_payment || null;
@@ -1164,6 +1168,228 @@ export default function PaystubGenerator() {
     }
   };
 
+  const storeDistributedPaystub = async (
+    pdfBytes: ArrayBuffer,
+    userId: string | null,
+    employeeName: string,
+    payDate: string,
+    opts?: { payPeriodStart?: string; payPeriodEnd?: string; distributionMode?: 'single' | 'batch' }
+  ) => {
+    const { data: { session } } = await supabase.auth.getSession();
+
+    const formPayload = new FormData();
+    formPayload.append(
+      'pdf',
+      new Blob([pdfBytes], { type: 'application/pdf' }),
+      `paystub-${employeeName.replace(/\s+/g, '_')}-${payDate}.pdf`
+    );
+    if (userId) formPayload.append('userId', userId);
+    formPayload.append('employeeName', employeeName);
+    formPayload.append('payDate', payDate);
+    if (opts?.payPeriodStart) formPayload.append('payPeriodStart', opts.payPeriodStart);
+    if (opts?.payPeriodEnd) formPayload.append('payPeriodEnd', opts.payPeriodEnd);
+    formPayload.append('distributionMode', opts?.distributionMode ?? 'single');
+
+    const res = await fetch('/api/distribute-paystub', {
+      method: 'POST',
+      headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      body: formPayload,
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || 'Failed to distribute paystub');
+    }
+    return await res.json();
+  };
+
+  const handleDistribute = async () => {
+    setDistributing(true);
+    setDistributeMessage(null);
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      const resolvedUserId =
+        matchedUserId ||
+        (formData.employeeName
+          ? await resolveEmployeeUserIdByOfficialName(formData.employeeName, { debug: debugMode })
+          : null);
+
+      if (!resolvedUserId) {
+        throw new Error('Could not match this employee to a user profile. Match the employee first.');
+      }
+
+      let sickLeaveForPayload = sickLeave;
+      let stateForPayload = formData.state;
+      const summaryData = await fetchEmployeeSummary(resolvedUserId);
+      sickLeaveForPayload = summaryData.sickLeave;
+      if (summaryData.profileStateCode) stateForPayload = summaryData.profileStateCode;
+
+      const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
+
+      const payload = {
+        employeeName: formData.employeeName,
+        ssn: formData.ssn,
+        address: formData.address,
+        employeeId: formData.employeeId,
+        payPeriodStart: formData.payPeriodStart,
+        payPeriodEnd: formData.payPeriodEnd,
+        payDate: formData.payDate,
+        federalIncome: formData.federalIncome,
+        socialSecurity: formData.socialSecurity,
+        medicare: formData.medicare,
+        stateIncome: formData.stateIncome,
+        stateDI: formData.stateDI,
+        state: stateForPayload,
+        miscDeduction: formData.miscDeduction,
+        miscReimbursement: formData.miscReimbursement,
+        mealPremium: parseFloat(getOverride(resolvedUserId).mealPremium) || 0,
+        sick: parseFloat(getOverride(resolvedUserId).sick) || 0,
+        events: filteredEvents,
+        sickLeave: sickLeaveForPayload,
+        matchedUserId: resolvedUserId,
+        debug: debugMode,
+      };
+
+      const genRes = await fetch('/api/generate-paystub', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!genRes.ok) {
+        const err = await genRes.json().catch(() => ({}));
+        throw new Error(err?.error || 'Failed to generate paystub');
+      }
+      const pdfBytes = await genRes.arrayBuffer();
+
+      await storeDistributedPaystub(
+        pdfBytes,
+        resolvedUserId,
+        formData.employeeName,
+        formData.payDate,
+        {
+          payPeriodStart: formData.payPeriodStart,
+          payPeriodEnd: formData.payPeriodEnd,
+          distributionMode: 'single',
+        }
+      );
+      setDistributeMessage('Paystub distributed to the employee profile.');
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setDistributing(false);
+    }
+  };
+
+  const handleDistributeBatch = async () => {
+    setBatchDistributing(true);
+    setBatchDistributeMessage(null);
+    setBatchDistributeErrors([]);
+
+    const rows = importedEmployees || [];
+    if (rows.length === 0) {
+      alert('No employees imported from Excel yet.');
+      setBatchDistributing(false);
+      return;
+    }
+    if (!formData.payPeriodStart || !formData.payPeriodEnd) {
+      alert('Missing pay period start/end.');
+      setBatchDistributing(false);
+      return;
+    }
+
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      let sent = 0;
+      let skipped = 0;
+      const errors: string[] = [];
+      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
+      const profileStateByUserId: Record<string, string | null> = {};
+
+      for (const emp of rows) {
+        try {
+          const employeeName = (emp.employeeName || '').trim();
+          if (!employeeName || !emp.matchedUserId) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName || 'unknown'}): no matched user`);
+            continue;
+          }
+
+          const filteredEvents = filterEventsForUserIdWithHours(emp.matchedUserId);
+          if (filteredEvents.length === 0) {
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): no payable events in period`);
+            continue;
+          }
+
+          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, emp.matchedUserId)) {
+            const summaryData = await fetchEmployeeSummary(emp.matchedUserId);
+            sickLeaveByUserId[emp.matchedUserId] = summaryData.sickLeave;
+            profileStateByUserId[emp.matchedUserId] = summaryData.profileStateCode;
+          }
+
+          const payload = {
+            employeeName,
+            ssn: emp.ssn,
+            address: emp.address,
+            employeeId: emp.employeeId,
+            payPeriodStart: formData.payPeriodStart,
+            payPeriodEnd: formData.payPeriodEnd,
+            payDate: formData.payDate,
+            federalIncome: emp.federalIncome,
+            socialSecurity: emp.socialSecurity,
+            medicare: emp.medicare,
+            stateIncome: emp.stateIncome,
+            stateDI: emp.stateDI,
+            state: profileStateByUserId[emp.matchedUserId] || emp.state || formData.state,
+            miscDeduction: emp.miscDeduction,
+            miscReimbursement: emp.miscReimbursement,
+            mealPremium: parseFloat(getOverride(emp.matchedUserId).mealPremium) || 0,
+            sick: parseFloat(getOverride(emp.matchedUserId).sick) || 0,
+            events: filteredEvents,
+            sickLeave: sickLeaveByUserId[emp.matchedUserId] ?? null,
+            matchedUserId: emp.matchedUserId,
+            debug: debugMode,
+          };
+
+          const genRes = await fetch('/api/generate-paystub', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (!genRes.ok) {
+            const body = await genRes.json().catch(() => ({}));
+            skipped++;
+            errors.push(`Row ${emp.rowIndex} (${employeeName}): ${body?.error || 'generation failed'}`);
+            continue;
+          }
+
+          const pdfBytes = await genRes.arrayBuffer();
+          await storeDistributedPaystub(pdfBytes, emp.matchedUserId, employeeName, formData.payDate, {
+            payPeriodStart: formData.payPeriodStart,
+            payPeriodEnd: formData.payPeriodEnd,
+            distributionMode: 'batch',
+          });
+          sent++;
+        } catch (err: any) {
+          skipped++;
+          errors.push(`Row ${emp.rowIndex} (${(emp.employeeName || '').trim() || 'Unknown'}): ${err?.message || 'Unexpected error'}`);
+        }
+      }
+
+      setBatchDistributeMessage(`Distributed ${sent} paystub(s) to employee profiles. Skipped ${skipped}.`);
+      setBatchDistributeErrors(errors);
+    } catch (err: any) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setBatchDistributing(false);
+    }
+  };
+
   const handleCreateReport = async () => {
     setCreatingReport(true);
 
@@ -1458,6 +1684,8 @@ export default function PaystubGenerator() {
           ]
         : [];
 
+      const maskedCommissionRowValue = '-';
+
       const finalCommissionRows = normalizedCommissionReportRows.map((row) => ({
         show_date: row.showDate,
         event_name: row.eventName,
@@ -1468,9 +1696,9 @@ export default function PaystubGenerator() {
         employee_count: row.employeeCount,
         commission: row.commission,
         hours_worked: row.hoursWorked,
-        rate_in_effect: row.rateInEffect,
-        variable_rate: row.variableRate === '' ? 0 : row.variableRate,
-        variable_incentive: row.variableIncentive === '' ? 0 : row.variableIncentive,
+        rate_in_effect: maskedCommissionRowValue,
+        variable_rate: maskedCommissionRowValue,
+        variable_incentive: maskedCommissionRowValue,
         tips: row.tips === '' ? 0 : row.tips,
         rest_pay: row.restPay === '' ? 0 : row.restPay,
         final_pay: row.finalPay,
@@ -1518,9 +1746,9 @@ export default function PaystubGenerator() {
           row.employeeCount,
           row.commission,
           row.hoursWorked,
-          row.rateInEffect,
-          row.variableRate,
-          row.variableIncentive,
+          maskedCommissionRowValue,
+          maskedCommissionRowValue,
+          maskedCommissionRowValue,
           row.tips,
           row.restPay,
           row.finalPay,
@@ -2511,6 +2739,33 @@ export default function PaystubGenerator() {
                 )}
               </button>
 
+              {/* Distribute to Employee Profile Button (Single) */}
+              <button
+                onClick={handleDistribute}
+                disabled={distributing || generating || !formData.employeeName}
+                className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                title="Generate paystub and add it to this employee profile"
+              >
+                {distributing ? (
+                  <>
+                    <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Distributing...
+                  </>
+                ) : (
+                  <>
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Distribute to Profile
+                  </>
+                )}
+              </button>
+              {distributeMessage && (
+                <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                  {distributeMessage}
+                </div>
+              )}
+
               {/* Batch Generate Button (Excel import) */}
               {importedEmployees.length > 0 && (
                 <div className="space-y-2">
@@ -2578,6 +2833,48 @@ export default function PaystubGenerator() {
                       )}
                     </div>
                   )}
+
+                  {/* Distribute Batch to Employee Profiles */}
+                  <div className="pt-2 border-t border-slate-100">
+                    <button
+                      onClick={handleDistributeBatch}
+                      disabled={batchDistributing || batchGenerating}
+                      className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-emerald-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                      title="Generate each paystub and add it to the employee profile"
+                    >
+                      {batchDistributing ? (
+                        <>
+                          <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                          Distributing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                          Distribute Batch to Profiles
+                        </>
+                      )}
+                    </button>
+                    {batchDistributeMessage && (
+                      <div className="mt-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+                        {batchDistributeMessage}
+                      </div>
+                    )}
+                    {batchDistributeErrors.length > 0 && (
+                      <div className="mt-2 text-xs text-slate-700 bg-white border border-slate-200 rounded-md p-2 max-h-32 overflow-auto">
+                        <div className="font-semibold text-slate-900 mb-1">Distribute Errors</div>
+                        <ul className="list-disc pl-5 space-y-1">
+                          {batchDistributeErrors.slice(0, 50).map((e) => (
+                            <li key={e}>{e}</li>
+                          ))}
+                        </ul>
+                        {batchDistributeErrors.length > 50 && (
+                          <div className="mt-1 text-slate-600">Showing first 50.</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
 

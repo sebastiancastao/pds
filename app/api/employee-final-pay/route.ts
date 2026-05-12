@@ -17,12 +17,8 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const GATE_PHONE_OFFSET_HOURS = 0.5;
 const HOURS_MISMATCH_THRESHOLD = 0.01;
 
-const addGatePhoneLeadHours = (hours: number): number =>
-  Number((hours + GATE_PHONE_OFFSET_HOURS).toFixed(6));
-const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
 const roundHoursForDebug = (value: number): number =>
   Number((Number.isFinite(value) ? value : 0).toFixed(6));
 const normalizeDivision = (value?: string | null) => (value || '').toString().toLowerCase().trim();
@@ -42,17 +38,17 @@ const getMinimumLoadedRate = (stateCode?: string | null): number =>
 const getEffectiveHours = (payment: any): number => {
   if (payment && (payment?.effective_hours != null || payment?.effectiveHours != null)) {
     const effective = Number(payment?.effective_hours ?? payment?.effectiveHours);
-    if (Number.isFinite(effective) && effective >= 0) return addLongShiftBonus(addGatePhoneLeadHours(effective));
+    if (Number.isFinite(effective) && effective >= 0) return effective;
   }
   const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
-  if (actual > 0) return addLongShiftBonus(actual);
+  if (actual > 0) return actual;
   const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
-  if (worked > 0) return addLongShiftBonus(worked);
+  if (worked > 0) return worked;
   const reg = Number(payment?.regular_hours ?? payment?.regularHours ?? 0);
   const ot = Number(payment?.overtime_hours ?? payment?.overtimeHours ?? 0);
   const dt = Number(payment?.doubletime_hours ?? payment?.doubletimeHours ?? 0);
   const summed = reg + ot + dt;
-  return summed > 0 ? addLongShiftBonus(summed) : 0;
+  return summed > 0 ? summed : 0;
 };
 
 const getHoursDebugBreakdown = (payment: any) => {
@@ -61,7 +57,7 @@ const getHoursDebugBreakdown = (payment: any) => {
   const effective = hasEffective ? Number(effectiveRaw) : 0;
   const effectivePlusGatePhone =
     hasEffective && Number.isFinite(effective) && effective >= 0
-      ? addGatePhoneLeadHours(effective)
+      ? effective
       : 0;
   const actual = Number(payment?.actual_hours ?? payment?.actualHours ?? 0);
   const worked = Number(payment?.worked_hours ?? payment?.workedHours ?? 0);
@@ -83,7 +79,7 @@ const getHoursDebugBreakdown = (payment: any) => {
   return {
     selected_hours: roundHoursForDebug(selected),
     selected_source: effectivePlusGatePhone > 0
-      ? 'effective_hours+gate_phone'
+      ? 'effective_hours'
       : actual > 0
         ? 'actual_hours'
         : worked > 0

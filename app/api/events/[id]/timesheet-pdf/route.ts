@@ -452,7 +452,7 @@ export async function GET(
     }
 
     const date = String(event.event_date || "").split("T")[0];
-    const applyGateOffset = date >= "2026-03-03";
+    const applyGateOffset = true;
     const eventState = String(event.state || "CA").toUpperCase();
     const tz = getTimezoneForState(eventState) || "America/Los_Angeles";
     const teamMembers = teamResult.data || [];

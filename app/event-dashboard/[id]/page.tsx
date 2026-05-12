@@ -2520,8 +2520,7 @@ export default function EventDashboardPage() {
 
   const GATE_PHONE_OFFSET_MINUTES = 30;
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
-  const applyGateOffset = Boolean(event?.event_date && String(event.event_date).slice(0, 10) >= "2026-03-03");
-  const addLongShiftBonus = (hours: number): number => hours >= 14 ? hours + 4.5 : hours;
+  const applyGateOffset = true;
 
   const getDisplayedWorkedMs = (uid: string): number => {
     const span = timesheetSpans[uid];
@@ -2562,8 +2561,8 @@ export default function EventDashboardPage() {
       totalMs = Math.max(apiTotalMs - mealMs, 0);
     }
 
-    // Apply a single 30-minute entry/admin processing offset (events from 2026-03-03 onwards only).
-    if (applyGateOffset && totalMs > 0 && span?.firstIn) {
+    // The HR timesheet source of truth always includes the 30-minute admin response allowance.
+    if (applyGateOffset && totalMs > 0) {
       totalMs += GATE_PHONE_OFFSET_MS;
     }
 
@@ -3563,7 +3562,7 @@ export default function EventDashboardPage() {
   const getActualHoursFromWorkedMs = (totalMs: number, roundToHundredths = false): number => {
     const rawHours = totalMs / (1000 * 60 * 60);
     const normalizedHours = roundToHundredths ? Math.round(rawHours * 100) / 100 : rawHours;
-    return addLongShiftBonus(normalizedHours);
+    return normalizedHours;
   };
 
   const buildCommissionSharesByUser = (
