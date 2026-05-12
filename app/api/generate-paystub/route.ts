@@ -1583,6 +1583,8 @@ export async function POST(req: NextRequest) {
       let totalCommission = 0;
       let totalRestBreak = 0;
       let totalOther = 0;
+      let totalAdjustmentMealPremium = 0;
+      let totalAdjustmentReimbursement = 0;
       let totalGross = 0;
       let totalRegularPayAmount = 0;
       let totalOvertimePayAmount = 0;
@@ -1746,7 +1748,30 @@ export async function POST(req: NextRequest) {
           : usesPeriodRate
             ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
             : roundPayrollAmount(totalFinalCommissionAmt);
-        const other = Number(worker?.adjustment_amount || 0);
+        const adjustmentTotal = Number(worker?.adjustment_amount || 0);
+        const parsedAdj = (() => {
+          const note = (worker as any)?.adjustment_note;
+          if (note) {
+            try {
+              const parsed = JSON.parse(note);
+              if (parsed && typeof parsed === 'object') {
+                return {
+                  reimbursementAmount: Number(parsed.reimbursement || 0),
+                  bonusAmount: (parsed.otherType === 'bonus') ? Number(parsed.otherAmount || 0) : 0,
+                  mealPremiumAmount: (parsed.otherType === 'meal_break') ? Number(parsed.otherAmount || 0) : 0,
+                };
+              }
+            } catch {}
+            const normalized = note.toString().trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+            if (normalized === 'bonus') return { reimbursementAmount: 0, bonusAmount: adjustmentTotal, mealPremiumAmount: 0 };
+            if (normalized === 'meal_break') return { reimbursementAmount: 0, bonusAmount: 0, mealPremiumAmount: adjustmentTotal };
+            return { reimbursementAmount: adjustmentTotal, bonusAmount: 0, mealPremiumAmount: 0 };
+          }
+          return { reimbursementAmount: 0, bonusAmount: adjustmentTotal, mealPremiumAmount: 0 };
+        })();
+        const other = parsedAdj.bonusAmount;
+        const adjustmentMealPremium = parsedAdj.mealPremiumAmount;
+        const adjustmentReimbursement = parsedAdj.reimbursementAmount;
 
         const regPay = isEventSD ? sdRegPay : Number(paymentData?.regular_pay || 0);
         const otPay = isEventSD ? sdOtPay : Number(paymentData?.overtime_pay || 0);
@@ -1809,6 +1834,8 @@ export async function POST(req: NextRequest) {
         totalFinalCommission += isEventSD ? 0 : reportFinalCommissionAmt;
         totalRestBreak += restBreak;
         totalOther += other;
+        totalAdjustmentMealPremium += adjustmentMealPremium;
+        totalAdjustmentReimbursement += adjustmentReimbursement;
         totalGross += computedTotalGrossPay;
         totalRegularPayAmount += isEventSD ? sdRegPay : regPay;
         totalOvertimePayAmount += isEventSD ? sdOtPay : otPay;
@@ -1821,9 +1848,11 @@ export async function POST(req: NextRequest) {
           hourlySummaryOvertimePay += sdOtPay;
           hourlySummaryDoubletimePay += sdDtPay;
         }
-        // Travel pay = (differentialMiles × 2 / 60) × 28.50
+        // Travel pay = (differentialMiles ÷ 30) × max(stateMin, rateInEffect)
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
-        const travelPay = (differentialMiles * 2 / 60) * 28.50;
+        const travelStateMin = ['CA'].includes((eventState || paystubState || '').toUpperCase()) ? 28.50 : 25.94;
+        const travelRate = Math.max(travelStateMin, loadedRateBase);
+        const travelPay = (differentialMiles / 30) * travelRate;
         totalTravelPay += travelPay;
         // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
         const mileageApproved = mileageApprovedByEvent[eventId] ?? true;
@@ -1917,8 +1946,9 @@ export async function POST(req: NextRequest) {
       const totalRestBreakRounded = round2(totalRestBreak);
       const totalOtherRounded = round2(totalOther);
       const totalMileageReimbursementRounded = round2(totalMileageReimbursement);
-      const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0));
+      const mealPremiumThisPeriod = round2(Math.abs(Number(mealPremium) || 0) + totalAdjustmentMealPremium);
       const sickThisPeriod = round2(Math.abs(Number(sick) || 0));
+      const adjustmentReimbursementRounded = round2(totalAdjustmentReimbursement);
       const grossPayThisPeriod = round2(
         (hasSanDiegoEventHours ? totalRegularPayAmount : 0) +
         totalOvertimePayAmount +
@@ -1933,7 +1963,7 @@ export async function POST(req: NextRequest) {
         mealPremiumThisPeriod
       );
       const appliedStatutoryDeductions = round2(Math.min(rawTotalDeductions, grossPayThisPeriod));
-      const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + totalMileageReimbursementRounded);
+      const netPay = round2(grossPayThisPeriod - appliedStatutoryDeductions + reimbursement + adjustmentReimbursementRounded + totalMileageReimbursementRounded);
       const effectiveRate = commissionRateInEffectForEarnings;
 
       let ytdSnapshot: any = null;
@@ -2191,9 +2221,10 @@ export async function POST(req: NextRequest) {
       drawTopText("this period", 233, netAdjustmentsHeaderY, { size: 8 });
       drawTopText("year to date", 289, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
+      const totalMiscReimbursement = round2(reimbursement + adjustmentReimbursementRounded);
       drawTopText("Miscellaneous Reimbursement", 112, reimbursementRowY, { size: 8 });
-      drawTopText(fmt(reimbursement), 249, reimbursementRowY, { size: 8 });
-      drawTopText(fmt(reimbursement), 299, reimbursementRowY, { size: 8 });
+      drawTopText(fmt(totalMiscReimbursement), 249, reimbursementRowY, { size: 8 });
+      drawTopText(fmt(totalMiscReimbursement), 299, reimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageRowY, { size: 8 });
       drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageRowY, { size: 8 });
       drawTopText(fmt(totalMileageReimbursementRounded), 299, mileageRowY, { size: 8 });
@@ -2395,6 +2426,7 @@ export async function POST(req: NextRequest) {
     let totalRestBreak = 0;
     let totalOther = 0;
     let totalGross = 0;
+    let totalAdjustmentReimbursementNonCA = 0;
     const nonCaCommissionRows: CommissionReportRow[] = [];
 
     // Draw event rows
@@ -2523,7 +2555,30 @@ export async function POST(req: NextRequest) {
         const reportFinalCommissionAmt = usesPeriodRate
           ? roundPayrollAmount(Number(periodWorker?.commissionPaidTotal || 0))
           : roundPayrollAmount(totalFinalCommissionAmt);
-        const other = Number(worker?.adjustment_amount || 0);
+        const adjustmentTotal2 = Number(worker?.adjustment_amount || 0);
+        const parsedAdj2 = (() => {
+          const note = (worker as any)?.adjustment_note;
+          if (note) {
+            try {
+              const parsed = JSON.parse(note);
+              if (parsed && typeof parsed === 'object') {
+                return {
+                  reimbursementAmount: Number(parsed.reimbursement || 0),
+                  bonusAmount: (parsed.otherType === 'bonus') ? Number(parsed.otherAmount || 0) : 0,
+                  mealPremiumAmount: (parsed.otherType === 'meal_break') ? Number(parsed.otherAmount || 0) : 0,
+                };
+              }
+            } catch {}
+            const normalized = note.toString().trim().toLowerCase().replace(/\s+/g, '_').replace(/-/g, '_');
+            if (normalized === 'bonus') return { reimbursementAmount: 0, bonusAmount: adjustmentTotal2, mealPremiumAmount: 0 };
+            if (normalized === 'meal_break') return { reimbursementAmount: 0, bonusAmount: 0, mealPremiumAmount: adjustmentTotal2 };
+            return { reimbursementAmount: adjustmentTotal2, bonusAmount: 0, mealPremiumAmount: 0 };
+          }
+          return { reimbursementAmount: 0, bonusAmount: adjustmentTotal2, mealPremiumAmount: 0 };
+        })();
+        const other = parsedAdj2.bonusAmount;
+        const adjustmentMealPremium2 = parsedAdj2.mealPremiumAmount;
+        const adjustmentReimbursement2 = parsedAdj2.reimbursementAmount;
 
         const regPay = Number(paymentData?.regular_pay || 0);
         const otPay = Number(paymentData?.overtime_pay || 0);
@@ -2547,12 +2602,12 @@ export async function POST(req: NextRequest) {
         // Total (gross) used for "This Period" and Net Pay.
         // If persisted total_pay exists and is non-zero, keep it for non-CA; otherwise use computed.
         const persistedTotal = Number(paymentData?.total_pay || 0);
-        const persistedTotalGrossPay = persistedTotal + other;
+        const persistedTotalGrossPay = persistedTotal + other + adjustmentMealPremium2;
         const reportFinalPay = roundPayrollAmount(
           displayCommissionPay + displayVariableIncentive + tips + restBreak
         );
         const computedTotalPay = reportFinalPay;
-        const computedTotalGrossPay = computedTotalPay + other;
+        const computedTotalGrossPay = computedTotalPay + other + adjustmentMealPremium2;
         const total = (!useVendorLayout && persistedTotal > 0) ? persistedTotalGrossPay : computedTotalGrossPay;
         const reportRateInEffect = getReportRateInEffect({
           commissionPay: displayCommissionPay,
@@ -2601,6 +2656,7 @@ export async function POST(req: NextRequest) {
         totalRestBreak += restBreak;
         totalOther += other;
         totalGross += total;
+        totalAdjustmentReimbursementNonCA += adjustmentReimbursement2;
 
         const eventDateStr = (event.event_date || '').toString().split('T')[0];
         const eventDateObj = eventDateStr ? new Date(`${eventDateStr}T00:00:00Z`) : new Date(event.event_date);
@@ -2750,9 +2806,10 @@ export async function POST(req: NextRequest) {
 
     // Reimbursement
     const reimbursement = parseFloat(miscReimbursement || '0');
-    if (reimbursement > 0) {
+    const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
+    if (totalReimbursementNonCA > 0) {
       drawText("Misc Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${reimbursement.toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${totalReimbursementNonCA.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
 
@@ -2760,7 +2817,7 @@ export async function POST(req: NextRequest) {
     yPosition -= 10;
     drawLine(50, yPosition + 10, 350, yPosition + 10);
     yPosition -= 5;
-    const netPay = currentGrossPay - round2(appliedTotalDeductions) + reimbursement;
+    const netPay = currentGrossPay - round2(appliedTotalDeductions) + totalReimbursementNonCA;
     drawText("Net Pay", 50, yPosition, { bold: true, size: 12 });
     drawText(`$${netPay.toFixed(2)}`, 250, yPosition, { bold: true, size: 12 });
 

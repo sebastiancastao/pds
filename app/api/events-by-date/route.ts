@@ -195,11 +195,12 @@ export async function GET(req: NextRequest) {
 
         // Payment adjustments (aka "Other" in HR Payroll tab)
         const adjustmentByVendorId: Record<string, number> = {};
+        const adjustmentNoteByVendorId: Record<string, string | null> = {};
         if (resolvedVendorIds.length > 0) {
           try {
             const { data: adjustments, error: adjustmentsError } = await supabaseAdmin
               .from('payment_adjustments')
-              .select('user_id, adjustment_amount')
+              .select('user_id, adjustment_amount, adjustment_note')
               .eq('event_id', event.id)
               .in('user_id', resolvedVendorIds);
 
@@ -209,6 +210,7 @@ export async function GET(req: NextRequest) {
               for (const row of adjustments || []) {
                 if (!row?.user_id) continue;
                 adjustmentByVendorId[row.user_id] = Number((row as any).adjustment_amount || 0);
+                adjustmentNoteByVendorId[row.user_id] = (row as any).adjustment_note ?? null;
               }
               if (debug) {
                 console.log('[EVENTS-BY-DATE][debug] adjustments fetched', {
@@ -381,6 +383,7 @@ export async function GET(req: NextRequest) {
               status: teamStatusByVendorId[vendorId] || (paymentData ? 'paid_only' : 'unassigned'),
               payment_data: paymentData,
               adjustment_amount: adjustmentByVendorId[vendorId] ?? 0,
+              adjustment_note: adjustmentNoteByVendorId[vendorId] ?? null,
               worked_hours: includeHours ? (workedHoursByVendorId[vendorId] ?? 0) : undefined
             };
           })

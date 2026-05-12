@@ -265,6 +265,11 @@ function HRDashboardContent() {
     (Number.isFinite(amount) ? amount : 0).toFixed(2);
   const usesPeriodRateBreakdown = (stateCode?: string | null): boolean =>
     isPeriodRateState(normalizeState(stateCode));
+  const computeTravelPay = (diffMiles: number, stateCode: string | null | undefined, rateInEffect: number): number => {
+    const stateMin = normalizeState(stateCode) === 'CA' ? 28.50 : 25.94;
+    const travelRate = Math.max(stateMin, rateInEffect);
+    return (diffMiles / 30) * travelRate;
+  };
   const getEffectiveHours = (payment: any): number => {
     // Payroll tab: when hours are computed from timesheet effective_hours,
     // include the Gate/Phone lead time (30 minutes).
@@ -321,7 +326,7 @@ function HRDashboardContent() {
   };
   const getOtherAdjustmentTypeLabel = (value?: string | null): string => {
     const t = normalizeOtherAdjustmentType(value);
-    if (t === "meal_break") return "Meal Break";
+    if (t === "meal_break") return "Meal Break Premium";
     if (t === "bonus") return "Bonus";
     return "Reimbursement 1";
   };
@@ -1096,6 +1101,7 @@ function HRDashboardContent() {
               tips,
               totalPay,
               adjustmentAmount,
+              adjustmentNote: payment.adjustment_note ?? null,
               adjustmentType,
               reimbursementAmount: parsedAdj.reimbursementAmount,
               otherAmount: parsedAdj.otherAmount,
@@ -1214,9 +1220,10 @@ function HRDashboardContent() {
           (ev.payments || []).forEach((p: any) => {
             const paymentUserId = (p.userId || '').toString();
             if (!paymentUserId) return;
-            initialAdjustments[ev.id][paymentUserId] = Number(p.otherAmount ?? p.adjustmentAmount ?? 0);
-            initialReimbursements[ev.id][paymentUserId] = Number(p.reimbursementAmount || 0);
-            initialAdjustmentTypes[ev.id][paymentUserId] = normalizeOtherAdjustmentType(p.adjustmentType);
+            const _initParsed = parseAdjustmentNote(p.adjustmentNote ?? p.adjustmentType, Number(p.adjustmentAmount || 0));
+            initialAdjustments[ev.id][paymentUserId] = _initParsed.otherAmount;
+            initialReimbursements[ev.id][paymentUserId] = _initParsed.reimbursementAmount;
+            initialAdjustmentTypes[ev.id][paymentUserId] = _initParsed.otherType;
           });
         });
       });
@@ -1238,8 +1245,22 @@ function HRDashboardContent() {
         throw new Error('Missing event or user id for adjustment save');
       }
 
-      const reimbursementAmt = Number(reimbursementAmounts[eventId]?.[userId] || 0);
-      const otherAmt = Number(adjustments[eventId]?.[userId] || 0);
+      // Find the current saved payment to preserve the other column's value if state is missing
+      let savedReimbursement = 0;
+      let savedOther = 0;
+      for (const v of paymentsByVenue) {
+        for (const ev of (v.events || [])) {
+          if (ev.id !== eventId) continue;
+          const p = (ev.payments || []).find((p: any) => p.userId === userId);
+          if (p) { savedReimbursement = Number(p.reimbursementAmount || 0); savedOther = Number(p.otherAmount || 0); }
+        }
+      }
+      const reimbursementAmt = reimbursementAmounts[eventId]?.[userId] !== undefined
+        ? Number(reimbursementAmounts[eventId][userId] || 0)
+        : savedReimbursement;
+      const otherAmt = adjustments[eventId]?.[userId] !== undefined
+        ? Number(adjustments[eventId][userId] || 0)
+        : savedOther;
       const otherType = normalizeOtherAdjustmentType(adjustmentTypes[eventId]?.[userId]);
       const totalAmount = reimbursementAmt + otherAmt;
       const notePayload = JSON.stringify({ reimbursement: reimbursementAmt, otherAmount: otherAmt, otherType });
@@ -1269,6 +1290,7 @@ function HRDashboardContent() {
             return {
               ...p,
               adjustmentAmount: totalAmount,
+              adjustmentNote: notePayload,
               adjustmentType: notePayload,
               reimbursementAmount: reimbursementAmt,
               otherAmount: otherAmt,
@@ -1285,6 +1307,9 @@ function HRDashboardContent() {
         const totalHours = events.reduce((sum: number, ev: any) => sum + Number(ev.eventHours || 0), 0);
         return { ...v, events, totalPayment, totalHours };
       }));
+      // Sync both states to the confirmed saved values so subsequent saves read correct amounts
+      setReimbursementAmounts(prev => ({ ...prev, [eventId]: { ...(prev[eventId] || {}), [userId]: reimbursementAmt } }));
+      setAdjustments(prev => ({ ...prev, [eventId]: { ...(prev[eventId] || {}), [userId]: otherAmt } }));
       return true;
     } catch (e: any) {
       const message = e?.message || 'Failed to save adjustment';
@@ -1294,7 +1319,7 @@ function HRDashboardContent() {
     } finally {
       setSavingAdjustment(false);
     }
-  }, [adjustments, reimbursementAmounts, adjustmentTypes, supabase]);
+  }, [adjustments, reimbursementAmounts, adjustmentTypes, supabase, paymentsByVenue]);
 
   const payPeriodCommission = useMemo(() => {
     const events = paymentsByVenue.flatMap((venue) => venue.events || []);
@@ -1462,10 +1487,10 @@ function HRDashboardContent() {
     const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
     const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isEventSD ? 0 : Number(payment?.restBreak || 0)), 0);
     const totalReimbursement = payments.reduce((sum: number, payment: any) => {
-      return sum + (reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment?.reimbursementAmount || 0));
+      return sum + Number(payment?.reimbursementAmount || 0);
     }, 0);
     const totalOther = payments.reduce((sum: number, payment: any) => {
-      return sum + (adjustments[event.id]?.[payment.userId] ?? Number(payment?.otherAmount || 0));
+      return sum + Number(payment?.otherAmount || 0);
     }, 0);
     const totalMileagePay = payments.reduce((sum: number, payment: any) => {
       const override = (mileagePayOverrides[event.id] || {})[payment.userId];
@@ -1482,9 +1507,9 @@ function HRDashboardContent() {
       const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
       if (diffMiles === null) return sum;
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
-      return sum + ((diffMiles * 2) / 60) * 28.50;
+      return sum + computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect);
     }, 0);
-    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalOther + totalMileagePay + totalTravelPay;
+    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalReimbursement + totalOther + totalMileagePay + totalTravelPay;
 
     return {
       eventHours,
@@ -1527,7 +1552,7 @@ function HRDashboardContent() {
       const mileagePay = mileageOverrideV !== undefined ? mileageOverrideV
         : (approval.mileage ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0) : 0);
       const travelPay = travelOverrideV !== undefined ? travelOverrideV
-        : (approval.travel && diffMiles !== null ? ((diffMiles * 2) / 60) * 28.50 : 0);
+        : (approval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0);
 
       totals.totalHours += Number(payment?.actualHours || 0);
       totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
@@ -1536,8 +1561,8 @@ function HRDashboardContent() {
       totals.totalOvertimePay += isEventSD ? breakdown.overtimePay : 0;
       totals.totalDoubletimeHours += isEventSD ? breakdown.doubletimeHours : 0;
       totals.totalDoubletimePay += isEventSD ? breakdown.doubletimePay : 0;
-      const rowReimbursement = reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment?.reimbursementAmount || 0);
-      const rowOther = adjustments[event.id]?.[payment.userId] ?? Number(payment?.otherAmount || 0);
+      const rowReimbursement = Number(payment?.reimbursementAmount || 0);
+      const rowOther = Number(payment?.otherAmount || 0);
       totals.totalCommissionPay += isEventSD ? 0 : breakdown.commissionPay;
       totals.totalVariableIncentive += isEventSD ? 0 : breakdown.variableIncentive;
       totals.totalCommissionPaid += breakdown.commissionPaidTotal;
@@ -1547,7 +1572,7 @@ function HRDashboardContent() {
       totals.totalTravelPay += travelPay;
       totals.totalReimbursement += rowReimbursement;
       totals.totalOther += rowOther;
-      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + other + mileagePay + travelPay;
+      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + rowReimbursement + rowOther + mileagePay + travelPay;
 
       return totals;
     }, {
@@ -1709,19 +1734,18 @@ function HRDashboardContent() {
       const hoursInDecimal = roundHoursToTwoDecimals(hours);
       const displayedCommissionPay = breakdown.commissionPay;
       const variableIncentive = breakdown.variableIncentive;
-      const reimbursementExport = reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment.reimbursementAmount || 0);
-      const other = adjustments[event.id]?.[payment.userId] ?? Number(payment.otherAmount || 0);
+      const reimbursementExport = Number(payment.reimbursementAmount ?? 0);
+      const other = Number(payment.otherAmount ?? 0);
       const adjustmentAmt = reimbursementExport + other;
       const tips = Number(payment.tips || 0);
       const restBreak = hideRest ? 0 : Number(payment.restBreak || 0);
       const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
       const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
       const diffMilesExport = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-      const rawTravelHours = diffMilesExport !== null ? (diffMilesExport * 2) / 60 : 0;
       const exportApproval = getMileageApproval(event.id, payment.userId);
       const mileagePay = exportApproval.mileage ? rawMileagePay : 0;
-      const travelHoursExport = exportApproval.travel ? rawTravelHours : 0;
-      const travelPayExport = exportApproval.travel ? rawTravelHours * 28.50 : 0;
+      const travelHoursExport = 0;
+      const travelPayExport = exportApproval.travel && diffMilesExport !== null ? computeTravelPay(diffMilesExport, state, loadedRate) : 0;
       const totalGrossPay =
         breakdown.commissionPaidTotal +
         tips +
@@ -1880,7 +1904,7 @@ function HRDashboardContent() {
           const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
           if (diffMiles === null) return sum;
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + ((diffMiles * 2) / 60) * breakdown.rateInEffect;
+          return sum + computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect);
         }, 0);
         const totalDisplayedMileagePay = eventPayments.reduce((sum: number, p: any) => {
           return sum + (getMileageApproval(event.id, p.userId).mileage
@@ -2002,11 +2026,10 @@ function HRDashboardContent() {
           const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
           const exportApproval = getMileageApproval(event.id, payment.userId);
           const mileagePay = exportApproval.mileage ? Number(roundUpThousandsToNextHundred(rawMileagePay).toFixed(2)) : 0;
-          const rawTravelHours = diffMiles !== null ? (diffMiles * 2) / 60 : 0;
-          const travelHours = exportApproval.travel ? rawTravelHours : 0;
-          const travelPay = exportApproval.travel ? Number(roundUpThousandsToNextHundred(rawTravelHours * 28.50).toFixed(2)) : 0;
-          const reimbursementBve = Number(roundUpThousandsToNextHundred(reimbursementAmounts[event.id]?.[payment.userId] ?? Number(payment.reimbursementAmount || 0)).toFixed(2));
-          const other = Number(roundUpThousandsToNextHundred(adjustments[event.id]?.[payment.userId] ?? Number(payment.otherAmount || 0)).toFixed(2));
+          const travelHours = 0;
+          const travelPay = exportApproval.travel && diffMiles !== null ? Number(roundUpThousandsToNextHundred(computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect)).toFixed(2)) : 0;
+          const reimbursementBve = Number(roundUpThousandsToNextHundred(Number(payment.reimbursementAmount ?? 0)).toFixed(2));
+          const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
             breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
@@ -2143,7 +2166,7 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedVendorTotals]);
+  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedVendorTotals, adjustmentTypes]);
 
   const exportNonEventPayroll = useCallback(() => {
     const nonEventVenues = paymentsByVenue
@@ -2171,16 +2194,16 @@ function HRDashboardContent() {
           const overtimePay = Number(roundUpThousandsToNextHundred(breakdown.overtimePay).toFixed(2));
           const doubletimeHours = Number(breakdown.doubletimeHours.toFixed(2));
           const doubletimePay = Number(roundUpThousandsToNextHundred(breakdown.doubletimePay).toFixed(2));
-          const reimbursementNe = reimbursementAmounts[event.id]?.[p.userId] ?? Number(p.reimbursementAmount || 0);
-          const other = adjustments[event.id]?.[p.userId] ?? Number(p.otherAmount || 0);
+          const reimbursementNe = Number(p.reimbursementAmount ?? 0);
+          const other = Number(p.otherAmount ?? 0);
           const adjAmtNe = reimbursementNe + other;
           const mileageMiles = (mileageByEvent[event.id] || {})[p.userId]?.miles ?? null;
           const _mileagePayRaw = Number((mileageByEvent[event.id] || {})[p.userId]?.mileagePay || 0);
           const exportApproval = getMileageApproval(event.id, p.userId);
           const mileagePay = exportApproval.mileage ? _mileagePayRaw : 0;
           const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
-          const travelHours = exportApproval.travel && diffMiles !== null ? (diffMiles * 2) / 60 : 0;
-          const travelPay = exportApproval.travel && diffMiles !== null ? travelHours * 28.50 : 0;
+          const travelHours = 0;
+          const travelPay = exportApproval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
             breakdown.commissionPaidTotal + Number(p.tips || 0) + adjAmtNe + mileagePay + travelPay
           ).toFixed(2));
@@ -3333,7 +3356,7 @@ function HRDashboardContent() {
                               const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
-                              const _tp = diffMiles !== null ? ((diffMiles * 2) / 60) * 28.50 : 0;
+                              const _tp = diffMiles !== null ? computeTravelPay(diffMiles, state ?? event?.state, loadedRate) : 0;
                               const approval = getMileageApproval(event.id, payment.userId);
                               const mileageOverrideS1 = (mileagePayOverrides[event.id] || {})[payment.userId];
                               const travelOverrideS1 = (travelPayOverrides[event.id] || {})[payment.userId];
@@ -3424,7 +3447,7 @@ function HRDashboardContent() {
                                             <button type="button" onClick={() => { setEditingMileageCell({ eventId: event.id, userId: payment.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col items-end gap-0.5 hover:text-indigo-800" title="Click to edit">
                                               <span>{travelOverrideS1 !== undefined ? <span className="text-orange-500">${formatVendorMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : `$${formatVendorMoney(travelPay)}`}</span>
                                               {diffMiles !== null && diffMiles > 0 && (
-                                                <div className="text-[10px] text-gray-400">{diffMiles} mi diff x 2 / 60 x $28.50/hr</div>
+                                                <div className="text-[10px] text-gray-400">{diffMiles} mi ÷ 30 × ${formatVendorMoney(Math.max(normalizeState(state ?? event?.state) === 'CA' ? 28.50 : 25.94, loadedRate))}/hr</div>
                                               )}
                                             </button>
                                           ) : <span className="text-gray-400">&mdash;</span>}
@@ -3472,7 +3495,7 @@ function HRDashboardContent() {
                                           <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((adjustments[event.id] ?? {})[payment.userId] ?? payment.otherAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setAdjustments(prev => ({ ...prev, [event.id]: { ...(prev[event.id] || {}), [payment.userId]: val } })); }} step="1" />
                                         </div>
                                         <select className="w-32 px-2 py-1 border rounded text-xs text-right" value={currentAdjustmentType} onChange={(e) => { const nextType = normalizeOtherAdjustmentType(e.target.value); setAdjustmentTypes(prev => ({ ...prev, [event.id]: { ...(prev[event.id] || {}), [payment.userId]: nextType } })); }}>
-                                          <option value="meal_break">Meal Break</option>
+                                          <option value="meal_break">Meal Break Premium</option>
                                           <option value="bonus">Bonus</option>
                                         </select>
                                         <div className="flex items-center gap-2">
@@ -3707,8 +3730,7 @@ function HRDashboardContent() {
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
-                                                const _travelHours = differentialMiles !== null ? (differentialMiles * 2) / 60 : 0;
-                                                const _travelPay = _travelHours * 28.50;
+                                                const _travelPay = differentialMiles !== null ? computeTravelPay(differentialMiles, ev?.state ?? v?.state, loadedRate) : 0;
                                                 const approval = getMileageApproval(ev.id, p.userId);
                                                 const mileageOverrideS2 = (mileagePayOverrides[ev.id] || {})[p.userId];
                                                 const travelOverrideS2 = (travelPayOverrides[ev.id] || {})[p.userId];
@@ -3790,7 +3812,7 @@ function HRDashboardContent() {
                                                             {_travelPay > 0 ? (
                                                               <button type="button" onClick={() => { setEditingMileageCell({ eventId: ev.id, userId: p.userId, field: 'travel' }); setEditingMileageValue(String(travelPay.toFixed(2))); }} className="flex flex-col gap-0.5 hover:text-indigo-800 text-left" title="Click to edit">
                                                                 {travelOverrideS2 !== undefined ? <span className="text-orange-500">${formatPayrollMoney(travelPay)}<span className="text-[9px] ml-1">edited</span></span> : <span>${formatPayrollMoney(travelPay)}</span>}
-                                                                {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi diff x 2 / 60 x $28.50/hr</div>}
+                                                                {differentialMiles !== null && differentialMiles > 0 && <div className="text-[10px] text-gray-400">{differentialMiles} mi ÷ 30 × ${formatPayrollMoney(Math.max(normalizeState(ev?.state ?? v?.state) === 'CA' ? 28.50 : 25.94, loadedRate))}/hr</div>}
                                                               </button>
                                                             ) : <span className="text-gray-400">&mdash;</span>}
                                                             <div className="flex gap-1 mt-0.5">
@@ -3828,7 +3850,7 @@ function HRDashboardContent() {
                                                             <input type="number" className="w-24 px-2 py-1 border rounded text-sm" value={Number((adjustments[ev.id] ?? {})[p.userId] ?? p.otherAmount ?? 0)} onChange={(e) => { const val = Number(e.target.value) || 0; setAdjustments(prev => ({ ...prev, [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: val } })); }} step="1" />
                                                           </div>
                                                           <select className="w-32 px-2 py-1 border rounded text-xs text-right" value={currentAdjustmentType} onChange={(e) => { const nextType = normalizeOtherAdjustmentType(e.target.value); setAdjustmentTypes(prev => ({ ...prev, [ev.id]: { ...(prev[ev.id] || {}), [p.userId]: nextType } })); }}>
-                                                            <option value="meal_break">Meal Break</option>
+                                                            <option value="meal_break">Meal Break Premium</option>
                                                             <option value="bonus">Bonus</option>
                                                           </select>
                                                           <div className="flex items-center gap-2">

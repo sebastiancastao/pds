@@ -39,6 +39,7 @@ interface Worker {
   payment_data: PaymentData | null;
   worked_hours?: number;
   adjustment_amount?: number;
+  adjustment_note?: string | null;
 }
 
 interface EventPaymentSummary {
