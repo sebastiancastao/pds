@@ -321,6 +321,7 @@ export default function WorkerProfilePage() {
 
   const [paystubHistory, setPaystubHistory] = useState<PaystubDistributionEntry[]>([]);
   const [paystubHistoryLoading, setPaystubHistoryLoading] = useState(false);
+  const [paystubHistoryError, setPaystubHistoryError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!employeeId) return;
@@ -428,16 +429,29 @@ export default function WorkerProfilePage() {
   useEffect(() => {
     if (!employeeId) return;
     setPaystubHistoryLoading(true);
-    supabase
-      .from("paystub_distribution_log")
-      .select("id, employee_name, pay_date, pay_period_start, pay_period_end, triggered_by_email, distribution_mode, status, error_message, pdf_storage_path, sent_at")
-      .eq("employee_user_id", employeeId)
-      .order("sent_at", { ascending: false })
-      .limit(50)
-      .then(({ data }) => {
-        setPaystubHistory((data as PaystubDistributionEntry[]) ?? []);
-        setPaystubHistoryLoading(false);
-      });
+    setPaystubHistoryError(null);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/employees/${employeeId}/paystub-history`, {
+        headers: session?.access_token
+          ? { Authorization: `Bearer ${session.access_token}` }
+          : {},
+        cache: "no-store",
+      })
+        .then((r) => r.json())
+        .then((body) => {
+          if (body.error) {
+            setPaystubHistoryError(body.error);
+            setPaystubHistory([]);
+          } else {
+            setPaystubHistory((body.records as PaystubDistributionEntry[]) ?? []);
+          }
+          setPaystubHistoryLoading(false);
+        })
+        .catch((e) => {
+          setPaystubHistoryError(e.message ?? "Failed to load paystubs");
+          setPaystubHistoryLoading(false);
+        });
+    });
   }, [employeeId, refreshTick]);
 
   // Fetch I-9 documents after worker is loaded
@@ -2388,18 +2402,25 @@ export default function WorkerProfilePage() {
             </section>
 
           {/* Paystub Distribution History */}
-          {(paystubHistoryLoading || paystubHistory.length > 0) && (
-            <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
               <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
                 <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                 </svg>
-                <h2 className="text-base font-semibold text-gray-900">Paystub Distribution History</h2>
-                <span className="ml-auto text-xs text-gray-400">{paystubHistory.length} record{paystubHistory.length !== 1 ? "s" : ""}</span>
+                <h2 className="text-base font-semibold text-gray-900">My Paystubs</h2>
+                {!paystubHistoryLoading && !paystubHistoryError && (
+                  <span className="ml-auto text-xs text-gray-400">{paystubHistory.length} record{paystubHistory.length !== 1 ? "s" : ""}</span>
+                )}
               </div>
               <div className="divide-y divide-gray-50">
-                {paystubHistoryLoading && paystubHistory.length === 0 ? (
+                {paystubHistoryLoading ? (
                   <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+                ) : paystubHistoryError ? (
+                  <div className="px-6 py-4 text-sm text-red-600">
+                    Could not load paystubs: {paystubHistoryError}
+                  </div>
+                ) : paystubHistory.length === 0 ? (
+                  <div className="px-6 py-8 text-center text-sm text-gray-400">No paystubs distributed yet.</div>
                 ) : (
                   paystubHistory.map((entry) => (
                     <div key={entry.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
@@ -2431,7 +2452,6 @@ export default function WorkerProfilePage() {
 
                       {/* Right-side meta + download */}
                       <div className="text-right shrink-0 space-y-1">
-                        {entry.pdf_storage_path && <p className="text-xs text-gray-500">Available in employee profile</p>}
                         <p className="text-xs text-gray-400">
                           By {entry.triggered_by_email ?? "unknown"} - {entry.distribution_mode === "batch" ? "batch" : "single"}
                         </p>
@@ -2460,7 +2480,6 @@ export default function WorkerProfilePage() {
                 )}
               </div>
             </section>
-          )}
 
           {/* Uploaded Emails */}
           {uploadedEmails.length > 0 && (

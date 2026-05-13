@@ -1,24 +1,22 @@
--- Migration: add pdf_storage_path to paystub_distribution_log
--- Stores the Supabase Storage path so employees can download their paystub.
+-- Run this ONLY if you already ran create-paystub-distribution-log.sql
+-- without the pdf_storage_path column and the storage bucket setup.
+-- If you are starting fresh, run create-paystub-distribution-log.sql instead.
 
 ALTER TABLE paystub_distribution_log
   ADD COLUMN IF NOT EXISTS pdf_storage_path TEXT;
 
--- Create the private storage bucket for paystubs (run once; ignored if it already exists)
 INSERT INTO storage.buckets (id, name, public)
 VALUES ('paystubs', 'paystubs', false)
 ON CONFLICT (id) DO NOTHING;
 
--- Storage RLS: employees can read only their own files (path starts with their user id)
-CREATE POLICY "Employees can download their own paystubs"
+CREATE POLICY IF NOT EXISTS "Employees can download their own paystubs"
   ON storage.objects FOR SELECT
   USING (
     bucket_id = 'paystubs'
     AND auth.uid()::text = (string_to_array(name, '/'))[1]
   );
 
--- HR/admins can read all paystub files
-CREATE POLICY "HR and admins can download all paystubs"
+CREATE POLICY IF NOT EXISTS "HR and admins can download all paystubs"
   ON storage.objects FOR SELECT
   USING (
     bucket_id = 'paystubs'
@@ -29,8 +27,7 @@ CREATE POLICY "HR and admins can download all paystubs"
     )
   );
 
--- Only service role can insert/delete paystub files
-CREATE POLICY "Service role can manage paystub files"
+CREATE POLICY IF NOT EXISTS "Service role can manage paystub files"
   ON storage.objects FOR ALL
   USING (bucket_id = 'paystubs' AND auth.role() = 'service_role')
   WITH CHECK (bucket_id = 'paystubs' AND auth.role() = 'service_role');

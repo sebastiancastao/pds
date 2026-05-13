@@ -1971,7 +1971,7 @@ export async function POST(req: NextRequest) {
           const { data } = await supabaseAdmin
             .from("payroll_deductions")
             .select(
-              "pay_date, ytd_gross, ytd_net, federal_income_ytd, social_security_ytd, medicare_ytd, ca_state_income_ytd, ca_state_di_ytd, regular_hours, overtime_hours, doubletime_hours, regular_earnings, overtime_earnings, doubletime_earnings"
+              "pay_date, ytd_gross, federal_income_ytd, social_security_ytd, medicare_ytd, ca_state_income_ytd, ca_state_di_ytd, regular_hours, overtime_hours, doubletime_hours, regular_earnings, overtime_earnings, doubletime_earnings"
             )
             .eq("user_id", matchedUserId)
             .order("pay_date", { ascending: false })
@@ -2025,8 +2025,6 @@ export async function POST(req: NextRequest) {
       const ytdMedicare = round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt));
       const ytdStateIncome = round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt));
       const ytdStateDI = round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt));
-      const ytdNet = round2(runningYtd(ytdSnapshot?.ytd_net, netPay));
-
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
       let sickAccruedThisPeriod =
@@ -2227,7 +2225,6 @@ export async function POST(req: NextRequest) {
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });
-      drawTopText(money(ytdNet), 286, netPayY, { size: 8, bold: true });
 
       drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
       drawTopText("Information", 353, 187, { size: 8, bold: true });

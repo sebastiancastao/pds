@@ -183,6 +183,9 @@ export default function PaystubGenerator() {
   const [generating, setGenerating] = useState(false);
   const [distributing, setDistributing] = useState(false);
   const [distributeMessage, setDistributeMessage] = useState<string | null>(null);
+  const [distributeError, setDistributeError] = useState<string | null>(null);
+  const [distributeStep, setDistributeStep] = useState<string | null>(null);
+  const [distributeUserId, setDistributeUserId] = useState<string | null>(null);
   const [batchDistributing, setBatchDistributing] = useState(false);
   const [batchDistributeMessage, setBatchDistributeMessage] = useState<string | null>(null);
   const [batchDistributeErrors, setBatchDistributeErrors] = useState<string[]>([]);
@@ -1205,6 +1208,9 @@ export default function PaystubGenerator() {
   const handleDistribute = async () => {
     setDistributing(true);
     setDistributeMessage(null);
+    setDistributeError(null);
+    setDistributeStep('Matching employee...');
+    setDistributeUserId(null);
     try {
       const debugMode =
         typeof window !== 'undefined' &&
@@ -1217,9 +1223,11 @@ export default function PaystubGenerator() {
           : null);
 
       if (!resolvedUserId) {
-        throw new Error('Could not match this employee to a user profile. Match the employee first.');
+        throw new Error('Could not match this employee to a user profile. Make sure the employee name matches exactly.');
       }
 
+      setDistributeUserId(resolvedUserId);
+      setDistributeStep('Loading employee profile...');
       let sickLeaveForPayload = sickLeave;
       let stateForPayload = formData.state;
       const summaryData = await fetchEmployeeSummary(resolvedUserId);
@@ -1228,6 +1236,7 @@ export default function PaystubGenerator() {
 
       const filteredEvents = filterEventsForUserIdWithHours(resolvedUserId);
 
+      setDistributeStep('Generating PDF...');
       const payload = {
         employeeName: formData.employeeName,
         ssn: formData.ssn,
@@ -1259,10 +1268,11 @@ export default function PaystubGenerator() {
       });
       if (!genRes.ok) {
         const err = await genRes.json().catch(() => ({}));
-        throw new Error(err?.error || 'Failed to generate paystub');
+        throw new Error(err?.error || 'Failed to generate paystub PDF');
       }
       const pdfBytes = await genRes.arrayBuffer();
 
+      setDistributeStep('Saving to employee profile...');
       await storeDistributedPaystub(
         pdfBytes,
         resolvedUserId,
@@ -1274,9 +1284,12 @@ export default function PaystubGenerator() {
           distributionMode: 'single',
         }
       );
-      setDistributeMessage('Paystub distributed to the employee profile.');
+
+      setDistributeStep(null);
+      setDistributeMessage(`Done — paystub saved to employee profile (user: ${resolvedUserId.slice(0, 8)}…)`);
     } catch (err: any) {
-      alert(`Error: ${err.message}`);
+      setDistributeStep(null);
+      setDistributeError(`Step failed: ${err.message}`);
     } finally {
       setDistributing(false);
     }
@@ -2760,9 +2773,30 @@ export default function PaystubGenerator() {
                   </>
                 )}
               </button>
+              {distributeStep && (
+                <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-md px-3 py-2 flex items-center gap-2">
+                  <div className="inline-block h-3 w-3 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                  {distributeStep}
+                </div>
+              )}
+              {distributeError && (
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  {distributeError}
+                </div>
+              )}
               {distributeMessage && (
-                <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
-                  {distributeMessage}
+                <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2 space-y-1">
+                  <p>{distributeMessage}</p>
+                  {distributeUserId && (
+                    <a
+                      href={`/hr/employees/${distributeUserId}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline font-medium text-emerald-700 hover:text-emerald-900"
+                    >
+                      View employee profile →
+                    </a>
+                  )}
                 </div>
               )}
 
