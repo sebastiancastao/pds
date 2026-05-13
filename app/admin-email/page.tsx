@@ -5,6 +5,11 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
+import {
+  formatBytes,
+  RESEND_MAX_EMAIL_SIZE_BYTES,
+  validateResendAttachments,
+} from '@/lib/email-attachments';
 
 type Audience = 'manual' | 'role' | 'region' | 'all';
 type BodyFormat = 'html' | 'text';
@@ -73,6 +78,9 @@ function AdminEmailPageContent() {
   const [success, setSuccess] = useState<{
     messageId?: string;
     recipientCount?: number;
+    partial?: boolean;
+    failureCount?: number;
+    failedRecipients?: string[];
   } | null>(null);
 
   useEffect(() => {
@@ -157,18 +165,10 @@ function AdminEmailPageContent() {
   const attachmentBytes = useMemo(() => {
     return attachments.reduce((sum, f) => sum + (f?.size || 0), 0);
   }, [attachments]);
-
-  const formatBytes = (bytes: number) => {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let value = bytes;
-    let idx = 0;
-    while (value >= 1024 && idx < units.length - 1) {
-      value /= 1024;
-      idx += 1;
-    }
-    return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
-  };
+  const attachmentValidation = useMemo(
+    () => validateResendAttachments(attachments),
+    [attachments]
+  );
 
   const insertTemplate = () => {
     setBodyFormat('html');
@@ -217,6 +217,10 @@ function AdminEmailPageContent() {
       setError('Please confirm bulk sending before continuing.');
       return;
     }
+    if (attachments.length > 0 && !attachmentValidation.ok) {
+      setError(attachmentValidation.error || 'One or more attachments are invalid.');
+      return;
+    }
 
     setSending(true);
     try {
@@ -254,6 +258,9 @@ function AdminEmailPageContent() {
       setSuccess({
         messageId: data?.messageId,
         recipientCount: data?.recipientCount,
+        partial: Boolean(data?.partial),
+        failureCount: Number(data?.failureCount || 0),
+        failedRecipients: Array.isArray(data?.failedRecipients) ? data.failedRecipients : [],
       });
     } catch (err: any) {
       setError(err?.message || 'Network error.');
@@ -303,11 +310,18 @@ function AdminEmailPageContent() {
               )}
 
               {success && (
-                <div className="p-4 rounded bg-green-50 text-green-800 border border-green-200">
-                  Sent successfully{success.recipientCount ? ` to ${success.recipientCount} recipient(s)` : ''}.
+                <div className={`p-4 rounded border ${success.partial ? 'bg-yellow-50 text-yellow-900 border-yellow-200' : 'bg-green-50 text-green-800 border-green-200'}`}>
+                  {success.partial
+                    ? `Sent to ${success.recipientCount || 0} recipient(s), but ${success.failureCount || 0} failed.`
+                    : `Sent successfully${success.recipientCount ? ` to ${success.recipientCount} recipient(s)` : ''}.`}
                   {success.messageId ? (
                     <div className="text-sm mt-1">
                       Message ID: <span className="font-mono">{success.messageId}</span>
+                    </div>
+                  ) : null}
+                  {success.partial && success.failedRecipients && success.failedRecipients.length > 0 ? (
+                    <div className="text-sm mt-2">
+                      Failed recipients: <span className="font-mono">{success.failedRecipients.join(', ')}</span>
                     </div>
                   ) : null}
                 </div>
@@ -509,8 +523,8 @@ function AdminEmailPageContent() {
                   className="w-full border rounded px-3 py-2"
                 />
                 <div className="mt-2 flex items-center justify-between">
-                  <div className="text-xs text-gray-500">
-                    {attachments.length} file(s), {formatBytes(attachmentBytes)}
+                  <div className={`text-xs ${attachmentValidation.ok ? 'text-gray-500' : 'text-red-600'}`}>
+                    {attachments.length} file(s), {formatBytes(attachmentBytes)} raw, {formatBytes(attachmentValidation.estimatedEncodedBytes)} encoded
                   </div>
                   {attachments.length > 0 ? (
                     <button
@@ -522,6 +536,12 @@ function AdminEmailPageContent() {
                     </button>
                   ) : null}
                 </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Resend limit: {formatBytes(RESEND_MAX_EMAIL_SIZE_BYTES)} per email after Base64 encoding.
+                </p>
+                {!attachmentValidation.ok ? (
+                  <p className="text-xs text-red-600 mt-1">{attachmentValidation.error}</p>
+                ) : null}
                 {attachments.length > 0 ? (
                   <div className="mt-2 space-y-2">
                     {attachments.map((file, idx) => (
@@ -593,9 +613,9 @@ function AdminEmailPageContent() {
               <div className="flex items-center gap-3">
                 <button
                   type="submit"
-                  disabled={sending}
+                  disabled={sending || (attachments.length > 0 && !attachmentValidation.ok)}
                   className={`py-3 px-6 rounded font-semibold transition ${
-                    sending
+                    sending || (attachments.length > 0 && !attachmentValidation.ok)
                       ? 'bg-gray-400 cursor-not-allowed'
                       : 'bg-blue-600 hover:bg-blue-700 text-white'
                   }`}

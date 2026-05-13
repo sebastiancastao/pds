@@ -2,6 +2,7 @@
 // Secure email delivery for temporary passwords and notifications via Resend
 
 import { Resend, type Attachment } from 'resend';
+import { sanitizeAttachmentFilename } from '@/lib/email-attachments';
 
 // Initialize Resend client
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -35,6 +36,7 @@ interface ResendEmailPayload {
   cc?: string | string[];
   bcc?: string | string[];
   attachments?: Attachment[];
+  skipGlobalBcc?: boolean;
 }
 
 function normalizeEmailList(emails?: string | string[]): string[] {
@@ -43,10 +45,13 @@ function normalizeEmailList(emails?: string | string[]): string[] {
     .filter(Boolean);
 }
 
-function mergeBccRecipients(bcc?: string | string[]): string | string[] | undefined {
+function mergeBccRecipients(
+  bcc?: string | string[],
+  skipGlobalBcc = false
+): string | string[] | undefined {
   const merged = [...new Set([
     ...normalizeEmailList(bcc).filter(isValidEmail),
-    ...normalizeEmailList(GLOBAL_BCC_RECIPIENTS).filter(isValidEmail),
+    ...(skipGlobalBcc ? [] : normalizeEmailList(GLOBAL_BCC_RECIPIENTS).filter(isValidEmail)),
   ])];
 
   if (merged.length === 0) {
@@ -56,11 +61,27 @@ function mergeBccRecipients(bcc?: string | string[]): string | string[] | undefi
   return Array.isArray(bcc) || merged.length > 1 ? merged : merged[0];
 }
 
+function normalizeAttachmentsForResend(attachments?: Attachment[]): Attachment[] | undefined {
+  return attachments?.map((attachment) => {
+    const content =
+      Buffer.isBuffer(attachment.content)
+        ? attachment.content.toString('base64')
+        : attachment.content;
+
+    return {
+      ...attachment,
+      content,
+      filename: sanitizeAttachmentFilename(String(attachment.filename || 'attachment')),
+    };
+  });
+}
+
 async function sendResendEmail(data: ResendEmailPayload) {
-  const { bcc, ...emailData } = data;
+  const { bcc, skipGlobalBcc, attachments, ...emailData } = data;
   return resend.emails.send({
     ...emailData,
-    bcc: mergeBccRecipients(bcc),
+    attachments: normalizeAttachmentsForResend(attachments),
+    bcc: mergeBccRecipients(bcc, skipGlobalBcc),
   });
 }
 
@@ -1484,8 +1505,9 @@ export async function sendEmail(data: {
   cc?: string | string[];
   bcc?: string | string[];
   attachments?: Attachment[];
+  skipGlobalBcc?: boolean;
 }): Promise<EmailResult> {
-  const { to, subject, html, from, cc, bcc, attachments } = data;
+  const { to, subject, html, from, cc, bcc, attachments, skipGlobalBcc } = data;
   const toList = (Array.isArray(to) ? to : [to])
     .map((v) => (v || "").toString().trim().toLowerCase())
     .filter(Boolean);
@@ -1515,12 +1537,14 @@ export async function sendEmail(data: {
       subject,
       html,
       attachments,
+      skipGlobalBcc,
     });
 
     if (error) {
       console.error('Resend error (generic email):', error);
       return {
         success: false,
+        errorName: error?.name,
         error: formatResendError(error),
       };
     }
@@ -1538,6 +1562,7 @@ export async function sendEmail(data: {
     console.error('Email sending failed:', error);
     return {
       success: false,
+      errorName: error?.name,
       error: formatResendError(error),
     };
   }

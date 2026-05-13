@@ -4,6 +4,11 @@ import { cookies } from "next/headers";
 import { createClient } from "@supabase/supabase-js";
 import type { Attachment } from "resend";
 import { sendEmail } from "@/lib/email";
+import {
+  formatBytes,
+  sanitizeAttachmentFilename,
+  validateResendAttachments,
+} from "@/lib/email-attachments";
 
 export const runtime = "nodejs";
 
@@ -25,6 +30,7 @@ const MAX_BATCH_SIZE = 100;
 const DEFAULT_BATCH_DELAY_MS = 300;
 const MIN_BATCH_DELAY_MS = 200;
 const MAX_BATCH_DELAY_MS = 5000;
+const DEFAULT_ATTACHMENT_BATCH_SIZE = 15;
 const DEFAULT_MAX_RECIPIENTS_PER_REQUEST = 1000;
 const ABSOLUTE_MAX_RECIPIENTS_PER_REQUEST = 2000;
 const DEFAULT_RATE_LIMIT_RETRY_COUNT = 3;
@@ -92,6 +98,45 @@ function getRetryDelayMs(baseDelayMs: number, attempt: number): number {
 function isRateLimitError(message?: string) {
   const text = String(message || "").toLowerCase();
   return text.includes("429") || text.includes("rate limit") || text.includes("too many");
+}
+
+function isProviderInternalError(errorName?: string, message?: string) {
+  const name = String(errorName || "").toLowerCase();
+  const text = String(message || "").toLowerCase();
+  return (
+    name === "application_error" ||
+    name === "internal_server_error" ||
+    text.includes("internal server error") ||
+    text.includes("unable to process your request right now")
+  );
+}
+
+async function sendEmailWithRetries(
+  payload: Parameters<typeof sendEmail>[0],
+  rateLimitRetryCount: number,
+  retryBaseDelayMs: number
+) {
+  let result: Awaited<ReturnType<typeof sendEmail>> | null = null;
+
+  for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
+    result = await sendEmail(payload);
+
+    if (result.success) {
+      return result;
+    }
+
+    const retryable =
+      isRateLimitError(result.error) ||
+      isProviderInternalError(result.errorName, result.error);
+
+    if (!retryable || attempt >= rateLimitRetryCount) {
+      return result;
+    }
+
+    await sleep(getRetryDelayMs(retryBaseDelayMs, attempt));
+  }
+
+  return result;
 }
 
 function normalizeRole(value: unknown): string {
@@ -253,13 +298,18 @@ export async function POST(req: NextRequest) {
     }
 
     const files = form.getAll("attachments").filter((v) => v instanceof File) as File[];
+    const attachmentValidation = validateResendAttachments(files);
+    if (!attachmentValidation.ok) {
+      return NextResponse.json({ error: attachmentValidation.error }, { status: 400 });
+    }
+
     const attachments: Attachment[] = [];
     for (const file of files) {
       const bytes = await file.arrayBuffer();
-      const content = Buffer.from(bytes).toString("base64");
       attachments.push({
         filename: file.name,
-        content,
+        content: Buffer.from(bytes),
+        contentType: file.type || undefined,
       } as Attachment);
     }
 
@@ -280,6 +330,12 @@ export async function POST(req: NextRequest) {
       MIN_BATCH_DELAY_MS,
       MAX_BATCH_DELAY_MS
     );
+    const attachmentBatchSize = resolveIntSetting(
+      process.env.EMAIL_ATTACHMENT_BATCH_SIZE,
+      DEFAULT_ATTACHMENT_BATCH_SIZE,
+      MIN_BATCH_SIZE,
+      MAX_BATCH_SIZE
+    );
     const rateLimitRetryCount = resolveIntSetting(
       process.env.EMAIL_SEND_RATE_LIMIT_RETRY_COUNT,
       DEFAULT_RATE_LIMIT_RETRY_COUNT,
@@ -292,57 +348,92 @@ export async function POST(req: NextRequest) {
       MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS,
       MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS
     );
-    const batches = chunkArray(primaryRecipients, batchSize);
+    const effectiveBatchSize = attachments.length > 0
+      ? recipientMode === "hidden_bcc"
+        ? 1
+        : Math.min(batchSize, attachmentBatchSize)
+      : batchSize;
+    const batches = chunkArray(primaryRecipients, effectiveBatchSize);
+    const directRecipientAttachmentMode = attachments.length > 0 && recipientMode === "hidden_bcc";
 
     let sentCount = 0;
     const messageIds: string[] = [];
+    const failedRecipients: string[] = [];
+    const failureDetails: Array<{ recipient: string; error?: string; errorName?: string }> = [];
     const basePayload = {
       subject,
       html,
       from: process.env.RESEND_FROM || undefined,
       attachments: attachments.length ? attachments : undefined,
+      skipGlobalBcc: attachments.length > 0,
     };
+
+    if (attachments.length > 0) {
+      console.log("[admin/send-email] Attachments prepared:", {
+        count: attachments.length,
+        totalBytes: attachmentValidation.totalBytes,
+        totalBytesFormatted: formatBytes(attachmentValidation.totalBytes),
+        estimatedEncodedBytes: attachmentValidation.estimatedEncodedBytes,
+        estimatedEncodedBytesFormatted: formatBytes(attachmentValidation.estimatedEncodedBytes),
+        batchSize: effectiveBatchSize,
+        deliveryStrategy: directRecipientAttachmentMode ? "direct_single_recipient" : "batch",
+        contentTypes: files.map((file) => file.type || "(empty)"),
+        filenames: files.map((file) => file.name),
+        sanitizedFilenames: files.map((file) => sanitizeAttachmentFilename(file.name)),
+      });
+    }
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      let result: Awaited<ReturnType<typeof sendEmail>> | null = null;
-
-      for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
-        result = await sendEmail({
+      const result = await sendEmailWithRetries(
+        {
           ...basePayload,
-          to: recipientMode === "hidden_bcc" ? hiddenRecipientTo : batch,
-          bcc:
-            recipientMode === "hidden_bcc"
+          to:
+            directRecipientAttachmentMode
               ? batch
-              : i === 0 && oneTimeBcc.length > 0
-                ? oneTimeBcc
-                : undefined,
-        });
-
-        if (result.success) {
-          break;
-        }
-
-        if (!isRateLimitError(result.error) || attempt >= rateLimitRetryCount) {
-          break;
-        }
-
-        await sleep(getRetryDelayMs(retryBaseDelayMs, attempt));
-      }
+              : recipientMode === "hidden_bcc"
+                ? hiddenRecipientTo
+                : batch,
+          bcc:
+            directRecipientAttachmentMode
+              ? undefined
+              : recipientMode === "hidden_bcc"
+                ? batch
+                : i === 0 && oneTimeBcc.length > 0
+                  ? oneTimeBcc
+                  : undefined,
+        },
+        rateLimitRetryCount,
+        retryBaseDelayMs
+      );
 
       if (!result?.success) {
-        return NextResponse.json(
-          {
-            error: result?.error || "Failed to send email.",
-            sentCount,
-            attemptedRecipients: recipientCount,
-          },
-          { status: 500 }
-        );
+        failedRecipients.push(...batch);
+        for (const recipient of batch) {
+          failureDetails.push({
+            recipient,
+            errorName: result?.errorName,
+            error: result?.error,
+          });
+        }
+
+        console.error("[admin/send-email] Batch send failed:", {
+          batchNumber: i + 1,
+          batchCount: batches.length,
+          batchRecipients: batch.length,
+          batchTargets: batch,
+          recipientMode: directRecipientAttachmentMode ? "direct_single_recipient" : recipientMode,
+          attachments: attachments.length,
+          attachmentBytes: attachmentValidation.totalBytes,
+          estimatedEncodedBytes: attachmentValidation.estimatedEncodedBytes,
+          errorName: result?.errorName,
+          error: result?.error,
+        });
+        continue;
       }
 
       sentCount +=
-        recipientMode === "hidden_bcc"
+        directRecipientAttachmentMode || recipientMode === "hidden_bcc"
           ? batch.length
           : batch.length + (i === 0 ? oneTimeBcc.length : 0);
       if (result.messageId) messageIds.push(result.messageId);
@@ -350,6 +441,39 @@ export async function POST(req: NextRequest) {
       if (i < batches.length - 1 && batchDelayMs > 0) {
         await sleep(batchDelayMs);
       }
+    }
+
+    if (failedRecipients.length > 0) {
+      const attachmentHint = attachments.length > 0
+        ? ` Attachment payload: ${attachments.length} file(s), ${formatBytes(attachmentValidation.totalBytes)} raw, ${formatBytes(attachmentValidation.estimatedEncodedBytes)} estimated after encoding.`
+        : "";
+
+      if (sentCount === 0) {
+        return NextResponse.json(
+          {
+            error: `No emails were sent.${attachmentHint}`,
+            sentCount,
+            attemptedRecipients: recipientCount,
+            failureCount: failedRecipients.length,
+            failedRecipients,
+            failureDetails,
+          },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        partial: true,
+        messageId: messageIds[0],
+        messageIds,
+        recipientCount: sentCount,
+        attemptedRecipients: recipientCount,
+        failureCount: failedRecipients.length,
+        failedRecipients,
+        failureDetails,
+        batches: batches.length,
+      });
     }
 
     return NextResponse.json({

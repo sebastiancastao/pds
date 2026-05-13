@@ -5,6 +5,11 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { AuthGuard } from '@/lib/auth-guard';
+import {
+  formatBytes,
+  RESEND_MAX_EMAIL_SIZE_BYTES,
+  validateResendAttachments,
+} from '@/lib/email-attachments';
 
 const allowedRoles = new Set(['admin', 'exec', 'manager', 'supervisor', 'supervisor3']);
 
@@ -50,7 +55,13 @@ function TeamEmailPageContent() {
 
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState<{ messageId?: string; recipientCount?: number } | null>(null);
+  const [success, setSuccess] = useState<{
+    messageId?: string;
+    recipientCount?: number;
+    partial?: boolean;
+    failureCount?: number;
+    failedRecipients?: string[];
+  } | null>(null);
 
   const recipientCount = useMemo(
     () => dedupeEmails([...teamEmails, ...parseEmailList(bcc)]).length,
@@ -63,18 +74,10 @@ function TeamEmailPageContent() {
     () => attachments.reduce((sum, f) => sum + (f?.size || 0), 0),
     [attachments]
   );
-
-  const formatBytes = (bytes: number) => {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let value = bytes;
-    let idx = 0;
-    while (value >= 1024 && idx < units.length - 1) {
-      value /= 1024;
-      idx += 1;
-    }
-    return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
-  };
+  const attachmentValidation = useMemo(
+    () => validateResendAttachments(attachments),
+    [attachments]
+  );
 
   useEffect(() => {
     (async () => {
@@ -171,6 +174,10 @@ function TeamEmailPageContent() {
       setError('Please confirm bulk sending before continuing.');
       return;
     }
+    if (attachments.length > 0 && !attachmentValidation.ok) {
+      setError(attachmentValidation.error || 'One or more attachments are invalid.');
+      return;
+    }
 
     setSending(true);
     try {
@@ -216,6 +223,9 @@ function TeamEmailPageContent() {
       setSuccess({
         messageId: data?.messageId,
         recipientCount: data?.recipientCount || recipientCount,
+        partial: Boolean(data?.partial),
+        failureCount: Number(data?.failureCount || 0),
+        failedRecipients: Array.isArray(data?.failedRecipients) ? data.failedRecipients : [],
       });
     } catch (e: any) {
       setError(e?.message || 'Network error.');
@@ -268,11 +278,18 @@ function TeamEmailPageContent() {
               )}
 
               {success && (
-                <div className="p-4 rounded bg-green-50 text-green-800 border border-green-200">
-                  Sent successfully to {success.recipientCount || recipientCount} recipient(s).
+                <div className={`p-4 rounded border ${success.partial ? 'bg-yellow-50 text-yellow-900 border-yellow-200' : 'bg-green-50 text-green-800 border-green-200'}`}>
+                  {success.partial
+                    ? `Sent to ${success.recipientCount || 0} recipient(s), but ${success.failureCount || 0} failed.`
+                    : `Sent successfully to ${success.recipientCount || recipientCount} recipient(s).`}
                   {success.messageId ? (
                     <div className="text-sm mt-1">
                       Message ID: <span className="font-mono">{success.messageId}</span>
+                    </div>
+                  ) : null}
+                  {success.partial && success.failedRecipients && success.failedRecipients.length > 0 ? (
+                    <div className="text-sm mt-2">
+                      Failed recipients: <span className="font-mono">{success.failedRecipients.join(', ')}</span>
                     </div>
                   ) : null}
                 </div>
@@ -348,12 +365,62 @@ function TeamEmailPageContent() {
                 <input
                   type="file"
                   multiple
-                  onChange={(e) => setAttachments(Array.from(e.target.files || []))}
-                  className="block w-full text-sm"
+                  onChange={(e) => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length === 0) return;
+                    setAttachments((prev) => [...prev, ...files]);
+                    e.currentTarget.value = '';
+                  }}
+                  className="w-full border rounded px-3 py-2"
                 />
-                <p className="text-xs text-gray-500 mt-2">
-                  {attachments.length} file(s), {formatBytes(attachmentBytes)}
+                <div className="mt-2 flex items-center justify-between">
+                  <div className={`text-xs ${attachmentValidation.ok ? 'text-gray-500' : 'text-red-600'}`}>
+                    {attachments.length} file(s), {formatBytes(attachmentBytes)} raw, {formatBytes(attachmentValidation.estimatedEncodedBytes)} encoded
+                  </div>
+                  {attachments.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => setAttachments([])}
+                      className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 px-2 py-1 rounded"
+                    >
+                      Clear attachments
+                    </button>
+                  ) : null}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Resend limit: {formatBytes(RESEND_MAX_EMAIL_SIZE_BYTES)} per email after Base64 encoding.
                 </p>
+                {!attachmentValidation.ok ? (
+                  <p className="text-xs text-red-600 mt-1">{attachmentValidation.error}</p>
+                ) : null}
+                {attachments.length > 0 ? (
+                  <div className="mt-2 space-y-2">
+                    {attachments.map((file, idx) => (
+                      <div
+                        key={`${file.name}-${file.size}-${idx}`}
+                        className="flex items-center justify-between border rounded px-3 py-2 bg-gray-50"
+                      >
+                        <div className="text-sm text-gray-800 truncate">
+                          <span className="font-mono">{file.name}</span>{' '}
+                          <span className="text-xs text-gray-500">
+                            ({formatBytes(file.size)})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAttachments((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            )
+                          }
+                          className="text-xs bg-gray-200 hover:bg-gray-300 text-gray-800 px-2 py-1 rounded"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
               </div>
 
               {bulkMode && (
@@ -370,7 +437,7 @@ function TeamEmailPageContent() {
 
               <button
                 type="submit"
-                disabled={sending || loadingTeam || recipientCount === 0}
+                disabled={sending || loadingTeam || recipientCount === 0 || (attachments.length > 0 && !attachmentValidation.ok)}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {sending ? 'Sending...' : `BCC Team (${recipientCount})`}
