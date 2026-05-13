@@ -3222,7 +3222,7 @@ function HRDashboardContent() {
                   className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'vendor' ? 'apple-button-primary' : 'apple-button-secondary'}`}
                   disabled={paymentsByVenue.length === 0}
                 >
-                  View by Event
+                  View by Vendor
                 </button>
                 <button onClick={() => { setApprovalError(''); setShowApprovalModal(true); }} className="apple-button apple-button-primary">
                   Send to Approval
