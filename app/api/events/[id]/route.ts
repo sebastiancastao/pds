@@ -13,6 +13,11 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
+function normalizeRole(value: unknown): string {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "execs" ? "exec" : normalized;
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -51,7 +56,7 @@ export async function GET(
       .eq("id", user.id)
       .single();
 
-    const userRole = userData?.role as string;
+    const userRole = normalizeRole(userData?.role);
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
     // For supervisors/supervisor2/supervisor3, look up their lead manager(s) and group members to grant access
@@ -206,7 +211,7 @@ export async function PUT(
       .eq("id", user.id)
       .single();
 
-    const userRole = userData?.role as string;
+    const userRole = normalizeRole(userData?.role);
     const isAdminOrExec = userRole === "admin" || userRole === "exec";
 
     // For supervisors, look up their lead manager(s) and group members to grant edit access
@@ -577,7 +582,7 @@ export async function DELETE(
       return NextResponse.json({ error: "Failed to verify user role" }, { status: 403 });
     }
 
-    const userRole = userData.role as string;
+    const userRole = normalizeRole(userData?.role);
     const canDeleteEvents =
       userRole === "manager" || userRole === "supervisor" || userRole === "supervisor2" || userRole === "exec";
 

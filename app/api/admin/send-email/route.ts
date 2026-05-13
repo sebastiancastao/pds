@@ -18,6 +18,7 @@ const supabaseAnon = createClient(
 );
 
 const allowedSenderRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "supervisor3"]);
+const DEFAULT_HIDDEN_RECIPIENT_TO = "service@pdsportal.site";
 const DEFAULT_BATCH_SIZE = 50;
 const MIN_BATCH_SIZE = 1;
 const MAX_BATCH_SIZE = 100;
@@ -34,6 +35,7 @@ const MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS = 20000;
 
 type Audience = "manual" | "role" | "region" | "all";
 type BodyFormat = "html" | "text";
+type RecipientMode = "standard" | "hidden_bcc";
 
 function parseEmailList(value: string): string[] {
   return Array.from(
@@ -92,6 +94,11 @@ function isRateLimitError(message?: string) {
   return text.includes("429") || text.includes("rate limit") || text.includes("too many");
 }
 
+function normalizeRole(value: unknown): string {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "execs" ? "exec" : normalized;
+}
+
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -121,7 +128,7 @@ export async function POST(req: NextRequest) {
     if (requesterErr) {
       return NextResponse.json({ error: requesterErr.message }, { status: 500 });
     }
-    const requesterRole = String(requester?.role || "").trim().toLowerCase();
+    const requesterRole = normalizeRole(requester?.role);
     if (!allowedSenderRoles.has(requesterRole)) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
@@ -132,10 +139,20 @@ export async function POST(req: NextRequest) {
     const body = String(form.get("body") || "");
     const bodyFormat = String(form.get("bodyFormat") || "text").trim().toLowerCase() as BodyFormat;
     const bccRaw = String(form.get("bcc") || "");
+    const recipientMode = String(form.get("recipientMode") || "standard").trim().toLowerCase() as RecipientMode;
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
 
     if (!["manual", "role", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
+    }
+    if (!["standard", "hidden_bcc"].includes(recipientMode)) {
+      return NextResponse.json({ error: "Invalid recipientMode" }, { status: 400 });
+    }
+    if (recipientMode === "hidden_bcc" && audience !== "manual") {
+      return NextResponse.json(
+        { error: "Hidden BCC delivery is only supported for manual sends." },
+        { status: 400 }
+      );
     }
     if ((requesterRole === "manager" || requesterRole === "supervisor" || requesterRole === "supervisor3") && audience !== "manual") {
       return NextResponse.json(
@@ -152,11 +169,11 @@ export async function POST(req: NextRequest) {
     let to: string[] = [];
     if (audience === "manual") {
       to = parseEmailList(String(form.get("to") || ""));
-      if (!to.length) {
+      if (!to.length && recipientMode !== "hidden_bcc") {
         return NextResponse.json({ error: "Recipient list is required." }, { status: 400 });
       }
     } else if (audience === "role") {
-      const role = String(form.get("role") || "").trim().toLowerCase();
+      const role = normalizeRole(form.get("role"));
       if (!role) {
         return NextResponse.json({ error: "Role is required for audience=role." }, { status: 400 });
       }
@@ -187,25 +204,47 @@ export async function POST(req: NextRequest) {
     }
 
     to = to.filter(isValidEmail);
-    const bcc = parseEmailList(bccRaw).filter(isValidEmail);
+    let hiddenRecipientTo = to;
+    let primaryRecipients = to;
+    let oneTimeBcc = parseEmailList(bccRaw).filter(isValidEmail);
 
-    if (!to.length) {
-      return NextResponse.json({ error: "No valid recipients found." }, { status: 400 });
+    if (recipientMode === "hidden_bcc") {
+      hiddenRecipientTo = to.length > 0 ? to : [DEFAULT_HIDDEN_RECIPIENT_TO];
+      primaryRecipients = parseEmailList(bccRaw).filter(isValidEmail);
+      oneTimeBcc = [];
+
+      const hiddenRecipientSet = new Set(hiddenRecipientTo);
+      primaryRecipients = primaryRecipients.filter((email) => !hiddenRecipientSet.has(email));
+      if (!primaryRecipients.length) {
+        return NextResponse.json({ error: "No valid team recipients found." }, { status: 400 });
+      }
+    } else {
+      const primaryRecipientSet = new Set(primaryRecipients);
+      oneTimeBcc = oneTimeBcc.filter((email) => !primaryRecipientSet.has(email));
+      if (!primaryRecipients.length && !oneTimeBcc.length) {
+        return NextResponse.json({ error: "No valid recipients found." }, { status: 400 });
+      }
     }
+
+    const recipientCount =
+      recipientMode === "hidden_bcc"
+        ? primaryRecipients.length
+        : primaryRecipients.length + oneTimeBcc.length;
+
     const maxRecipientsPerRequest = resolveIntSetting(
       process.env.MAX_BULK_EMAIL_RECIPIENTS || process.env.MAX_RECIPIENTS_PER_REQUEST,
       DEFAULT_MAX_RECIPIENTS_PER_REQUEST,
       1,
       ABSOLUTE_MAX_RECIPIENTS_PER_REQUEST
     );
-    if (to.length > maxRecipientsPerRequest) {
+    if (recipientCount > maxRecipientsPerRequest) {
       return NextResponse.json(
         { error: `Too many recipients. Max allowed is ${maxRecipientsPerRequest} per request.` },
         { status: 400 }
       );
     }
 
-    const isBulk = audience !== "manual" || to.length > 25;
+    const isBulk = audience !== "manual" || recipientCount > 25;
     if (isBulk && !confirm) {
       return NextResponse.json(
         { error: "Bulk sending requires explicit confirmation." },
@@ -253,12 +292,11 @@ export async function POST(req: NextRequest) {
       MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS,
       MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS
     );
-    const batches = chunkArray(to, batchSize);
+    const batches = chunkArray(primaryRecipients, batchSize);
 
     let sentCount = 0;
     const messageIds: string[] = [];
     const basePayload = {
-      bcc: bcc.length ? bcc : undefined,
       subject,
       html,
       from: process.env.RESEND_FROM || undefined,
@@ -272,7 +310,13 @@ export async function POST(req: NextRequest) {
       for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
         result = await sendEmail({
           ...basePayload,
-          to: batch,
+          to: recipientMode === "hidden_bcc" ? hiddenRecipientTo : batch,
+          bcc:
+            recipientMode === "hidden_bcc"
+              ? batch
+              : i === 0 && oneTimeBcc.length > 0
+                ? oneTimeBcc
+                : undefined,
         });
 
         if (result.success) {
@@ -291,13 +335,16 @@ export async function POST(req: NextRequest) {
           {
             error: result?.error || "Failed to send email.",
             sentCount,
-            attemptedRecipients: to.length,
+            attemptedRecipients: recipientCount,
           },
           { status: 500 }
         );
       }
 
-      sentCount += batch.length;
+      sentCount +=
+        recipientMode === "hidden_bcc"
+          ? batch.length
+          : batch.length + (i === 0 ? oneTimeBcc.length : 0);
       if (result.messageId) messageIds.push(result.messageId);
 
       if (i < batches.length - 1 && batchDelayMs > 0) {

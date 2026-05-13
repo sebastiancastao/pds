@@ -8,6 +8,11 @@ import { AuthGuard } from '@/lib/auth-guard';
 
 const allowedRoles = new Set(['admin', 'exec', 'manager', 'supervisor', 'supervisor3']);
 
+function normalizeRole(value: unknown): string {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === 'execs' ? 'exec' : normalized;
+}
+
 type AccessState = 'checking' | 'allowed' | 'forbidden';
 
 function dedupeEmails(values: string[]): string[] {
@@ -18,6 +23,10 @@ function dedupeEmails(values: string[]): string[] {
         .filter(Boolean)
     )
   );
+}
+
+function parseEmailList(value: string): string[] {
+  return dedupeEmails(String(value || '').split(/[\s,;]+/g));
 }
 
 function TeamEmailPageContent() {
@@ -43,7 +52,10 @@ function TeamEmailPageContent() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState<{ messageId?: string; recipientCount?: number } | null>(null);
 
-  const recipientCount = teamEmails.length;
+  const recipientCount = useMemo(
+    () => dedupeEmails([...teamEmails, ...parseEmailList(bcc)]).length,
+    [teamEmails, bcc]
+  );
   const bulkMode = recipientCount > 25;
   const backHref = from === 'global-calendar' ? '/global-calendar' : '/dashboard';
 
@@ -79,7 +91,7 @@ function TeamEmailPageContent() {
           .eq('id', user.id)
           .single() as any);
 
-        const normalized = String(data?.role || '').trim().toLowerCase();
+        const normalized = normalizeRole(data?.role);
         setCurrentRole(normalized || 'unknown');
         if (error || !allowedRoles.has(normalized)) {
           setAccessState('forbidden');
@@ -165,10 +177,11 @@ function TeamEmailPageContent() {
       const { data: { session } } = await supabase.auth.getSession();
       const form = new FormData();
       form.set('audience', 'manual');
+      form.set('recipientMode', 'hidden_bcc');
 
       const mergedBcc = [
         ...teamEmails,
-        ...bcc.split(',').map((e) => e.trim()).filter(Boolean),
+        ...parseEmailList(bcc),
       ];
 
       if (eventId) {
