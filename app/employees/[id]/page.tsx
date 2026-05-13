@@ -4,6 +4,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 
 type Employee = {
@@ -1181,6 +1182,8 @@ export default function WorkerProfilePage() {
                 </div>
               </div>
             </section>
+
+            <KnowYourRightsNoticeSection state={employee.state ?? undefined} />
 
             {/* Personal Calendar */}
             {(() => {
