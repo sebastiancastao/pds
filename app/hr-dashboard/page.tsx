@@ -3623,6 +3623,12 @@ function HRDashboardContent() {
                           </tbody>
                         </table>
                       </div>
+                      {showVendorCommissionColumns && (
+                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-200">
+                          <span className="text-sm font-medium text-gray-600">Total Variable Incentive</span>
+                          <span className="text-lg font-bold text-purple-600">${formatVendorMoney(vendorTotals.totalVariableIncentive)}</span>
+                        </div>
+                      )}
                     </div>
                   );
                 })

@@ -31,7 +31,7 @@ export function distributePoolByHoursRule({
   members,
   mode = "equal",
   shortShiftThresholdHours = 8,
-  allShortShiftMode = "hours",
+  allShortShiftMode = "equal",
 }: DistributePoolArgs): PoolDistributionResult {
   const mergedMembers = new Map<string, number>();
 
