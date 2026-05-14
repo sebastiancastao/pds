@@ -16,6 +16,10 @@ type PayRecord = {
   pay_period_end: string;
   annual_salary: number;
   gross_pay: number;
+  bonus_amount: number;
+  bonus_notes: string | null;
+  reimbursement_amount: number;
+  reimbursement_notes: string | null;
   federal_tax: number;
   state_tax: number;
   social_security: number;
@@ -33,6 +37,7 @@ type EmployeeOption = {
   id: string;
   name: string;
   email: string | null;
+  employment_type: string;
 };
 
 type FormState = {
@@ -41,6 +46,10 @@ type FormState = {
   pay_period_end: string;
   annual_salary: string;
   gross_pay: string;
+  bonus_amount: string;
+  bonus_notes: string;
+  reimbursement_amount: string;
+  reimbursement_notes: string;
   federal_tax: string;
   state_tax: string;
   social_security: string;
@@ -57,6 +66,10 @@ const EMPTY_FORM: FormState = {
   pay_period_end: '',
   annual_salary: '',
   gross_pay: '',
+  bonus_amount: '',
+  bonus_notes: '',
+  reimbursement_amount: '',
+  reimbursement_notes: '',
   federal_tax: '',
   state_tax: '',
   social_security: '',
@@ -162,11 +175,14 @@ export default function SalariedPaysheetPage() {
         const json = await res.json().catch(() => ({}));
         const list = Array.isArray(json.employees) ? json.employees : Array.isArray(json) ? json : [];
         setEmployees(
-          list.map((e: any) => ({
-            id: e.id,
-            name: `${e.first_name || ''} ${e.last_name || ''}`.trim() || e.email || e.id,
-            email: e.email || null,
-          }))
+          list
+            .filter((e: any) => (e.employment_type || 'hourly').toLowerCase() === 'salaried')
+            .map((e: any) => ({
+              id: e.id,
+              name: `${e.first_name || ''} ${e.last_name || ''}`.trim() || e.email || e.id,
+              email: e.email || null,
+              employment_type: e.employment_type || 'salaried',
+            }))
         );
       }
     } catch {
@@ -206,6 +222,8 @@ export default function SalariedPaysheetPage() {
   const stats = useMemo(() => ({
     count: records.length,
     totalGross: records.reduce((s, r) => s + r.gross_pay, 0),
+    totalBonus: records.reduce((s, r) => s + (r.bonus_amount || 0), 0),
+    totalReimbursement: records.reduce((s, r) => s + (r.reimbursement_amount || 0), 0),
     totalDeductions: records.reduce((s, r) => s + r.federal_tax + r.state_tax + r.social_security + r.medicare + r.other_deductions, 0),
     totalNet: records.reduce((s, r) => s + r.net_pay, 0),
   }), [records]);
@@ -224,6 +242,10 @@ export default function SalariedPaysheetPage() {
       pay_period_end: record.pay_period_end,
       annual_salary: record.annual_salary.toFixed(2),
       gross_pay: record.gross_pay.toFixed(2),
+      bonus_amount: (record.bonus_amount || 0).toFixed(2),
+      bonus_notes: record.bonus_notes || '',
+      reimbursement_amount: (record.reimbursement_amount || 0).toFixed(2),
+      reimbursement_notes: record.reimbursement_notes || '',
       federal_tax: record.federal_tax.toFixed(2),
       state_tax: record.state_tax.toFixed(2),
       social_security: record.social_security.toFixed(2),
@@ -252,13 +274,15 @@ export default function SalariedPaysheetPage() {
 
   function computedNet(): number {
     const gross = parseFloat(form.gross_pay) || 0;
+    const bonus = parseFloat(form.bonus_amount) || 0;
+    const reimbursement = parseFloat(form.reimbursement_amount) || 0;
     const deductions =
       (parseFloat(form.federal_tax) || 0) +
       (parseFloat(form.state_tax) || 0) +
       (parseFloat(form.social_security) || 0) +
       (parseFloat(form.medicare) || 0) +
       (parseFloat(form.other_deductions) || 0);
-    return gross - deductions;
+    return gross + bonus - deductions + reimbursement;
   }
 
   async function submitForm() {
@@ -282,6 +306,10 @@ export default function SalariedPaysheetPage() {
         pay_period_end: form.pay_period_end,
         annual_salary: parseFloat(form.annual_salary),
         gross_pay: parseFloat(form.gross_pay),
+        bonus_amount: parseFloat(form.bonus_amount) || 0,
+        bonus_notes: form.bonus_notes.trim() || null,
+        reimbursement_amount: parseFloat(form.reimbursement_amount) || 0,
+        reimbursement_notes: form.reimbursement_notes.trim() || null,
         federal_tax: parseFloat(form.federal_tax) || 0,
         state_tax: parseFloat(form.state_tax) || 0,
         social_security: parseFloat(form.social_security) || 0,
@@ -396,6 +424,22 @@ export default function SalariedPaysheetPage() {
         </div>
 
         <div className="md:col-span-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Additional Earnings</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="apple-label text-xs mb-1 block">Bonus ($) <span className="text-gray-400 font-normal normal-case">— taxable</span></label>
+              <input type="number" min="0" step="0.01" placeholder="0.00" value={form.bonus_amount} onChange={(e) => updateForm('bonus_amount', e.target.value)} className="apple-select text-sm" />
+              <input type="text" placeholder="Bonus reason (optional)" value={form.bonus_notes} onChange={(e) => updateForm('bonus_notes', e.target.value)} className="apple-select text-sm mt-2" />
+            </div>
+            <div>
+              <label className="apple-label text-xs mb-1 block">Reimbursement ($) <span className="text-gray-400 font-normal normal-case">— non-taxable</span></label>
+              <input type="number" min="0" step="0.01" placeholder="0.00" value={form.reimbursement_amount} onChange={(e) => updateForm('reimbursement_amount', e.target.value)} className="apple-select text-sm" />
+              <input type="text" placeholder="Reimbursement reason (optional)" value={form.reimbursement_notes} onChange={(e) => updateForm('reimbursement_notes', e.target.value)} className="apple-select text-sm mt-2" />
+            </div>
+          </div>
+        </div>
+
+        <div className="md:col-span-2">
           <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Deductions</p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {(
@@ -416,11 +460,25 @@ export default function SalariedPaysheetPage() {
         </div>
 
         <div className="md:col-span-2">
-          <div className="flex items-center justify-between rounded-2xl bg-gray-50 border border-gray-200 px-5 py-3">
-            <span className="text-sm font-semibold text-gray-700">Computed Net Pay</span>
-            <span className={`text-xl font-bold ${computedNet() >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-              {formatMoney(computedNet())}
-            </span>
+          <div className="rounded-2xl bg-gray-50 border border-gray-200 px-5 py-3 space-y-1">
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>Gross + Bonus − Deductions + Reimbursement</span>
+              <span>
+                {formatMoney(parseFloat(form.gross_pay) || 0)} + {formatMoney(parseFloat(form.bonus_amount) || 0)} − {formatMoney(
+                  (parseFloat(form.federal_tax) || 0) +
+                  (parseFloat(form.state_tax) || 0) +
+                  (parseFloat(form.social_security) || 0) +
+                  (parseFloat(form.medicare) || 0) +
+                  (parseFloat(form.other_deductions) || 0)
+                )} + {formatMoney(parseFloat(form.reimbursement_amount) || 0)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm font-semibold text-gray-700">Computed Net Pay</span>
+              <span className={`text-xl font-bold ${computedNet() >= 0 ? 'text-green-700' : 'text-red-600'}`}>
+                {formatMoney(computedNet())}
+              </span>
+            </div>
           </div>
         </div>
 
@@ -512,10 +570,12 @@ export default function SalariedPaysheetPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
           {[
             { label: 'Employees', value: stats.count, color: 'text-gray-900', bg: 'bg-white' },
             { label: 'Total Gross', value: formatMoney(stats.totalGross), color: 'text-blue-700', bg: 'bg-blue-50' },
+            { label: 'Total Bonus', value: formatMoney(stats.totalBonus), color: 'text-emerald-700', bg: 'bg-emerald-50' },
+            { label: 'Total Reimb.', value: formatMoney(stats.totalReimbursement), color: 'text-emerald-700', bg: 'bg-emerald-50' },
             { label: 'Total Deductions', value: formatMoney(stats.totalDeductions), color: 'text-red-600', bg: 'bg-red-50' },
             { label: 'Total Net Pay', value: formatMoney(stats.totalNet), color: 'text-green-700', bg: 'bg-green-50' },
           ].map((stat) => (
@@ -610,16 +670,34 @@ export default function SalariedPaysheetPage() {
                     <div className="mt-4 pt-4 border-t border-gray-100">
                       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Salary</p>
+                          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Earnings</p>
                           <div className="space-y-1 text-sm">
                             <div className="flex justify-between">
-                              <span className="text-gray-600">Annual</span>
+                              <span className="text-gray-600">Annual Salary</span>
                               <span className="font-medium">{formatMoney(record.annual_salary)}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-gray-600">Gross This Period</span>
                               <span className="font-medium">{formatMoney(record.gross_pay)}</span>
                             </div>
+                            {record.bonus_amount > 0 && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">Bonus</span>
+                                <span className="font-medium text-emerald-700">+{formatMoney(record.bonus_amount)}</span>
+                              </div>
+                            )}
+                            {record.bonus_notes && (
+                              <p className="text-xs text-gray-500 italic pl-1">{record.bonus_notes}</p>
+                            )}
+                            {record.reimbursement_amount > 0 && (
+                              <div className="flex justify-between">
+                                <span className="text-gray-600">Reimbursement</span>
+                                <span className="font-medium text-emerald-700">+{formatMoney(record.reimbursement_amount)}</span>
+                              </div>
+                            )}
+                            {record.reimbursement_notes && (
+                              <p className="text-xs text-gray-500 italic pl-1">{record.reimbursement_notes}</p>
+                            )}
                           </div>
                         </div>
 

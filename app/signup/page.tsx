@@ -13,6 +13,10 @@ interface NewUser {
   firstName: string;
   lastName: string;
   official_name: string;
+  employmentType: 'hourly' | 'salaried';
+  annualSalary: string;
+  department: string;
+  position: string;
 }
 
 interface CreatedUser extends NewUser {
@@ -36,17 +40,21 @@ interface VendorRecord {
 }
 
 export default function SignupPage() {
-  const [users, setUsers] = useState<NewUser[]>([
-    {
-      id: crypto.randomUUID(),
-      email: '',
-      role: 'worker',
-      division: 'vendor',
-      firstName: '',
-      lastName: '',
-      official_name: '',
-    },
-  ]);
+  const emptyUser = (): NewUser => ({
+    id: crypto.randomUUID(),
+    email: '',
+    role: 'worker',
+    division: 'vendor',
+    firstName: '',
+    lastName: '',
+    official_name: '',
+    employmentType: 'hourly',
+    annualSalary: '',
+    department: '',
+    position: '',
+  });
+
+  const [users, setUsers] = useState<NewUser[]>([emptyUser()]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [successResults, setSuccessResults] = useState<CreatedUser[]>([]);
@@ -60,18 +68,7 @@ export default function SignupPage() {
   const usersPerPage = 20;
 
   const addUser = () => {
-    setUsers([
-      ...users,
-      {
-        id: crypto.randomUUID(),
-        email: '',
-        role: 'worker',
-        division: 'vendor',
-        firstName: '',
-        lastName: '',
-        official_name: '',
-      },
-    ]);
+    setUsers([...users, emptyUser()]);
   };
 
   const removeUser = (id: string) => {
@@ -112,6 +109,16 @@ export default function SignupPage() {
       if (!user.firstName.trim() || !user.lastName.trim()) {
         setError('All users must have first and last names');
         return false;
+      }
+    }
+
+    // Validate salaried users have a salary
+    for (const user of users) {
+      if (user.employmentType === 'salaried') {
+        if (!user.annualSalary || isNaN(Number(user.annualSalary)) || Number(user.annualSalary) <= 0) {
+          setError(`${user.firstName || user.email}: annual salary is required for salaried employees`);
+          return false;
+        }
       }
     }
 
@@ -156,25 +163,40 @@ export default function SignupPage() {
       setSuccessResults(data.results);
       setShowResults(true);
 
+      // Save salary records for any salaried users
+      const salariedForms = users.filter(u => u.employmentType === 'salaried' && u.annualSalary);
+      if (salariedForms.length > 0) {
+        const { data: { session } } = await supabase.auth.getSession();
+        const salaryHeaders = {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        };
+        for (const result of data.results as CreatedUser[]) {
+          if (result.status !== 'success') continue;
+          const formUser = salariedForms.find(u => u.email.toLowerCase() === result.email.toLowerCase());
+          if (!formUser) continue;
+          await fetch('/api/salaries', {
+            method: 'POST',
+            headers: salaryHeaders,
+            body: JSON.stringify({
+              user_id: result.id,
+              annual_salary: Number(formUser.annualSalary),
+              employment_type: 'salaried',
+              department: formUser.department.trim() || null,
+              position: formUser.position.trim() || null,
+            }),
+          }).catch((err) => console.error('[Signup] Failed to save salary for', result.email, err));
+        }
+      }
+
       // Reset form for successful users
       const failedUsers = data.results.filter((r: CreatedUser) => r.status === 'error');
       if (failedUsers.length === 0) {
-        // All succeeded, reset form
-        setUsers([
-          {
-            id: crypto.randomUUID(),
-            email: '',
-            role: 'worker',
-            division: 'vendor',
-            firstName: '',
-            lastName: '',
-            official_name: '',
-          },
-        ]);
+        setUsers([emptyUser()]);
       } else {
-        // Keep only failed users in form
         setUsers(
           failedUsers.map((u: CreatedUser) => ({
+            ...emptyUser(),
             id: crypto.randomUUID(),
             email: u.email,
             role: u.role,
@@ -428,6 +450,7 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
             const fullName = `${firstName} ${lastName}`.trim();
 
             importedUsers.push({
+              ...emptyUser(),
               id: crypto.randomUUID(),
               firstName,
               lastName,
@@ -570,6 +593,7 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
       const fullName = `${firstName} ${lastName}`.trim();
 
       return {
+        ...emptyUser(),
         id: crypto.randomUUID(),
         email: vendor.email.trim(),
         role: 'worker' as const,
@@ -745,10 +769,11 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                               setUsers([
                                 ...users,
                                 {
+                                  ...emptyUser(),
                                   id: crypto.randomUUID(),
                                   email: vendorEmail,
-                                  role: 'worker',
-                                  division: 'vendor',
+                                  role: 'worker' as const,
+                                  division: 'vendor' as const,
                                   firstName,
                                   lastName,
                                   official_name: fullName,
@@ -1120,6 +1145,8 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Role</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Division</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Type</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase">Salary ($)</th>
                         <th className="px-3 py-2 text-center text-xs font-medium text-gray-500 uppercase w-16"></th>
                       </tr>
                     </thead>
@@ -1182,6 +1209,28 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                               <option value="trailers">Trailers</option>
                               <option value="both">Both</option>
                             </select>
+                          </td>
+                          <td className="px-3 py-2">
+                            <select
+                              value={user.employmentType}
+                              onChange={(e) => updateUser(user.id, 'employmentType', e.target.value)}
+                              className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-transparent"
+                            >
+                              <option value="hourly">Hourly</option>
+                              <option value="salaried">Salaried</option>
+                            </select>
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min="0"
+                              step="1000"
+                              value={user.annualSalary}
+                              onChange={(e) => updateUser(user.id, 'annualSalary', e.target.value)}
+                              disabled={user.employmentType !== 'salaried'}
+                              className="w-24 px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-primary-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"
+                              placeholder="0"
+                            />
                           </td>
                           <td className="px-3 py-2 text-center">
                             {users.length > 1 && (
@@ -1376,6 +1425,59 @@ Ben,Check,ben.check@example.com,backgroundchecker,vendor`;
                       <option value="both">Both Divisions</option>
                     </select>
                   </div>
+
+                  {/* Employment Type */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Employment Type</label>
+                    <select
+                      value={user.employmentType}
+                      onChange={(e) => updateUser(user.id, 'employmentType', e.target.value)}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                    >
+                      <option value="hourly">Hourly</option>
+                      <option value="salaried">Salaried</option>
+                    </select>
+                  </div>
+
+                  {/* Annual Salary — only when salaried */}
+                  {user.employmentType === 'salaried' && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Annual Salary ($) <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          step="1000"
+                          value={user.annualSalary}
+                          onChange={(e) => updateUser(user.id, 'annualSalary', e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="e.g. 55000"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Department</label>
+                        <input
+                          type="text"
+                          value={user.department}
+                          onChange={(e) => updateUser(user.id, 'department', e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="e.g. Operations"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-sm font-medium text-gray-700 mb-2">Position / Title</label>
+                        <input
+                          type="text"
+                          value={user.position}
+                          onChange={(e) => updateUser(user.id, 'position', e.target.value)}
+                          className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                          placeholder="e.g. Coordinator"
+                        />
+                      </div>
+                    </>
+                  )}
 
                 </div>
               </div>

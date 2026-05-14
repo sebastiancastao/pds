@@ -233,7 +233,7 @@ const STATE_TIMEZONES: Record<string, string> = {
   WI: "America/Chicago", WY: "America/Denver",
 };
 
-const EMPLOYEE_DETAIL_REFRESH_MS = 30000;
+const EMPLOYEE_DETAIL_REFRESH_MS = 45000;
 
 function formatDateTime(d?: string | null, state?: string | null) {
   if (!d) return "—";

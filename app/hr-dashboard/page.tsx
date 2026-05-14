@@ -162,6 +162,20 @@ function HRDashboardContent() {
   const [createSalariedError, setCreateSalariedError] = useState('');
   const [createSalariedLoading, setCreateSalariedLoading] = useState(false);
   const [createSalariedSuccess, setCreateSalariedSuccess] = useState('');
+
+  // Convert existing user to salaried modal
+  const [showConvertSalariedModal, setShowConvertSalariedModal] = useState(false);
+  const [convertSalariedForm, setConvertSalariedForm] = useState({
+    userId: '',
+    annualSalary: '',
+    department: '',
+    position: '',
+    effectiveDate: new Date().toISOString().slice(0, 10),
+  });
+  const [convertSalariedSearch, setConvertSalariedSearch] = useState('');
+  const [convertSalariedError, setConvertSalariedError] = useState('');
+  const [convertSalariedSuccess, setConvertSalariedSuccess] = useState('');
+  const [convertSalariedLoading, setConvertSalariedLoading] = useState(false);
   const getMileageApproval = (eventId: string, userId: string) =>
     mileageApprovals[eventId]?.[userId] ?? { mileage: true, travel: true };
   const setMileageApproval = async (eventId: string, userId: string, field: 'mileage' | 'travel', value: boolean) => {
@@ -500,6 +514,55 @@ function HRDashboardContent() {
     }
     setCreateSalariedLoading(false);
   }, [createSalariedForm, loadEmployees]);
+
+  const submitConvertExistingToSalaried = useCallback(async () => {
+    const { userId, annualSalary, department, position, effectiveDate } = convertSalariedForm;
+    if (!userId) {
+      setConvertSalariedError('Please select an employee.');
+      return;
+    }
+    if (!annualSalary || isNaN(Number(annualSalary)) || Number(annualSalary) < 0) {
+      setConvertSalariedError('Please enter a valid annual salary.');
+      return;
+    }
+    setConvertSalariedLoading(true);
+    setConvertSalariedError('');
+    setConvertSalariedSuccess('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const authHeaders = {
+        'Content-Type': 'application/json',
+        ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+      };
+      const res = await fetch('/api/salaries', {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({
+          user_id: userId,
+          annual_salary: Number(annualSalary),
+          department: department.trim() || null,
+          position: position.trim() || null,
+          employment_type: 'salaried',
+          effective_date: effectiveDate || undefined,
+        }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to convert user to salaried');
+      setConvertSalariedSuccess('Employee converted to salaried.');
+      setConvertSalariedForm({
+        userId: '',
+        annualSalary: '',
+        department: '',
+        position: '',
+        effectiveDate: new Date().toISOString().slice(0, 10),
+      });
+      setConvertSalariedSearch('');
+      await loadEmployees();
+    } catch (err: any) {
+      setConvertSalariedError(err.message || 'Failed to convert user to salaried');
+    }
+    setConvertSalariedLoading(false);
+  }, [convertSalariedForm, loadEmployees]);
 
   const loadBackgroundChecks = useCallback(async () => {
     try {
@@ -3210,6 +3273,9 @@ function HRDashboardContent() {
                 <button onClick={exportSalariedPayroll} className={`apple-button ${employees.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={employees.length === 0}>
                   Salaried
                 </button>
+                <Link href="/salaried-paysheet">
+                  <button className="apple-button apple-button-secondary">Salaried Paysheet</button>
+                </Link>
                 <button
                   onClick={() => setPayrollGroupBy('venue')}
                   className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
@@ -4028,10 +4094,10 @@ function HRDashboardContent() {
               <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Employees</h2>
               <div className="flex flex-wrap items-center justify-end gap-3">
                 <button
-                  onClick={() => { setCreateSalariedError(''); setCreateSalariedSuccess(''); setShowCreateSalariedModal(true); }}
-                  className="apple-button apple-button-primary"
+                  onClick={() => { setConvertSalariedError(''); setConvertSalariedSuccess(''); setShowConvertSalariedModal(true); }}
+                  className="apple-button apple-button-secondary"
                 >
-                  + Create Salaried User
+                  Convert Existing to Salaried
                 </button>
                 <div className="relative">
                   <label className="sr-only" htmlFor="employee-search">Search employees</label>
@@ -4145,18 +4211,19 @@ function HRDashboardContent() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {filteredEmployeeCards.map(({ employee: e, firstName, lastName }) => (
-                  <Link key={e.id} href={`/hr/employees/${e.id}`} className="block group">
+                <div key={e.id} className="relative group">
+                  <Link href={`/hr/employees/${e.id}`} className="block">
                     <div className="apple-card p-6 hover:shadow-lg transition-shadow group-hover:translate-y-[-1px]">
                       <div className="flex items-start gap-4">
-                        <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-semibold">
+                        <div className="w-12 h-12 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 font-semibold shrink-0">
                           {firstName?.[0] || 'E'}{lastName?.[0] || ''}
                         </div>
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between">
-                            <h3 className="text-lg font-semibold text-gray-900">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <h3 className="text-lg font-semibold text-gray-900 truncate">
                               {firstName} {lastName}
                             </h3>
-                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                            <span className={`shrink-0 px-2 py-0.5 rounded text-xs font-medium ${
                               e.status === 'active' ? 'bg-green-100 text-green-700' : e.status === 'on_leave' ? 'bg-yellow-100 text-yellow-700' : 'bg-gray-100 text-gray-600'
                             }`}>
                               {e.status}
@@ -4164,10 +4231,37 @@ function HRDashboardContent() {
                           </div>
                           <p className="text-sm text-gray-600">{e.position} • {e.department}</p>
                           <p className="text-sm text-gray-500">{e.city || '—'}, {e.state}</p>
+                          {Number(e.salary) > 0 && (
+                            <p className="text-xs font-semibold text-emerald-700 mt-1">
+                              Salaried · ${Number(e.salary).toLocaleString()}/yr
+                            </p>
+                          )}
                         </div>
                       </div>
                     </div>
                   </Link>
+                  {/* Edit salary button — sits outside the Link so it doesn't navigate */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConvertSalariedForm({
+                        userId: e.id,
+                        annualSalary: Number(e.salary) > 0 ? String(e.salary) : '',
+                        department: e.department || '',
+                        position: e.position || '',
+                        effectiveDate: new Date().toISOString().slice(0, 10),
+                      });
+                      setConvertSalariedSearch(`${firstName} ${lastName}`.trim());
+                      setConvertSalariedError('');
+                      setConvertSalariedSuccess('');
+                      setShowConvertSalariedModal(true);
+                    }}
+                    className="absolute bottom-4 right-4 text-xs px-2.5 py-1 rounded-lg border border-gray-200 bg-white text-gray-600 hover:border-blue-400 hover:text-blue-600 transition-colors shadow-sm"
+                    title={Number(e.salary) > 0 ? 'Edit salary' : 'Set as salaried'}
+                  >
+                    {Number(e.salary) > 0 ? 'Edit Salary' : '+ Salary'}
+                  </button>
+                </div>
                 ))}
               {filteredEmployeeCards.length === 0 && (
                 <div className="apple-card p-12 text-center md:col-span-2 lg:col-span-3">
@@ -4179,8 +4273,8 @@ function HRDashboardContent() {
               )}
             </div>
 
-            {/* Create Salaried User Modal */}
-            {showCreateSalariedModal && (
+            {/* Create Salaried User Modal — moved to /signup page */}
+            {false && showCreateSalariedModal && (
               <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
                 <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg mx-4 p-8">
                   <div className="flex items-center justify-between mb-6">
@@ -4327,6 +4421,156 @@ function HRDashboardContent() {
                 </div>
               </div>
             )}
+
+            {/* Convert Existing User to Salaried Modal */}
+            {showConvertSalariedModal && (() => {
+              const search = convertSalariedSearch.trim().toLowerCase();
+              const filteredEmployees = (employees || [])
+                .filter((e: any) => {
+                  if (!search) return true;
+                  const fullName = `${e.first_name || ''} ${e.last_name || ''}`.toLowerCase();
+                  return fullName.includes(search) || (e.email || '').toLowerCase().includes(search);
+                })
+                .slice(0, 50);
+              const selectedEmployee = (employees || []).find((e: any) => e.id === convertSalariedForm.userId);
+              return (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+                  <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <h2 className="text-xl font-semibold text-gray-900">Convert Existing User to Salaried</h2>
+                        <p className="text-sm text-gray-500 mt-1">
+                          Sets annual salary on an existing employee. Upserts on user — re-running updates the salary.
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => { setShowConvertSalariedModal(false); setConvertSalariedError(''); setConvertSalariedSuccess(''); }}
+                        className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+                        aria-label="Close"
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    <div className="mb-4">
+                      <label className="apple-label" htmlFor="conv-search">Employee <span className="text-red-500">*</span></label>
+                      <input
+                        id="conv-search"
+                        type="text"
+                        value={convertSalariedSearch}
+                        onChange={e => setConvertSalariedSearch(e.target.value)}
+                        className="apple-select w-full"
+                        placeholder="Search by name or email…"
+                      />
+                      <div className="mt-2 border border-gray-200 rounded-xl max-h-48 overflow-y-auto">
+                        {filteredEmployees.length === 0 ? (
+                          <p className="text-sm text-gray-500 px-3 py-2">No matching employees.</p>
+                        ) : filteredEmployees.map((e: any) => {
+                          const isSelected = e.id === convertSalariedForm.userId;
+                          const name = `${e.first_name || ''} ${e.last_name || ''}`.trim() || e.email || e.id;
+                          const currentSalary = Number(e.salary || 0);
+                          return (
+                            <button
+                              key={e.id}
+                              type="button"
+                              onClick={() => setConvertSalariedForm(f => ({ ...f, userId: e.id }))}
+                              className={`block w-full text-left px-3 py-2 text-sm border-b border-gray-100 last:border-0 ${isSelected ? 'bg-blue-50 text-blue-700' : 'hover:bg-gray-50'}`}
+                            >
+                              <span className="font-medium">{name}</span>
+                              {e.email && <span className="text-gray-500 ml-2">{e.email}</span>}
+                              {currentSalary > 0 && (
+                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">
+                                  Salaried · ${currentSalary.toLocaleString()}
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {selectedEmployee && (
+                        <p className="mt-2 text-xs text-gray-500">
+                          Selected: <span className="font-medium text-gray-700">{`${selectedEmployee.first_name || ''} ${selectedEmployee.last_name || ''}`.trim() || selectedEmployee.email}</span>
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="mb-4">
+                      <label className="apple-label" htmlFor="conv-salary">Annual Salary ($) <span className="text-red-500">*</span></label>
+                      <input
+                        id="conv-salary"
+                        type="number"
+                        min="0"
+                        step="1000"
+                        value={convertSalariedForm.annualSalary}
+                        onChange={e => setConvertSalariedForm(f => ({ ...f, annualSalary: e.target.value }))}
+                        className="apple-select w-full"
+                        placeholder="e.g. 55000"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 mb-4">
+                      <div>
+                        <label className="apple-label" htmlFor="conv-department">Department</label>
+                        <input
+                          id="conv-department"
+                          type="text"
+                          value={convertSalariedForm.department}
+                          onChange={e => setConvertSalariedForm(f => ({ ...f, department: e.target.value }))}
+                          className="apple-select w-full"
+                          placeholder="e.g. Operations"
+                        />
+                      </div>
+                      <div>
+                        <label className="apple-label" htmlFor="conv-position">Position</label>
+                        <input
+                          id="conv-position"
+                          type="text"
+                          value={convertSalariedForm.position}
+                          onChange={e => setConvertSalariedForm(f => ({ ...f, position: e.target.value }))}
+                          className="apple-select w-full"
+                          placeholder="e.g. Coordinator"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mb-6">
+                      <label className="apple-label" htmlFor="conv-effective">Effective Date</label>
+                      <input
+                        id="conv-effective"
+                        type="date"
+                        value={convertSalariedForm.effectiveDate}
+                        onChange={e => setConvertSalariedForm(f => ({ ...f, effectiveDate: e.target.value }))}
+                        className="apple-select w-full"
+                      />
+                    </div>
+
+                    {convertSalariedError && (
+                      <div className="apple-alert apple-alert-error mb-4">{convertSalariedError}</div>
+                    )}
+                    {convertSalariedSuccess && (
+                      <div className="rounded-xl bg-green-50 border border-green-200 text-green-700 px-4 py-3 text-sm mb-4">{convertSalariedSuccess}</div>
+                    )}
+
+                    <div className="flex gap-3 justify-end">
+                      <button
+                        onClick={() => { setShowConvertSalariedModal(false); setConvertSalariedError(''); setConvertSalariedSuccess(''); }}
+                        className="apple-button apple-button-secondary"
+                        disabled={convertSalariedLoading}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={submitConvertExistingToSalaried}
+                        className={`apple-button ${convertSalariedLoading ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                        disabled={convertSalariedLoading}
+                      >
+                        {convertSalariedLoading ? 'Saving…' : 'Save Salary'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 

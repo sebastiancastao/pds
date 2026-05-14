@@ -220,6 +220,13 @@ export default function PaystubGenerator() {
   const [finalPayLoading, setFinalPayLoading] = useState(false);
   const [finalPayError, setFinalPayError] = useState<string | null>(null);
 
+  // Email paystub state
+  const [showEmailModal, setShowEmailModal] = useState(false);
+  const [emailSelectedIds, setEmailSelectedIds] = useState<Set<string>>(new Set());
+  const [emailSending, setEmailSending] = useState(false);
+  const [emailResults, setEmailResults] = useState<{ name: string; success: boolean; error?: string }[]>([]);
+  const [showEmailResults, setShowEmailResults] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -740,6 +747,24 @@ export default function PaystubGenerator() {
 
     return map;
   }, [events]);
+
+  // Email candidates: matched batch employees or the single employee
+  const emailCandidates = useMemo(() => {
+    if (importedEmployees.length > 0) {
+      return importedEmployees
+        .filter(emp => !!emp.matchedUserId)
+        .map(emp => ({
+          key: emp.matchedUserId!,
+          userId: emp.matchedUserId!,
+          name: emp.employeeName,
+          empRow: emp as ImportedEmployeeRow,
+        }));
+    }
+    if (formData.employeeName && matchedUserId) {
+      return [{ key: matchedUserId, userId: matchedUserId, name: formData.employeeName, empRow: null as ImportedEmployeeRow | null }];
+    }
+    return [] as { key: string; userId: string; name: string; empRow: ImportedEmployeeRow | null }[];
+  }, [importedEmployees, formData.employeeName, matchedUserId]);
 
   const resolveEmployeeUserIdFromLoadedEvents = (nameRaw: string): string | null => {
     const normalizedName = normalizeEmployeeLookupName(nameRaw);
@@ -1400,6 +1425,138 @@ export default function PaystubGenerator() {
       alert(`Error: ${err.message}`);
     } finally {
       setBatchDistributing(false);
+    }
+  };
+
+  const handleSendEmails = async () => {
+    setEmailSending(true);
+    const results: { name: string; success: boolean; error?: string }[] = [];
+
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const selected = emailCandidates.filter(c => emailSelectedIds.has(c.key));
+
+      const sickLeaveByUserId: Record<string, SickLeaveBalance | null> = {};
+      const profileStateByUserId: Record<string, string | null> = {};
+
+      for (let i = 0; i < selected.length; i++) {
+        const candidate = selected[i];
+        try {
+          if (!Object.prototype.hasOwnProperty.call(sickLeaveByUserId, candidate.userId)) {
+            const summaryData = await fetchEmployeeSummary(candidate.userId);
+            sickLeaveByUserId[candidate.userId] = summaryData.sickLeave;
+            profileStateByUserId[candidate.userId] = summaryData.profileStateCode;
+          }
+
+          let payload: Record<string, unknown>;
+          if (candidate.empRow) {
+            const emp = candidate.empRow;
+            payload = {
+              employeeName: emp.employeeName,
+              ssn: emp.ssn,
+              address: emp.address,
+              employeeId: emp.employeeId,
+              payPeriodStart: formData.payPeriodStart,
+              payPeriodEnd: formData.payPeriodEnd,
+              payDate: formData.payDate,
+              federalIncome: emp.federalIncome,
+              socialSecurity: emp.socialSecurity,
+              medicare: emp.medicare,
+              stateIncome: emp.stateIncome,
+              stateDI: emp.stateDI,
+              state: profileStateByUserId[emp.matchedUserId!] || emp.state || formData.state,
+              miscDeduction: emp.miscDeduction,
+              miscReimbursement: emp.miscReimbursement,
+              mealPremium: parseFloat(getOverride(emp.matchedUserId!).mealPremium) || 0,
+              sick: parseFloat(getOverride(emp.matchedUserId!).sick) || 0,
+              events: filterEventsForUserIdWithHours(emp.matchedUserId!),
+              sickLeave: sickLeaveByUserId[emp.matchedUserId!] ?? null,
+              matchedUserId: emp.matchedUserId,
+              debug: debugMode,
+            };
+          } else {
+            payload = {
+              employeeName: formData.employeeName,
+              ssn: formData.ssn,
+              address: formData.address,
+              employeeId: formData.employeeId,
+              payPeriodStart: formData.payPeriodStart,
+              payPeriodEnd: formData.payPeriodEnd,
+              payDate: formData.payDate,
+              federalIncome: formData.federalIncome,
+              socialSecurity: formData.socialSecurity,
+              medicare: formData.medicare,
+              stateIncome: formData.stateIncome,
+              stateDI: formData.stateDI,
+              state: profileStateByUserId[candidate.userId] || formData.state,
+              miscDeduction: formData.miscDeduction,
+              miscReimbursement: formData.miscReimbursement,
+              mealPremium: parseFloat(getOverride(candidate.userId).mealPremium) || 0,
+              sick: parseFloat(getOverride(candidate.userId).sick) || 0,
+              events: filterEventsForUserIdWithHours(candidate.userId),
+              sickLeave: sickLeaveByUserId[candidate.userId] ?? null,
+              matchedUserId: candidate.userId,
+              debug: debugMode,
+            };
+          }
+
+          const genRes = await fetch('/api/generate-paystub', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+
+          if (!genRes.ok) {
+            const body = await genRes.json().catch(() => ({}));
+            results.push({ name: candidate.name, success: false, error: body?.error || 'PDF generation failed' });
+            if (i < selected.length - 1) await new Promise(r => setTimeout(r, 800));
+            continue;
+          }
+
+          const pdfBytes = await genRes.arrayBuffer();
+
+          const emailFormData = new FormData();
+          emailFormData.append(
+            'pdf',
+            new Blob([pdfBytes], { type: 'application/pdf' }),
+            `paystub-${candidate.name.replace(/\s+/g, '_')}-${formData.payDate || 'recent'}.pdf`
+          );
+          emailFormData.append('userId', candidate.userId);
+          emailFormData.append('employeeName', candidate.name);
+          emailFormData.append('payDate', formData.payDate);
+          emailFormData.append('payPeriodStart', formData.payPeriodStart);
+          emailFormData.append('payPeriodEnd', formData.payPeriodEnd);
+
+          const emailRes = await fetch('/api/distribute-paystub/send-email', {
+            method: 'POST',
+            headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+            body: emailFormData,
+          });
+
+          if (emailRes.ok) {
+            results.push({ name: candidate.name, success: true });
+          } else {
+            const body = await emailRes.json().catch(() => ({}));
+            results.push({ name: candidate.name, success: false, error: body?.error || 'Email send failed' });
+          }
+        } catch (err: any) {
+          results.push({ name: candidate.name, success: false, error: err?.message || 'Unexpected error' });
+        }
+
+        // Delay between sends to avoid rate limits, skip after the last item
+        if (i < selected.length - 1) {
+          await new Promise(r => setTimeout(r, 800));
+        }
+      }
+    } finally {
+      setEmailResults(results);
+      setEmailSending(false);
+      setShowEmailModal(false);
+      setShowEmailResults(true);
     }
   };
 
@@ -2167,6 +2324,7 @@ export default function PaystubGenerator() {
   };
 
   return (
+    <>
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
       <div className="max-w-5xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
         {/* Header */}
@@ -2800,6 +2958,24 @@ export default function PaystubGenerator() {
                 </div>
               )}
 
+              {/* Send Paystub by Email (Single) */}
+              {importedEmployees.length === 0 && emailCandidates.length > 0 && (
+                <button
+                  onClick={() => {
+                    setEmailSelectedIds(new Set(emailCandidates.map(c => c.key)));
+                    setShowEmailModal(true);
+                  }}
+                  disabled={emailSending || distributing || generating}
+                  className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-violet-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                  title="Send this paystub by email to the employee"
+                >
+                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                  Send Paystub by Email
+                </button>
+              )}
+
               {/* Batch Generate Button (Excel import) */}
               {importedEmployees.length > 0 && (
                 <div className="space-y-2">
@@ -2909,6 +3085,35 @@ export default function PaystubGenerator() {
                       </div>
                     )}
                   </div>
+
+                  {/* Send Batch Paystubs by Email */}
+                  {emailCandidates.length > 0 && (
+                    <div className="pt-2 border-t border-slate-100">
+                      <button
+                        onClick={() => {
+                          setEmailSelectedIds(new Set(emailCandidates.map(c => c.key)));
+                          setShowEmailModal(true);
+                        }}
+                        disabled={emailSending || batchDistributing || batchGenerating}
+                        className="w-full inline-flex items-center justify-center gap-2 px-6 py-3 bg-violet-600 text-white rounded-lg text-sm font-semibold shadow-sm hover:bg-violet-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+                        title="Send paystubs by email to selected employees"
+                      >
+                        {emailSending ? (
+                          <>
+                            <div className="inline-block h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                            Sending Emails...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            </svg>
+                            Send Paystubs by Email ({emailCandidates.length})
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -2948,5 +3153,184 @@ export default function PaystubGenerator() {
         </div>
       </div>
     </div>
+
+    {/* Email Selection Modal */}
+    {showEmailModal && (
+      <div
+        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        onClick={(e) => { if (e.target === e.currentTarget && !emailSending) setShowEmailModal(false); }}
+      >
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+            <h2 className="text-base font-semibold text-slate-900">Send Paystubs by Email</h2>
+            <button
+              onClick={() => setShowEmailModal(false)}
+              disabled={emailSending}
+              className="text-slate-400 hover:text-slate-600 disabled:opacity-40 transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Body */}
+          <div className="px-6 py-5 space-y-4">
+            {/* Disclaimer */}
+            <div className="flex gap-3 bg-amber-50 border border-amber-200 rounded-xl p-4">
+              <svg className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+              </svg>
+              <div>
+                <p className="text-sm font-semibold text-amber-800">Confirm Email Send</p>
+                <p className="text-sm text-amber-700 mt-0.5">
+                  A paystub PDF will be sent by email to each selected employee. This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            {/* Select All */}
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <input
+                type="checkbox"
+                id="email-select-all"
+                className="w-4 h-4 accent-violet-600 cursor-pointer"
+                checked={emailCandidates.length > 0 && emailCandidates.every(c => emailSelectedIds.has(c.key))}
+                onChange={(e) => {
+                  setEmailSelectedIds(
+                    e.target.checked ? new Set(emailCandidates.map(c => c.key)) : new Set()
+                  );
+                }}
+              />
+              <label htmlFor="email-select-all" className="text-sm font-medium text-slate-700 cursor-pointer select-none">
+                Select All ({emailCandidates.length} employee{emailCandidates.length !== 1 ? 's' : ''})
+              </label>
+            </div>
+
+            {/* Employee List */}
+            <div className="space-y-1 max-h-56 overflow-y-auto pr-1">
+              {emailCandidates.map(candidate => (
+                <label
+                  key={candidate.key}
+                  htmlFor={`email-sel-${candidate.key}`}
+                  className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 cursor-pointer group"
+                >
+                  <input
+                    type="checkbox"
+                    id={`email-sel-${candidate.key}`}
+                    className="w-4 h-4 accent-violet-600 cursor-pointer"
+                    checked={emailSelectedIds.has(candidate.key)}
+                    onChange={(e) => {
+                      const next = new Set(emailSelectedIds);
+                      if (e.target.checked) next.add(candidate.key);
+                      else next.delete(candidate.key);
+                      setEmailSelectedIds(next);
+                    }}
+                  />
+                  <span className="text-sm text-slate-800 group-hover:text-slate-900">{candidate.name}</span>
+                </label>
+              ))}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <span className="text-xs text-slate-500">
+                {emailSelectedIds.size} selected
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowEmailModal(false)}
+                  disabled={emailSending}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleSendEmails}
+                  disabled={emailSending || emailSelectedIds.size === 0}
+                  className="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-violet-600 rounded-lg hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {emailSending ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      Sending...
+                    </>
+                  ) : (
+                    <>
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                      </svg>
+                      Send to {emailSelectedIds.size} Employee{emailSelectedIds.size !== 1 ? 's' : ''}
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Email Results Modal */}
+    {showEmailResults && (
+      <div
+        className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        onClick={(e) => { if (e.target === e.currentTarget) setShowEmailResults(false); }}
+      >
+        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+          <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+            <h2 className="text-base font-semibold text-slate-900">Email Send Results</h2>
+            <button
+              onClick={() => setShowEmailResults(false)}
+              className="text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div className="px-6 py-5 space-y-4">
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {emailResults.map((r, i) => (
+                <div
+                  key={i}
+                  className={`flex items-start gap-3 px-3 py-2.5 rounded-lg ${r.success ? 'bg-emerald-50' : 'bg-red-50'}`}
+                >
+                  {r.success ? (
+                    <svg className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                  ) : (
+                    <svg className="w-5 h-5 text-red-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  )}
+                  <div>
+                    <p className="text-sm font-medium text-slate-800">{r.name}</p>
+                    {r.error && <p className="text-xs text-red-600 mt-0.5">{r.error}</p>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+              <p className="text-sm text-slate-600">
+                <span className="font-semibold text-emerald-700">{emailResults.filter(r => r.success).length} sent</span>
+                {emailResults.filter(r => !r.success).length > 0 && (
+                  <span className="text-red-600 ml-2 font-semibold">{emailResults.filter(r => !r.success).length} failed</span>
+                )}
+              </p>
+              <button
+                onClick={() => setShowEmailResults(false)}
+                className="px-4 py-2 text-sm font-medium text-white bg-slate-800 rounded-lg hover:bg-slate-700 transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

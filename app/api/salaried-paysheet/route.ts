@@ -74,6 +74,10 @@ function normalizeRecord(row: any, userMap: Record<string, { name: string; email
     pay_period_end: row.pay_period_end,
     annual_salary: Number(row.annual_salary || 0),
     gross_pay: Number(row.gross_pay || 0),
+    bonus_amount: Number(row.bonus_amount || 0),
+    bonus_notes: row.bonus_notes || null,
+    reimbursement_amount: Number(row.reimbursement_amount || 0),
+    reimbursement_notes: row.reimbursement_notes || null,
     federal_tax: Number(row.federal_tax || 0),
     state_tax: Number(row.state_tax || 0),
     social_security: Number(row.social_security || 0),
@@ -107,7 +111,7 @@ export async function GET(req: NextRequest) {
       .from('salaried_pay_records')
       .select('*')
       .order('pay_period_start', { ascending: false })
-      .order('employee_name' as any, { ascending: true });
+      .order('created_at', { ascending: false });
 
     if (startDate) query = query.gte('pay_period_start', startDate);
     if (endDate) query = query.lte('pay_period_end', endDate);
@@ -144,6 +148,10 @@ export async function POST(req: NextRequest) {
       pay_period_end,
       annual_salary,
       gross_pay,
+      bonus_amount = 0,
+      bonus_notes = null,
+      reimbursement_amount = 0,
+      reimbursement_notes = null,
       federal_tax = 0,
       state_tax = 0,
       social_security = 0,
@@ -164,7 +172,8 @@ export async function POST(req: NextRequest) {
     const totalDeductions =
       Number(federal_tax) + Number(state_tax) + Number(social_security) +
       Number(medicare) + Number(other_deductions);
-    const net_pay = Number(gross_pay) - totalDeductions;
+    const net_pay =
+      Number(gross_pay) + Number(bonus_amount) - totalDeductions + Number(reimbursement_amount);
 
     const { data: inserted, error } = await supabaseAdmin
       .from('salaried_pay_records')
@@ -174,6 +183,10 @@ export async function POST(req: NextRequest) {
         pay_period_end,
         annual_salary: Number(annual_salary),
         gross_pay: Number(gross_pay),
+        bonus_amount: Number(bonus_amount) || 0,
+        bonus_notes: bonus_notes || null,
+        reimbursement_amount: Number(reimbursement_amount) || 0,
+        reimbursement_notes: reimbursement_notes || null,
         federal_tax: Number(federal_tax),
         state_tax: Number(state_tax),
         social_security: Number(social_security),
@@ -222,15 +235,22 @@ export async function PATCH(req: NextRequest) {
     if (!existing) return NextResponse.json({ error: 'Record not found' }, { status: 404 });
 
     const mergedGross = fields.gross_pay != null ? Number(fields.gross_pay) : Number(existing.gross_pay);
+    const mergedBonus = fields.bonus_amount != null ? Number(fields.bonus_amount) : Number(existing.bonus_amount || 0);
+    const mergedReimbursement = fields.reimbursement_amount != null
+      ? Number(fields.reimbursement_amount)
+      : Number(existing.reimbursement_amount || 0);
     const mergedFederal = fields.federal_tax != null ? Number(fields.federal_tax) : Number(existing.federal_tax);
     const mergedState = fields.state_tax != null ? Number(fields.state_tax) : Number(existing.state_tax);
     const mergedSS = fields.social_security != null ? Number(fields.social_security) : Number(existing.social_security);
     const mergedMedicare = fields.medicare != null ? Number(fields.medicare) : Number(existing.medicare);
     const mergedOther = fields.other_deductions != null ? Number(fields.other_deductions) : Number(existing.other_deductions);
-    const net_pay = mergedGross - mergedFederal - mergedState - mergedSS - mergedMedicare - mergedOther;
+    const net_pay =
+      mergedGross + mergedBonus - mergedFederal - mergedState - mergedSS - mergedMedicare - mergedOther + mergedReimbursement;
 
     const updatePayload: Record<string, any> = {
       gross_pay: mergedGross,
+      bonus_amount: mergedBonus,
+      reimbursement_amount: mergedReimbursement,
       federal_tax: mergedFederal,
       state_tax: mergedState,
       social_security: mergedSS,
@@ -242,6 +262,8 @@ export async function PATCH(req: NextRequest) {
     if (fields.annual_salary != null) updatePayload.annual_salary = Number(fields.annual_salary);
     if (fields.pay_period_start != null) updatePayload.pay_period_start = fields.pay_period_start;
     if (fields.pay_period_end != null) updatePayload.pay_period_end = fields.pay_period_end;
+    if ('bonus_notes' in fields) updatePayload.bonus_notes = fields.bonus_notes || null;
+    if ('reimbursement_notes' in fields) updatePayload.reimbursement_notes = fields.reimbursement_notes || null;
     if ('deduction_notes' in fields) updatePayload.deduction_notes = fields.deduction_notes || null;
     if ('notes' in fields) updatePayload.notes = fields.notes || null;
     if (fields.status != null) updatePayload.status = fields.status;
