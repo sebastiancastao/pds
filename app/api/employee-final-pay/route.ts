@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { getMondayOfWeek } from '@/lib/utils';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
-import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-commission';
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
@@ -388,12 +388,12 @@ export async function GET(req: NextRequest) {
         commissionSharesByUser: distributePoolByHoursRule({
           totalAmount: commissionPoolDollars,
           members: commissionEligibleMembers,
-          allShortShiftMode: 'equal',
+          allShortShiftMode: shortShiftModeForDate(ev.event_date),
         }).amountsById,
         tipsSharesByUser: distributePoolByHoursRule({
           totalAmount: totalTipsEvent,
           members: tipsEligibleMembers,
-          allShortShiftMode: 'equal',
+          allShortShiftMode: shortShiftModeForDate(ev.event_date),
         }).amountsById,
       };
     }
@@ -415,6 +415,7 @@ export async function GET(req: NextRequest) {
       events: (events || []).map((ev: any) => ({
         eventId: (ev?.id || '').toString(),
         state: ev?.state,
+        date: ev?.event_date,
         commissionPoolDollars: Number(distributionByEvent[ev.id]?.commissionPoolDollars || 0),
         workers: (allVendorPaymentsByEvent[ev.id] || []).map((row: any) => ({
           userId: (row?.user_id || '').toString(),

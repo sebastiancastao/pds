@@ -3,7 +3,7 @@ import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import { createClient } from "@supabase/supabase-js";
 import { getMondayOfWeek } from "@/lib/utils";
 import { calculateDistanceMiles } from "@/lib/geocoding";
-import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { safeDecrypt } from "@/lib/encryption";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
@@ -301,12 +301,12 @@ export async function POST(req: NextRequest) {
       const commissionDistribution = distributePoolByHoursRule({
         totalAmount: commissionPoolDollars,
         members: commissionEligibleMembers,
-        allShortShiftMode: 'equal',
+        allShortShiftMode: shortShiftModeForDate(event?.event_date),
       });
       const tipsDistribution = distributePoolByHoursRule({
         totalAmount: totalTipsEvent,
         members: tipsEligibleMembers,
-        allShortShiftMode: 'equal',
+        allShortShiftMode: shortShiftModeForDate(event?.event_date),
       });
       const commissionEligibleCount =
         commissionDistribution.eligibleCount > 0 ? commissionDistribution.eligibleCount : memberCount;
@@ -405,6 +405,7 @@ export async function POST(req: NextRequest) {
         return {
           eventId: (event?.id || "").toString(),
           state: event?.state,
+          date: (event?.event_date || "").toString().split("T")[0] || undefined,
           commissionPoolDollars: Number(payrollInputs.commissionPoolDollars || 0),
           workers: (Array.isArray(event?.workers) ? event.workers : []).map((worker: any) => ({
             userId: (worker?.user_id || "").toString(),

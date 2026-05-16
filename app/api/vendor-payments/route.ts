@@ -4,7 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { decrypt } from '@/lib/encryption';
-import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getLocalDateRange, getTimezoneForState } from '@/lib/timezones';
 
 const supabaseAdmin = createClient(
@@ -525,7 +525,7 @@ export async function GET(req: NextRequest) {
           if (!(div === 'vendor' || div === 'both') || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
-        allShortShiftMode: 'equal',
+        allShortShiftMode: shortShiftModeForDate(dateStr),
       }).amountsById;
       const tipsSharesByUser = distributePoolByHoursRule({
         totalAmount: totalTips,
@@ -535,7 +535,7 @@ export async function GET(req: NextRequest) {
           if (div === 'trailers' || hours <= 0) return [];
           return [{ id: uid, hours }];
         }),
-        allShortShiftMode: 'equal',
+        allShortShiftMode: shortShiftModeForDate(dateStr),
       }).amountsById;
 
       // Rest break helper (matches event-dashboard)

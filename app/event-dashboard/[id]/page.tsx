@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
-import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -3577,7 +3577,7 @@ export default function EventDashboardPage() {
         if (!uid || isTrailersDivision(member?.users?.division) || commissionsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
-      allShortShiftMode: "equal",
+      allShortShiftMode: shortShiftModeForDate(event?.event_date),
     }).amountsById;
   };
 
@@ -3593,7 +3593,7 @@ export default function EventDashboardPage() {
         if (!uid || isTrailersDivision(member?.users?.division) || tipsOverrides[uid] === null || actualHours <= 0) return [];
         return [{ id: uid, hours: actualHours }];
       }),
-      allShortShiftMode: "equal",
+      allShortShiftMode: shortShiftModeForDate(event?.event_date),
     }).amountsById;
   };
 
@@ -3654,6 +3654,7 @@ export default function EventDashboardPage() {
     const eventsForPeriod: Array<{
       eventId: string;
       state?: string | null;
+      date?: string | null;
       commissionPoolDollars: number;
       workers: Array<{
         userId: string;
@@ -3668,6 +3669,7 @@ export default function EventDashboardPage() {
       eventsForPeriod.push({
         eventId,
         state: event.state,
+        date: event.event_date,
         commissionPoolDollars: resolvedCommissionPoolDollars,
         workers: teamMembers.map((member: any) => {
           const uid = (member?.user_id || member?.vendor_id || member?.users?.id || "").toString();
@@ -3693,6 +3695,7 @@ export default function EventDashboardPage() {
         eventsForPeriod.push({
           eventId: periodEventId,
           state: periodEvent?.state,
+          date: periodEvent?.event_date,
           commissionPoolDollars: getResolvedPoolDollarsForPeriodEvent(periodEvent),
           workers: (periodEvent?.workers || []).map((worker: any) => ({
             userId: (worker?.user_id || "").toString(),

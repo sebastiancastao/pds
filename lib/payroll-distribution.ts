@@ -1,6 +1,13 @@
 export type PoolDistributionMode = "equal" | "hours";
 export type AllShortShiftMode = "equal" | "hours";
 
+export const ALL_SHORT_SHIFT_EQUAL_DATE = "2025-05-11";
+
+export function shortShiftModeForDate(eventDate?: string | null): AllShortShiftMode {
+  if (!eventDate) return "hours";
+  return eventDate.toString().split("T")[0] >= ALL_SHORT_SHIFT_EQUAL_DATE ? "equal" : "hours";
+}
+
 export type PoolDistributionMember = {
   id: string;
   hours: number;
@@ -31,7 +38,7 @@ export function distributePoolByHoursRule({
   members,
   mode = "equal",
   shortShiftThresholdHours = 8,
-  allShortShiftMode = "equal",
+  allShortShiftMode = "hours",
 }: DistributePoolArgs): PoolDistributionResult {
   const mergedMembers = new Map<string, number>();
 

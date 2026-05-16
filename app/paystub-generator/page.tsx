@@ -5,7 +5,7 @@ import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { PDFDocument } from 'pdf-lib';
-import { distributePoolByHoursRule } from '@/lib/payroll-distribution';
+import { distributePoolByHoursRule, shortShiftModeForDate } from '@/lib/payroll-distribution';
 import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from '@/lib/commission-pool';
 
 interface PaymentData {
@@ -422,13 +422,13 @@ export default function PaystubGenerator() {
     const commissionDistribution = distributePoolByHoursRule({
       totalAmount: rawGrossCommission,
       members: commissionEligibleMembers,
-      allShortShiftMode: 'equal',
+      allShortShiftMode: shortShiftModeForDate(event.event_date),
     });
     const totalTips = Number(event.event_payment?.total_tips || 0) || Number(event.tips || 0);
     const tipsDistribution = distributePoolByHoursRule({
       totalAmount: totalTips,
       members: tipsEligibleMembers,
-      allShortShiftMode: 'equal',
+      allShortShiftMode: shortShiftModeForDate(event.event_date),
     });
 
     return {

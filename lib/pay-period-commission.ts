@@ -1,4 +1,4 @@
-import { distributePoolByHoursRule } from "./payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "./payroll-distribution";
 
 export const PERIOD_RATE_MINIMUM = 28.5;
 export const PERIOD_RATE_STATES = ["CA", "NV", "WI"] as const;
@@ -21,6 +21,7 @@ export type PayPeriodCommissionWorkerInput = {
 export type PayPeriodCommissionEventInput = {
   eventId: string;
   state?: string | null;
+  date?: string | null;
   commissionPoolDollars: number;
   workers: PayPeriodCommissionWorkerInput[];
 };
@@ -134,7 +135,7 @@ export function computePayPeriodCommission({
 
         return [{ id: userId, hours }];
       }),
-      allShortShiftMode: "equal",
+      allShortShiftMode: shortShiftModeForDate(event.date),
     }).amountsById;
 
     byEvent[eventId] = {};

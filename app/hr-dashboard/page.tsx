@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { distributePoolByHoursRule } from "@/lib/payroll-distribution";
+import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -994,7 +994,7 @@ function HRDashboardContent() {
             if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
-          allShortShiftMode: "equal",
+          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
         const tipsSharesByUser = distributePoolByHoursRule({
           totalAmount: totalTips,
@@ -1004,7 +1004,7 @@ function HRDashboardContent() {
             if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
             return [{ id: paymentUserId, hours: payrollHours }];
           }),
-          allShortShiftMode: "equal",
+          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
         }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
@@ -1386,6 +1386,7 @@ function HRDashboardContent() {
       events: events.map((event: any) => ({
         eventId: (event?.id || "").toString(),
         state: event?.state,
+        date: event?.date,
         commissionPoolDollars: Number(event?.commissionPoolDollars ?? event?.commissionDollars ?? 0),
         workers: (event?.payments || []).map((payment: any) => ({
           userId: (payment?.userId || "").toString(),
@@ -3281,7 +3282,7 @@ function HRDashboardContent() {
                   className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : payrollGroupBy === 'venue' ? 'apple-button-primary' : 'apple-button-secondary'}`}
                   disabled={paymentsByVenue.length === 0}
                 >
-                  View by Venue
+                  View by Event
                 </button>
                 <button
                   onClick={() => setPayrollGroupBy('vendor')}
@@ -3464,7 +3465,7 @@ function HRDashboardContent() {
                                   {showVendorCommissionColumns && (
                                     <>
                                       <td className="px-4 py-2 text-sm text-right text-blue-600">{isEventSD ? '—' : `$${formatVendorMoney(breakdown.commissionPay)}`}</td>
-                                      <td className="px-4 py-2 text-sm text-right text-purple-600">{isEventSD ? '—' : `$${formatVendorMoney(breakdown.variableIncentive)}`}</td>
+                                      <td className="px-4 py-2 text-sm text-right text-gray-400">—</td>
                                     </>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-orange-600">${formatVendorMoney(Number(payment.tips || 0))}</td>
@@ -3582,6 +3583,30 @@ function HRDashboardContent() {
                                 </tr>
                               );
                             })}
+                            {showVendorCommissionColumns && (
+                              <tr style={{ backgroundColor: '#f3e8ff' }} className="font-medium text-sm border-t border-purple-200">
+                                <td className="px-4 py-2 uppercase tracking-wide text-purple-700" colSpan={3}>Variable Incentive</td>
+                                <td className="px-4 py-2 text-right"></td>
+                                {showVendorHourlyColumns && (
+                                  <>
+                                    <td className="px-4 py-2 text-right"></td>
+                                    <td className="px-4 py-2 text-right"></td>
+                                    <td className="px-4 py-2 text-right"></td>
+                                  </>
+                                )}
+                                <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right text-purple-700">${formatVendorMoney(vendorTotals.totalVariableIncentive)}</td>
+                                <td className="px-4 py-2 text-right"></td>
+                                {showVendorRestBreakColumn && (
+                                  <td className="px-4 py-2 text-right"></td>
+                                )}
+                                <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right"></td>
+                              </tr>
+                            )}
                             <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                               <td className="px-4 py-2 uppercase tracking-wide" colSpan={3}>Total</td>
                               <td className="px-4 py-2 text-right">{formatHoursDecimal(vendorTotals.totalHours)}</td>
@@ -3607,7 +3632,7 @@ function HRDashboardContent() {
                               {showVendorCommissionColumns && (
                                 <>
                                   <td className="px-4 py-2 text-right text-blue-600">${formatVendorMoney(vendorTotals.totalCommissionPay)}</td>
-                                  <td className="px-4 py-2 text-right text-purple-600">${formatVendorMoney(vendorTotals.totalVariableIncentive)}</td>
+                                  <td className="px-4 py-2 text-right text-gray-400">—</td>
                                 </>
                               )}
                               <td className="px-4 py-2 text-right text-orange-600">${formatVendorMoney(vendorTotals.totalTips)}</td>
@@ -3623,12 +3648,6 @@ function HRDashboardContent() {
                           </tbody>
                         </table>
                       </div>
-                      {showVendorCommissionColumns && (
-                        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-200">
-                          <span className="text-sm font-medium text-gray-600">Total Variable Incentive</span>
-                          <span className="text-lg font-bold text-purple-600">${formatVendorMoney(vendorTotals.totalVariableIncentive)}</span>
-                        </div>
-                      )}
                     </div>
                   );
                 })
@@ -3797,7 +3816,6 @@ function HRDashboardContent() {
                                                 const hours = breakdown.hours;
                                                 const otRate = Number(p.otRate || 0);
                                                 const displayedCommissionPay = breakdown.commissionPay;
-                                                const variableIncentive = breakdown.variableIncentive;
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
@@ -3838,7 +3856,7 @@ function HRDashboardContent() {
                                                           <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                         )}
                                                         <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
-                                                        <td className="p-2 text-sm text-purple-600">${formatPayrollMoney(variableIncentive)}</td>
+                                                        <td className="p-2 text-sm text-gray-400">&mdash;</td>
                                                       </>
                                                     )}
                                                     <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
