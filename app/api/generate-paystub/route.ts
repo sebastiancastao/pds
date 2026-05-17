@@ -214,6 +214,11 @@ export async function POST(req: NextRequest) {
       if (!Number.isFinite(actualHours) || actualHours <= 0) return 0;
       return actualHours >= 14 ? 17 : actualHours >= 10 ? 12.5 : 9;
     };
+    const computeTravelPay = (diffMiles: number, stateCode: string | null | undefined, rateInEffect: number): number => {
+      const stateMin = normalizeState(stateCode) === "CA" ? 28.5 : 25.94;
+      const travelRate = Math.max(stateMin, Number.isFinite(rateInEffect) ? rateInEffect : 0);
+      return roundPayrollAmount((diffMiles / 30) * travelRate);
+    };
 
     const timesheetHoursByEventUser: Record<string, Record<string, number>> = {};
     const getTimesheetHoursForWorker = (event: any, worker: any): number => {
@@ -1182,6 +1187,8 @@ export async function POST(req: NextRequest) {
       variableIncentive: number;
       tips: number;
       restBreak: number;
+      travelPay: number;
+      bonus: number;
       finalPay: number;
     };
 
@@ -1207,7 +1214,7 @@ export async function POST(req: NextRequest) {
         const variableRate = roundPayrollAmount(rawVariableRate);
         const variableIncentive = roundPayrollAmount(rawVariableRate * row.hoursWorked);
         const finalPay = roundPayrollAmount(
-          row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak
+          row.commissionPerEmployee + variableIncentive + row.tips + row.restBreak + row.travelPay + row.bonus
         );
         return {
           ...row,
@@ -1250,7 +1257,7 @@ export async function POST(req: NextRequest) {
       const drawRL = (x1: number, y1: number, x2: number) => {
         reportPage.drawLine({ start: { x: x1, y: y1 }, end: { x: x2, y: y1 }, thickness: 0.5, color: rgb(0, 0, 0) });
       };
-      const C = { date: 20, show: 56, venue: 101, adjGross: 147, pool: 186, numEmp: 223, comm: 261, hours: 299, rate: 332, varRate: 364, varInc: 404, tips: 446, restPay: 479, finalPay: 518 };
+      const C = { date: 20, show: 56, venue: 101, adjGross: 147, pool: 186, numEmp: 223, comm: 261, hours: 299, rate: 332, varRate: 364, varInc: 404, tips: 436, restPay: 466, travelPay: 496, bonus: 526, finalPay: 556 };
       const splitReportAddressLines = (rawAddress?: string | null) => {
         const str = (rawAddress || "").toString().trim();
         if (!str) return ["", "", ""] as const;
@@ -1296,7 +1303,9 @@ export async function POST(req: NextRequest) {
       drawR("Variable", C.varInc, y, { bold: true, size: 6 });
       drawR("Tips", C.tips, y, { bold: true, size: 6 });
       drawR("Rest Pay", C.restPay, y, { bold: true, size: 6 });
-      drawR("Final Pay", C.finalPay, y, { bold: true, size: 6 });
+      drawR("Travel", C.travelPay, y, { bold: true, size: 6 });
+      drawR("Bonus", C.bonus, y, { bold: true, size: 6 });
+      drawR("Final Gross", C.finalPay, y, { bold: true, size: 6 });
       y -= 7;
       // Header row 2
       drawR("Event Date", C.date, y, { bold: true, size: 6 });
@@ -1310,6 +1319,8 @@ export async function POST(req: NextRequest) {
       drawR("Effect", C.rate, y, { bold: true, size: 6 });
       drawR("Rate ($/hr)", C.varRate, y, { bold: true, size: 6 });
       drawR("Incentive Pay", C.varInc, y, { bold: true, size: 6 });
+      drawR("Pay", C.travelPay, y, { bold: true, size: 6 });
+      drawR("Pay", C.finalPay, y, { bold: true, size: 6 });
       y -= 4;
       drawRL(20, y, 592);
       y -= 11;
@@ -1321,6 +1332,8 @@ export async function POST(req: NextRequest) {
       let grandRowVariableIncentive = 0;
       let grandTips = 0;
       let grandRestPay = 0;
+      let grandTravelPay = 0;
+      let grandBonus = 0;
       let grandFinalPay = 0;
       const maskedCommissionRowValue = "-";
       for (const row of displayRows) {
@@ -1339,6 +1352,8 @@ export async function POST(req: NextRequest) {
         drawR(maskedCommissionRowValue, C.varInc, y, { size: 6 });
         drawR(fmtMoney(row.tips), C.tips, y, { size: 6 });
         drawR(fmtMoney(row.restBreak), C.restPay, y, { size: 6 });
+        drawR(fmtMoney(row.travelPay), C.travelPay, y, { size: 6 });
+        drawR(fmtMoney(row.bonus), C.bonus, y, { size: 6 });
         drawR(fmtMoney(row.finalPay), C.finalPay, y, { size: 6 });
         grandAdjustedGross += row.adjGrossSales;
         grandCommissionPool += row.commissionPoolDollars;
@@ -1348,6 +1363,8 @@ export async function POST(req: NextRequest) {
         grandRowVariableIncentive += row.variableIncentive;
         grandTips += row.tips;
         grandRestPay += row.restBreak;
+        grandTravelPay += row.travelPay;
+        grandBonus += row.bonus;
         grandFinalPay += row.finalPay;
         y -= 11;
       }
@@ -1363,7 +1380,14 @@ export async function POST(req: NextRequest) {
           ? roundPayrollAmount(grandRawVariableIncentive / grandHoursWorked)
           : 0;
       const totalVariableIncentive = roundPayrollAmount(grandRawVariableIncentive);
-      const totalFinalPay = roundPayrollAmount(grandFinalPay);
+      const totalFinalPay = roundPayrollAmount(
+        roundPayrollAmount(grandCommission) +
+        totalVariableIncentive +
+        roundPayrollAmount(grandTips) +
+        roundPayrollAmount(grandRestPay) +
+        roundPayrollAmount(grandTravelPay) +
+        roundPayrollAmount(grandBonus)
+      );
       if (debugEnabled || process.env.NODE_ENV !== "production") {
         const debugRows = displayRows.map((row) => {
           const minimumRateInEffect = getMinimumRateInEffect(row.stateCode || paystubState);
@@ -1386,6 +1410,8 @@ export async function POST(req: NextRequest) {
             expectedVariableIncentive,
             commissionOverrideApplied: roundPayrollAmount(row.commissionOverride),
             actualVariableIncentive: roundPayrollAmount(row.variableIncentive),
+            travelPay: roundPayrollAmount(row.travelPay),
+            bonus: roundPayrollAmount(row.bonus),
             variableIncentiveDifference: roundPayrollAmount(
               row.variableIncentive - expectedVariableIncentive
             ),
@@ -1402,6 +1428,8 @@ export async function POST(req: NextRequest) {
           totalHoursWorked: roundPayrollAmount(grandHoursWorked),
           totalRateInEffect: averageRateInEffect,
           totalVariableIncentive,
+          totalTravelPay: roundPayrollAmount(grandTravelPay),
+          totalBonus: roundPayrollAmount(grandBonus),
           totalFinalPay,
         });
       }
@@ -1416,6 +1444,8 @@ export async function POST(req: NextRequest) {
       drawR(fmtMoney(totalVariableIncentive), C.varInc, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandTips), C.tips, y, { bold: true, size: 6 });
       drawR(fmtMoney(grandRestPay), C.restPay, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandTravelPay), C.travelPay, y, { bold: true, size: 6 });
+      drawR(fmtMoney(grandBonus), C.bonus, y, { bold: true, size: 6 });
       drawR(fmtMoney(totalFinalPay), C.finalPay, y, { bold: true, size: 6 });
     };
 
@@ -1503,25 +1533,43 @@ export async function POST(req: NextRequest) {
       const differentialMilesByEventId: Record<string, number> = {};
       const mileageApprovedByEvent: Record<string, boolean> = {};
       const travelApprovedByEvent: Record<string, boolean> = {};
+      const mileageAmountOverrideByEvent: Record<string, number> = {};
+      const travelAmountOverrideByEvent: Record<string, number> = {};
       if (matchedUserId) {
         const eventIds = (events || []).map((e: any) => String(e.id)).filter(Boolean);
         if (eventIds.length > 0) {
-          const [{ data: approvalRows }, { data: profile }] = await Promise.all([
-            supabaseAdmin
-              .from('event_payment_approvals')
-              .select('event_id, travel_approved, mileage_approved')
-              .in('event_id', eventIds)
-              .eq('user_id', matchedUserId),
+          const [approvalRowsResult, profileResult] = await Promise.all([
+            (async () => {
+              const withAmounts = await supabaseAdmin
+                .from('event_payment_approvals')
+                .select('event_id, travel_approved, mileage_approved, mileage_amount_override, travel_amount_override')
+                .in('event_id', eventIds)
+                .eq('user_id', matchedUserId);
+              if (!withAmounts.error) return withAmounts;
+              return supabaseAdmin
+                .from('event_payment_approvals')
+                .select('event_id, travel_approved, mileage_approved')
+                .in('event_id', eventIds)
+                .eq('user_id', matchedUserId);
+            })(),
             supabaseAdmin
               .from('profiles')
               .select('latitude, longitude')
               .eq('user_id', matchedUserId)
               .maybeSingle(),
           ]);
+          const approvalRows = (approvalRowsResult.data || []) as any[];
+          const profile = profileResult.data;
 
           for (const row of approvalRows || []) {
             travelApprovedByEvent[String(row.event_id)] = row.travel_approved ?? true;
             mileageApprovedByEvent[String(row.event_id)] = row.mileage_approved ?? true;
+            if (row.travel_amount_override != null && Number.isFinite(Number(row.travel_amount_override))) {
+              travelAmountOverrideByEvent[String(row.event_id)] = Number(row.travel_amount_override);
+            }
+            if (row.mileage_amount_override != null && Number.isFinite(Number(row.mileage_amount_override))) {
+              mileageAmountOverrideByEvent[String(row.event_id)] = Number(row.mileage_amount_override);
+            }
           }
 
           if (profile?.latitude && profile?.longitude) {
@@ -1794,10 +1842,21 @@ export async function POST(req: NextRequest) {
               ? Number(periodWorker?.rowRateInEffect || 0)
               : null,
         });
+        const rowDifferentialMiles = differentialMilesByEventId[eventId] ?? 0;
+        const rowTravelApproved = travelApprovedByEvent[eventId] ?? true;
+        const rowMileageApproved = mileageApprovedByEvent[eventId] ?? true;
+        const rowTravelOverride = travelAmountOverrideByEvent[eventId];
+        const rowMileageOverride = mileageAmountOverrideByEvent[eventId];
+        const travelPay = rowTravelOverride !== undefined
+          ? roundPayrollAmount(rowTravelOverride)
+          : rowTravelApproved && rowDifferentialMiles > 0
+            ? computeTravelPay(rowDifferentialMiles, eventState, reportRateInEffect)
+            : 0;
+        const commissionReportFinalPay = roundPayrollAmount(reportFinalPay + travelPay + other);
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
-        if (!isEventSD && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0)) {
+        if (!isEventSD && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
           caCommissionRows.push({
@@ -1819,7 +1878,9 @@ export async function POST(req: NextRequest) {
             variableIncentive: displayVariableIncentive,
             tips,
             restBreak,
-            finalPay: reportFinalPay,
+            travelPay,
+            bonus: other,
+            finalPay: commissionReportFinalPay,
           });
         }
 
@@ -1852,11 +1913,15 @@ export async function POST(req: NextRequest) {
         const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
         const travelApproved = travelApprovedByEvent[eventId] ?? true;
         const mileageApproved = mileageApprovedByEvent[eventId] ?? true;
-        if (travelApproved && differentialMiles > 0) {
-          totalTravelPay += (differentialMiles / 30) * 28.50;
+        if (rowTravelOverride !== undefined || (travelApproved && differentialMiles > 0)) {
+          totalTravelPay += travelPay;
         }
         // Mileage reimbursement = differentialMiles × 2 × $0.71 (IRS rate)
-        totalMileageReimbursement += mileageApproved ? differentialMiles * 2 * 0.71 : 0;
+        totalMileageReimbursement += rowMileageOverride !== undefined
+          ? rowMileageOverride
+          : mileageApproved
+            ? differentialMiles * 2 * 0.71
+            : 0;
       }
 
       const normalizedCaCommissionRows = (() => {
@@ -2219,7 +2284,7 @@ export async function POST(req: NextRequest) {
       drawTopText("this period", 233, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
       const totalMiscReimbursement = round2(reimbursement + adjustmentReimbursementRounded);
-      drawTopText("Miscellaneous Reimbursement", 112, reimbursementRowY, { size: 8 });
+      drawTopText("Equipment Reimbursement", 112, reimbursementRowY, { size: 8 });
       drawTopText(fmt(totalMiscReimbursement), 249, reimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageRowY, { size: 8 });
       drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageRowY, { size: 8 });
@@ -2408,6 +2473,92 @@ export async function POST(req: NextRequest) {
 
     yPosition -= 15;
     drawLine(50, yPosition + 10, 560, yPosition + 10);
+
+    const differentialMilesByEventId: Record<string, number> = {};
+    const travelApprovedByEvent: Record<string, boolean> = {};
+    const travelAmountOverrideByEvent: Record<string, number> = {};
+    if (matchedUserId) {
+      const eventIds = (events || []).map((e: any) => String(e.id)).filter(Boolean);
+      if (eventIds.length > 0) {
+        const [approvalRowsResult, profileResult] = await Promise.all([
+          (async () => {
+            const withAmounts = await supabaseAdmin
+              .from('event_payment_approvals')
+              .select('event_id, travel_approved, travel_amount_override')
+              .in('event_id', eventIds)
+              .eq('user_id', matchedUserId);
+            if (!withAmounts.error) return withAmounts;
+            return supabaseAdmin
+              .from('event_payment_approvals')
+              .select('event_id, travel_approved')
+              .in('event_id', eventIds)
+              .eq('user_id', matchedUserId);
+          })(),
+          supabaseAdmin
+            .from('profiles')
+            .select('latitude, longitude')
+            .eq('user_id', matchedUserId)
+            .maybeSingle(),
+        ]);
+        const approvalRows = (approvalRowsResult.data || []) as any[];
+        const profile = profileResult.data;
+
+        for (const row of approvalRows) {
+          travelApprovedByEvent[String(row.event_id)] = row.travel_approved ?? true;
+          if (row.travel_amount_override != null && Number.isFinite(Number(row.travel_amount_override))) {
+            travelAmountOverrideByEvent[String(row.event_id)] = Number(row.travel_amount_override);
+          }
+        }
+
+        if (profile?.latitude && profile?.longitude) {
+          const userLat = Number(profile.latitude);
+          const userLng = Number(profile.longitude);
+
+          const { data: homeVenueRow } = await supabaseAdmin
+            .from('vendor_venue_assignments')
+            .select('venue_id')
+            .eq('vendor_id', matchedUserId)
+            .limit(1)
+            .maybeSingle();
+
+          let distToHomeVenue = 0;
+          if (homeVenueRow?.venue_id) {
+            const { data: homeVenue } = await supabaseAdmin
+              .from('venue_reference')
+              .select('latitude, longitude')
+              .eq('id', homeVenueRow.venue_id)
+              .maybeSingle();
+            if (homeVenue?.latitude && homeVenue?.longitude) {
+              distToHomeVenue = calculateDistanceMiles(userLat, userLng, Number(homeVenue.latitude), Number(homeVenue.longitude));
+            }
+          }
+
+          const venueNames = [...new Set((events || []).map((e: any) => e.venue).filter(Boolean))];
+          const { data: venueRows } = await supabaseAdmin
+            .from('venue_reference')
+            .select('venue_name, latitude, longitude')
+            .in('venue_name', venueNames);
+
+          const venueByName: Record<string, any> = {};
+          for (const venue of venueRows || []) {
+            venueByName[(venue.venue_name || '').toLowerCase().trim()] = venue;
+          }
+
+          for (const event of events || []) {
+            const eventId = String(event.id);
+            if (travelApprovedByEvent[eventId] === false) continue;
+            const venue = venueByName[(event.venue || '').toLowerCase().trim()];
+            if (!venue?.latitude || !venue?.longitude) continue;
+            const evLat = Number(venue.latitude);
+            const evLng = Number(venue.longitude);
+            if (!Number.isFinite(evLat) || !Number.isFinite(evLng)) continue;
+            const distToEvent = calculateDistanceMiles(userLat, userLng, evLat, evLng);
+            const rawDiff = distToEvent - distToHomeVenue;
+            differentialMilesByEventId[eventId] = rawDiff >= 2 ? Math.round(rawDiff * 10) / 10 : 0;
+          }
+        }
+      }
+    }
 
     // Calculate totals
     let totalRegHours = 0;
@@ -2611,10 +2762,19 @@ export async function POST(req: NextRequest) {
               ? Number(periodWorker?.rowRateInEffect || 0)
               : null,
         });
+        const differentialMiles = differentialMilesByEventId[eventId] ?? 0;
+        const travelApproved = travelApprovedByEvent[eventId] ?? true;
+        const travelOverride = travelAmountOverrideByEvent[eventId];
+        const travelPay = travelOverride !== undefined
+          ? roundPayrollAmount(travelOverride)
+          : travelApproved && differentialMiles > 0
+            ? computeTravelPay(differentialMiles, eventState, reportRateInEffect)
+            : 0;
+        const commissionReportFinalPay = roundPayrollAmount(reportFinalPay + travelPay + other);
 
         const reportCommissionPool = roundPayrollAmount(commissionPoolDollars);
 
-        if (!isSanDiegoRegion(event) && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || reportFinalPay > 0)) {
+        if (!isSanDiegoRegion(event) && ((adjustedGrossForReport > 0 && commissionEligibleCount > 0) || commissionReportFinalPay > 0)) {
           // Match HR dashboard payroll logic:
           // Commission Pay = distributed share, Variable Incentive = excess above that share.
           nonCaCommissionRows.push({
@@ -2636,7 +2796,9 @@ export async function POST(req: NextRequest) {
             variableIncentive: displayVariableIncentive,
             tips,
             restBreak,
-            finalPay: reportFinalPay,
+            travelPay,
+            bonus: other,
+            finalPay: commissionReportFinalPay,
           });
         }
 
@@ -2802,7 +2964,7 @@ export async function POST(req: NextRequest) {
     const reimbursement = parseFloat(miscReimbursement || '0');
     const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
     if (totalReimbursementNonCA > 0) {
-      drawText("Misc Reimbursement", 50, yPosition, { size: 9 });
+      drawText("Equipment Reimbursement", 50, yPosition, { size: 9 });
       drawText(`+${totalReimbursementNonCA.toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }

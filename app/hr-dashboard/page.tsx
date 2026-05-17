@@ -113,6 +113,7 @@ const sickLeaveStatusStyles: Record<SickLeaveStatus, string> = {
 
 const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200";
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
+const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
 function HRDashboardContent() {
   const router = useRouter();
@@ -670,8 +671,9 @@ function HRDashboardContent() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[HR PAYMENTS] loading events for HR dashboard');
-      const eventsRes = await fetch('/api/all-events', {
+      const eventsRes = await fetch(`/api/all-events?ts=${Date.now()}`, {
         method: 'GET',
+        cache: 'no-store',
         headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
       if (!eventsRes.ok) {
@@ -683,6 +685,11 @@ function HRDashboardContent() {
       console.log('[HR PAYMENTS] all events fetched', { count: allEvents.length, sample: allEvents.slice(0, 3).map((e: any) => ({ id: e.id, name: e.event_name, date: e.event_date })) });
       if (allEvents.length === 0) {
         setPaymentsError('No events found in the database.');
+        try {
+          window.localStorage.removeItem(PAYROLL_DIRTY_STORAGE_KEY);
+        } catch {
+          // Ignore storage failures.
+        }
         setLoadingPayments(false);
         return;
       }
@@ -692,7 +699,16 @@ function HRDashboardContent() {
       console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate });
       const filteredEventIds = filtered.map((e: any) => e.id).filter(Boolean);
       const eventIds = filteredEventIds.join(',');
-      if (!eventIds) { setPaymentsByVenue([]); setLoadingPayments(false); return; }
+      if (!eventIds) {
+        try {
+          window.localStorage.removeItem(PAYROLL_DIRTY_STORAGE_KEY);
+        } catch {
+          // Ignore storage failures.
+        }
+        setPaymentsByVenue([]);
+        setLoadingPayments(false);
+        return;
+      }
       // Fetch vendor payments for filtered events (same data model as Global Calendar)
       const payRes = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventIds)}&ts=${Date.now()}`, {
         method: 'GET',
@@ -784,6 +800,12 @@ function HRDashboardContent() {
         const configuredBaseRate = getConfiguredBaseRate(eventState);
         // Sales-tab parity: prefer persisted net_sales from event_payments (saved by Sales tab), fallback to event fields.
         const eventTips = Number(eventInfo.tips || 0);
+        const persistedTotalTipsRaw = Number(eventPaymentSummary?.total_tips);
+        const hasPersistedTotalTips =
+          eventPaymentSummary?.total_tips !== null &&
+          eventPaymentSummary?.total_tips !== undefined &&
+          eventPaymentSummary?.total_tips !== "" &&
+          Number.isFinite(persistedTotalTipsRaw);
         const eventFees = Number(eventInfo.fees || 0);
         const eventOtherIncome = Number(eventInfo.other_income || 0);
         const ticketSales = Number(eventInfo.ticket_sales || 0);
@@ -806,7 +828,9 @@ function HRDashboardContent() {
         const eventCommissionDollarsRaw =
           adjustedGrossAmount * commissionPoolPercent;
         const eventCommissionDollars = Number.isFinite(eventCommissionDollarsRaw) ? eventCommissionDollarsRaw : 0;
-        const eventTotalTips = eventTips;
+        const eventTotalTips = hasPersistedTotalTips
+          ? Math.max(persistedTotalTipsRaw, 0)
+          : Math.max(eventTips, 0);
 
         // Initialize venue entry
         if (!byVenue[eventInfo.venue]) {
@@ -1289,12 +1313,53 @@ function HRDashboardContent() {
         });
       });
       setAdjustmentTypes(initialAdjustmentTypes);
+      try {
+        window.localStorage.removeItem(PAYROLL_DIRTY_STORAGE_KEY);
+      } catch {
+        // Ignore storage failures.
+      }
     } catch (e: any) {
       setPaymentsError(e.message || 'Failed to load payments');
     } finally {
       setLoadingPayments(false);
     }
   }, [paymentsStartDate, paymentsEndDate]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const maybeReloadDirtyPayroll = () => {
+      try {
+        const dirtyAt = window.localStorage.getItem(PAYROLL_DIRTY_STORAGE_KEY);
+        if (!dirtyAt) return;
+        if (loadingPayments) return;
+        void loadPaymentsData();
+      } catch {
+        // Ignore storage failures.
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        maybeReloadDirtyPayroll();
+      }
+    };
+
+    maybeReloadDirtyPayroll();
+    window.addEventListener("focus", maybeReloadDirtyPayroll);
+    window.addEventListener("pageshow", maybeReloadDirtyPayroll);
+    window.addEventListener("storage", maybeReloadDirtyPayroll);
+    window.addEventListener("pds:payroll-data-dirty", maybeReloadDirtyPayroll as EventListener);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("focus", maybeReloadDirtyPayroll);
+      window.removeEventListener("pageshow", maybeReloadDirtyPayroll);
+      window.removeEventListener("storage", maybeReloadDirtyPayroll);
+      window.removeEventListener("pds:payroll-data-dirty", maybeReloadDirtyPayroll as EventListener);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [loadingPayments, loadPaymentsData]);
 
   // Persist a single adjustment
   const saveAdjustment = useCallback(async (eventId: string, userId: string): Promise<boolean> => {

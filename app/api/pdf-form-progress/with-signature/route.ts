@@ -3,6 +3,8 @@ import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 
+export const dynamic = 'force-dynamic';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
@@ -10,7 +12,11 @@ const supabaseAdmin = createClient(
 
 const STATE_CODE_PREFIXES = ['ca', 'ny', 'wi', 'az', 'nv', 'tx', 'fl', 'il', 'oh', 'pa', 'nj'] as const;
 const STATE_CODE_PREFIX_SET = new Set(STATE_CODE_PREFIXES);
+const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
+const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
+const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 const SIGNATURE_Y_SHIFT = 80;
 const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
@@ -111,6 +117,46 @@ function normalizeStateCode(state?: string | null): string | null {
   }
 
   return stateMap[lower] || null;
+}
+
+function buildDisplayName(fullName?: string | null, firstName?: string | null, lastName?: string | null) {
+  const trimmedFullName = (fullName || '').trim();
+  if (trimmedFullName) return trimmedFullName;
+  return [firstName, lastName]
+    .map((value) => (value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+}
+
+function drawTextInRect(
+  page: any,
+  font: PDFFont,
+  rect: { x: number; y: number; width: number; height: number },
+  value: string
+) {
+  const trimmedValue = value.trim();
+  page.drawRectangle({
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    color: rgb(1, 1, 1),
+  });
+  if (!trimmedValue) return;
+
+  const widthForText = Math.max(1, rect.width - 4);
+  let fontSize = Math.max(8, Math.min(10, rect.height - 2));
+  while (fontSize > 8 && font.widthOfTextAtSize(trimmedValue, fontSize) > widthForText) {
+    fontSize -= 0.5;
+  }
+
+  page.drawText(trimmedValue, {
+    x: rect.x + 2,
+    y: rect.y + Math.max(1, (rect.height - fontSize) / 2),
+    size: fontSize,
+    font,
+    maxWidth: widthForText,
+  });
 }
 
 function buildFormIdCandidates(formName: string, preferredState?: string | null) {
@@ -379,9 +425,15 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Empty form data' }, { status: 404 });
     }
 
+    const { data: userData } = await supabaseAdmin
+      .from('users')
+      .select('full_name')
+      .eq('id', userId)
+      .maybeSingle();
+
     const { data: profileData } = await supabaseAdmin
       .from('profiles')
-      .select('state')
+      .select('state, first_name, last_name')
       .eq('user_id', userId)
       .maybeSingle();
 
@@ -393,6 +445,11 @@ export async function GET(request: NextRequest) {
 
     const preferredState = normalizeStateCode(profileData?.state);
     const normalizedUserState = (employeeInfo?.state || profileData?.state || '').toString().toLowerCase().trim();
+    const resolvedUserFullName = buildDisplayName(
+      userData?.full_name,
+      (profileData as any)?.first_name,
+      (profileData as any)?.last_name
+    );
     const normalizedName = normalizeFormKey(formName);
     const signatureLookupFormId = signatureFormId || formName;
     const formIdsToTry = isCustomFormId(signatureLookupFormId)
@@ -509,14 +566,21 @@ export async function GET(request: NextRequest) {
     const signatureData = selectedSignature?.signature_data || null;
     const signatureType = selectedSignature?.signature_type || null;
     const isTempEmploymentAgreement = normalizedName === 'temp-employment-agreement';
-    if (returnSignatureData || isTempEmploymentAgreement) {
+    if (isTempEmploymentAgreement) {
       // Temp-agreement custom-form view/download requests raw form data here and
       // completes signature placement in the dedicated client-side redraw pipeline.
       return NextResponse.json({ formData: base64Data, signatureData, signatureType });
     }
 
-    if (!signatureData) {
-      return NextResponse.json({ formData: base64Data });
+    const responseExtras = returnSignatureData
+      ? { signatureData, signatureType }
+      : {};
+
+    const isAttestation = normalizedName === 'attestation';
+    const hasSignatureData = Boolean(signatureData?.trim());
+
+    if (!hasSignatureData && !isAttestation) {
+      return NextResponse.json({ formData: base64Data, ...responseExtras });
     }
 
     const pdfBytes = Buffer.from(base64Data, 'base64');
@@ -589,17 +653,16 @@ export async function GET(request: NextRequest) {
         }
       }
     }
-    const isAttestation = normalizedName === 'attestation';
     const signatureWidth = 150;
     const signatureHeight = isI9 ? 30 : 15;
 
     const signatureKind = (signatureType || '').toLowerCase();
-    const isImageDataUrl = signatureData.trim().toLowerCase().startsWith('data:image/');
+    const isImageDataUrl = hasSignatureData && signatureData!.trim().toLowerCase().startsWith('data:image/');
     const isTyped = signatureKind === 'typed' || signatureKind === 'type' || !isImageDataUrl;
 
     let signatureImage: PDFImage | null = null;
-    if (!isTyped) {
-      const { format, base64 } = normalizeSignatureImage(signatureData);
+    if (hasSignatureData && !isTyped) {
+      const { format, base64 } = normalizeSignatureImage(signatureData!);
       const imageBytes = Buffer.from(base64, 'base64');
       signatureImage =
         format === 'jpg' || format === 'jpeg'
@@ -613,67 +676,69 @@ export async function GET(request: NextRequest) {
       const fallbackX = Math.max(0, width - signatureWidth - 50);
       const fallbackY = Math.min(height - signatureHeight, 50 + SIGNATURE_Y_SHIFT);
       let placedAttestationSignature = false;
-      try {
-        const attestationField = pdfDoc.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
-        const widgets = attestationField?.acroField?.getWidgets?.() || [];
-        if (widgets.length > 0) {
-          const widget = widgets[0];
-          const rect = widget.getRectangle();
-          const pageRef = widget.P?.();
-          const targetPage = pageRef
-            ? pages.find((candidate: any) => candidate.ref === pageRef)
-            : fallbackPage;
+      if (hasSignatureData) {
+        try {
+          const attestationField = pdfDoc.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
+          const widgets = attestationField?.acroField?.getWidgets?.() || [];
+          if (widgets.length > 0) {
+            const widget = widgets[0];
+            const rect = widget.getRectangle();
+            const pageRef = widget.P?.();
+            const targetPage = pageRef
+              ? pages.find((candidate: any) => candidate.ref === pageRef)
+              : fallbackPage;
 
-          if (targetPage) {
-            targetPage.drawRectangle({
-              x: rect.x - 2,
-              y: rect.y - 2,
-              width: rect.width + 4,
-              height: rect.height + 4,
-              color: rgb(1, 1, 1),
-            });
+            if (targetPage) {
+              targetPage.drawRectangle({
+                x: rect.x - 2,
+                y: rect.y - 2,
+                width: rect.width + 4,
+                height: rect.height + 4,
+                color: rgb(1, 1, 1),
+              });
 
-            if (isTyped) {
-              const { StandardFonts } = await import('pdf-lib');
-              const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-              targetPage.drawText(signatureData, {
-                x: rect.x + 2,
-                y: rect.y + rect.height / 2 - 3,
-                size: 10,
-                font,
-              });
-            } else if (signatureImage) {
-              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
-              const drawWidth = signatureImage.width * scale;
-              const drawHeight = signatureImage.height * scale;
-              const drawX = rect.x + (rect.width - drawWidth) / 2;
-              const drawY = rect.y + (rect.height - drawHeight) / 2;
-              targetPage.drawImage(signatureImage, {
-                x: drawX,
-                y: drawY,
-                width: drawWidth,
-                height: drawHeight,
-              });
+              if (isTyped) {
+                const { StandardFonts } = await import('pdf-lib');
+                const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+                targetPage.drawText(signatureData!, {
+                  x: rect.x + 2,
+                  y: rect.y + rect.height / 2 - 3,
+                  size: 10,
+                  font,
+                });
+              } else if (signatureImage) {
+                const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+                const drawWidth = signatureImage.width * scale;
+                const drawHeight = signatureImage.height * scale;
+                const drawX = rect.x + (rect.width - drawWidth) / 2;
+                const drawY = rect.y + (rect.height - drawHeight) / 2;
+                targetPage.drawImage(signatureImage, {
+                  x: drawX,
+                  y: drawY,
+                  width: drawWidth,
+                  height: drawHeight,
+                });
+              }
+              placedAttestationSignature = true;
             }
-            placedAttestationSignature = true;
           }
+        } catch (error) {
+          console.warn('[WITH_SIGNATURE] Failed to place attestation signature in field, falling back to default placement', error);
         }
-      } catch (error) {
-        console.warn('[WITH_SIGNATURE] Failed to place attestation signature in field, falling back to default placement', error);
-      }
 
-      if (!placedAttestationSignature) {
-        if (isTyped) {
-          const { StandardFonts } = await import('pdf-lib');
-          const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-          fallbackPage.drawText(signatureData, { x: fallbackX, y: fallbackY + signatureHeight / 2, size: 10, font });
-        } else if (signatureImage) {
-          fallbackPage.drawImage(signatureImage, {
-            x: fallbackX,
-            y: fallbackY,
-            width: signatureWidth,
-            height: signatureHeight,
-          });
+        if (!placedAttestationSignature) {
+          if (isTyped) {
+            const { StandardFonts } = await import('pdf-lib');
+            const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+            fallbackPage.drawText(signatureData!, { x: fallbackX, y: fallbackY + signatureHeight / 2, size: 10, font });
+          } else if (signatureImage) {
+            fallbackPage.drawImage(signatureImage, {
+              x: fallbackX,
+              y: fallbackY,
+              width: signatureWidth,
+              height: signatureHeight,
+            });
+          }
         }
       }
 
@@ -682,11 +747,31 @@ export async function GET(request: NextRequest) {
         const { StandardFonts: AttestSF } = await import('pdf-lib');
         const attestFont = await pdfDoc.embedFont(AttestSF.Helvetica);
         const attestPdfForm = pdfDoc.getForm();
+        if (resolvedUserFullName) {
+          try {
+            const attestationNameField = attestPdfForm.getTextField(ATTESTATION_NAME_FIELD);
+            const currentValue = attestationNameField.getText()?.trim() ?? '';
+            if (!currentValue) {
+              attestationNameField.setText(resolvedUserFullName);
+            }
+          } catch (e) {
+            console.warn('[WITH_SIGNATURE] Could not backfill attestation name field:', e);
+          }
+        }
         const flattenAttestField = (fieldName: string) => {
           try {
             const tf = attestPdfForm.getTextField(fieldName) as any;
             const tfWidgets = tf?.acroField?.getWidgets?.() || [];
-            if (!tfWidgets.length) return;
+            const value = (tf.getText() || '').trim();
+            if (!tfWidgets.length) {
+              if (fieldName === ATTESTATION_NAME_FIELD && value) {
+                const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];
+                if (fallbackPage) {
+                  drawTextInRect(fallbackPage, attestFont, ATTESTATION_NAME_FALLBACK_RECT, value);
+                }
+              }
+              return;
+            }
             const tfWidget = tfWidgets[0];
             const tfRect = tfWidget.getRectangle();
             const tfPageRef = tfWidget.P?.();
@@ -694,28 +779,24 @@ export async function GET(request: NextRequest) {
               ? pages.find((p: any) => p.ref === tfPageRef)
               : fallbackPage;
             if (!tfPage) return;
-            const value = tf.getText() || '';
-            tfPage.drawRectangle({
-              x: tfRect.x,
-              y: tfRect.y,
-              width: tfRect.width,
-              height: tfRect.height,
-              color: rgb(1, 1, 1),
-            });
-            if (value) {
-              tfPage.drawText(value, {
-                x: tfRect.x + 2,
-                y: tfRect.y + tfRect.height / 2 - 4,
-                size: 10,
-                font: attestFont,
-              });
-            }
+            drawTextInRect(tfPage, attestFont, tfRect, value);
           } catch (e) {
+            if (fieldName === ATTESTATION_NAME_FIELD && resolvedUserFullName) {
+              try {
+                const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];
+                if (fallbackPage) {
+                  drawTextInRect(fallbackPage, attestFont, ATTESTATION_NAME_FALLBACK_RECT, resolvedUserFullName);
+                  return;
+                }
+              } catch {
+                // fall through to warning
+              }
+            }
             console.warn(`[WITH_SIGNATURE] Could not flatten attestation field ${fieldName}:`, e);
           }
         };
-        flattenAttestField('employee_attestation_name');
-        flattenAttestField('employee_attestation_date');
+        flattenAttestField(ATTESTATION_NAME_FIELD);
+        flattenAttestField(ATTESTATION_DATE_FIELD);
       } catch (e) {
         console.warn('[WITH_SIGNATURE] Could not flatten attestation name/date fields:', e);
       }
@@ -800,7 +881,7 @@ export async function GET(request: NextRequest) {
     const resultBytes = await pdfDoc.save();
     const resultBase64 = Buffer.from(resultBytes).toString('base64');
 
-    return NextResponse.json({ formData: resultBase64 });
+    return NextResponse.json({ formData: resultBase64, ...responseExtras });
   } catch (error: any) {
     console.error('[WITH_SIGNATURE] Error:', error);
     return NextResponse.json({ error: error.message || 'Server error' }, { status: 500 });

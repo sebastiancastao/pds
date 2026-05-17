@@ -243,6 +243,37 @@ export default function EventDashboardPage() {
     userRole === "manager" ||
     userRole === "supervisor" ||
     userRole === "supervisor3";
+  const markPayrollDataDirty = () => {
+    if (typeof window === "undefined") return;
+    try {
+      const timestamp = new Date().toISOString();
+      window.localStorage.setItem("pds-payroll-data-dirty-at", timestamp);
+      window.dispatchEvent(new CustomEvent("pds:payroll-data-dirty", { detail: { timestamp } }));
+    } catch {
+      // Ignore storage failures.
+    }
+  };
+  const getMessageTone = (value: string): "success" | "warning" | "error" => {
+    const normalized = value.toLowerCase();
+    if (normalized.includes("will be excluded from tip calculations")) {
+      return "warning";
+    }
+    if (
+      normalized.includes("will be included in tip calculations") ||
+      normalized.includes("success") ||
+      normalized.includes("successfully")
+    ) {
+      return "success";
+    }
+    return "error";
+  };
+  const normalizeEventTeamRole = (value: unknown): "staff" | "manager" | "supervisor" => {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (normalized === "manager" || normalized === "supervisor") {
+      return normalized;
+    }
+    return "staff";
+  };
   const isEventCreator = Boolean(
     currentUserId &&
     event?.created_by &&
@@ -326,6 +357,8 @@ export default function EventDashboardPage() {
   const [loadingAddVendors, setLoadingAddVendors] = useState(false);
   const [addingVendorToTeam, setAddingVendorToTeam] = useState(false);
   const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
+  const [savingTeamRoleMemberId, setSavingTeamRoleMemberId] = useState<string | null>(null);
+  const [savingTeamTipsMemberId, setSavingTeamTipsMemberId] = useState<string | null>(null);
   const [addVendorSearch, setAddVendorSearch] = useState<string>("");
   const [addVendorState, setAddVendorState] = useState<string>("all");
   const [addVendorCity, setAddVendorCity] = useState<string>("all");
@@ -501,13 +534,15 @@ export default function EventDashboardPage() {
     const phone = (profile?.phone || "").toString().toLowerCase();
     const division = (member?.users?.division || "").toString().toLowerCase();
     const status = (member?.status || "").toString().replace(/_/g, " ").toLowerCase();
+    const eventRole = normalizeEventTeamRole(member?.event_role).replace(/_/g, " ").toLowerCase();
 
     return (
       fullName.includes(q) ||
       email.includes(q) ||
       phone.includes(q) ||
       division.includes(q) ||
-      status.includes(q)
+      status.includes(q) ||
+      eventRole.includes(q)
     );
   }), [sortedTeamMembers, teamSearch]);
 
@@ -841,6 +876,9 @@ export default function EventDashboardPage() {
 
     if (activeTab === "team") {
       if (!teamLoaded) loadTeam(false); // Include photos for team tab
+      if (!tipsOverridesLoaded) {
+        loadTipsOverrides();
+      }
       // Prefetch timesheet data in background while user is on team tab
       if (!timesheetLoaded) {
         loadTimesheetTotals();
@@ -1703,6 +1741,98 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to uninvite team member");
     } finally {
       setUninvitingMemberId(null);
+    }
+  };
+
+  const handleUpdateTeamEventRole = async (
+    member: any,
+    eventRole: "staff" | "manager" | "supervisor"
+  ) => {
+    if (!eventId || !member?.id) return;
+
+    const currentEventRole = normalizeEventTeamRole(member?.event_role);
+    if (currentEventRole === eventRole) return;
+
+    const memberName = getTeamMemberDisplayName(member);
+    setSavingTeamRoleMemberId(member.id);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ eventRole }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update event role");
+      }
+
+      markPayrollDataDirty();
+      await Promise.all([loadTeam(false), loadTipsOverrides()]);
+      setMessage(
+        `${memberName} was set as ${
+          eventRole === "staff"
+            ? "staff"
+            : eventRole === "manager"
+              ? "event manager"
+              : "event supervisor"
+        }.`
+      );
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to update event role");
+    } finally {
+      setSavingTeamRoleMemberId(null);
+    }
+  };
+
+  const handleUpdateTeamTipsEligibility = async (member: any, tipsEligible: boolean) => {
+    if (!eventId || !member?.id) return;
+
+    const uid = getTeamMemberId(member);
+    if (!uid) return;
+
+    const eventRole = normalizeEventTeamRole(member?.event_role);
+    if (eventRole !== "manager" && eventRole !== "supervisor") {
+      setMessage("Select this team member as an event manager or supervisor before changing tip eligibility.");
+      return;
+    }
+
+    const memberName = getTeamMemberDisplayName(member);
+    const currentlyEligible = tipsOverrides[uid] !== null;
+    if (currentlyEligible === tipsEligible) return;
+
+    setSavingTeamTipsMemberId(member.id);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ tipsEligible }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update tip eligibility");
+      }
+
+      markPayrollDataDirty();
+      await loadTipsOverrides();
+      setMessage(
+        `${memberName} ${tipsEligible ? "will be included in" : "will be excluded from"} tip calculations.`
+      );
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to update tip eligibility");
+    } finally {
+      setSavingTeamTipsMemberId(null);
     }
   };
 
@@ -2804,9 +2934,11 @@ export default function EventDashboardPage() {
     try {
       if (!eventId) return;
       const token = await getSessionToken();
-      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}&ts=${Date.now()}`, {
         method: 'GET',
+        cache: 'no-store',
         headers: {
+          'Cache-Control': 'no-cache',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
@@ -2838,9 +2970,11 @@ export default function EventDashboardPage() {
     try {
       if (!eventId) return;
       const token = await getSessionToken();
-      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}`, {
+      const res = await fetch(`/api/vendor-payments?event_ids=${encodeURIComponent(eventId)}&ts=${Date.now()}`, {
         method: 'GET',
+        cache: 'no-store',
         headers: {
+          'Cache-Control': 'no-cache',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
@@ -3989,6 +4123,7 @@ export default function EventDashboardPage() {
       }
 
       console.log('✅ Payment data saved:', result);
+      markPayrollDataDirty();
       setMessage('Payment data saved successfully!');
       setTipsOverridesLoaded(false); // force re-fetch on next HR tab visit
       setCommissionsOverridesLoaded(false);
@@ -4140,6 +4275,7 @@ export default function EventDashboardPage() {
   }
 
   const shares = sharesData;
+  const messageTone = message ? getMessageTone(message) : null;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-50">
@@ -4162,15 +4298,21 @@ export default function EventDashboardPage() {
         {message && (
           <div
             className={`mb-6 px-6 py-4 rounded-xl relative shadow-lg backdrop-blur-sm ${
-              message.toLowerCase().includes("success")
+              messageTone === "success"
                 ? "bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 text-green-800"
-                : "bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 text-red-800"
+                : messageTone === "warning"
+                  ? "bg-gradient-to-r from-amber-50 to-yellow-50 border-2 border-amber-200 text-amber-800"
+                  : "bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 text-red-800"
             }`}
           >
             <div className="flex items-center gap-3">
-              {message.toLowerCase().includes("success") ? (
+              {messageTone === "success" ? (
                 <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              ) : messageTone === "warning" ? (
+                <svg className="w-5 h-5 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3m0 4h.01M10.29 3.86l-7.55 13.09A1 1 0 003.61 18h16.78a1 1 0 00.87-1.5L13.71 3.86a1 1 0 00-1.74 0z" />
                 </svg>
               ) : (
                 <svg className="w-5 h-5 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -5467,6 +5609,12 @@ export default function EventDashboardPage() {
                                 Status
                               </th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Event Role
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                Tip Eligible
+                              </th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Invited On
                               </th>
                               {canUninviteTeamMember && (
@@ -5479,7 +5627,7 @@ export default function EventDashboardPage() {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {filteredTeamListMembers.length === 0 ? (
                               <tr>
-                                <td colSpan={canUninviteTeamMember ? 6 : 5} className="px-6 py-8 text-center text-sm text-gray-500">
+                                <td colSpan={canUninviteTeamMember ? 8 : 7} className="px-6 py-8 text-center text-sm text-gray-500">
                                   No team members match your search
                                 </td>
                               </tr>
@@ -5488,9 +5636,15 @@ export default function EventDashboardPage() {
                               const profile = member.users?.profiles;
                               const firstName = profile?.first_name || "N/A";
                               const lastName = profile?.last_name || "";
-                              const memberRole = (member.users?.role || "").toLowerCase();
-                              const isManagerRole = memberRole === "manager";
-                              const isSupervisorRole = memberRole === "supervisor" || memberRole === "supervisor2" || memberRole === "supervisor3";
+                              const uid = getTeamMemberId(member);
+                              const eventTeamRole = normalizeEventTeamRole(member?.event_role);
+                              const isEventManagerRole = eventTeamRole === "manager";
+                              const isEventSupervisorRole = eventTeamRole === "supervisor";
+                              const canConfigureTipEligibility = isEventManagerRole || isEventSupervisorRole;
+                              const canEditEventRole = canManageTeam;
+                              const canEditTipEligibility = canManageTeam && canConfigureTipEligibility;
+                              const isTipsEligible = tipsOverrides[uid] !== null;
+                              const hasManualTipsOverride = typeof tipsOverrides[uid] === "number";
                               const email = member.users?.email || "N/A";
                               const phone = profile?.phone || "N/A";
                               const parsedDistance =
@@ -5556,14 +5710,14 @@ export default function EventDashboardPage() {
                                       <div className="text-sm font-medium text-gray-900">
                                         {firstName} {lastName}
                                       </div>
-                                      {isManagerRole && (
+                                      {isEventManagerRole && (
                                         <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                                          Manager
+                                          Event Manager
                                         </span>
                                       )}
-                                      {isSupervisorRole && (
+                                      {isEventSupervisorRole && (
                                         <span className="px-2 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-800 border border-violet-200">
-                                          Supervisor
+                                          Event Supervisor
                                         </span>
                                       )}
                                       {distanceFromVenue !== null && (
@@ -5594,6 +5748,73 @@ export default function EventDashboardPage() {
                                     {(hasSubmittedAttestation || hasRejectedAttestation) && (
                                       <div className={`mt-1 text-xs font-semibold ${attestationStatusColor}`}>
                                         {attestationStatusLabel}
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    {!canEditEventRole ? (
+                                      <span className="text-sm text-gray-700">
+                                        {eventTeamRole === "manager"
+                                          ? "Manager"
+                                          : eventTeamRole === "supervisor"
+                                            ? "Supervisor"
+                                            : "Staff"}
+                                      </span>
+                                    ) : (
+                                      <select
+                                        value={eventTeamRole}
+                                        onChange={(e) => {
+                                          void handleUpdateTeamEventRole(
+                                            member,
+                                            e.target.value as "staff" | "manager" | "supervisor"
+                                          );
+                                        }}
+                                        disabled={savingTeamRoleMemberId === member.id}
+                                        className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                      >
+                                        <option value="staff">Staff</option>
+                                        <option value="manager">Manager</option>
+                                        <option value="supervisor">Supervisor</option>
+                                      </select>
+                                    )}
+                                  </td>
+                                  <td className="px-6 py-4 whitespace-nowrap">
+                                    {!canConfigureTipEligibility ? (
+                                      <span className="text-sm text-gray-400">Select manager/supervisor first</span>
+                                    ) : !tipsOverridesLoaded ? (
+                                      <span className="text-sm text-gray-500">Loading...</span>
+                                    ) : !canEditTipEligibility ? (
+                                      <div className="flex flex-col gap-1">
+                                        <span className={`text-sm font-medium ${isTipsEligible ? "text-green-700" : "text-red-600"}`}>
+                                          {isTipsEligible ? "Eligible" : "No Tips"}
+                                        </span>
+                                        {hasManualTipsOverride && isTipsEligible && (
+                                          <span className="text-[11px] font-medium text-orange-600">
+                                            Manual payroll override saved
+                                          </span>
+                                        )}
+                                      </div>
+                                    ) : (
+                                      <div className="flex flex-col gap-1">
+                                        <select
+                                          value={isTipsEligible ? "eligible" : "excluded"}
+                                          onChange={(e) => {
+                                            void handleUpdateTeamTipsEligibility(member, e.target.value === "eligible");
+                                          }}
+                                          disabled={
+                                            savingTeamTipsMemberId === member.id ||
+                                            savingTeamRoleMemberId === member.id
+                                          }
+                                          className="rounded-md border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+                                        >
+                                          <option value="eligible">Eligible</option>
+                                          <option value="excluded">No Tips</option>
+                                        </select>
+                                        {hasManualTipsOverride && isTipsEligible && (
+                                          <span className="text-[11px] font-medium text-orange-600">
+                                            Manual payroll override saved
+                                          </span>
+                                        )}
                                       </div>
                                     )}
                                   </td>
@@ -6383,9 +6604,9 @@ export default function EventDashboardPage() {
               const firstName = profile?.first_name || "N/A";
               const lastName = profile?.last_name || "";
               const uid = (m.user_id || m.vendor_id || m.users?.id || "").toString();
-              const timesheetMemberRole = (m.users?.role || "").toLowerCase();
+              const timesheetMemberRole = normalizeEventTeamRole(m?.event_role);
               const isTimesheetManager = timesheetMemberRole === "manager";
-              const isTimesheetSupervisor = timesheetMemberRole === "supervisor" || timesheetMemberRole === "supervisor2" || timesheetMemberRole === "supervisor3";
+              const isTimesheetSupervisor = timesheetMemberRole === "supervisor";
               const attestationStatus = String(m?.attestation_status || "").trim().toLowerCase();
               const hasSubmittedAttestation =
                 attestationStatus === "submitted" ||
@@ -6469,12 +6690,12 @@ export default function EventDashboardPage() {
                           </div>
                           {isTimesheetManager && (
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
-                              Manager
+                              Event Manager
                             </span>
                           )}
                           {isTimesheetSupervisor && (
                             <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
-                              Supervisor
+                              Event Supervisor
                             </span>
                           )}
                         </div>
@@ -6875,9 +7096,9 @@ export default function EventDashboardPage() {
                           const lastName = profile?.last_name || "";
                           const uid = (member.user_id || member.vendor_id || member.users?.id || "").toString();
                           const hasAttestation = Boolean(member?.has_attestation);
-                          const payrollMemberRole = (member.users?.role || "").toLowerCase();
+                          const payrollMemberRole = normalizeEventTeamRole(member?.event_role);
                           const isPayrollManager = payrollMemberRole === "manager";
-                          const isPayrollSupervisor = payrollMemberRole === "supervisor" || payrollMemberRole === "supervisor2" || payrollMemberRole === "supervisor3";
+                          const isPayrollSupervisor = payrollMemberRole === "supervisor";
 
                           // Worked hours include meal deductions plus Gate/Phone lead time.
                           const totalMs = getDisplayedWorkedMs(uid);
@@ -6932,12 +7153,12 @@ export default function EventDashboardPage() {
                                       <div className="mt-0.5">
                                         {isPayrollManager && (
                                           <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
-                                            Manager
+                                            Event Manager
                                           </span>
                                         )}
                                         {isPayrollSupervisor && (
                                           <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
-                                            Supervisor
+                                            Event Supervisor
                                           </span>
                                         )}
                                       </div>
@@ -7035,18 +7256,6 @@ export default function EventDashboardPage() {
                                   <div className="flex flex-col gap-1">
                                     <span className="text-xs text-red-500 line-through">$0.00</span>
                                     <span className="text-[10px] text-red-400">Excluded</span>
-                                    {canEditTimesheets && (
-                                      <button
-                                        onClick={() => setTipsOverrides(prev => {
-                                          const next = { ...prev };
-                                          delete next[uid];
-                                          return next;
-                                        })}
-                                        className="text-[10px] text-blue-500 hover:text-blue-700 underline"
-                                      >
-                                        Restore
-                                      </button>
-                                    )}
                                   </div>
                                 ) : editingTipsMemberId === uid ? (
                                   // Editing state
@@ -7242,7 +7451,13 @@ export default function EventDashboardPage() {
               {canEditTimesheets && (
                 <div className="flex items-center justify-end gap-3 mt-4 px-2">
                   {message && (
-                    <span className={`text-sm font-medium ${message.includes('success') ? 'text-green-600' : 'text-red-600'}`}>
+                    <span className={`text-sm font-medium ${
+                      messageTone === "success"
+                        ? "text-green-600"
+                        : messageTone === "warning"
+                          ? "text-amber-600"
+                          : "text-red-600"
+                    }`}>
                       {message}
                     </span>
                   )}

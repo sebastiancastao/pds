@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useMemo } from 'react';
+import { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
@@ -146,6 +146,8 @@ interface FinalPayTotals {
   finalPay: number;
 }
 
+const PAYROLL_DIRTY_STORAGE_KEY = 'pds-payroll-data-dirty-at';
+
 export default function PaystubGenerator() {
   const [formData, setFormData] = useState({
     // Employee Information
@@ -228,6 +230,9 @@ export default function PaystubGenerator() {
   const [showEmailResults, setShowEmailResults] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const eventsRequestIdRef = useRef(0);
+  const finalPayRequestIdRef = useRef(0);
+  const handledPayrollDirtyAtRef = useRef<string | null>(null);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
@@ -454,6 +459,45 @@ export default function PaystubGenerator() {
     }
     return actualHours >= 10 ? 12 : 9;
   };
+  const computeTravelPay = (
+    diffMiles: number,
+    stateCode: string | null | undefined,
+    rateInEffect: number
+  ) => {
+    const stateMin = normalizeState(stateCode) === 'CA' ? 28.5 : 25.94;
+    const travelRate = Math.max(stateMin, Number.isFinite(rateInEffect) ? rateInEffect : 0);
+    return roundMoney((diffMiles / 30) * travelRate);
+  };
+  const getCommissionReportBonusAmount = (worker?: Worker | null) => {
+    if (!worker) return 0;
+    const adjustmentTotal = roundMoney(Number(worker.adjustment_amount || 0));
+    const note = (worker.adjustment_note || '').toString().trim();
+    if (!note) {
+      return adjustmentTotal;
+    }
+
+    try {
+      const parsed = JSON.parse(note);
+      if (parsed && typeof parsed === 'object') {
+        const normalizedOtherType = (parsed.otherType || '')
+          .toString()
+          .trim()
+          .toLowerCase()
+          .replace(/\s+/g, '_')
+          .replace(/-/g, '_');
+        if (normalizedOtherType === 'bonus') {
+          return roundMoney(Number(parsed.otherAmount || 0));
+        }
+        return 0;
+      }
+    } catch {}
+
+    const normalizedNote = note
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+    return normalizedNote === 'bonus' ? adjustmentTotal : 0;
+  };
 
   const fetchEmployeeSummary = async (userId: string): Promise<{
     sickLeave: SickLeaveBalance | null;
@@ -492,9 +536,13 @@ export default function PaystubGenerator() {
     const debugMode = options?.debugMode === true;
     const { data: { session } } = await supabase.auth.getSession();
     const res = await fetch(
-      `/api/employee-final-pay?userId=${encodeURIComponent(userId)}&startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}${debugMode ? '&debug=1' : ''}`,
+      `/api/employee-final-pay?userId=${encodeURIComponent(userId)}&startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}${debugMode ? '&debug=1' : ''}&ts=${Date.now()}`,
       {
-        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
       }
     );
     if (!res.ok) {
@@ -509,43 +557,57 @@ export default function PaystubGenerator() {
     };
   };
 
-  // Fetch events when pay period dates change
-  useEffect(() => {
-    const fetchEvents = async () => {
-      if (!formData.payPeriodStart || !formData.payPeriodEnd) {
-        setEvents([]);
-        return;
+  const loadEventsForPayPeriod = useCallback(async () => {
+    const requestId = ++eventsRequestIdRef.current;
+
+    if (!formData.payPeriodStart || !formData.payPeriodEnd) {
+      setEvents([]);
+      return false;
+    }
+
+    setEventsLoading(true);
+    setEventsError(null);
+
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+
+      const response = await fetch(
+        `/api/events-by-date?startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}&includeHours=true${debugMode ? '&debug=true' : ''}&ts=${Date.now()}`,
+        {
+          cache: 'no-store',
+          headers: {
+            'Cache-Control': 'no-cache',
+          },
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('Failed to fetch events');
       }
 
-      setEventsLoading(true);
-      setEventsError(null);
-
-      try {
-        const debugMode =
-          typeof window !== 'undefined' &&
-          new URLSearchParams(window.location.search).get('debug') === '1';
-
-        const response = await fetch(
-          `/api/events-by-date?startDate=${formData.payPeriodStart}&endDate=${formData.payPeriodEnd}&includeHours=true${debugMode ? '&debug=true' : ''}`
-        );
-
-        if (!response.ok) {
-          throw new Error('Failed to fetch events');
-        }
-
-        const data = await response.json();
-        setEvents(data.events || []);
-      } catch (error: any) {
-        console.error('Error fetching events:', error);
-        setEventsError(error.message || 'Failed to load events');
-        setEvents([]);
-      } finally {
+      const data = await response.json();
+      if (requestId !== eventsRequestIdRef.current) return false;
+      setEvents(data.events || []);
+      return true;
+    } catch (error: any) {
+      if (requestId !== eventsRequestIdRef.current) return false;
+      console.error('Error fetching events:', error);
+      setEventsError(error.message || 'Failed to load events');
+      setEvents([]);
+      return false;
+    } finally {
+      if (requestId === eventsRequestIdRef.current) {
         setEventsLoading(false);
       }
-    };
-
-    fetchEvents();
+    }
   }, [formData.payPeriodStart, formData.payPeriodEnd]);
+
+  // Fetch events when pay period dates change
+  useEffect(() => {
+    void loadEventsForPayPeriod();
+  }, [loadEventsForPayPeriod]);
 
   useEffect(() => {
     let isMounted = true;
@@ -589,54 +651,113 @@ export default function PaystubGenerator() {
     };
   }, [matchedUserId]);
 
-  // Fetch Final Pay from HR Dashboard data when employee + dates are ready
-  useEffect(() => {
-    let isMounted = true;
+  const loadFinalPayForMatchedUser = useCallback(async () => {
+    const requestId = ++finalPayRequestIdRef.current;
 
     if (!matchedUserId || !formData.payPeriodStart || !formData.payPeriodEnd) {
       setFinalPayEvents([]);
       setFinalPayTotals(null);
       setFinalPayError(null);
-      return;
+      return false;
     }
 
-    const fetchFinalPay = async () => {
-      setFinalPayLoading(true);
-      setFinalPayError(null);
+    setFinalPayLoading(true);
+    setFinalPayError(null);
+    try {
+      const debugMode =
+        typeof window !== 'undefined' &&
+        new URLSearchParams(window.location.search).get('debug') === '1';
+      const data = await fetchFinalPayData(matchedUserId, { debugMode });
+      if (requestId !== finalPayRequestIdRef.current) return false;
+
+      if (debugMode) {
+        console.log('[PAYSTUB-GEN][debug] employee-final-pay hours breakdown', (data.events || []).map((ev: any) => ({
+          eventId: ev.eventId,
+          eventName: ev.eventName,
+          eventDate: ev.eventDate,
+          actualHours: ev.actualHours,
+          hoursDebug: ev.hours_debug || null,
+        })));
+      }
+      setFinalPayEvents(data.events || []);
+      setFinalPayTotals(data.totals || null);
+      return true;
+    } catch (err: any) {
+      if (requestId !== finalPayRequestIdRef.current) return false;
+      setFinalPayError(err.message || 'Failed to load final pay data');
+      setFinalPayEvents([]);
+      setFinalPayTotals(null);
+      return false;
+    } finally {
+      if (requestId === finalPayRequestIdRef.current) {
+        setFinalPayLoading(false);
+      }
+    }
+  }, [matchedUserId, formData.payPeriodStart, formData.payPeriodEnd]);
+
+  // Fetch Final Pay from HR Dashboard data when employee + dates are ready
+  useEffect(() => {
+    void loadFinalPayForMatchedUser();
+  }, [loadFinalPayForMatchedUser]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const maybeReloadDirtyPaystubData = async () => {
       try {
-        const debugMode =
-          typeof window !== 'undefined' &&
-          new URLSearchParams(window.location.search).get('debug') === '1';
-        const data = await fetchFinalPayData(matchedUserId, { debugMode });
-        if (isMounted) {
-          if (debugMode) {
-            console.log('[PAYSTUB-GEN][debug] employee-final-pay hours breakdown', (data.events || []).map((ev: any) => ({
-              eventId: ev.eventId,
-              eventName: ev.eventName,
-              eventDate: ev.eventDate,
-              actualHours: ev.actualHours,
-              hoursDebug: ev.hours_debug || null,
-            })));
-          }
-          setFinalPayEvents(data.events || []);
-          setFinalPayTotals(data.totals || null);
+        const dirtyAt = window.localStorage.getItem(PAYROLL_DIRTY_STORAGE_KEY);
+        if (!dirtyAt) return;
+        if (handledPayrollDirtyAtRef.current === dirtyAt) return;
+        if (!formData.payPeriodStart || !formData.payPeriodEnd) return;
+        if (eventsLoading || finalPayLoading) return;
+
+        const eventsLoaded = await loadEventsForPayPeriod();
+        const finalPayLoaded = matchedUserId ? await loadFinalPayForMatchedUser() : true;
+        if (!eventsLoaded || !finalPayLoaded) return;
+
+        handledPayrollDirtyAtRef.current = dirtyAt;
+        try {
+          window.localStorage.removeItem(PAYROLL_DIRTY_STORAGE_KEY);
+        } catch {
+          // Ignore storage failures.
         }
-      } catch (err: any) {
-        if (!isMounted) return;
-        setFinalPayError(err.message || 'Failed to load final pay data');
-        setFinalPayEvents([]);
-        setFinalPayTotals(null);
-      } finally {
-        if (isMounted) setFinalPayLoading(false);
+      } catch {
+        // Ignore storage failures.
       }
     };
 
-    fetchFinalPay();
+    const runMaybeReloadDirtyPaystubData = () => {
+      void maybeReloadDirtyPaystubData();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void maybeReloadDirtyPaystubData();
+      }
+    };
+
+    runMaybeReloadDirtyPaystubData();
+    window.addEventListener('focus', runMaybeReloadDirtyPaystubData);
+    window.addEventListener('pageshow', runMaybeReloadDirtyPaystubData);
+    window.addEventListener('storage', runMaybeReloadDirtyPaystubData);
+    window.addEventListener('pds:payroll-data-dirty', runMaybeReloadDirtyPaystubData as EventListener);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
-      isMounted = false;
+      window.removeEventListener('focus', runMaybeReloadDirtyPaystubData);
+      window.removeEventListener('pageshow', runMaybeReloadDirtyPaystubData);
+      window.removeEventListener('storage', runMaybeReloadDirtyPaystubData);
+      window.removeEventListener('pds:payroll-data-dirty', runMaybeReloadDirtyPaystubData as EventListener);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [matchedUserId, formData.payPeriodStart, formData.payPeriodEnd]);
+  }, [
+    formData.payPeriodStart,
+    formData.payPeriodEnd,
+    matchedUserId,
+    eventsLoading,
+    finalPayLoading,
+    loadEventsForPayPeriod,
+    loadFinalPayForMatchedUser,
+  ]);
 
   const calculateEarnings = () => {
     const regularPay = (parseFloat(formData.regularHours) || 0) * (parseFloat(formData.regularRate) || 0);
@@ -1591,6 +1712,50 @@ export default function PaystubGenerator() {
       setFinalPayTotals(latestFinalPay.totals || null);
       setFinalPayError(null);
       const finalPayByEventId = new Map((latestFinalPay.events || []).map((event) => [event.eventId, event]));
+      const travelCompByEventId: Record<string, { differentialMiles: number | null; approved: boolean; override?: number }> = {};
+      const reportEventIds = filteredEvents
+        .map((event) => String(event?.id || '').trim())
+        .filter(Boolean);
+      if (reportEventIds.length > 0) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          const headers: HeadersInit = session?.access_token
+            ? { Authorization: `Bearer ${session.access_token}` }
+            : {};
+          const eventIdsParam = encodeURIComponent(reportEventIds.join(','));
+          const [mileageRes, approvalsRes] = await Promise.all([
+            fetch(`/api/mileage-pay?event_ids=${eventIdsParam}`, { headers }),
+            fetch(`/api/mileage-approvals?event_ids=${eventIdsParam}`, { headers }),
+          ]);
+          const mileageBody = mileageRes.ok ? await mileageRes.json().catch(() => ({})) : {};
+          const approvalsBody = approvalsRes.ok ? await approvalsRes.json().catch(() => ({})) : {};
+          const mileageByEvent = mileageBody?.mileage || {};
+          const approvalsByEvent = approvalsBody?.approvals || {};
+
+          for (const eventId of reportEventIds) {
+            const mileageRow = mileageByEvent[eventId]?.[reportUserId];
+            const approvalRow = approvalsByEvent[eventId]?.[reportUserId];
+            const overrideRaw = approvalRow?.travel_amount;
+            const override =
+              overrideRaw !== null &&
+              overrideRaw !== undefined &&
+              Number.isFinite(Number(overrideRaw))
+                ? Number(overrideRaw)
+                : undefined;
+
+            travelCompByEventId[eventId] = {
+              differentialMiles:
+                mileageRow?.differentialMiles != null && Number.isFinite(Number(mileageRow.differentialMiles))
+                  ? Number(mileageRow.differentialMiles)
+                  : null,
+              approved: approvalRow?.travel !== false,
+              ...(override !== undefined ? { override } : {}),
+            };
+          }
+        } catch (error) {
+          console.warn('[PAYSTUB-GEN] Unable to load travel pay inputs for commission report', error);
+        }
+      }
 
       type CommissionReportRow = {
         eventId: string;
@@ -1611,6 +1776,8 @@ export default function PaystubGenerator() {
         variableIncentive: number | '';
         tips: number | '';
         restPay: number | '';
+        travelPay: number | '';
+        bonus: number | '';
         finalPay: number;
       };
 
@@ -1627,7 +1794,7 @@ export default function PaystubGenerator() {
         ['State', formData.state],
         ['Gross Pay', Number(grossPay.toFixed(2))],
         ['Total Deductions', appliedStatutoryDeductions],
-        ['Misc Reimbursement', Number((parseFloat(formData.miscReimbursement) || 0).toFixed(2))],
+        ['Equipment Reimbursement', Number((parseFloat(formData.miscReimbursement) || 0).toFixed(2))],
         ['Net Pay', netPay],
       ];
 
@@ -1722,6 +1889,7 @@ export default function PaystubGenerator() {
                 : Number(worker.payment_data?.rest_break_pay ?? 0) ||
                   getRestPayForReport(hoursWorked, formData.state || event.state, event)
           );
+          const bonusValue = getCommissionReportBonusAmount(worker);
           const rateInEffect = roundMoney(
             usesPeriodRate && finalPayData?.rateInEffect != null
               ? Number(finalPayData.rateInEffect)
@@ -1729,12 +1897,25 @@ export default function PaystubGenerator() {
                 ? commission / hoursWorked
                 : 0
           );
+          const travelComp = travelCompByEventId[String(event.id || '')];
+          const travelPayValue = roundMoney(
+            travelComp?.override !== undefined
+              ? travelComp.override
+              : travelComp?.approved !== false &&
+                travelComp?.differentialMiles != null &&
+                travelComp.differentialMiles > 0
+                ? computeTravelPay(travelComp.differentialMiles, event.state || formData.state, rateInEffect)
+                : 0
+          );
           const variableRate =
             !isEventSD && hoursWorked > 0 && Math.abs(variableIncentiveValue) >= 0.005
               ? roundMoney(variableIncentiveValue / hoursWorked)
               : '';
-          const finalPay = roundMoney(
+          const baseFinalPay = roundMoney(
             Number(finalPayData?.totalPay ?? (commissionPaidTotal + tips + restPay))
+          );
+          const finalPay = roundMoney(
+            baseFinalPay + travelPayValue + bonusValue
           );
 
           return [{
@@ -1756,6 +1937,8 @@ export default function PaystubGenerator() {
             variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
             tips: Math.abs(tips) < 0.005 ? '' : tips,
             restPay: Math.abs(restPay) < 0.005 ? '' : restPay,
+            travelPay: Math.abs(travelPayValue) < 0.005 ? '' : travelPayValue,
+            bonus: Math.abs(bonusValue) < 0.005 ? '' : bonusValue,
             finalPay,
           }];
         }) ?? [];
@@ -1784,12 +1967,14 @@ export default function PaystubGenerator() {
         );
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
+        const travelPay = typeof row.travelPay === 'number' ? row.travelPay : 0;
+        const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           ...row,
           variableRate: variableRateValue,
           commissionPaidTotal: roundMoney(row.commission + variableIncentiveValue),
           variableIncentive: Math.abs(variableIncentiveValue) < 0.005 ? '' : variableIncentiveValue,
-          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay),
+          finalPay: roundMoney(row.commission + variableIncentiveValue + tips + restPay + travelPay + bonus),
         };
       });
 
@@ -1871,6 +2056,8 @@ export default function PaystubGenerator() {
         variable_incentive: maskedCommissionRowValue,
         tips: row.tips === '' ? 0 : row.tips,
         rest_pay: row.restPay === '' ? 0 : row.restPay,
+        travel_pay: row.travelPay === '' ? 0 : row.travelPay,
+        bonus: row.bonus === '' ? 0 : row.bonus,
         final_pay: row.finalPay,
       }));
 
@@ -1904,7 +2091,9 @@ export default function PaystubGenerator() {
           'Variable Incentive',
           'Tips',
           'Rest Pay',
-          'Final Pay (incl. tips/rest)',
+          'Travel Pay',
+          'Bonus',
+          'Final Gross Pay (incl. tips/rest/travel/bonus)',
         ],
         ...normalizedCommissionReportRows.map((row) => [
           row.showDate,
@@ -1921,6 +2110,8 @@ export default function PaystubGenerator() {
           maskedCommissionRowValue,
           row.tips,
           row.restPay,
+          row.travelPay,
+          row.bonus,
           row.finalPay,
         ]),
       ];
@@ -1930,12 +2121,16 @@ export default function PaystubGenerator() {
           typeof row.variableIncentive === 'number' ? row.variableIncentive : 0;
         const tips = typeof row.tips === 'number' ? row.tips : 0;
         const restPay = typeof row.restPay === 'number' ? row.restPay : 0;
+        const travelPay = typeof row.travelPay === 'number' ? row.travelPay : 0;
+        const bonus = typeof row.bonus === 'number' ? row.bonus : 0;
         return {
           commission: acc.commission + row.commission,
           hoursWorked: acc.hoursWorked + row.hoursWorked,
           rowVariableIncentive: acc.rowVariableIncentive + rowVariableIncentive,
           tips: acc.tips + tips,
           restPay: acc.restPay + restPay,
+          travelPay: acc.travelPay + travelPay,
+          bonus: acc.bonus + bonus,
           finalPay: acc.finalPay + row.finalPay,
         };
       }, {
@@ -1944,6 +2139,8 @@ export default function PaystubGenerator() {
         rowVariableIncentive: 0,
         tips: 0,
         restPay: 0,
+        travelPay: 0,
+        bonus: 0,
         finalPay: 0,
       });
       const totalRateInEffect =
@@ -1953,7 +2150,14 @@ export default function PaystubGenerator() {
           ? roundMoney(totals.rowVariableIncentive / totals.hoursWorked)
           : 0;
       const totalVariableIncentive = roundMoney(totals.rowVariableIncentive);
-      const totalFinalPay = roundMoney(totals.finalPay);
+      const totalFinalPay = roundMoney(
+        roundMoney(totals.commission) +
+        totalVariableIncentive +
+        roundMoney(totals.tips) +
+        roundMoney(totals.restPay) +
+        roundMoney(totals.travelPay) +
+        roundMoney(totals.bonus)
+      );
 
       if (debugMode) {
         const debugRows = normalizedCommissionReportRows.map((row) => {
@@ -1976,6 +2180,8 @@ export default function PaystubGenerator() {
             expectedVariableIncentive,
             actualVariableIncentive:
               typeof row.variableIncentive === 'number' ? row.variableIncentive : 0,
+            travelPay: typeof row.travelPay === 'number' ? row.travelPay : 0,
+            bonus: typeof row.bonus === 'number' ? row.bonus : 0,
             variableIncentiveDifference: roundMoney(
               (typeof row.variableIncentive === 'number' ? row.variableIncentive : 0) -
               expectedVariableIncentive
@@ -1994,6 +2200,8 @@ export default function PaystubGenerator() {
           totalHoursWorked: roundHours(totals.hoursWorked),
           totalPayPeriodRateInEffect: totalRateInEffect,
           totalVariableIncentive,
+          totalTravelPay: roundMoney(totals.travelPay),
+          totalBonus: roundMoney(totals.bonus),
           totalFinalPay,
         });
         console.table(debugRows);
@@ -2015,6 +2223,8 @@ export default function PaystubGenerator() {
         totalVariableIncentive,
         roundMoney(totals.tips),
         roundMoney(totals.restPay),
+        roundMoney(totals.travelPay),
+        roundMoney(totals.bonus),
         totalFinalPay,
       ]);
 
@@ -2034,14 +2244,16 @@ export default function PaystubGenerator() {
         { wch: 18 },
         { wch: 12 },
         { wch: 12 },
+        { wch: 12 },
+        { wch: 12 },
         { wch: 24 },
       ];
       commissionReportSheet['!autofilter'] = {
-        ref: `A1:O${commissionReportSheetData.length}`,
+        ref: `A1:Q${commissionReportSheetData.length}`,
       };
 
-      // D=AdjGross, F=GrossComm, H=Commission, J=RateInEffect, K=VariableRate, L=VariableIncentive, M=Tips, N=RestPay, O=FinalPay
-      const currencyColumns = ['D', 'F', 'H', 'J', 'K', 'L', 'M', 'N', 'O'];
+      // D=AdjGross, F=GrossComm, H=Commission, J=RateInEffect, K=VariableRate, L=VariableIncentive, M=Tips, N=RestPay, O=TravelPay, P=Bonus, Q=FinalPay
+      const currencyColumns = ['D', 'F', 'H', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q'];
       const numericColumns = ['I'];
       for (let rowIndex = 2; rowIndex <= commissionReportSheetData.length; rowIndex += 1) {
         for (const column of currencyColumns) {
@@ -2722,7 +2934,7 @@ export default function PaystubGenerator() {
                                           )}
                                           {formData.miscReimbursement && (
                                             <div>
-                                              <span className="text-blue-600">Reimbursement:</span>{' '}
+                                              <span className="text-blue-600">Equipment Reimbursement:</span>{' '}
                                               <span className="font-medium text-green-700">${parseFloat(formData.miscReimbursement).toFixed(2)}</span>
                                             </div>
                                           )}

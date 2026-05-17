@@ -27,7 +27,10 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
+const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
+const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 
 const formDisplayNames: Record<string, string> = {
   // California
@@ -94,6 +97,47 @@ const parseSignedAt = (value?: string | null): number | null => {
   if (!value) return null;
   const time = Date.parse(value);
   return Number.isNaN(time) ? null : time;
+};
+
+const buildDisplayName = (fullName?: string | null, firstName?: string | null, lastName?: string | null) => {
+  const trimmedFullName = (fullName || '').trim();
+  if (trimmedFullName) return trimmedFullName;
+  return [firstName, lastName]
+    .map((value) => (value || '').trim())
+    .filter(Boolean)
+    .join(' ');
+};
+
+const drawTextInRect = (
+  page: PDFPage,
+  font: PDFFont,
+  rect: { x: number; y: number; width: number; height: number },
+  value: string
+) => {
+  const trimmedValue = value.trim();
+  page.drawRectangle({
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    color: rgb(1, 1, 1),
+  });
+  if (!trimmedValue) return;
+
+  const widthForText = Math.max(1, rect.width - 4);
+  let fontSize = Math.max(8, Math.min(10, rect.height - 2));
+  while (fontSize > 8 && font.widthOfTextAtSize(trimmedValue, fontSize) > widthForText) {
+    fontSize -= 0.5;
+  }
+
+  page.drawText(trimmedValue, {
+    x: rect.x + 2,
+    y: rect.y + Math.max(1, (rect.height - fontSize) / 2),
+    size: fontSize,
+    font,
+    color: rgb(0, 0, 0),
+    maxWidth: widthForText,
+  });
 };
 
 const normalizeSignatureData = (value?: string | null) => {
@@ -1675,17 +1719,21 @@ export async function GET(
       .eq('id', userId)
       .maybeSingle();
 
-    const targetUserFullName = (targetUserData?.full_name || '').toString().trim();
-
     const { data: targetProfile, error: profileError } = await supabaseAdmin
       .from('profiles')
-      .select('state')
+      .select('state, first_name, last_name')
       .eq('user_id', userId)
       .maybeSingle();
 
     if (profileError) {
       console.warn('[PDF_FORMS] Could not fetch profile state for user:', userId, profileError.message);
     }
+
+    const targetUserFullName = buildDisplayName(
+      targetUserData?.full_name,
+      (targetProfile as any)?.first_name,
+      (targetProfile as any)?.last_name
+    );
 
     // Fetch date_of_birth from employee_information for birthdate field normalization
     const { data: employeeInfo } = await supabaseAdmin
@@ -2183,6 +2231,28 @@ export async function GET(
               );
               console.log('[PDF_FORMS] Rendered employee-handbook form fields for:', form.form_name);
             } else {
+              if (normalizedFormName === 'attestation' && targetUserFullName) {
+                try {
+                  const attestationNameField = pdfForm.getTextField(ATTESTATION_NAME_FIELD);
+                  const existingValue = attestationNameField.getText()?.trim() ?? '';
+                  if (!existingValue) {
+                    attestationNameField.setText(targetUserFullName);
+                  }
+                } catch (error) {
+                  try {
+                    const font = await formPdf.embedFont(StandardFonts.Helvetica);
+                    const fallbackPage =
+                      formPdf.getPages()[ATTESTATION_FALLBACK_PAGE_INDEX] ||
+                      formPdf.getPages()[Math.max(formPdf.getPages().length - 1, 0)];
+                    if (fallbackPage) {
+                      drawTextInRect(fallbackPage, font, ATTESTATION_NAME_FALLBACK_RECT, targetUserFullName);
+                    }
+                  } catch (fallbackError) {
+                    console.warn('[PDF_FORMS] Failed to backfill attestation print name:', error, fallbackError);
+                  }
+                }
+              }
+
               // For non-handbook forms, normalize date fields before flattening
               for (const field of fields) {
                 try {

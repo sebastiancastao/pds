@@ -7,6 +7,8 @@ import { computePayPeriodCommission, isPeriodRateState } from '@/lib/pay-period-
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from '@/lib/san-diego-payroll';
 import { attachRegionMetadataToEvents } from '@/lib/event-region';
 
+export const dynamic = 'force-dynamic';
+
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!

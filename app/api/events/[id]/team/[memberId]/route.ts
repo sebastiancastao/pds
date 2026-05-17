@@ -15,7 +15,7 @@ const supabaseAnon = createClient(
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 
-const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2"]);
+const MANAGE_ROLES = new Set(["exec", "admin", "manager", "supervisor", "supervisor2", "supervisor3"]);
 
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
@@ -36,6 +36,133 @@ function isMissingRelationError(error: any): boolean {
   const code = String(error?.code || "").trim();
   const message = String(error?.message || "");
   return code === "42P01" || /relation .* does not exist/i.test(message);
+}
+
+function isMissingColumnError(error: any, columnName?: string): boolean {
+  const code = String(error?.code || "").trim();
+  const message = String(error?.message || "");
+  if (code !== "42703" && !/column .* does not exist/i.test(message)) {
+    return false;
+  }
+  return columnName ? message.toLowerCase().includes(columnName.toLowerCase()) : true;
+}
+
+function normalizeEventTeamRole(value: unknown): "staff" | "manager" | "supervisor" | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "staff" || normalized === "manager" || normalized === "supervisor") {
+    return normalized;
+  }
+  return null;
+}
+
+async function persistTipsEligibility(params: {
+  eventId: string;
+  vendorId: string;
+  actingUserId: string;
+  tipsEligible: boolean;
+}) {
+  const { eventId, vendorId, actingUserId, tipsEligible } = params;
+
+  const { data: existingVendorPayment, error: existingVendorPaymentError } = await supabaseAdmin
+    .from("event_vendor_payments")
+    .select("id")
+    .eq("event_id", eventId)
+    .eq("user_id", vendorId)
+    .maybeSingle();
+
+  if (existingVendorPaymentError) {
+    throw new Error(existingVendorPaymentError.message);
+  }
+
+  const timestamp = new Date().toISOString();
+
+  if (tipsEligible) {
+    if (!existingVendorPayment?.id) {
+      return { persisted: false };
+    }
+
+    const { error: updateError } = await supabaseAdmin
+      .from("event_vendor_payments")
+      .update({
+        tips_deleted: false,
+        tips_override: null,
+        updated_at: timestamp,
+      })
+      .eq("id", existingVendorPayment.id);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    return { persisted: true };
+  }
+
+  let eventPaymentId: string | null = null;
+  const { data: existingEventPayment, error: existingEventPaymentError } = await supabaseAdmin
+    .from("event_payments")
+    .select("id")
+    .eq("event_id", eventId)
+    .maybeSingle();
+
+  if (existingEventPaymentError) {
+    throw new Error(existingEventPaymentError.message);
+  }
+
+  if (existingEventPayment?.id) {
+    eventPaymentId = String(existingEventPayment.id);
+  } else {
+    const { data: insertedEventPayment, error: insertEventPaymentError } = await supabaseAdmin
+      .from("event_payments")
+      .insert({
+        event_id: eventId,
+        created_by: actingUserId,
+        updated_at: timestamp,
+      })
+      .select("id")
+      .single();
+
+    if (insertEventPaymentError) {
+      throw new Error(insertEventPaymentError.message);
+    }
+
+    eventPaymentId = String(insertedEventPayment?.id || "");
+  }
+
+  if (!eventPaymentId) {
+    throw new Error("Failed to create event payment summary");
+  }
+
+  if (existingVendorPayment?.id) {
+    const { error: updateError } = await supabaseAdmin
+      .from("event_vendor_payments")
+      .update({
+        tips_deleted: true,
+        tips_override: null,
+        updated_at: timestamp,
+      })
+      .eq("id", existingVendorPayment.id);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+  } else {
+    const { error: insertVendorPaymentError } = await supabaseAdmin
+      .from("event_vendor_payments")
+      .insert({
+        event_payment_id: eventPaymentId,
+        event_id: eventId,
+        user_id: vendorId,
+        tips_override: null,
+        tips_deleted: true,
+        updated_at: timestamp,
+      });
+
+    if (insertVendorPaymentError) {
+      throw new Error(insertVendorPaymentError.message);
+    }
+  }
+
+  return { persisted: true };
 }
 
 export async function DELETE(
@@ -271,6 +398,197 @@ export async function DELETE(
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || "Failed to uninvite team member" },
+      { status: 500 }
+    );
+  }
+}
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string; memberId: string } }
+) {
+  try {
+    const eventId = String(params?.id || "").trim();
+    const memberId = String(params?.memberId || "").trim();
+
+    if (!eventId || !memberId) {
+      return NextResponse.json({ error: "Event ID and member ID are required" }, { status: 400 });
+    }
+
+    const user = await getAuthedUser(req);
+    if (!user?.id) {
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const hasEventRoleInput = Object.prototype.hasOwnProperty.call(body, "eventRole");
+    const hasTipsEligibleInput = Object.prototype.hasOwnProperty.call(body, "tipsEligible");
+    const requestedEventRole = hasEventRoleInput ? normalizeEventTeamRole(body?.eventRole) : null;
+    const tipsEligible = body?.tipsEligible;
+
+    if (!hasEventRoleInput && !hasTipsEligibleInput) {
+      return NextResponse.json(
+        { error: "At least one of eventRole or tipsEligible must be provided" },
+        { status: 400 }
+      );
+    }
+
+    if (hasEventRoleInput && !requestedEventRole) {
+      return NextResponse.json(
+        { error: "eventRole must be one of: staff, manager, supervisor" },
+        { status: 400 }
+      );
+    }
+
+    if (hasTipsEligibleInput && typeof tipsEligible !== "boolean") {
+      return NextResponse.json({ error: "tipsEligible must be a boolean" }, { status: 400 });
+    }
+
+    const { data: event, error: eventError } = await supabaseAdmin
+      .from("events")
+      .select("id, created_by")
+      .eq("id", eventId)
+      .maybeSingle();
+
+    if (eventError) {
+      return NextResponse.json({ error: eventError.message }, { status: 500 });
+    }
+    if (!event) {
+      return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
+    const isCreator = event.created_by === user.id;
+    if (!isCreator) {
+      const { data: requester, error: requesterError } = await supabaseAdmin
+        .from("users")
+        .select("role")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (requesterError) {
+        return NextResponse.json({ error: requesterError.message }, { status: 500 });
+      }
+
+      const role = String(requester?.role || "").toLowerCase().trim();
+      if (!MANAGE_ROLES.has(role)) {
+        return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+      }
+    }
+
+    let teamMember: any = null;
+    let teamMemberError: any = null;
+    let eventRoleColumnAvailable = true;
+
+    const teamMemberWithRoleResult = await supabaseAdmin
+      .from("event_teams")
+      .select("id, vendor_id, event_role")
+      .eq("id", memberId)
+      .eq("event_id", eventId)
+      .maybeSingle();
+
+    if (teamMemberWithRoleResult.error && isMissingColumnError(teamMemberWithRoleResult.error, "event_role")) {
+      eventRoleColumnAvailable = false;
+      if (hasEventRoleInput) {
+        return NextResponse.json(
+          { error: "Database migration required before event-specific team roles can be updated." },
+          { status: 409 }
+        );
+      }
+
+      const legacyTeamMemberResult = await supabaseAdmin
+        .from("event_teams")
+        .select("id, vendor_id")
+        .eq("id", memberId)
+        .eq("event_id", eventId)
+        .maybeSingle();
+
+      teamMember = legacyTeamMemberResult.data || null;
+      teamMemberError = legacyTeamMemberResult.error || null;
+    } else {
+      teamMember = teamMemberWithRoleResult.data || null;
+      teamMemberError = teamMemberWithRoleResult.error || null;
+    }
+
+    if (teamMemberError) {
+      return NextResponse.json({ error: teamMemberError.message }, { status: 500 });
+    }
+    if (!teamMember) {
+      return NextResponse.json({ error: "Team member not found for this event" }, { status: 404 });
+    }
+
+    const vendorId = String(teamMember.vendor_id || "").trim();
+    if (!vendorId) {
+      return NextResponse.json({ error: "Team member is missing a vendor ID" }, { status: 400 });
+    }
+
+    let resolvedEventRole = eventRoleColumnAvailable
+      ? normalizeEventTeamRole(teamMember?.event_role) || "staff"
+      : "staff";
+
+    if (hasEventRoleInput && requestedEventRole && requestedEventRole !== resolvedEventRole) {
+      const { error: updateRoleError } = await supabaseAdmin
+        .from("event_teams")
+        .update({
+          event_role: requestedEventRole,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", memberId)
+        .eq("event_id", eventId);
+
+      if (updateRoleError) {
+        if (isMissingColumnError(updateRoleError, "event_role")) {
+          return NextResponse.json(
+            { error: "Database migration required before event-specific team roles can be updated." },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json({ error: updateRoleError.message }, { status: 500 });
+      }
+
+      resolvedEventRole = requestedEventRole;
+    }
+
+    let tipsPersisted = false;
+
+    if (hasTipsEligibleInput) {
+      if (resolvedEventRole !== "manager" && resolvedEventRole !== "supervisor") {
+        return NextResponse.json(
+          { error: "tipsEligible can only be set for event managers or supervisors." },
+          { status: 400 }
+        );
+      }
+
+      const result = await persistTipsEligibility({
+        eventId,
+        vendorId,
+        actingUserId: user.id,
+        tipsEligible,
+      });
+      tipsPersisted = result.persisted;
+    } else if (resolvedEventRole === "staff") {
+      const result = await persistTipsEligibility({
+        eventId,
+        vendorId,
+        actingUserId: user.id,
+        tipsEligible: true,
+      });
+      tipsPersisted = result.persisted;
+    }
+
+    return NextResponse.json({
+      success: true,
+      eventRole: resolvedEventRole,
+      tipsEligible:
+        resolvedEventRole === "manager" || resolvedEventRole === "supervisor"
+          ? hasTipsEligibleInput
+            ? tipsEligible
+            : null
+          : true,
+      persisted: tipsPersisted,
+    });
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: error?.message || "Failed to update team member settings" },
       { status: 500 }
     );
   }

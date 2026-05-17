@@ -451,6 +451,7 @@ CREATE TABLE event_teams (
     event_id UUID REFERENCES events(id) ON DELETE CASCADE,
     vendor_id UUID REFERENCES users(id) ON DELETE CASCADE,
     assigned_by UUID REFERENCES users(id),
+    event_role VARCHAR(20) DEFAULT 'staff' CHECK (event_role IN ('staff', 'manager', 'supervisor')),
     status VARCHAR(20) DEFAULT 'assigned' CHECK (status IN ('assigned', 'confirmed', 'declined', 'completed')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

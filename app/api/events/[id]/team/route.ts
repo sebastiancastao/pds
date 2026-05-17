@@ -29,6 +29,23 @@ const isMissingRelationError = (error: any): boolean => {
   return code === "42P01" || /relation .* does not exist/i.test(message);
 };
 
+const isMissingColumnError = (error: any, columnName?: string): boolean => {
+  const code = String(error?.code || "").trim();
+  const message = String(error?.message || "");
+  if (code !== "42703" && !/column .* does not exist/i.test(message)) {
+    return false;
+  }
+  return columnName ? message.toLowerCase().includes(columnName.toLowerCase()) : true;
+};
+
+function normalizeEventTeamRole(value: unknown): "staff" | "manager" | "supervisor" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "manager" || normalized === "supervisor") {
+    return normalized;
+  }
+  return "staff";
+}
+
 function formatEventDate(value: string | null | undefined): string {
   if (!value) return "Date TBD";
   const normalized = String(value).trim();
@@ -559,7 +576,30 @@ export async function GET(
     }
 
     // Keep payload lean and stable: do not include raw profile photo blobs here.
-    const selectFields = `
+    const selectFieldsWithEventRole = `
+      id,
+      vendor_id,
+      event_role,
+      status,
+      created_at,
+      users!event_teams_vendor_id_fkey (
+        id,
+        email,
+        division,
+        role,
+        profiles (
+          first_name,
+          last_name,
+          phone,
+          city,
+          state,
+          region_id,
+          latitude,
+          longitude
+        )
+      )
+    `;
+    const selectFieldsLegacy = `
       id,
       vendor_id,
       status,
@@ -582,10 +622,27 @@ export async function GET(
       )
     `;
 
-    const { data: teamMembers, error: teamError } = await supabaseAdmin
+    let teamMembers: any[] | null = null;
+    let teamError: any = null;
+    let eventRoleColumnAvailable = true;
+
+    const teamWithEventRoleResult = await supabaseAdmin
       .from('event_teams')
-      .select(selectFields)
+      .select(selectFieldsWithEventRole)
       .eq('event_id', eventId);
+
+    if (teamWithEventRoleResult.error && isMissingColumnError(teamWithEventRoleResult.error, 'event_role')) {
+      eventRoleColumnAvailable = false;
+      const legacyTeamResult = await supabaseAdmin
+        .from('event_teams')
+        .select(selectFieldsLegacy)
+        .eq('event_id', eventId);
+      teamMembers = legacyTeamResult.data || null;
+      teamError = legacyTeamResult.error || null;
+    } else {
+      teamMembers = teamWithEventRoleResult.data || null;
+      teamError = teamWithEventRoleResult.error || null;
+    }
 
     if (teamError) {
       console.error('❌ Error fetching team:', teamError);
@@ -821,6 +878,9 @@ export async function GET(
 
       return {
         ...member,
+        event_role: normalizeEventTeamRole(
+          eventRoleColumnAvailable ? (member as any)?.event_role : null
+        ),
         distance,
         isOutOfVenue: memberUserId ? outOfVenueVendorIds.has(memberUserId) : false,
         has_attestation: hasSubmittedAttestation,
