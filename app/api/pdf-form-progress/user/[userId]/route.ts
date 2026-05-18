@@ -4,6 +4,10 @@ import { PDFDocument, PDFImage, PDFPage, PDFFont, StandardFonts, rgb } from 'pdf
 import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
+import {
+  drawSignatureIntoExistingPlacement,
+  resolveExistingEmployeeSignaturePlacement,
+} from '@/app/lib/pdf-signature-placement';
 
 // Disable caching and increase body size limit for large PDFs
 export const dynamic = 'force-dynamic';
@@ -85,12 +89,14 @@ type SignatureAuditEntry = {
 type CustomFormCatalogRow = {
   id: string;
   title: string | null;
+  storage_path: string | null;
 };
 
 type ResolvedCustomForm = {
   id: string | null;
   title: string;
   dedupeKey: string;
+  storagePath: string | null;
 };
 
 const parseSignedAt = (value?: string | null): number | null => {
@@ -424,6 +430,7 @@ function buildCustomFormResolver(customForms: CustomFormCatalogRow[]) {
         id: matchedForm?.id || legacyId || null,
         title: (matchedForm?.title || rawName).trim(),
         dedupeKey: `custom-form:${matchedForm?.id || legacyId || normalizedName}`,
+        storagePath: matchedForm?.storage_path || null,
       };
     }
 
@@ -433,6 +440,7 @@ function buildCustomFormResolver(customForms: CustomFormCatalogRow[]) {
         id: exactTitleMatch.id,
         title: (exactTitleMatch.title || rawName).trim(),
         dedupeKey: `custom-form:${exactTitleMatch.id}`,
+        storagePath: exactTitleMatch.storage_path || null,
       };
     }
 
@@ -443,6 +451,7 @@ function buildCustomFormResolver(customForms: CustomFormCatalogRow[]) {
         id: titleMatch.id,
         title: (titleMatch.title || titleWithoutYear || rawName).trim(),
         dedupeKey: `custom-form:${titleMatch.id}`,
+        storagePath: titleMatch.storage_path || null,
       };
     }
 
@@ -514,6 +523,27 @@ function displayNameForForm(formName: string, customForm?: ResolvedCustomForm | 
   return formName
     .replace(/[-_]+/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function loadCustomFormTemplateBytes(storagePath?: string | null) {
+  const normalizedPath = (storagePath || '').trim();
+  if (!normalizedPath || normalizedPath.startsWith('payroll-packet:')) {
+    return null;
+  }
+
+  const { data, error } = await supabaseAdmin.storage
+    .from('custom-forms')
+    .download(normalizedPath);
+
+  if (error || !data) {
+    console.warn('[PDF_FORMS] Failed to download custom form template for signature placement', {
+      storagePath: normalizedPath,
+      error: error?.message || 'download returned no data',
+    });
+    return null;
+  }
+
+  return new Uint8Array(await data.arrayBuffer());
 }
 
 const formatDateLabel = (value?: string | null) => {
@@ -1554,7 +1584,7 @@ export async function GET(
     try {
       const { data: customForms, error: customFormsError } = await supabaseAdmin
         .from('custom_pdf_forms')
-        .select('id, title');
+        .select('id, title, storage_path');
 
       if (customFormsError) {
         if (customFormsError.code !== '42P01') {
@@ -2496,138 +2526,165 @@ export async function GET(
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
-          const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
+            const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
+            const hasExplicitSignaturePlacement =
+              Boolean(formDisplayNames[normalizedFormName]) ||
+              BACKGROUND_CHECK_FORM_KEYS.has(normalizedFormName);
 
-          let attestationSignaturePlacement:
-            | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
-            | null = null;
+            let attestationSignaturePlacement:
+              | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
+              | null = null;
 
-          if (isAttestationForm) {
-            try {
-              const attestationField = formPdf.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
-              const widgets = attestationField?.acroField?.getWidgets?.() || [];
-              if (widgets.length > 0) {
-                const widget = widgets[0];
-                const rect = widget.getRectangle();
-                const pageRef = widget.P?.();
-                const targetPage = pageRef
-                  ? pages.find((candidate: any) => candidate.ref === pageRef)
-                  : pages[pages.length - 1];
+            if (isAttestationForm) {
+              try {
+                const attestationField = formPdf.getForm().getTextField(ATTESTATION_SIGNATURE_FIELD) as any;
+                const widgets = attestationField?.acroField?.getWidgets?.() || [];
+                if (widgets.length > 0) {
+                  const widget = widgets[0];
+                  const rect = widget.getRectangle();
+                  const pageRef = widget.P?.();
+                  const targetPage = pageRef
+                    ? pages.find((candidate: any) => candidate.ref === pageRef)
+                    : pages[pages.length - 1];
 
-                if (targetPage) {
-                  attestationSignaturePlacement = {
-                    page: targetPage,
-                    rect: {
-                      x: rect.x,
-                      y: rect.y,
-                      width: rect.width,
-                      height: rect.height,
-                    },
-                  };
+                  if (targetPage) {
+                    attestationSignaturePlacement = {
+                      page: targetPage,
+                      rect: {
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                      },
+                    };
+                  }
                 }
+              } catch (error) {
+                console.warn('[PDF_FORMS] Failed to resolve attestation signature field placement', error);
               }
-            } catch (error) {
-              console.warn('[PDF_FORMS] Failed to resolve attestation signature field placement', error);
             }
-          }
 
-          if (isAttestationForm && attestationSignaturePlacement) {
-            const { page, rect } = attestationSignaturePlacement;
-            page.drawRectangle({
-              x: rect.x - 2,
-              y: rect.y - 2,
-              width: rect.width + 4,
-              height: rect.height + 4,
-              color: rgb(1, 1, 1),
-            });
-
-            if (isTyped && !isDataUrl) {
-              page.drawText(signatureValue, {
-                x: rect.x + 2,
-                y: rect.y + rect.height / 2 - 3,
-                size: 10,
+            if (isAttestationForm && attestationSignaturePlacement) {
+              const { page, rect } = attestationSignaturePlacement;
+              page.drawRectangle({
+                x: rect.x - 2,
+                y: rect.y - 2,
+                width: rect.width + 4,
+                height: rect.height + 4,
+                color: rgb(1, 1, 1),
               });
-            } else if (signatureImage) {
-              const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
-              const drawWidth = signatureImage.width * scale;
-              const drawHeight = signatureImage.height * scale;
-              const x = rect.x + (rect.width - drawWidth) / 2;
-              const y = rect.y + (rect.height - drawHeight) / 2;
-              page.drawImage(signatureImage, {
-                x,
-                y,
-                width: drawWidth,
-                height: drawHeight,
-              });
-            }
-          } else {
-
-          for (const pageIdx of signaturePageIndexes) {
-            if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
-              console.log('[PDF_FORMS] notice-to-employee: skipping employee signature embed (already present)');
-              continue;
-            }
-            const page = pages[pageIdx];
-            const { width, height } = page.getSize();
-
-              const baseX = width - signatureWidth - 50;
-              const baseY = isI9Form ? 100 : 50;
-              const fw4OffsetX = isFW4Form ? -200 : 0;
-              const fw4OffsetY = isFW4Form ? 70 : 0;
-              const caDE4OffsetX = isCaDE4Form ? -300 : 0;
-              const caDE4OffsetY = isCaDE4Form ? 320 : 0;
-              const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
-              const i9OffsetX = isI9Form ? -400 : 0;
-              const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
-              const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
-              const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
-              const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
-              const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
-              const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-              // For temp-employment-agreement, use fixed x position (50) to place signature on the left
-              const x = isTempEmploymentAgreement
-                ? 50
-                : Math.max(
-                    0,
-                    baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
-                  );
-              // CA temp-employment-agreement uses a dedicated lower signature position
-              // that aligns with the generated PDF's `employee_signature_date` field at y=125.
-              const rawY = isCaliforniaTempEmploymentAgreement
-                ? 125
-                : isI9Form
-                ? Math.max(0, i9DateFieldY - 185)
-                : Math.min(
-                    height - signatureHeight,
-                    baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
-                  );
-              const y = Math.min(
-                height - signatureHeight,
-                rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
-              );
 
               if (isTyped && !isDataUrl) {
                 page.drawText(signatureValue, {
-                  x,
-                  y: y + signatureHeight / 2,
+                  x: rect.x + 2,
+                  y: rect.y + rect.height / 2 - 3,
                   size: 10,
                 });
               } else if (signatureImage) {
+                const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+                const drawWidth = signatureImage.width * scale;
+                const drawHeight = signatureImage.height * scale;
+                const x = rect.x + (rect.width - drawWidth) / 2;
+                const y = rect.y + (rect.height - drawHeight) / 2;
                 page.drawImage(signatureImage, {
                   x,
                   y,
-                  width: signatureWidth,
-                  height: signatureHeight,
+                  width: drawWidth,
+                  height: drawHeight,
                 });
               }
-
-              page.drawText('Digitally Signed:', {
-                x,
-                y: y + signatureHeight + 5,
-                size: 8,
+            } else if (!hasExplicitSignaturePlacement) {
+              const templateBytes = await loadCustomFormTemplateBytes(customForm?.storagePath);
+              const placementResult = await resolveExistingEmployeeSignaturePlacement({
+                pdfBytes: new Uint8Array(pdfBytes),
+                templateBytes,
               });
+
+              if (placementResult.placement) {
+                const placed = await drawSignatureIntoExistingPlacement({
+                  pdfDoc: formPdf,
+                  placement: placementResult.placement,
+                  signatureData: signatureValue,
+                  signatureType: signatureForForm.signature_type || null,
+                });
+
+                if (!placed) {
+                  console.warn('[PDF_FORMS] Existing signature target resolved but could not be rendered', {
+                    formName: form.form_name,
+                    placementSource: placementResult.placement.source,
+                  });
+                }
+              } else {
+                console.warn('[PDF_FORMS] Existing employee signature target not found; leaving PDF unchanged', {
+                  formName: form.form_name,
+                  failureTier: placementResult.failureTier,
+                  reason: placementResult.failureReason,
+                });
+              }
+            } else {
+              for (const pageIdx of signaturePageIndexes) {
+                if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
+                  console.log('[PDF_FORMS] notice-to-employee: skipping employee signature embed (already present)');
+                  continue;
+                }
+                const page = pages[pageIdx];
+                const { width, height } = page.getSize();
+
+                const baseX = width - signatureWidth - 50;
+                const baseY = isI9Form ? 100 : 50;
+                const fw4OffsetX = isFW4Form ? -200 : 0;
+                const fw4OffsetY = isFW4Form ? 70 : 0;
+                const caDE4OffsetX = isCaDE4Form ? -300 : 0;
+                const caDE4OffsetY = isCaDE4Form ? 320 : 0;
+                const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
+                const i9OffsetX = isI9Form ? -400 : 0;
+                const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
+                const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
+                const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
+                const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
+                const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
+                const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
+                const x = isTempEmploymentAgreement
+                  ? 50
+                  : Math.max(
+                      0,
+                      baseX + fw4OffsetX + i9OffsetX + 30 + noticeToEmployeeOffsetX + wiStateTaxOffsetX + caDE4OffsetX + stateTaxOffsetX
+                    );
+                const rawY = isCaliforniaTempEmploymentAgreement
+                  ? 125
+                  : isI9Form
+                    ? Math.max(0, i9DateFieldY - 185)
+                    : Math.min(
+                        height - signatureHeight,
+                        baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
+                      );
+                const y = Math.min(
+                  height - signatureHeight,
+                  rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+                );
+
+                if (isTyped && !isDataUrl) {
+                  page.drawText(signatureValue, {
+                    x,
+                    y: y + signatureHeight / 2,
+                    size: 10,
+                  });
+                } else if (signatureImage) {
+                  page.drawImage(signatureImage, {
+                    x,
+                    y,
+                    width: signatureWidth,
+                    height: signatureHeight,
+                  });
+                }
+
+                page.drawText('Digitally Signed:', {
+                  x,
+                  y: y + signatureHeight + 5,
+                  size: 8,
+                });
+              }
             }
-          }
           } catch (imgError) {
             console.error('[PDF_FORMS] ? Error embedding signature on form:', form.form_name, imgError);
           }

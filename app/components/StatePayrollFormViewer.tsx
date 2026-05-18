@@ -238,6 +238,7 @@ export default function StatePayrollFormViewer({
   const [uniformPolicyDate, setUniformPolicyDate] = useState('');
   const [homeVenueDate, setHomeVenueDate] = useState('');
   const [homeVenuePrintName, setHomeVenuePrintName] = useState('');
+  const [attestationPrintName, setAttestationPrintName] = useState('');
   const [validationError, setValidationError] = useState<string | null>(null);
   const [emptyFieldPage, setEmptyFieldPage] = useState<number | null>(null);
   const [missingRequiredFields, setMissingRequiredFields] = useState<string[]>([]);
@@ -408,6 +409,7 @@ export default function StatePayrollFormViewer({
     setUniformPolicyDate('');
     setHomeVenueDate('');
     setHomeVenuePrintName('');
+    setAttestationPrintName('');
     setMissingRequiredFields([]);
   }, [currentForm?.formId, selectedForm, signatures]);
 
@@ -497,6 +499,27 @@ export default function StatePayrollFormViewer({
     }, 30000); // Auto-save 30 seconds after user stops typing
   };
 
+  const syncAttestationPrintNameToPdf = async (sourcePdfBytes: Uint8Array) => {
+    const trimmedPrintName = attestationPrintName.trim();
+    if (!trimmedPrintName) return sourcePdfBytes;
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(sourcePdfBytes);
+      const form = pdfDoc.getForm();
+      const nameField = form.getTextField(ATTESTATION_NAME_FIELD);
+
+      if (nameField.getText() !== trimmedPrintName) {
+        nameField.setText(trimmedPrintName);
+      }
+
+      return new Uint8Array(await pdfDoc.save());
+    } catch (error) {
+      console.warn('[ATTESTATION] Unable to sync printed name into PDF', error);
+      return sourcePdfBytes;
+    }
+  };
+
   const handleManualSave = async (formIdOverride?: string) => {
     // Use the passed formId if provided (for auto-save timer), otherwise use current form
     const formId = formIdOverride || currentForm?.formId;
@@ -522,8 +545,14 @@ export default function StatePayrollFormViewer({
       }
 
       let pdfBytesToSave = pdfBytes;
+      if (isCurrentForm && isAttestationFormId(formId) && attestationPrintName.trim()) {
+        pdfBytesToSave = await syncAttestationPrintNameToPdf(pdfBytesToSave);
+        pdfBytesRef.current = pdfBytesToSave;
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       if (isAttestationFormId(formId) && (!asUser || currentSignature)) {
-        pdfBytesToSave = await embedAttestationSignature(pdfBytes, currentSignature);
+        pdfBytesToSave = await embedAttestationSignature(pdfBytesToSave, currentSignature);
         if (isCurrentForm) {
           pdfBytesRef.current = pdfBytesToSave;
         }
@@ -789,6 +818,14 @@ export default function StatePayrollFormViewer({
     }
 
     if (selectedForm === 'attestation' && pdfBytesRef.current) {
+      if (attestationPrintName.trim()) {
+        const syncedPdfBytes = await syncAttestationPrintNameToPdf(pdfBytesRef.current);
+        pdfBytesRef.current = syncedPdfBytes;
+        if (currentForm?.formId) {
+          pdfBytesByFormRef.current.set(currentForm.formId, syncedPdfBytes);
+        }
+      }
+
       try {
         const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
@@ -810,7 +847,7 @@ export default function StatePayrollFormViewer({
         };
 
         const requiredFields = [
-          { name: ATTESTATION_NAME_FIELD, friendly: 'Employee Name' },
+          { name: ATTESTATION_NAME_FIELD, friendly: 'Print Name' },
           { name: ATTESTATION_DATE_FIELD, friendly: 'Date' },
         ];
 
@@ -2834,9 +2871,38 @@ export default function StatePayrollFormViewer({
             )}
 
             {selectedForm === 'attestation' && (
-              <p style={{ margin: '0 0 16px 0', fontSize: '14px', color: '#555' }}>
-                Enter your printed name and date directly on page 2 of the PDF, then sign below.
-              </p>
+              <div style={{ marginBottom: '20px' }}>
+                <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333', fontSize: '15px' }}>
+                  Print Name <span style={{ color: '#d32f2f' }}>*</span>
+                </label>
+                <input
+                  type="text"
+                  value={attestationPrintName}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setAttestationPrintName(nextValue);
+
+                    if (nextValue.trim() && missingRequiredFields.includes(ATTESTATION_NAME_FIELD)) {
+                      setMissingRequiredFields((prev) => prev.filter((fieldName) => fieldName !== ATTESTATION_NAME_FIELD));
+                      setValidationError(null);
+                      setEmptyFieldPage(null);
+                    }
+                  }}
+                  placeholder="Full legal name"
+                  style={{
+                    width: '100%',
+                    padding: '10px 14px',
+                    fontSize: '15px',
+                    border: attestationPrintName.trim() ? '2px solid #4caf50' : '2px solid #ddd',
+                    borderRadius: '6px',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+                <p style={{ margin: '10px 0 0 0', fontSize: '13px', color: '#666' }}>
+                  This fills the printed-name field in the attestation PDF. Enter the date directly on page 2, then sign below.
+                </p>
+              </div>
             )}
 
             <div style={{

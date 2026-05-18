@@ -17,7 +17,7 @@ interface PDFFormEditorProps {
   onFieldChange?: () => void;
   onContinue?: () => void;
   onProgress?: (progress: number) => void; // 0.0 - 1.0
-  skipButtonDetection?: boolean; // Skip detecting and overlaying embedded PDF buttons
+  skipButtonDetection?: boolean; // Skip intercepting embedded Continue buttons
   requiredFieldNames?: string[];
   showRequiredFieldErrors?: boolean;
   continueUrl?: string;
@@ -34,6 +34,60 @@ interface FormField {
   value: string;
   widgetValue?: string;
 }
+
+interface OverlayRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface PDFLinkOverlay {
+  id: string;
+  pageIndex: number;
+  rect: OverlayRect;
+  url?: string | null;
+  destPageIndex?: number | null;
+  destTop?: number | null;
+  title?: string | null;
+}
+
+const normalizeAnnotationRect = (rect: number[]): OverlayRect | null => {
+  if (!Array.isArray(rect) || rect.length < 4) return null;
+
+  const x1 = Math.min(rect[0], rect[2]);
+  const y1 = Math.min(rect[1], rect[3]);
+  const x2 = Math.max(rect[0], rect[2]);
+  const y2 = Math.max(rect[1], rect[3]);
+  const width = x2 - x1;
+  const height = y2 - y1;
+
+  if (width <= 0 || height <= 0) return null;
+
+  return {
+    x: x1,
+    y: y1,
+    width,
+    height
+  };
+};
+
+const getLinkAnnotationUrl = (annotation: any) =>
+  annotation?.url || annotation?.unsafeUrl || null;
+
+const getDestinationTop = (destination: any[]): number | null => {
+  if (!Array.isArray(destination) || destination.length < 2) return null;
+
+  const destinationType = destination[1]?.name;
+  if (destinationType === 'XYZ') {
+    return typeof destination[3] === 'number' ? destination[3] : null;
+  }
+  if (destinationType === 'FitH' || destinationType === 'FitBH') {
+    return typeof destination[2] === 'number' ? destination[2] : null;
+  }
+
+  return null;
+};
 
 const MIRRORED_FIELDS: Record<string, Record<string, string>> = {
   fw4: {
@@ -352,13 +406,15 @@ export default function PDFFormEditor({
   const [formFields, setFormFields] = useState<FormField[]>([]);
   const [maskedFields, setMaskedFields] = useState<FormField[]>([]);
   const [fieldValues, setFieldValues] = useState<Map<string, string>>(new Map());
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const pdfDocRef = useRef<any>(null);
   const pdfLibDocRef = useRef<any>(null);
   const [numPages, setNumPages] = useState(0);
   const [scale, setScale] = useState(1.5);
   const [pageViewports, setPageViewports] = useState<any[]>([]);
-  const [continueButtonRect, setContinueButtonRect] = useState<{x: number, y: number, width: number, height: number} | null>(null);
+  const [continueButtonRect, setContinueButtonRect] = useState<OverlayRect | null>(null);
+  const [pdfLinkOverlays, setPdfLinkOverlays] = useState<PDFLinkOverlay[]>([]);
   const renderTaskRef = useRef<any>(null);
   const isLoadingRef = useRef(false);
 
@@ -408,6 +464,40 @@ export default function PDFFormEditor({
     };
   }, [pdfUrl, formId, assignedVenueName]);
 
+  const resolvePdfDestination = async (destination: any) => {
+    if (!pdfDocRef.current || !destination) {
+      return { pageIndex: null, top: null };
+    }
+
+    try {
+      let resolvedDestination = Array.isArray(destination) ? destination : null;
+      if (!resolvedDestination && typeof destination === 'string') {
+        resolvedDestination = await pdfDocRef.current.getDestination(destination);
+      }
+
+      if (!resolvedDestination || resolvedDestination.length === 0) {
+        return { pageIndex: null, top: null };
+      }
+
+      const destinationRef = resolvedDestination[0];
+      let pageIndex: number | null = null;
+
+      if (typeof destinationRef === 'number') {
+        pageIndex = destinationRef;
+      } else if (destinationRef) {
+        pageIndex = await pdfDocRef.current.getPageIndex(destinationRef);
+      }
+
+      return {
+        pageIndex,
+        top: getDestinationTop(resolvedDestination)
+      };
+    } catch (error) {
+      console.warn('Failed to resolve PDF link destination:', error);
+      return { pageIndex: null, top: null };
+    }
+  };
+
   const loadPDF = async () => {
     // Prevent multiple simultaneous loads
     if (isLoadingRef.current) {
@@ -437,6 +527,8 @@ export default function PDFFormEditor({
 
       setLoading(true);
       setError('');
+      setContinueButtonRect(null);
+      setPdfLinkOverlays([]);
 
       // Get session for authentication
       const { data: { session }, error: sessionError } = await supabase.auth.getSession();
@@ -808,65 +900,90 @@ export default function PDFFormEditor({
         throw renderError; // Re-throw to see in main error handler
       }
 
-      // Extract Continue button position from last page annotations
-      // Skip button detection for read-only/informational PDFs
-      if (!skipButtonDetection) {
-        console.log('Step 9: Extracting Continue button annotations...');
-        try {
-          if (pdfDocRef.current) {
-            const lastPageNum = pdfDocRef.current.numPages;
-            console.log('Getting last page:', lastPageNum);
-            const lastPage = await pdfDocRef.current.getPage(lastPageNum);
-            console.log('Last page retrieved successfully');
+      console.log('Step 9: Extracting PDF link annotations...');
+      try {
+        if (pdfDocRef.current) {
+          const totalPages = pdfDocRef.current.numPages;
+          const nextLinkOverlays: PDFLinkOverlay[] = [];
+          let nextContinueButtonRect: OverlayRect | null = null;
 
-            const annotations = await lastPage.getAnnotations();
-            console.log('Annotations found:', annotations ? annotations.length : 0);
+          for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+            const page = await pdfDocRef.current.getPage(pageNum);
+            const annotations = await page.getAnnotations();
+            const linkAnnotations = Array.isArray(annotations)
+              ? annotations.filter((annot) => annot?.subtype === 'Link' && Array.isArray(annot?.rect))
+              : [];
 
-            if (annotations && Array.isArray(annotations)) {
-              const linkAnnots = annotations.filter(
-                (annot) => annot?.subtype === 'Link' && annot?.url && annot?.rect
+            if (linkAnnotations.length === 0) {
+              continue;
+            }
+
+            let continueAnnotation: any = null;
+            if (!skipButtonDetection && pageNum === totalPages) {
+              const continueCandidates = linkAnnotations.filter((annot) => getLinkAnnotationUrl(annot));
+              continueAnnotation = continueCandidates.find(
+                (annot) => getLinkAnnotationUrl(annot) === continueUrl
               );
 
-              linkAnnots.forEach((annot, index) => {
-                console.log(`Annotation ${index}:`, {
-                  subtype: annot?.subtype,
-                  hasUrl: !!annot?.url,
-                  hasRect: !!annot?.rect,
-                  url: annot?.url
-                });
-              });
-
-              let targetAnnot = linkAnnots.find((annot) => annot.url === continueUrl);
-              if (!targetAnnot && linkAnnots.length > 0) {
-                targetAnnot = linkAnnots.reduce((best, current) =>
+              if (!continueAnnotation && continueCandidates.length > 0) {
+                continueAnnotation = continueCandidates.reduce((best, current) =>
                   current.rect[0] > best.rect[0] ? current : best
                 );
               }
 
-              if (targetAnnot?.rect) {
-                const rect = targetAnnot.rect;
-                console.log('Link annotation rect:', rect);
-                if (Array.isArray(rect) && rect.length >= 4) {
-                  const buttonRect = {
-                    x: rect[0],
-                    y: rect[1],
-                    width: rect[2] - rect[0],
-                    height: rect[3] - rect[1]
-                  };
-                  console.log('Continue button found:', buttonRect);
-                  setContinueButtonRect(buttonRect);
-                }
-              }
+              nextContinueButtonRect = continueAnnotation?.rect
+                ? normalizeAnnotationRect(continueAnnotation.rect)
+                : null;
             }
-            console.log('Annotation extraction completed');
+
+            for (let annotationIndex = 0; annotationIndex < linkAnnotations.length; annotationIndex++) {
+              const annotation = linkAnnotations[annotationIndex];
+              if (annotation === continueAnnotation) {
+                continue;
+              }
+
+              const rect = normalizeAnnotationRect(annotation.rect);
+              if (!rect) {
+                continue;
+              }
+
+              const url = getLinkAnnotationUrl(annotation);
+              let destPageIndex: number | null = null;
+              let destTop: number | null = null;
+
+              if (!url && annotation.dest) {
+                const resolvedDestination = await resolvePdfDestination(annotation.dest);
+                destPageIndex = resolvedDestination.pageIndex;
+                destTop = resolvedDestination.top;
+              }
+
+              if (!url && destPageIndex == null) {
+                continue;
+              }
+
+              nextLinkOverlays.push({
+                id: `pdf-link-${pageNum}-${annotationIndex}`,
+                pageIndex: pageNum - 1,
+                rect,
+                url,
+                destPageIndex,
+                destTop,
+                title: annotation.contents || null
+              });
+            }
           }
-        } catch (annotError: any) {
-          console.warn('Error extracting button annotations:', annotError);
-          console.warn('Stack:', annotError?.stack);
-          // Continue without button interception - user can still use manual navigation
+
+          setContinueButtonRect(nextContinueButtonRect);
+          setPdfLinkOverlays(nextLinkOverlays);
+          console.log('PDF link annotation extraction completed:', {
+            linkCount: nextLinkOverlays.length,
+            hasContinueButton: !!nextContinueButtonRect
+          });
         }
-      } else {
-        console.log('Step 9: Skipping button detection (skipButtonDetection=true)');
+      } catch (annotError: any) {
+        console.warn('Error extracting PDF link annotations:', annotError);
+        console.warn('Stack:', annotError?.stack);
+        // Continue without link interception - user can still use manual navigation
       }
 
       // Provide initial PDF bytes
@@ -1224,6 +1341,39 @@ export default function PDFFormEditor({
   const pageOffsets = calculatePageOffsets();
   const maskPadding = 2;
 
+  const handlePdfLinkClick = async (link: PDFLinkOverlay) => {
+    if (link.url) {
+      if (/^(https?:|mailto:)/i.test(link.url)) {
+        window.open(link.url, '_blank', 'noopener,noreferrer');
+      } else {
+        window.location.assign(link.url);
+      }
+      return;
+    }
+
+    if (
+      link.destPageIndex == null ||
+      link.destPageIndex < 0 ||
+      link.destPageIndex >= pageViewports.length ||
+      !scrollContainerRef.current
+    ) {
+      return;
+    }
+
+    const destinationViewport = pageViewports[link.destPageIndex];
+    const destinationPageOffset = pageOffsets[link.destPageIndex] || 0;
+    let targetTop = destinationPageOffset;
+
+    if (destinationViewport && typeof link.destTop === 'number') {
+      targetTop += Math.max(0, destinationViewport.height - link.destTop * scale);
+    }
+
+    scrollContainerRef.current.scrollTo({
+      top: Math.max(0, targetTop - 12),
+      behavior: 'smooth'
+    });
+  };
+
   return (
     <div
       style={{
@@ -1237,6 +1387,7 @@ export default function PDFFormEditor({
       {/* PDF Canvas with Overlaid Inputs */}
       <div
         data-pdf-scroll-container="true"
+        ref={scrollContainerRef}
         style={{ flex: 1, display: 'flex', justifyContent: 'flex-start', padding: '20px', overflow: 'auto' }}
       >
         <div style={{
@@ -1284,6 +1435,36 @@ export default function PDFFormEditor({
                   backgroundColor: '#fff',
                   pointerEvents: 'none'
                 }}
+              />
+            );
+          })}
+
+          {/* Overlay embedded PDF links on all pages */}
+          {pageViewports.length > 0 && pdfLinkOverlays.map((link) => {
+            if (link.pageIndex < 0 || link.pageIndex >= pageViewports.length) return null;
+
+            const viewport = pageViewports[link.pageIndex];
+            const pageOffset = pageOffsets[link.pageIndex];
+
+            return (
+              <div
+                key={link.id}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  void handlePdfLinkClick(link);
+                }}
+                style={{
+                  position: 'absolute',
+                  left: `${link.rect.x * scale}px`,
+                  top: `${pageOffset + (viewport.height - (link.rect.y + link.rect.height) * scale)}px`,
+                  width: `${link.rect.width * scale}px`,
+                  height: `${link.rect.height * scale}px`,
+                  cursor: 'pointer',
+                  pointerEvents: 'auto',
+                  backgroundColor: 'rgba(0,0,0,0)'
+                }}
+                title={link.title || (link.url ? 'Open linked content' : 'Go to linked section')}
               />
             );
           })}

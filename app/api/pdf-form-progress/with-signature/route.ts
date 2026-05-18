@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
+import {
+  drawSignatureIntoExistingPlacement,
+  resolveExistingEmployeeSignaturePlacement,
+} from '@/app/lib/pdf-signature-placement';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,6 +27,7 @@ const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
 const FIRST_PAGE_SIGNATURE_FORMS = new Set(['fw4', 'i9', 'ca-de4', 'de4', 'wi-state-tax', 'state-tax']);
+const BACKGROUND_CHECK_FORM_KEYS = new Set(['background-waiver', 'background-disclosure', 'background-addon']);
 const SIGNATURE_FALLBACK_PRIORITY = [
   'employee-handbook',
   'adp-deposit',
@@ -38,6 +43,16 @@ const SIGNATURE_FALLBACK_PRIORITY = [
   'meal-waiver-6hour',
   'meal-waiver-10-12',
 ];
+const KNOWN_EXPLICIT_SIGNATURE_FORMS = new Set([
+  ...Array.from(FIRST_PAGE_SIGNATURE_FORMS),
+  ...SIGNATURE_FALLBACK_PRIORITY,
+  'notice-to-employee',
+  'state-tax',
+  'wi-state-tax',
+  'ny-state-tax',
+  'az-state-tax',
+  'attestation',
+]);
 
 type SignatureEntry = {
   form_id?: string | null;
@@ -117,6 +132,63 @@ function normalizeStateCode(state?: string | null): string | null {
   }
 
   return stateMap[lower] || null;
+}
+
+function normalizeComparableText(value?: string | null) {
+  return (value || '').toLowerCase().trim().replace(/\s+/g, ' ');
+}
+
+const CUSTOM_FORM_YEAR_SUFFIX = /\s+\d{4}$/;
+
+async function resolveCustomFormStoragePath(formIdentifier?: string | null) {
+  const rawIdentifier = (formIdentifier || '').trim();
+  if (!rawIdentifier) return null;
+
+  const customFormRecordId = getCustomFormRecordId(rawIdentifier);
+  if (customFormRecordId) {
+    const { data: customForm } = await supabaseAdmin
+      .from('custom_pdf_forms')
+      .select('storage_path')
+      .eq('id', customFormRecordId)
+      .maybeSingle();
+
+    return customForm?.storage_path || null;
+  }
+
+  const comparableTitle = normalizeComparableText(rawIdentifier.replace(CUSTOM_FORM_YEAR_SUFFIX, ''));
+  if (!comparableTitle) return null;
+
+  const { data: customForms } = await supabaseAdmin
+    .from('custom_pdf_forms')
+    .select('title, storage_path');
+
+  const matchingForm = (customForms || []).find(
+    (form) => normalizeComparableText(form.title) === comparableTitle
+  );
+
+  return matchingForm?.storage_path || null;
+}
+
+async function loadCustomFormTemplateBytes(formIdentifier?: string | null) {
+  const storagePath = await resolveCustomFormStoragePath(formIdentifier);
+  if (!storagePath || storagePath.startsWith('payroll-packet:')) {
+    return null;
+  }
+
+  const { data, error } = await supabaseAdmin.storage
+    .from('custom-forms')
+    .download(storagePath);
+
+  if (error || !data) {
+    console.warn('[WITH_SIGNATURE] Failed to download custom form template for signature placement', {
+      formIdentifier,
+      storagePath,
+      error: error?.message || 'download returned no data',
+    });
+    return null;
+  }
+
+  return new Uint8Array(await data.arrayBuffer());
 }
 
 function buildDisplayName(fullName?: string | null, firstName?: string | null, lastName?: string | null) {
@@ -599,6 +671,9 @@ export async function GET(request: NextRequest) {
     const isCaliforniaTempEmploymentAgreement =
       isTempEmploymentAgreement &&
       (normalizedUserState === 'ca' || normalizedUserState === 'california');
+    const hasExplicitSignaturePlacement =
+      KNOWN_EXPLICIT_SIGNATURE_FORMS.has(normalizedName) ||
+      BACKGROUND_CHECK_FORM_KEYS.has(normalizedName);
 
     // For I9: draw the state directly on the page and remove the form field,
     // so it renders correctly in every viewer without depending on appearance streams.
@@ -801,79 +876,111 @@ export async function GET(request: NextRequest) {
         console.warn('[WITH_SIGNATURE] Could not flatten attestation name/date fields:', e);
       }
     } else {
-      const defaultPageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedName)
-        ? 0
-        : Math.max(pages.length - 1, 0);
-      const handbookPageCount = Math.min(10, pages.length);
-      const handbookStartIndex = Math.max(0, pages.length - handbookPageCount);
-      const stateTaxPageIndex = Math.max(pages.length - 2, 0);
-      const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
-        ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
-        : isStateTaxForm
-          ? [stateTaxPageIndex]
-          : [defaultPageIndex];
+      const shouldUseExistingPlacementDetection = hasSignatureData && !hasExplicitSignaturePlacement;
 
-      let font: PDFFont | null = null;
-      if (isTyped) {
-        const { StandardFonts } = await import('pdf-lib');
-        font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      }
+      if (shouldUseExistingPlacementDetection) {
+        const templateBytes = await loadCustomFormTemplateBytes(signatureLookupFormId || formName);
+        const placementResult = await resolveExistingEmployeeSignaturePlacement({
+          pdfBytes: new Uint8Array(pdfBytes),
+          templateBytes,
+        });
 
-      for (const pageIdx of signaturePageIndexes) {
-        const page = pages[pageIdx];
-        const { width, height } = page.getSize();
-        const baseX = width - signatureWidth - 50;
-        const baseY = isI9 ? 100 : 50;
-        const fw4OffsetX = isFW4Form ? -200 : 0;
-        const fw4OffsetY = isFW4Form ? 70 : 0;
-        const caDE4OffsetX = isCaDE4Form ? -300 : 0;
-        const caDE4OffsetY = isCaDE4Form ? 320 : 0;
-        const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
-        const i9OffsetX = isI9 ? -300 : 0;
-        const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
-        const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
-        const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
-        const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
-        const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
-        const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-        const x = isTempEmploymentAgreement
-          ? 50
-          : Math.max(
-              0,
-              baseX +
-                fw4OffsetX +
-                i9OffsetX +
-                30 +
-                noticeToEmployeeOffsetX +
-                wiStateTaxOffsetX +
-                caDE4OffsetX +
-                stateTaxOffsetX
-            );
-        const rawY = isCaliforniaTempEmploymentAgreement
-          ? 125
-          : isI9
-            ? Math.max(0, i9DateFieldY - 185)
-            : Math.min(
-                height - signatureHeight,
-                baseY +
-                  fw4OffsetY +
-                  noticeToEmployeeOffsetY +
-                  wiStateTaxOffsetY +
-                  caDE4OffsetY +
-                  stateTaxOffsetY
+        if (placementResult.placement) {
+          const placed = await drawSignatureIntoExistingPlacement({
+            pdfDoc,
+            placement: placementResult.placement,
+            signatureData: signatureData!,
+            signatureType,
+          });
+
+          if (!placed) {
+            console.warn('[WITH_SIGNATURE] Existing signature target resolved but could not be rendered', {
+              formName,
+              placementSource: placementResult.placement.source,
+            });
+          }
+        } else {
+          console.warn('[WITH_SIGNATURE] Existing employee signature target not found; leaving PDF unchanged', {
+            formName,
+            failureTier: placementResult.failureTier,
+            reason: placementResult.failureReason,
+          });
+        }
+      } else {
+        const defaultPageIndex = FIRST_PAGE_SIGNATURE_FORMS.has(normalizedName)
+          ? 0
+          : Math.max(pages.length - 1, 0);
+        const handbookPageCount = Math.min(10, pages.length);
+        const handbookStartIndex = Math.max(0, pages.length - handbookPageCount);
+        const stateTaxPageIndex = Math.max(pages.length - 2, 0);
+        const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
+          ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
+          : isStateTaxForm
+            ? [stateTaxPageIndex]
+            : [defaultPageIndex];
+
+        let font: PDFFont | null = null;
+        if (isTyped) {
+          const { StandardFonts } = await import('pdf-lib');
+          font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        }
+
+        for (const pageIdx of signaturePageIndexes) {
+          const page = pages[pageIdx];
+          const { width, height } = page.getSize();
+          const baseX = width - signatureWidth - 50;
+          const baseY = isI9 ? 100 : 50;
+          const fw4OffsetX = isFW4Form ? -200 : 0;
+          const fw4OffsetY = isFW4Form ? 70 : 0;
+          const caDE4OffsetX = isCaDE4Form ? -300 : 0;
+          const caDE4OffsetY = isCaDE4Form ? 320 : 0;
+          const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
+          const i9OffsetX = isI9 ? -300 : 0;
+          const noticeToEmployeeOffsetX = isNoticeToEmployee ? -120 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA : 0;
+          const noticeToEmployeeOffsetY = isNoticeToEmployee ? 180 + NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA : 0;
+          const wiStateTaxOffsetX = isWIStateTax ? -450 : 0;
+          const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
+          const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
+          const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
+          const x = isTempEmploymentAgreement
+            ? 50
+            : Math.max(
+                0,
+                baseX +
+                  fw4OffsetX +
+                  i9OffsetX +
+                  30 +
+                  noticeToEmployeeOffsetX +
+                  wiStateTaxOffsetX +
+                  caDE4OffsetX +
+                  stateTaxOffsetX
               );
-        const y = Math.min(
-          height - signatureHeight,
-          rawY +
-            SIGNATURE_Y_SHIFT +
-            (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
-            (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
-        );
+          const rawY = isCaliforniaTempEmploymentAgreement
+            ? 125
+            : isI9
+              ? Math.max(0, i9DateFieldY - 185)
+              : Math.min(
+                  height - signatureHeight,
+                  baseY +
+                    fw4OffsetY +
+                    noticeToEmployeeOffsetY +
+                    wiStateTaxOffsetY +
+                    caDE4OffsetY +
+                    stateTaxOffsetY
+                );
+          const y = Math.min(
+            height - signatureHeight,
+            rawY +
+              SIGNATURE_Y_SHIFT +
+              (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
+              (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+          );
 
-        if (isTyped && font) {
-          page.drawText(signatureData, { x, y: y + signatureHeight / 2, size: 10, font });
-        } else if (signatureImage) {
-          page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
+          if (isTyped && font) {
+            page.drawText(signatureData!, { x, y: y + signatureHeight / 2, size: 10, font });
+          } else if (signatureImage) {
+            page.drawImage(signatureImage, { x, y, width: signatureWidth, height: signatureHeight });
+          }
         }
       }
     }

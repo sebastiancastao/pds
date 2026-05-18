@@ -939,6 +939,74 @@ export default function WorkerProfilePage() {
     return btoa(b);
   };
 
+  // For attestation forms: ensure the employee_attestation_name field is filled and
+  // rendered as static text. Mirrors the server-side flattenAttestField logic so that
+  // admin downloads always show the print name even when the server lookup returned empty.
+  const withAttestationPrintNameEmbedded = async (base64Data: string, employeeName: string): Promise<string> => {
+    const trimmedName = employeeName.trim();
+    if (!trimmedName) return base64Data;
+
+    const ATTESTATION_NAME_FIELD_KEY = 'employee_attestation_name';
+    const FALLBACK_PAGE_INDEX = 1;
+    const FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
+
+    try {
+      const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+      const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const pages = pdfDoc.getPages();
+
+      const drawNameAtRect = (page: any, rect: { x: number; y: number; width: number; height: number }) => {
+        const maxWidth = Math.max(1, rect.width - 4);
+        let fontSize = Math.max(8, Math.min(10, rect.height - 2));
+        while (fontSize > 8 && font.widthOfTextAtSize(trimmedName, fontSize) > maxWidth) {
+          fontSize -= 0.5;
+        }
+        page.drawRectangle({ x: rect.x, y: rect.y, width: rect.width, height: rect.height, color: rgb(1, 1, 1), borderWidth: 0 });
+        page.drawText(trimmedName, {
+          x: rect.x + 2,
+          y: rect.y + Math.max(1, (rect.height - fontSize) / 2),
+          size: fontSize,
+          font,
+          maxWidth,
+        });
+      };
+
+      try {
+        const nameField = pdfDoc.getForm().getTextField(ATTESTATION_NAME_FIELD_KEY);
+        const currentValue = (nameField.getText() || '').trim();
+        if (!currentValue) {
+          nameField.setText(trimmedName);
+          const widgets = (nameField as any)?.acroField?.getWidgets?.() || [];
+          if (widgets.length > 0) {
+            const widget = widgets[0];
+            const rect = widget.getRectangle();
+            const pageRef = widget.P?.();
+            const targetPage = pageRef
+              ? pages.find((p: any) => p.ref === pageRef)
+              : pages[FALLBACK_PAGE_INDEX] ?? pages[pages.length - 1];
+            if (targetPage) drawNameAtRect(targetPage, rect);
+          } else {
+            const fallbackPage = pages[FALLBACK_PAGE_INDEX] ?? pages[pages.length - 1];
+            if (fallbackPage) drawNameAtRect(fallbackPage, FALLBACK_RECT);
+          }
+        }
+      } catch {
+        const fallbackPage = pages[FALLBACK_PAGE_INDEX] ?? pages[pages.length - 1];
+        if (fallbackPage) drawNameAtRect(fallbackPage, FALLBACK_RECT);
+      }
+
+      const saved = await pdfDoc.save();
+      let b = '';
+      for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+      return btoa(b);
+    } catch (error) {
+      console.warn('[ATTESTATION] Failed to embed print name:', error);
+      return base64Data;
+    }
+  };
+
   // Embed the home venue footer fields and, for the home venue assignment form,
   // also fill the opening "I, ___" line on page 1.
   const withVenueEmbedded = async (
@@ -1145,9 +1213,11 @@ export default function WorkerProfilePage() {
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
     if (!employeeId) return form.form_data;
     try {
+      const matchingCustomForm = getMatchingCustomFormForPdf(form);
+      const signatureFormId = matchingCustomForm ? `custom-form-${matchingCustomForm.id}` : null;
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(
-        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}`,
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}${signatureFormId ? `&signatureFormId=${encodeURIComponent(signatureFormId)}` : ''}`,
         { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
       );
       if (res.ok) {
@@ -1246,6 +1316,9 @@ export default function WorkerProfilePage() {
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
+        data = await withAttestationPrintNameEmbedded(data, employeeFullName);
+      }
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,
@@ -1301,6 +1374,9 @@ export default function WorkerProfilePage() {
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
+      if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
+        data = await withAttestationPrintNameEmbedded(data, employeeFullName);
+      }
       if (shouldEmbedProfileFields && venueName) {
         data = await withVenueEmbedded(
           data,
