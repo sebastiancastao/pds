@@ -27,14 +27,25 @@ type PayrollData = {
   };
   voluntaryDeductions: {
     miscNonTaxableDeduction?: { thisPeriod: number; yearToDate: number };
+    calSaversRothRet?: { thisPeriod: number; yearToDate: number };
   };
   netPayAdjustments: {
     miscReimbursement?: { thisPeriod: number; yearToDate: number };
+    equipmentReimbursement?: { thisPeriod: number; yearToDate: number };
+    mileageReimbursement?: { thisPeriod: number; yearToDate: number };
   };
   earnings: {
-    regular?: number;
-    overtime?: number;
-    doubleTime?: number;
+    regular?: { thisPeriod: number; yearToDate: number };
+    overtime?: { thisPeriod: number; yearToDate: number };
+    doubleTime?: { thisPeriod: number; yearToDate: number };
+    commission?: { thisPeriod: number; yearToDate: number };
+    variableIncentive?: { thisPeriod: number; yearToDate: number };
+    creditCardTips?: { thisPeriod: number; yearToDate: number };
+    restBreakPay?: { thisPeriod: number; yearToDate: number };
+    travelPay?: { thisPeriod: number; yearToDate: number };
+    bonus?: { thisPeriod: number; yearToDate: number };
+    sickPay?: { thisPeriod: number; yearToDate: number };
+    mealPremium?: { thisPeriod: number; yearToDate: number };
   };
   hours: {
     regular?: number;
@@ -103,15 +114,26 @@ Return a JSON object with this EXACT structure:
     "arizonaStateIncome": {"thisPeriod": 0.00, "yearToDate": 0.00}
   },
   "voluntaryDeductions": {
-    "miscNonTaxableDeduction": {"thisPeriod": 0.00, "yearToDate": 0.00}
+    "miscNonTaxableDeduction": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "calSaversRothRet": {"thisPeriod": 0.00, "yearToDate": 0.00}
   },
   "netPayAdjustments": {
-    "miscReimbursement": {"thisPeriod": 0.00, "yearToDate": 0.00}
+    "miscReimbursement": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "equipmentReimbursement": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "mileageReimbursement": {"thisPeriod": 0.00, "yearToDate": 0.00}
   },
   "earnings": {
-    "regular": 0.00,
-    "overtime": 0.00,
-    "doubleTime": 0.00
+    "regular": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "overtime": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "doubleTime": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "commission": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "variableIncentive": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "creditCardTips": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "restBreakPay": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "travelPay": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "bonus": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "sickPay": {"thisPeriod": 0.00, "yearToDate": 0.00},
+    "mealPremium": {"thisPeriod": 0.00, "yearToDate": 0.00}
   },
   "hours": {
     "regular": 0.0,
@@ -129,11 +151,29 @@ EXTRACTION RULES:
    - Exempt states (no income tax): NV, WY, SD, TX, FL, AK, TN, NH, WA
    - If state is NOT exempt, search exhaustively for state income tax
 5. Extract BOTH amounts: thisPeriod (current pay period) AND yearToDate (YTD cumulative)
+   - **CalSavers Roth Ret %** / "CalSavers Roth Ret" / "Cal Savers Roth Ret %": store in voluntaryDeductions.calSaversRothRet
 6. Negative amounts: (50.00) or -50.00 both mean -50.00
 7. If field not found, use null for strings, 0 for numbers
 8. SSN formats: Handle XXX-XX-XXXX, ***-**-1234, etc.
 9. Dates: Be flexible with MM/DD/YYYY, MM/DD/YY, etc.
 10. Return ONLY valid JSON - no markdown, no explanations, no comments
+11. **Earnings rows** - The earnings table has columns: Label | Rate | Hours | This Period | Year to Date.
+    Rate and Hours may be absent for some rows. ALWAYS use the LAST two numbers on each row as thisPeriod and yearToDate:
+    - "Regular": last two numbers → regular.thisPeriod and regular.yearToDate
+    - "Overtime" / "OT": last two → overtime.thisPeriod and overtime.yearToDate
+    - "Double Time" / "DT": last two → doubleTime.thisPeriod and doubleTime.yearToDate
+    - "Commission": last two → commission.thisPeriod / commission.yearToDate
+    - "Variable Incentive": last two → variableIncentive.thisPeriod / yearToDate
+    - "Credit card tips owed": last two → creditCardTips.thisPeriod / yearToDate
+    - "Rest Break Pay" or "Rest Pay": last two → restBreakPay.thisPeriod / yearToDate
+    - "Travel Pay": last two → travelPay.thisPeriod / yearToDate
+    - "Bonus": last two → bonus.thisPeriod / yearToDate
+    - "Sick Pay": last two → sickPay.thisPeriod / yearToDate
+    - "Meal Premium": last two → mealPremium.thisPeriod / yearToDate
+12. **Net Pay Adjustments** - Each row has exactly two amounts (thisPeriod and yearToDate):
+    - "Equipment Reimbursement" / "Equipment Reimb" / "Misc reimburse Equipment" / "Misc reimbursement Equipment" / "Equip Reimb": → equipmentReimbursement.thisPeriod / yearToDate
+    - "Mileage Reimbursement" / "Mileage Reimb": → mileageReimbursement.thisPeriod / yearToDate
+    - "Misc Reimbursement" / "Misc reimburse" / "Misc Non Taxable Reimb": → miscReimbursement.thisPeriod / yearToDate
 
 PAYSTUB TEXT:
 `;

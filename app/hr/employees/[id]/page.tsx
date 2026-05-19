@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
+import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
 import { supabase } from "@/lib/supabase";
 import {
   isCaTempAgreementCustomFormTitle,
@@ -1689,6 +1690,8 @@ export default function EmployeeProfilePage() {
                 </div>
               </div>
             </section>
+
+            <KnowYourRightsNoticeSection />
 
             {/* Personal Calendar */}
             {(() => {

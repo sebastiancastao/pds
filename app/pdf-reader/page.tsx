@@ -165,6 +165,33 @@ const DEDUCTION_DEFS: DeductionDefinition[] = [
     bucket: 'voluntaryDeductions',
     keywords: ['misc non taxable', 'misc non taxable deduction'],
   },
+  {
+    key: 'calSaversRothRet',
+    label: 'CalSavers Roth Ret',
+    bucket: 'voluntaryDeductions',
+    keywords: ['calsavers roth ret', 'cal savers roth ret', 'calsavers roth', 'roth ret'],
+    stateCode: 'CA',
+  },
+];
+
+const EARNINGS_EXPORT_DEFS: Array<{ label: string; key: string }> = [
+  { label: 'Regular', key: 'regular' },
+  { label: 'Overtime', key: 'overtime' },
+  { label: 'Double Time', key: 'doubleTime' },
+  { label: 'Commission', key: 'commission' },
+  { label: 'Variable Incentive', key: 'variableIncentive' },
+  { label: 'Credit Card Tips', key: 'creditCardTips' },
+  { label: 'Rest Break Pay', key: 'restBreakPay' },
+  { label: 'Travel Pay', key: 'travelPay' },
+  { label: 'Bonus', key: 'bonus' },
+  { label: 'Sick Pay', key: 'sickPay' },
+  { label: 'Meal Premium', key: 'mealPremium' },
+];
+
+const NET_PAY_ADJ_EXPORT_DEFS: Array<{ label: string; key: string }> = [
+  { label: 'Equipment Reimbursement', key: 'equipmentReimbursement' },
+  { label: 'Mileage Reimbursement', key: 'mileageReimbursement' },
+  { label: 'Misc Reimbursement', key: 'miscReimbursement' },
 ];
 
 function escapeRegExp(value: string): string {
@@ -415,6 +442,17 @@ const getDeductionValues = (data?: PayrollData, text?: string) => {
     } else {
       values[def.key] = undefined;
     }
+  });
+  return values;
+};
+
+const getDeductionYtdValues = (data?: PayrollData) => {
+  const values: Record<string, number | undefined> = {};
+  if (!data) return values;
+  DEDUCTION_DEFS.forEach((def) => {
+    const bucket = (data as any)[def.bucket];
+    const amount = bucket?.[def.key]?.yearToDate;
+    values[def.key] = typeof amount === 'number' ? amount : undefined;
   });
   return values;
 };
@@ -861,13 +899,13 @@ function extractPayrollData(text: string) {
     };
   }
 
-  // Extract Misc reimbursement
-  const miscReimbPattern = /Misc reimbursement\s*([-\d,.]+)\s*([-\d,.]+)/i;
-  const miscReimbMatch = text.match(miscReimbPattern);
-  if (miscReimbMatch) {
-    payrollData.netPayAdjustments.miscReimbursement = {
-      thisPeriod: parseFloat(miscReimbMatch[1].replace(/,/g, '')),
-      yearToDate: parseFloat(miscReimbMatch[2].replace(/,/g, '')),
+  // Extract CalSavers Roth Ret % — matches "CalSavers Roth Ret %", "CalSavers Roth Ret", "Cal Savers Roth Ret %"
+  const calSaversPattern = /Cal\s*Savers?\s+Roth\s+Ret\s*%?/i;
+  const calSaversMatch = text.match(new RegExp(calSaversPattern.source + '\\s*([-\\d,.]+)\\s+([-\\d,.]+)', 'i'));
+  if (calSaversMatch) {
+    payrollData.voluntaryDeductions.calSaversRothRet = {
+      thisPeriod: parseFloat(calSaversMatch[1].replace(/,/g, '')),
+      yearToDate: parseFloat(calSaversMatch[2].replace(/,/g, '')),
     };
   }
 
@@ -1140,24 +1178,96 @@ function extractPayrollData(text: string) {
     payrollData.hours.total = parseFloat(totalHoursMatch[1].replace(/,/g, ''));
   }
 
+  // Helper: find a line starting with the label and return the last two numbers on it.
+  // Handles rows that may have rate+hours before thisPeriod+ytd (e.g. Commission 28.50 120.00 3,420.00 3,420.00).
+  // Split text into lines, find the first line matching the label, then take the last 1-4 numeric tokens.
+  // Using lines prevents numbers from neighbouring rows bleeding in when pdf-parse emits little/no newlines.
+  const textLines = text.split(/\r?\n|\r/);
+  const extractEarningsLine = (labelPattern: RegExp): { thisPeriod: number; yearToDate: number } | null => {
+    for (const line of textLines) {
+      if (!labelPattern.test(line)) continue;
+      // Extract only the contiguous number-run that starts right after the label (stops at first letter)
+      const afterLabel = line.replace(new RegExp('^.*?' + labelPattern.source, 'i'), '');
+      const runMatch = afterLabel.match(/^((?:\s*\d[\d,.]*){1,4})/);
+      if (!runMatch) continue;
+      const nums = runMatch[1].trim().split(/\s+/)
+        .map(n => parseFloat(n.replace(/,/g, '')))
+        .filter(n => !isNaN(n) && n >= 0);
+      if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
+      if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
+    }
+    // Fallback: scan full text for the label then grab a number-run (handles no-newline pdf-parse output)
+    const pattern = new RegExp(labelPattern.source + '((?:\\s*\\d[\\d,.]*){1,4})', labelPattern.flags);
+    const match = text.match(pattern);
+    if (!match || !match[1]) return null;
+    const nums = match[1].trim().split(/\s+/)
+      .map(n => parseFloat(n.replace(/,/g, '')))
+      .filter(n => !isNaN(n) && n >= 0);
+    if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
+    if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
+    return null;
+  };
+
   // Extract earnings - Regular, Overtime, Double Time
-  const regularPayPattern = /Regular\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const regularPayMatch = text.match(regularPayPattern);
-  if (regularPayMatch) {
-    payrollData.earnings.regular = parseFloat(regularPayMatch[1].replace(/,/g, ''));
+  // Negative lookahead prevents matching "Regular Hours" (hours label, not earnings pay row)
+  const regResult = extractEarningsLine(/Regular(?!\s+Hours)\b/i);
+  if (regResult) {
+    payrollData.earnings.regular = regResult;
   }
 
-  const overtimePayPattern = /(?:Overtime|OT)\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const overtimePayMatch = text.match(overtimePayPattern);
-  if (overtimePayMatch) {
-    payrollData.earnings.overtime = parseFloat(overtimePayMatch[1].replace(/,/g, ''));
+  const otResult = extractEarningsLine(/(?:Overtime|OT)\b/i);
+  if (otResult) {
+    payrollData.earnings.overtime = otResult;
   }
 
-  const doubleTimePayPattern = /(?:Double Time|DT)\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const doubleTimePayMatch = text.match(doubleTimePayPattern);
-  if (doubleTimePayMatch) {
-    payrollData.earnings.doubleTime = parseFloat(doubleTimePayMatch[1].replace(/,/g, ''));
+  const dtResult = extractEarningsLine(/Double\s+Time\b/i);
+  if (dtResult) {
+    payrollData.earnings.doubleTime = dtResult;
   }
+
+  // Extract Commission
+  const commResult = extractEarningsLine(/Commission\b/i);
+  if (commResult) payrollData.earnings.commission = commResult;
+
+  // Extract Variable Incentive
+  const viResult = extractEarningsLine(/Variable\s+Incentive\b/i);
+  if (viResult) payrollData.earnings.variableIncentive = viResult;
+
+  // Extract Credit Card Tips Owed
+  const tipsResult = extractEarningsLine(/Credit\s+card\s+tips\s+owed\b/i);
+  if (tipsResult) payrollData.earnings.creditCardTips = tipsResult;
+
+  // Extract Rest Break Pay (also matches "Rest Pay")
+  const rbResult = extractEarningsLine(/Rest\s+(?:Break\s+)?Pay\b/i);
+  if (rbResult) payrollData.earnings.restBreakPay = rbResult;
+
+  // Extract Travel Pay
+  const travelResult = extractEarningsLine(/Travel\s+Pay\b/i);
+  if (travelResult) payrollData.earnings.travelPay = travelResult;
+
+  // Extract Bonus
+  const bonusResult = extractEarningsLine(/Bonus\b/i);
+  if (bonusResult) payrollData.earnings.bonus = bonusResult;
+
+  // Extract Sick Pay
+  const sickResult = extractEarningsLine(/Sick\s+Pay\b/i);
+  if (sickResult) payrollData.earnings.sickPay = sickResult;
+
+  // Extract Meal Premium
+  const mealResult = extractEarningsLine(/Meal\s+Premium\b/i);
+  if (mealResult) payrollData.earnings.mealPremium = mealResult;
+
+  // Net pay adjustments (placed after extractEarningsLine definition)
+  const miscReimbResult = extractEarningsLine(/Misc\s+(?:Non\s+Taxable\s+)?[Rr]eimb(?:ursement)?\b/i);
+  if (miscReimbResult) payrollData.netPayAdjustments.miscReimbursement = miscReimbResult;
+
+  // Equipment Reimbursement — covers "Equipment Reimbursement", "Equipment Reimb", "Misc reimburse Equipment"
+  const equipReimbResult = extractEarningsLine(/(?:Misc\s+[Rr]eimburse(?:ment)?\s+)?Equip(?:ment)?(?:\s+[Rr]eimb(?:ursement)?)?\b/i);
+  if (equipReimbResult) payrollData.netPayAdjustments.equipmentReimbursement = equipReimbResult;
+
+  // Mileage Reimbursement — covers "Mileage Reimbursement", "Mileage Reimb"
+  const mileageReimbResult = extractEarningsLine(/Mileage\s+[Rr]eimb(?:ursement)?\b/i);
+  if (mileageReimbResult) payrollData.netPayAdjustments.mileageReimbursement = mileageReimbResult;
 
   // Extract hourly rate
   const hourlyRatePattern = /(?:Rate|Hourly Rate|Pay Rate)[:\s]+\$?([-\d,.]+)/i;
@@ -1234,65 +1344,85 @@ function StructuredPayrollGrid({ payrollInfo }: { payrollInfo: PayrollData }) {
 
       <div className="border border-slate-200 rounded-lg p-3">
         <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Earnings</p>
+        <div className="grid grid-cols-3 gap-x-2 text-xs text-slate-500 font-medium mb-1">
+          <span></span>
+          <span className="text-right">This Period</span>
+          <span className="text-right">Year to Date</span>
+        </div>
         <div className="space-y-1">
-          <div className="flex justify-between">
-            <span className="text-slate-600">Regular</span>
-            <span className="font-semibold text-slate-900">{formatCurrency(payrollInfo.earnings?.regular)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Overtime</span>
-            <span className="font-semibold text-slate-900">{formatCurrency(payrollInfo.earnings?.overtime)}</span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Double time</span>
-            <span className="font-semibold text-slate-900">{formatCurrency(payrollInfo.earnings?.doubleTime)}</span>
-          </div>
-          <div className="flex justify-between">
+          {[
+            { label: 'Regular', thisPeriod: payrollInfo.earnings?.regular?.thisPeriod, ytd: payrollInfo.earnings?.regular?.yearToDate },
+            { label: 'Overtime', thisPeriod: payrollInfo.earnings?.overtime?.thisPeriod, ytd: payrollInfo.earnings?.overtime?.yearToDate },
+            { label: 'Double time', thisPeriod: payrollInfo.earnings?.doubleTime?.thisPeriod, ytd: payrollInfo.earnings?.doubleTime?.yearToDate },
+            { label: 'Commission', thisPeriod: payrollInfo.earnings?.commission?.thisPeriod, ytd: payrollInfo.earnings?.commission?.yearToDate },
+            { label: 'Variable Incentive', thisPeriod: payrollInfo.earnings?.variableIncentive?.thisPeriod, ytd: payrollInfo.earnings?.variableIncentive?.yearToDate },
+            { label: 'Tips owed', thisPeriod: payrollInfo.earnings?.creditCardTips?.thisPeriod, ytd: payrollInfo.earnings?.creditCardTips?.yearToDate },
+            { label: 'Rest Break Pay', thisPeriod: payrollInfo.earnings?.restBreakPay?.thisPeriod, ytd: payrollInfo.earnings?.restBreakPay?.yearToDate },
+            { label: 'Travel Pay', thisPeriod: payrollInfo.earnings?.travelPay?.thisPeriod, ytd: payrollInfo.earnings?.travelPay?.yearToDate },
+            { label: 'Bonus', thisPeriod: payrollInfo.earnings?.bonus?.thisPeriod, ytd: payrollInfo.earnings?.bonus?.yearToDate },
+            { label: 'Sick Pay', thisPeriod: payrollInfo.earnings?.sickPay?.thisPeriod, ytd: payrollInfo.earnings?.sickPay?.yearToDate },
+            { label: 'Meal Premium', thisPeriod: payrollInfo.earnings?.mealPremium?.thisPeriod, ytd: payrollInfo.earnings?.mealPremium?.yearToDate },
+          ].filter(r => r.thisPeriod != null || r.ytd != null).map(({ label, thisPeriod, ytd }) => (
+            <div key={label} className="grid grid-cols-3 gap-x-2 text-sm">
+              <span className="text-slate-600">{label}</span>
+              <span className="font-semibold text-slate-900 text-right">{formatCurrency(thisPeriod)}</span>
+              <span className="font-semibold text-slate-900 text-right">{formatCurrency(ytd)}</span>
+            </div>
+          ))}
+          <div className="flex justify-between pt-1 border-t border-slate-100">
             <span className="text-slate-600">Hourly rate</span>
             <span className="font-semibold text-slate-900">{formatCurrency(payrollInfo.employeeInfo?.hourlyRate)}</span>
           </div>
         </div>
       </div>
 
+      {(payrollInfo.netPayAdjustments?.equipmentReimbursement || payrollInfo.netPayAdjustments?.mileageReimbursement || payrollInfo.netPayAdjustments?.miscReimbursement) && (
+        <div className="border border-slate-200 rounded-lg p-3">
+          <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Net Pay Adjustments</p>
+          <div className="grid grid-cols-3 gap-x-2 text-xs text-slate-500 font-medium mb-1">
+            <span></span>
+            <span className="text-right">This Period</span>
+            <span className="text-right">Year to Date</span>
+          </div>
+          <div className="space-y-1">
+            {[
+              { label: 'Equipment Reimb.', thisPeriod: payrollInfo.netPayAdjustments?.equipmentReimbursement?.thisPeriod, ytd: payrollInfo.netPayAdjustments?.equipmentReimbursement?.yearToDate },
+              { label: 'Mileage Reimb.', thisPeriod: payrollInfo.netPayAdjustments?.mileageReimbursement?.thisPeriod, ytd: payrollInfo.netPayAdjustments?.mileageReimbursement?.yearToDate },
+              { label: 'Misc Reimb.', thisPeriod: payrollInfo.netPayAdjustments?.miscReimbursement?.thisPeriod, ytd: payrollInfo.netPayAdjustments?.miscReimbursement?.yearToDate },
+            ].filter(r => r.thisPeriod != null || r.ytd != null).map(({ label, thisPeriod, ytd }) => (
+              <div key={label} className="grid grid-cols-3 gap-x-2 text-sm">
+                <span className="text-slate-600">{label}</span>
+                <span className="font-semibold text-slate-900 text-right">{formatCurrency(thisPeriod)}</span>
+                <span className="font-semibold text-slate-900 text-right">{formatCurrency(ytd)}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="border border-slate-200 rounded-lg p-3">
         <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Deductions</p>
+        <div className="grid grid-cols-3 gap-x-2 text-xs text-slate-500 font-medium mb-1">
+          <span></span>
+          <span className="text-right">This Period</span>
+          <span className="text-right">Year to Date</span>
+        </div>
         <div className="space-y-1">
-          <div className="flex justify-between">
-            <span className="text-slate-600">Federal income</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.statutoryDeductions?.federalIncome?.thisPeriod)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Social security</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.statutoryDeductions?.socialSecurity?.thisPeriod)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Medicare</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.statutoryDeductions?.medicare?.thisPeriod)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">CA State Income</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.statutoryDeductions?.californiaStateIncome?.thisPeriod)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">CA State DI</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.statutoryDeductions?.californiaStateDI?.thisPeriod)}
-            </span>
-          </div>
-          <div className="flex justify-between">
-            <span className="text-slate-600">Misc Non Taxable</span>
-            <span className="font-semibold text-slate-900">
-              {formatCurrency(payrollInfo.voluntaryDeductions?.miscNonTaxableDeduction?.thisPeriod)}
-            </span>
-          </div>
+          {[
+            { label: 'Federal income', thisPeriod: payrollInfo.statutoryDeductions?.federalIncome?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.federalIncome?.yearToDate },
+            { label: 'Social security', thisPeriod: payrollInfo.statutoryDeductions?.socialSecurity?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.socialSecurity?.yearToDate },
+            { label: 'Medicare', thisPeriod: payrollInfo.statutoryDeductions?.medicare?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.medicare?.yearToDate },
+            { label: 'CA State Income', thisPeriod: payrollInfo.statutoryDeductions?.californiaStateIncome?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.californiaStateIncome?.yearToDate },
+            { label: 'CA State DI', thisPeriod: payrollInfo.statutoryDeductions?.californiaStateDI?.thisPeriod, ytd: payrollInfo.statutoryDeductions?.californiaStateDI?.yearToDate },
+            { label: 'Misc Non Taxable', thisPeriod: payrollInfo.voluntaryDeductions?.miscNonTaxableDeduction?.thisPeriod, ytd: payrollInfo.voluntaryDeductions?.miscNonTaxableDeduction?.yearToDate },
+            { label: 'CalSavers Roth Ret', thisPeriod: payrollInfo.voluntaryDeductions?.calSaversRothRet?.thisPeriod, ytd: payrollInfo.voluntaryDeductions?.calSaversRothRet?.yearToDate },
+          ].map(({ label, thisPeriod, ytd }) => (
+            <div key={label} className="grid grid-cols-3 gap-x-2 text-sm">
+              <span className="text-slate-600">{label}</span>
+              <span className="font-semibold text-slate-900 text-right">{formatCurrency(thisPeriod)}</span>
+              <span className="font-semibold text-slate-900 text-right">{formatCurrency(ytd)}</span>
+            </div>
+          ))}
         </div>
       </div>
 
@@ -2108,6 +2238,11 @@ export default function PDFReaderPage() {
       'Period End',
       'Pay Date',
       ...DEDUCTION_DEFS.map(def => def.label),
+      ...DEDUCTION_DEFS.map(def => `${def.label} YTD`),
+      ...EARNINGS_EXPORT_DEFS.map(def => def.label),
+      ...EARNINGS_EXPORT_DEFS.map(def => `${def.label} YTD`),
+      ...NET_PAY_ADJ_EXPORT_DEFS.map(def => def.label),
+      ...NET_PAY_ADJ_EXPORT_DEFS.map(def => `${def.label} YTD`),
       'Gross Pay',
       'Net Pay',
       'Extraction Method',
@@ -2128,6 +2263,7 @@ export default function PDFReaderPage() {
         const displayName = extractedName || item.file.name;
         const ssn = data.employeeInfo?.ssn || '';
         const deductionValues = getDeductionValues(data, item.extracted.text);
+        const deductionYtdValues = getDeductionYtdValues(data);
         const rowState = determineRowState(data);
 
         const row = [
@@ -2145,6 +2281,34 @@ export default function PDFReaderPage() {
         DEDUCTION_DEFS.forEach((def) => {
           const showValue = !def.stateCode || def.stateCode === rowState;
           row.push(showValue ? (deductionValues[def.key] || 0) : '');
+        });
+
+        // Add YTD deduction values
+        DEDUCTION_DEFS.forEach((def) => {
+          const showValue = !def.stateCode || def.stateCode === rowState;
+          row.push(showValue ? (deductionYtdValues[def.key] || 0) : '');
+        });
+
+        // Add earnings this period
+        EARNINGS_EXPORT_DEFS.forEach((def) => {
+          const entry = data.earnings?.[def.key];
+          row.push(typeof entry === 'object' && entry !== null ? (entry.thisPeriod || 0) : 0);
+        });
+        // Add earnings YTD
+        EARNINGS_EXPORT_DEFS.forEach((def) => {
+          const entry = data.earnings?.[def.key];
+          row.push(typeof entry === 'object' && entry !== null ? (entry.yearToDate || 0) : 0);
+        });
+
+        // Add net pay adjustments this period
+        NET_PAY_ADJ_EXPORT_DEFS.forEach((def) => {
+          const entry = data.netPayAdjustments?.[def.key];
+          row.push(typeof entry === 'object' && entry !== null ? (entry.thisPeriod || 0) : 0);
+        });
+        // Add net pay adjustments YTD
+        NET_PAY_ADJ_EXPORT_DEFS.forEach((def) => {
+          const entry = data.netPayAdjustments?.[def.key];
+          row.push(typeof entry === 'object' && entry !== null ? (entry.yearToDate || 0) : 0);
         });
 
         // Add Gross Pay and Net Pay
@@ -2169,6 +2333,7 @@ export default function PDFReaderPage() {
           const ssn = pageData.payrollData?.employeeInfo?.ssn || '';
           const accountNumber = pageData.payrollData?.employeeInfo?.accountNumber || '';
           const deductionValues = getDeductionValues(pageData.payrollData, pageData.text);
+          const deductionYtdValues = getDeductionYtdValues(pageData.payrollData);
           const rowState = determineRowState(pageData.payrollData);
 
           const row = [
@@ -2186,6 +2351,34 @@ export default function PDFReaderPage() {
           DEDUCTION_DEFS.forEach((def) => {
             const showValue = !def.stateCode || def.stateCode === rowState;
             row.push(showValue ? (deductionValues[def.key] || 0) : '');
+          });
+
+          // Add YTD deduction values
+          DEDUCTION_DEFS.forEach((def) => {
+            const showValue = !def.stateCode || def.stateCode === rowState;
+            row.push(showValue ? (deductionYtdValues[def.key] || 0) : '');
+          });
+
+          // Add earnings this period
+          EARNINGS_EXPORT_DEFS.forEach((def) => {
+            const entry = pageData.payrollData?.earnings?.[def.key];
+            row.push(typeof entry === 'object' && entry !== null ? (entry.thisPeriod || 0) : 0);
+          });
+          // Add earnings YTD
+          EARNINGS_EXPORT_DEFS.forEach((def) => {
+            const entry = pageData.payrollData?.earnings?.[def.key];
+            row.push(typeof entry === 'object' && entry !== null ? (entry.yearToDate || 0) : 0);
+          });
+
+          // Add net pay adjustments this period
+          NET_PAY_ADJ_EXPORT_DEFS.forEach((def) => {
+            const entry = pageData.payrollData?.netPayAdjustments?.[def.key];
+            row.push(typeof entry === 'object' && entry !== null ? (entry.thisPeriod || 0) : 0);
+          });
+          // Add net pay adjustments YTD
+          NET_PAY_ADJ_EXPORT_DEFS.forEach((def) => {
+            const entry = pageData.payrollData?.netPayAdjustments?.[def.key];
+            row.push(typeof entry === 'object' && entry !== null ? (entry.yearToDate || 0) : 0);
           });
 
           // Add Gross Pay and Net Pay
@@ -2217,10 +2410,15 @@ export default function PDFReaderPage() {
       { wch: 12 }, // Pay Date
     ];
 
-    // Add widths for deduction columns
-    DEDUCTION_DEFS.forEach(() => {
-      colWidths.push({ wch: 15 });
-    });
+    // Add widths for deduction columns (this period + YTD)
+    DEDUCTION_DEFS.forEach(() => { colWidths.push({ wch: 15 }); });
+    DEDUCTION_DEFS.forEach(() => { colWidths.push({ wch: 15 }); });
+    // Add widths for earnings columns (this period + YTD)
+    EARNINGS_EXPORT_DEFS.forEach(() => { colWidths.push({ wch: 16 }); });
+    EARNINGS_EXPORT_DEFS.forEach(() => { colWidths.push({ wch: 16 }); });
+    // Add widths for net pay adjustment columns (this period + YTD)
+    NET_PAY_ADJ_EXPORT_DEFS.forEach(() => { colWidths.push({ wch: 22 }); });
+    NET_PAY_ADJ_EXPORT_DEFS.forEach(() => { colWidths.push({ wch: 22 }); });
 
     // Add widths for Gross Pay, Net Pay, Extraction Method
     colWidths.push({ wch: 12 }); // Gross Pay

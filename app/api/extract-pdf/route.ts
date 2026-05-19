@@ -173,6 +173,13 @@ const DEDUCTION_DEFS: DeductionDefinition[] = [
     bucket: 'voluntaryDeductions',
     keywords: ['misc non taxable', 'misc non taxable deduction'],
   },
+  {
+    key: 'calSaversRothRet',
+    label: 'CalSavers Roth Ret',
+    bucket: 'voluntaryDeductions',
+    keywords: ['calsavers roth ret', 'cal savers roth ret', 'calsavers roth', 'roth ret'],
+    stateCode: 'CA',
+  },
 ];
 
 function escapeRegExp(value: string): string {
@@ -771,15 +778,15 @@ function extractPayrollData(text: string) {
     };
   }
 
-  // Extract Misc reimbursement
-  const miscReimbPattern = /Misc reimbursement\s*([-\d,.]+)\s*([-\d,.]+)/i;
-  const miscReimbMatch = text.match(miscReimbPattern);
-  if (miscReimbMatch) {
-    payrollData.netPayAdjustments.miscReimbursement = {
-      thisPeriod: parseFloat(miscReimbMatch[1].replace(/,/g, '')),
-      yearToDate: parseFloat(miscReimbMatch[2].replace(/,/g, '')),
+  // Extract CalSavers Roth Ret % — matches "CalSavers Roth Ret %", "CalSavers Roth Ret", "Cal Savers Roth Ret %"
+  const calSaversMatch = text.match(/Cal\s*Savers?\s+Roth\s+Ret\s*%?\s*([-\d,.]+)\s+([-\d,.]+)/i);
+  if (calSaversMatch) {
+    payrollData.voluntaryDeductions.calSaversRothRet = {
+      thisPeriod: parseFloat(calSaversMatch[1].replace(/,/g, '')),
+      yearToDate: parseFloat(calSaversMatch[2].replace(/,/g, '')),
     };
   }
+
 
   // Extract gross pay
   const grossPattern = /Gross Pay[:\s]+([-\d,.]+)/i;
@@ -845,24 +852,65 @@ function extractPayrollData(text: string) {
     payrollData.hours.total = parseFloat(totalHoursMatch[1].replace(/,/g, ''));
   }
 
-  // Extract earnings - Regular, Overtime, Double Time
-  const regularPayPattern = /Regular\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const regularPayMatch = text.match(regularPayPattern);
-  if (regularPayMatch) {
-    payrollData.earnings.regular = parseFloat(regularPayMatch[1].replace(/,/g, ''));
-  }
+  // Split text into lines, find the first line matching the label, then take the last 1-4 numeric tokens.
+  const textLines = text.split(/\r?\n|\r/);
+  const extractEarningsLine = (labelPattern: RegExp): { thisPeriod: number; yearToDate: number } | null => {
+    for (const line of textLines) {
+      if (!labelPattern.test(line)) continue;
+      const afterLabel = line.replace(new RegExp('^.*?' + labelPattern.source, 'i'), '');
+      const runMatch = afterLabel.match(/^((?:\s*\d[\d,.]*){1,4})/);
+      if (!runMatch) continue;
+      const nums = runMatch[1].trim().split(/\s+/)
+        .map((n: string) => parseFloat(n.replace(/,/g, '')))
+        .filter((n: number) => !isNaN(n) && n >= 0);
+      if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
+      if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
+    }
+    // Fallback: scan full text (handles no-newline pdf-parse output)
+    const pattern = new RegExp(labelPattern.source + '((?:\\s*\\d[\\d,.]*){1,4})', labelPattern.flags);
+    const match = text.match(pattern);
+    if (!match || !match[1]) return null;
+    const nums = match[1].trim().split(/\s+/)
+      .map((n: string) => parseFloat(n.replace(/,/g, '')))
+      .filter((n: number) => !isNaN(n) && n >= 0);
+    if (nums.length >= 2) return { thisPeriod: nums[nums.length - 2], yearToDate: nums[nums.length - 1] };
+    if (nums.length === 1) return { thisPeriod: 0, yearToDate: nums[0] };
+    return null;
+  };
 
-  const overtimePayPattern = /(?:Overtime|OT)\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const overtimePayMatch = text.match(overtimePayPattern);
-  if (overtimePayMatch) {
-    payrollData.earnings.overtime = parseFloat(overtimePayMatch[1].replace(/,/g, ''));
-  }
+  // Extract earnings - all row types
+  const regResult = extractEarningsLine(/Regular(?!\s+Hours)\b/i);
+  if (regResult) payrollData.earnings.regular = regResult;
 
-  const doubleTimePayPattern = /(?:Double Time|DT)\s+(?:Pay|Earnings)\s*([-\d,.]+)/i;
-  const doubleTimePayMatch = text.match(doubleTimePayPattern);
-  if (doubleTimePayMatch) {
-    payrollData.earnings.doubleTime = parseFloat(doubleTimePayMatch[1].replace(/,/g, ''));
-  }
+  const otResult = extractEarningsLine(/(?:Overtime|OT)\b/i);
+  if (otResult) payrollData.earnings.overtime = otResult;
+
+  const dtResult = extractEarningsLine(/Double\s+Time\b/i);
+  if (dtResult) payrollData.earnings.doubleTime = dtResult;
+
+  const commResult = extractEarningsLine(/Commission\b/i);
+  if (commResult) payrollData.earnings.commission = commResult;
+
+  const viResult = extractEarningsLine(/Variable\s+Incentive\b/i);
+  if (viResult) payrollData.earnings.variableIncentive = viResult;
+
+  const tipsResult = extractEarningsLine(/Credit\s+card\s+tips\s+owed\b/i);
+  if (tipsResult) payrollData.earnings.creditCardTips = tipsResult;
+
+  const rbResult = extractEarningsLine(/Rest\s+(?:Break\s+)?Pay\b/i);
+  if (rbResult) payrollData.earnings.restBreakPay = rbResult;
+
+  const travelResult = extractEarningsLine(/Travel\s+Pay\b/i);
+  if (travelResult) payrollData.earnings.travelPay = travelResult;
+
+  const bonusResult = extractEarningsLine(/Bonus\b/i);
+  if (bonusResult) payrollData.earnings.bonus = bonusResult;
+
+  const sickResult = extractEarningsLine(/Sick\s+Pay\b/i);
+  if (sickResult) payrollData.earnings.sickPay = sickResult;
+
+  const mealResult = extractEarningsLine(/Meal\s+Premium\b/i);
+  if (mealResult) payrollData.earnings.mealPremium = mealResult;
 
   // Extract hourly rate
   const hourlyRatePattern = /(?:Rate|Hourly Rate|Pay Rate)[:\s]+\$?([-\d,.]+)/i;
@@ -884,6 +932,16 @@ function extractPayrollData(text: string) {
   if (ytdNetMatch) {
     payrollData.employeeInfo.ytdNet = parseFloat(ytdNetMatch[1].replace(/,/g, ''));
   }
+
+  // Net pay adjustments (placed after extractEarningsLine definition)
+  const miscReimbResult = extractEarningsLine(/Misc\s+(?:Non\s+Taxable\s+)?[Rr]eimb(?:ursement)?\b/i);
+  if (miscReimbResult) payrollData.netPayAdjustments.miscReimbursement = miscReimbResult;
+
+  const equipReimbResult = extractEarningsLine(/(?:Misc\s+[Rr]eimburse(?:ment)?\s+)?Equip(?:ment)?(?:\s+[Rr]eimb(?:ursement)?)?\b/i);
+  if (equipReimbResult) payrollData.netPayAdjustments.equipmentReimbursement = equipReimbResult;
+
+  const mileageReimbResult = extractEarningsLine(/Mileage\s+[Rr]eimb(?:ursement)?\b/i);
+  if (mileageReimbResult) payrollData.netPayAdjustments.mileageReimbursement = mileageReimbResult;
 
   // Extract all dollar amounts with labels for comprehensive data capture
   const allAmountsPattern = /([A-Za-z\s]+?)\s+([-\d,.]+)\s+([-\d,.]+)/g;

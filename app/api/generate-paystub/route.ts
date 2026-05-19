@@ -69,6 +69,29 @@ export async function POST(req: NextRequest) {
       stateDI,
       state,
 
+      // YTD overrides from Excel import (optional)
+      federalIncomeYtd = null,
+      socialSecurityYtd = null,
+      medicareYtd = null,
+      calSaversRothRetYtd = null,
+      stateIncomeYtd = null,
+      stateDIYtd = null,
+      regularYtd = null,
+      overtimeYtd = null,
+      doubleTimeYtd = null,
+      commissionYtd = null,
+      variableIncentiveYtd = null,
+      creditCardTipsYtd = null,
+      restBreakPayYtd = null,
+      travelPayYtd = null,
+      bonusYtd = null,
+      sickPayYtd = null,
+      mealPremiumYtd = null,
+      grossPayYtd = null,
+      equipmentReimbYtd = null,
+      mileageReimbYtd = null,
+      miscReimbursementYtd = null,
+
       // Other
       miscDeduction,
       miscReimbursement,
@@ -2037,7 +2060,7 @@ export async function POST(req: NextRequest) {
           const { data } = await supabaseAdmin
             .from("payroll_deductions")
             .select(
-              "pay_date, ytd_gross, federal_income_ytd, social_security_ytd, medicare_ytd, ca_state_income_ytd, ca_state_di_ytd, regular_hours, overtime_hours, doubletime_hours, regular_earnings, overtime_earnings, doubletime_earnings"
+              "pay_date, ytd_gross, federal_income_ytd, social_security_ytd, medicare_ytd, ca_state_income_ytd, ca_state_di_ytd, misc_non_taxable_ytd, regular_hours, overtime_hours, doubletime_hours, regular_earnings, overtime_earnings, doubletime_earnings"
             )
             .eq("user_id", matchedUserId)
             .order("pay_date", { ascending: false })
@@ -2071,26 +2094,32 @@ export async function POST(req: NextRequest) {
         return Math.max(prev, current);
       };
 
+      const parseYtdOverride = (val: any) => { const n = parseFloat(val); return Number.isFinite(n) && n > 0 ? n : null; };
       const ytdRegularHours = runningYtd(ytdSnapshot?.regular_hours, totalRegHours);
       const ytdOvertimeHours = runningYtd(ytdSnapshot?.overtime_hours, totalOtHours);
       const ytdDoubleTimeHours = runningYtd(ytdSnapshot?.doubletime_hours, totalDtHours);
-      const ytdRegularPay = round2(runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayRounded));
-      const ytdOvertimePay = round2(runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayRounded));
-      const ytdDoubletimePay = round2(runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayRounded));
+      const ytdRegularPay = parseYtdOverride(regularYtd) ?? round2(runningYtd(ytdSnapshot?.regular_earnings, totalRegularPayRounded));
+      const ytdOvertimePay = parseYtdOverride(overtimeYtd) ?? round2(runningYtd(ytdSnapshot?.overtime_earnings, totalOvertimePayRounded));
+      const ytdDoubletimePay = parseYtdOverride(doubleTimeYtd) ?? round2(runningYtd(ytdSnapshot?.doubletime_earnings, totalDoubletimePayRounded));
       const ytdWorkedHours = Math.max(0, ytdRegularHours + ytdOvertimeHours + ytdDoubleTimeHours);
-      const ytdCommission = round2(totalCommissionRounded);
-      const ytdVariableIncentive = round2(totalVariableIncentiveRounded);
-      const ytdTips = round2(totalTipsRounded);
-      const ytdRestBreak = round2(totalRestBreakRounded);
-      const ytdOther = round2(totalOtherRounded);
-      const ytdMealPremium = round2(mealPremiumThisPeriod);
-      const ytdSick = round2(sickThisPeriod);
-      const ytdGross = round2(runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod));
-      const ytdFederalIncome = round2(runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt));
-      const ytdSocialSecurity = round2(runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt));
-      const ytdMedicare = round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt));
-      const ytdStateIncome = round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt));
-      const ytdStateDI = round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt));
+      const ytdCommission = parseYtdOverride(commissionYtd) ?? round2(totalCommissionRounded);
+      const ytdVariableIncentive = parseYtdOverride(variableIncentiveYtd) ?? round2(totalVariableIncentiveRounded);
+      const ytdTips = parseYtdOverride(creditCardTipsYtd) ?? round2(totalTipsRounded);
+      const ytdRestBreak = parseYtdOverride(restBreakPayYtd) ?? round2(totalRestBreakRounded);
+      const ytdOther = parseYtdOverride(bonusYtd) ?? round2(totalOtherRounded);
+      const ytdMealPremium = parseYtdOverride(mealPremiumYtd) ?? round2(mealPremiumThisPeriod);
+      const ytdSick = parseYtdOverride(sickPayYtd) ?? round2(sickThisPeriod);
+      const ytdGross = parseYtdOverride(grossPayYtd) ?? round2(runningYtd(ytdSnapshot?.ytd_gross, grossPayThisPeriod));
+      const ytdFederalIncome = parseYtdOverride(federalIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.federal_income_ytd, federalIncomeAmt));
+      const ytdSocialSecurity = parseYtdOverride(socialSecurityYtd) ?? round2(runningYtd(ytdSnapshot?.social_security_ytd, socialSecurityAmt));
+      const ytdMedicare = parseYtdOverride(medicareYtd) ?? round2(runningYtd(ytdSnapshot?.medicare_ytd, medicareAmt));
+      const ytdStateIncome = parseYtdOverride(stateIncomeYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_income_ytd, stateIncomeAmt));
+      const ytdStateDI = parseYtdOverride(stateDIYtd) ?? round2(runningYtd(ytdSnapshot?.ca_state_di_ytd, stateDIAmt));
+      const ytdVoluntaryDeduction = parseYtdOverride(calSaversRothRetYtd) ?? round2(runningYtd(ytdSnapshot?.misc_non_taxable_ytd, miscDeductionAmt));
+      const ytdTotalDeductionsSum = round2(ytdFederalIncome + ytdSocialSecurity + ytdMedicare + ytdStateIncome + ytdStateDI);
+      const ytdEquipmentReimb = parseYtdOverride(equipmentReimbYtd) ?? round2(adjustmentReimbursementRounded);
+      const ytdMileageReimb = parseYtdOverride(mileageReimbYtd) ?? round2(totalMileageReimbursementRounded);
+      const ytdMiscReimbursement = parseYtdOverride(miscReimbursementYtd) ?? round2(reimbursement);
       // Period-specific: hours accrued this pay period = hours worked / 30
       const SICK_ACCRUAL_RATE = 30;
       let sickAccruedThisPeriod =
@@ -2170,10 +2199,20 @@ export async function POST(req: NextRequest) {
       if (addressLine2) drawTopText(addressLine2, 364, 154, { size: 10 });
       if (addressLine3) drawTopText(addressLine3, 364, 164, { size: 10 });
 
+      const earningsRateHeaderX = 122;
+      const earningsRateValueX = 137;
+      const earningsHoursHeaderX = 182;
+      const earningsHoursValueX = 192;
+      const earningsThisPeriodHeaderX = 228;
+      const earningsThisPeriodValueX = 243;
+      const earningsYtdHeaderX = 280;
+      const earningsYtdValueX = 292;
+
       drawTopText("Earning", 42, 185, { size: 8, bold: true });
-      drawTopText("Rate in effect", 128, 185, { size: 8 });
-      drawTopText("Hours", 200, 185, { size: 8 });
-      drawTopText("This Period", 255, 185, { size: 8 });
+      drawTopText("Rate in effect", earningsRateHeaderX, 185, { size: 8 });
+      drawTopText("Hours", earningsHoursHeaderX, 185, { size: 8 });
+      drawTopText("This Period", earningsThisPeriodHeaderX, 185, { size: 8 });
+      drawTopText("Year to Date", earningsYtdHeaderX, 185, { size: 8 });
       drawTopLine(40, 192, 332);
 
       const showHourlyEarningsRows =
@@ -2220,9 +2259,10 @@ export async function POST(req: NextRequest) {
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
-        if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), 145, row.y, { size: 8 });
-        if (row.hours > 0) drawTopText(Number(row.hours).toFixed(2), 210, row.y, { size: 8 });
-        if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), 265, row.y, { size: 8 });
+        if (row.rate > 0) drawTopText(Number(row.rate).toFixed(2), earningsRateValueX, row.y, { size: 8 });
+        if (row.hours > 0) drawTopText(Number(row.hours).toFixed(2), earningsHoursValueX, row.y, { size: 8 });
+        if (!(row as any).hideThisPeriod) drawTopText(fmt(row.thisPeriod), earningsThisPeriodValueX, row.y, { size: 8 });
+        if (row.ytd > 0) drawTopText(fmt(row.ytd), earningsYtdValueX, row.y, { size: 8 });
       }
 
       const earningsBottomLineY = earningsRows[earningsRows.length - 1].y + 3;
@@ -2234,14 +2274,15 @@ export async function POST(req: NextRequest) {
 
       drawTopLine(40, earningsBottomLineY, 332);
       drawTopText("Gross Pay", 95, grossPayY, { size: 8, bold: true });
-      drawTopText(money(grossPayThisPeriod), 255, grossPayY, { size: 8, bold: true });
+      drawTopText(money(grossPayThisPeriod), earningsThisPeriodValueX, grossPayY, { size: 8, bold: true });
+      drawTopText(money(ytdGross), earningsYtdValueX, grossPayY, { size: 8, bold: true });
 
       drawTopText("Statutory Deductions", 112, statutoryHeaderY, { size: 8, bold: true });
-      drawTopText("this period", 233, statutoryHeaderY, { size: 8 });
-      drawTopText("year to date", 289, statutoryHeaderY, { size: 8 });
+      drawTopText("This Period", 233, statutoryHeaderY, { size: 8 });
+      drawTopText("Year to Date", 289, statutoryHeaderY, { size: 8 });
       drawTopLine(109, statutoryDividerY, 332);
 
-      const deductionRows = [
+      const statutoryDeductionRows = [
         { label: "Federal Income", thisPeriod: federalIncomeAmt, ytd: ytdFederalIncome },
         { label: "Social Security", thisPeriod: socialSecurityAmt, ytd: ytdSocialSecurity },
         { label: "Medicare", thisPeriod: medicareAmt, ytd: ytdMedicare },
@@ -2249,53 +2290,82 @@ export async function POST(req: NextRequest) {
         { label: "California State DI", thisPeriod: stateDIAmt, ytd: ytdStateDI },
       ];
 
-      if (miscDeductionAmt > 0) {
-        deductionRows.push({ label: "Misc Deduction", thisPeriod: miscDeductionAmt, ytd: miscDeductionAmt });
-      }
+      const voluntaryDeductionRows = [
+        { label: "CalSavers Roth Ret %", thisPeriod: miscDeductionAmt, ytd: ytdVoluntaryDeduction },
+      ];
 
-      const positionedDeductionRows = deductionRows.map((row, index) => ({
+      const positionedStatutoryDeductionRows = statutoryDeductionRows.map((row, index) => ({
         ...row,
         y: deductionRowStartY + index * deductionRowGap,
       }));
 
+      const deductionsBottomLineY =
+        (positionedStatutoryDeductionRows[positionedStatutoryDeductionRows.length - 1]?.y ?? deductionRowStartY) + 7;
+      const voluntaryHeaderY = deductionsBottomLineY + 9;
+      const voluntaryDividerY = voluntaryHeaderY + 7;
+      const voluntaryRowStartY = voluntaryDividerY + 13.1;
+      const positionedVoluntaryDeductionRows = voluntaryDeductionRows.map((row, index) => ({
+        ...row,
+        y: voluntaryRowStartY + index * deductionRowGap,
+      }));
+
       const appliedDeductionValues = capDeductionValuesToGross(
-        positionedDeductionRows.map((row) => row.thisPeriod),
+        [...positionedStatutoryDeductionRows, ...positionedVoluntaryDeductionRows].map((row) => row.thisPeriod),
         grossPayThisPeriod
       );
 
-      positionedDeductionRows.forEach((row, index) => {
+      positionedStatutoryDeductionRows.forEach((row, index) => {
         const appliedThisPeriod = appliedDeductionValues[index] || 0;
         drawTopText(row.label, 112, row.y, { size: 8 });
         drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
         drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
       });
 
-      const deductionsBottomLineY =
-        (positionedDeductionRows[positionedDeductionRows.length - 1]?.y ?? deductionRowStartY) + 7;
-      const netAdjustmentsHeaderY = deductionsBottomLineY + 9;
+      drawTopLine(109, deductionsBottomLineY, 332);
+      drawTopText("Voluntary Deductions", 112, voluntaryHeaderY, { size: 8, bold: true });
+      drawTopText("This Period", 233, voluntaryHeaderY, { size: 8 });
+      drawTopText("Year to Date", 289, voluntaryHeaderY, { size: 8 });
+      drawTopLine(109, voluntaryDividerY, 332);
+
+      positionedVoluntaryDeductionRows.forEach((row, index) => {
+        const appliedThisPeriod = appliedDeductionValues[positionedStatutoryDeductionRows.length + index] || 0;
+        drawTopText(row.label, 112, row.y, { size: 8 });
+        drawTopText(fmt(-appliedThisPeriod), 249, row.y, { size: 8 });
+        drawTopText(fmt(row.ytd), 299, row.y, { size: 8 });
+      });
+
+      const voluntaryBottomLineY =
+        (positionedVoluntaryDeductionRows[positionedVoluntaryDeductionRows.length - 1]?.y ?? voluntaryRowStartY) + 7;
+      const netAdjustmentsHeaderY = voluntaryBottomLineY + 9;
       const netAdjustmentsDividerY = netAdjustmentsHeaderY + 7;
-      const reimbursementRowY = netAdjustmentsDividerY + 10;
-      const mileageRowY = reimbursementRowY + 8;
-      const netPayDividerY = mileageRowY + 7;
+      const equipmentReimbursementRowY = netAdjustmentsDividerY + 10;
+      const mileageRowY = equipmentReimbursementRowY + 8;
+      const miscReimbursementRowY = mileageRowY + 8;
+      const netPayDividerY = miscReimbursementRowY + 7;
       const netPayY = netPayDividerY + 8;
 
-      drawTopLine(109, deductionsBottomLineY, 332);
+      drawTopLine(109, voluntaryBottomLineY, 332);
       drawTopText("Net Pay Adjustments", 112, netAdjustmentsHeaderY, { size: 8, bold: true });
-      drawTopText("this period", 233, netAdjustmentsHeaderY, { size: 8 });
+      drawTopText("This Period", 233, netAdjustmentsHeaderY, { size: 8 });
+      drawTopText("Year to Date", 289, netAdjustmentsHeaderY, { size: 8 });
       drawTopLine(109, netAdjustmentsDividerY, 332);
-      const totalMiscReimbursement = round2(reimbursement + adjustmentReimbursementRounded);
-      drawTopText("Equipment Reimbursement", 112, reimbursementRowY, { size: 8 });
-      drawTopText(fmt(totalMiscReimbursement), 249, reimbursementRowY, { size: 8 });
+      drawTopText("Equipment Reimbursement", 112, equipmentReimbursementRowY, { size: 8 });
+      drawTopText(fmt(adjustmentReimbursementRounded), 249, equipmentReimbursementRowY, { size: 8 });
+      drawTopText(fmt(ytdEquipmentReimb), 299, equipmentReimbursementRowY, { size: 8 });
       drawTopText("Mileage Reimbursement", 112, mileageRowY, { size: 8 });
       drawTopText(fmt(totalMileageReimbursementRounded), 249, mileageRowY, { size: 8 });
+      drawTopText(fmt(ytdMileageReimb), 299, mileageRowY, { size: 8 });
+      drawTopText("Misc Reimbursement", 112, miscReimbursementRowY, { size: 8 });
+      drawTopText(fmt(reimbursement), 249, miscReimbursementRowY, { size: 8 });
+      drawTopText(fmt(ytdMiscReimbursement), 299, miscReimbursementRowY, { size: 8 });
       drawTopLine(109, netPayDividerY, 332);
       drawTopText("Net Pay", 112, netPayY, { size: 8, bold: true });
       drawTopText(money(netPay), 240, netPayY, { size: 8, bold: true });
 
       drawTopText("Other Benefits and", 353, 182, { size: 8, bold: true });
       drawTopText("Information", 353, 187, { size: 8, bold: true });
-      drawTopText("this period", 474, 187, { size: 8 });
-      drawTopText("year to date", 530, 187, { size: 8 });
+      drawTopText("This Period", 474, 187, { size: 8 });
+      drawTopText("Year to Date", 530, 187, { size: 8 });
       drawTopLine(353, 192, 560);
       drawTopText("Sick", 353, 207.7, { size: 8 });
       drawTopText("Carry Over", 362.6, 214.9, { size: 8 });
@@ -2319,12 +2389,13 @@ export async function POST(req: NextRequest) {
       drawTopText(fmt(netPay), 544.2, 268.4, { size: 8 });
 
       const hasCommissionReport = caCommissionRows.length > 0;
+      const showImportantNotes = totalHoursWorked > 0 && (showHourlyEarningsRows || hasCommissionReport);
 
       // Important Notes (commission rate explanation)
-      if (hasCommissionReport && commissionHoursForEarnings > 0) {
+      if (showImportantNotes) {
         drawTopText("IMPORTANT NOTES", 353, 290, { bold: true, size: 8 });
         drawTopText("Total Hours Worked:", 353, 300, { size: 8 });
-        drawTopText(Number(commissionHoursForEarnings).toFixed(2), 492.9, 300, { size: 8 });
+        drawTopText(Number(totalHoursWorked).toFixed(2), 492.9, 300, { size: 8 });
         drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
         drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
       }
@@ -2922,7 +2993,7 @@ export async function POST(req: NextRequest) {
     // Deductions
     yPosition -= 30;
     drawText("Statutory Deductions", 50, yPosition, { bold: true, size: 11 });
-    drawText("this period", 250, yPosition, { size: 9 });
+    drawText("This Period", 250, yPosition, { size: 9 });
 
     const deductions = [
       { label: "Federal Income", value: parseFloat(federalIncome || '0') },
@@ -2963,9 +3034,14 @@ export async function POST(req: NextRequest) {
     // Reimbursement
     const reimbursement = parseFloat(miscReimbursement || '0');
     const totalReimbursementNonCA = round2(reimbursement + totalAdjustmentReimbursementNonCA);
-    if (totalReimbursementNonCA > 0) {
+    if (totalAdjustmentReimbursementNonCA > 0) {
       drawText("Equipment Reimbursement", 50, yPosition, { size: 9 });
-      drawText(`+${totalReimbursementNonCA.toFixed(2)}`, 250, yPosition, { size: 9 });
+      drawText(`+${round2(totalAdjustmentReimbursementNonCA).toFixed(2)}`, 250, yPosition, { size: 9 });
+      yPosition -= 12;
+    }
+    if (reimbursement > 0) {
+      drawText("Misc Reimbursement", 50, yPosition, { size: 9 });
+      drawText(`+${round2(reimbursement).toFixed(2)}`, 250, yPosition, { size: 9 });
       yPosition -= 12;
     }
 
