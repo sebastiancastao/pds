@@ -2525,3 +2525,153 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     return { success: false, error: error.message || 'Failed to send non-event time sheet notification' };
   }
 }
+
+export async function sendCheckinLinkEmail(data: {
+  recipientEmails: string[];
+  eventName: string;
+  eventDate: string;
+  eventVenue: string;
+  checkinUrl: string;
+  expiresAt: Date;
+  senderName: string;
+}): Promise<EmailResult> {
+  const { recipientEmails, eventName, eventDate, eventVenue, checkinUrl, expiresAt, senderName } = data;
+
+  const validEmails = recipientEmails
+    .map((e) => (e || '').toString().trim().toLowerCase())
+    .filter(isValidEmail);
+
+  if (validEmails.length === 0) {
+    return { success: false, error: 'No valid recipient emails provided' };
+  }
+
+  const expiresFormatted = expiresAt.toLocaleString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+
+  const subject = `Check-In Link: ${eventName}`;
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+
+          <tr>
+            <td style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:40px 30px;text-align:center;">
+              <h1 style="color:#ffffff;margin:0;font-size:28px;">Event Check-In Link</h1>
+              <p style="color:#e6e6ff;margin:10px 0 0 0;font-size:16px;">Your check-in link is ready</p>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:40px 30px;">
+              <p style="color:#333333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">
+                Hello,
+              </p>
+              <p style="color:#333333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">
+                <strong>${senderName}</strong> has shared a check-in link for your upcoming event. Use the button below to check in when you arrive.
+              </p>
+
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f8f9fa;border-radius:8px;border:2px solid #667eea;margin:30px 0;">
+                <tr>
+                  <td style="padding:25px;">
+                    <h2 style="color:#667eea;margin:0 0 20px 0;font-size:20px;">Event Details</h2>
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:8px 0;color:#555555;font-size:14px;width:40%;"><strong>Event:</strong></td>
+                        <td style="padding:8px 0;color:#333333;font-size:14px;">${eventName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 0;color:#555555;font-size:14px;"><strong>Date:</strong></td>
+                        <td style="padding:8px 0;color:#333333;font-size:14px;">${eventDate}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 0;color:#555555;font-size:14px;"><strong>Venue:</strong></td>
+                        <td style="padding:8px 0;color:#333333;font-size:14px;">${eventVenue}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${checkinUrl}"
+                       style="display:inline-block;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#ffffff;text-decoration:none;padding:16px 48px;border-radius:6px;font-size:18px;font-weight:bold;">
+                      Check In Now
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top:15px;">
+                    <p style="color:#666666;font-size:13px;margin:0;">
+                      Or copy and paste this link:<br>
+                      <a href="${checkinUrl}" style="color:#667eea;text-decoration:none;word-break:break-all;">${checkinUrl}</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#fff3cd;border-radius:8px;border-left:4px solid #ffc107;margin:20px 0;">
+                <tr>
+                  <td style="padding:20px;">
+                    <p style="color:#856404;margin:0;font-size:14px;">
+                      <strong>This link expires on ${expiresFormatted}.</strong> Please use it before then to complete your check-in.
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="background-color:#f8f9fa;padding:30px;text-align:center;border-top:1px solid #e0e0e0;">
+              <p style="color:#777777;font-size:12px;margin:0 0 10px 0;">This check-in link was sent by PDS Time Keeping System</p>
+              <p style="color:#999999;font-size:11px;margin:0;">© ${new Date().getFullYear()} PDS. All rights reserved.</p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const results = await Promise.allSettled(
+      validEmails.map((email) =>
+        sendResendEmail({ from: EVENTS_FROM, to: email, subject, html })
+      )
+    );
+
+    const anySuccess = results.some(
+      (r) => r.status === 'fulfilled' && !r.value.error
+    );
+
+    if (!anySuccess) {
+      const firstError = results.find((r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value.error));
+      const errMsg = firstError?.status === 'rejected'
+        ? (firstError.reason as any)?.message
+        : firstError?.status === 'fulfilled'
+        ? formatResendError((firstError as any).value.error)
+        : 'Failed to send check-in link emails';
+      return { success: false, error: errMsg };
+    }
+
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send check-in link email' };
+  }
+}
