@@ -358,71 +358,139 @@ export async function GET(req: NextRequest) {
       const { data: timeEntries, error: timeError } = await timeQuery;
       if (timeError) throw new Error(timeError.message);
 
-      // Compute hours worked per user per event
-      type ShiftRecord = { user_id: string; event_id: string | null; hours: number; meal_break_mins: number; shift_date: string };
-      const shifts: ShiftRecord[] = [];
+      // Mirrors vendor-payments API logic: per-event session calculation
+      // effectiveMs = min(apiTotalMs, spanNetMs), payableMs = effectiveMs + 30-min gate offset
+      const GATE_PHONE_OFFSET_MS = 30 * 60 * 1000;
 
-      // Group by user
+      // Step 1: group ALL entries by user_id so clock_in/clock_out pairs always join
+      // regardless of whether their event_id fields differ or are null.
       const entriesByUser = new Map<string, any[]>();
-      (timeEntries || []).forEach((row: any) => {
-        if (!row.user_id) return;
+      for (const row of timeEntries || []) {
+        if (!row.user_id) continue;
         if (!entriesByUser.has(row.user_id)) entriesByUser.set(row.user_id, []);
         entriesByUser.get(row.user_id)!.push(row);
-      });
+      }
 
-      entriesByUser.forEach((rows, userId) => {
-        const sorted = [...rows].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-        let openClockIn: any = null;
-        let openMealStart: any = null;
-
-        for (const row of sorted) {
-          const action = row.action;
-          if (action === "clock_in") {
-            openClockIn = row;
-            openMealStart = null;
-          } else if (action === "clock_out" && openClockIn) {
-            const startMs = new Date(openClockIn.timestamp).getTime();
-            const endMs = new Date(row.timestamp).getTime();
-            if (endMs > startMs) {
-              const rawHours = (endMs - startMs) / 3600000;
-              shifts.push({
-                user_id: userId,
-                event_id: row.event_id || openClockIn.event_id || null,
-                hours: Math.round(rawHours * 100) / 100,
-                meal_break_mins: 0,
-                shift_date: String(openClockIn.timestamp).slice(0, 10),
-              });
-            }
-            openClockIn = null;
-            openMealStart = null;
-          } else if (action === "meal_start") {
-            openMealStart = row;
-          } else if (action === "meal_end" && openMealStart) {
-            openMealStart = null;
-          }
-        }
-      });
-
-      // Aggregate hours per user
       const hoursByUser = new Map<string, number>();
       const shiftsByUser = new Map<string, number>();
-      shifts.forEach((s) => {
-        hoursByUser.set(s.user_id, (hoursByUser.get(s.user_id) || 0) + s.hours);
-        shiftsByUser.set(s.user_id, (shiftsByUser.get(s.user_id) || 0) + 1);
-      });
-
-      // Aggregate hours per event
       const hoursByEvent = new Map<string, number>();
       const workersByEvent = new Map<string, Set<string>>();
-      shifts.forEach((s) => {
-        if (!s.event_id) return;
-        hoursByEvent.set(s.event_id, (hoursByEvent.get(s.event_id) || 0) + s.hours);
-        if (!workersByEvent.has(s.event_id)) workersByEvent.set(s.event_id, new Set());
-        workersByEvent.get(s.event_id)!.add(s.user_id);
-      });
+      let totalShifts = 0;
 
-      const totalHours = shifts.reduce((sum, s) => sum + s.hours, 0);
-      const totalShifts = shifts.length;
+      for (const [userId, userRows] of entriesByUser.entries()) {
+        const sorted = [...userRows].sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        // Step 2: sequential clock_in → clock_out pairing (resolves null event_id mismatches)
+        const pairs: Array<{ inTs: string; outTs: string; eventId: string | null }> = [];
+        const allMealEntries: any[] = [];
+        let currentClockIn: any = null;
+
+        for (const row of sorted) {
+          if (row.action === "clock_in") {
+            if (!currentClockIn) currentClockIn = row;
+          } else if (row.action === "clock_out") {
+            if (currentClockIn) {
+              const startMs = new Date(currentClockIn.timestamp).getTime();
+              const endMs = new Date(row.timestamp).getTime();
+              if (endMs > startMs) {
+                // Prefer non-null event_id from either half of the pair
+                const effectiveEventId = (currentClockIn.event_id || row.event_id) ?? null;
+                pairs.push({ inTs: currentClockIn.timestamp, outTs: row.timestamp, eventId: effectiveEventId });
+              }
+              currentClockIn = null;
+            }
+          } else if (row.action === "meal_start" || row.action === "meal_end") {
+            allMealEntries.push(row);
+          }
+        }
+
+        if (pairs.length === 0) continue;
+        totalShifts += pairs.length;
+        shiftsByUser.set(userId, (shiftsByUser.get(userId) || 0) + pairs.length);
+
+        // Step 3: group pairs into event sessions by event_id so split shifts share one 30-min offset
+        const sessionMap = new Map<string, typeof pairs>();
+        for (const pair of pairs) {
+          const key = pair.eventId ?? "<<null>>";
+          if (!sessionMap.has(key)) sessionMap.set(key, []);
+          sessionMap.get(key)!.push(pair);
+        }
+
+        // Step 4: for each session apply the full vendor-payments calculation
+        for (const [sessionKey, sessionPairs] of sessionMap.entries()) {
+          const eventId = sessionKey === "<<null>>" ? null : sessionKey;
+
+          let apiTotalMs = 0;
+          const workIntervals: Array<{ start: Date; end: Date }> = [];
+          for (const p of sessionPairs) {
+            const startMs = new Date(p.inTs).getTime();
+            const endMs = new Date(p.outTs).getTime();
+            apiTotalMs += endMs - startMs;
+            workIntervals.push({ start: new Date(p.inTs), end: new Date(p.outTs) });
+          }
+          workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
+
+          const firstInMs = workIntervals[0].start.getTime();
+          const lastOutMs = workIntervals[workIntervals.length - 1].end.getTime();
+
+          // Collect explicit meals within this session's time window
+          const sessionMealStarts = allMealEntries
+            .filter(m => m.action === "meal_start" && new Date(m.timestamp).getTime() >= firstInMs && new Date(m.timestamp).getTime() <= lastOutMs)
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+          const sessionMealEnds = allMealEntries
+            .filter(m => m.action === "meal_end" && new Date(m.timestamp).getTime() >= firstInMs && new Date(m.timestamp).getTime() <= lastOutMs)
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+          let mealMs = 0;
+          const hasExplicitMeals = sessionMealStarts.length > 0 || sessionMealEnds.length > 0;
+          if (hasExplicitMeals) {
+            for (let i = 0; i < Math.min(sessionMealStarts.length, sessionMealEnds.length, 3); i++) {
+              const ms = new Date(sessionMealStarts[i].timestamp).getTime();
+              const me = new Date(sessionMealEnds[i].timestamp).getTime();
+              if (me > ms) mealMs += me - ms;
+            }
+          } else if (workIntervals.length >= 2) {
+            // Auto-detect gaps between pairs as meal breaks (mirrors timesheet API GET + vendor-payments)
+            for (let i = 0; i < workIntervals.length - 1 && i < 3; i++) {
+              const gapMs = workIntervals[i + 1].start.getTime() - workIntervals[i].end.getTime();
+              if (gapMs > 0) mealMs += gapMs;
+            }
+          }
+
+          // spanNetMs = firstIn → lastOut minus meal time (mirrors getMealDeductedWorkedMs)
+          let spanNetMs = 0;
+          if (lastOutMs > firstInMs) {
+            spanNetMs = Math.max(lastOutMs - firstInMs - mealMs, 0);
+          }
+
+          let finalMs = 0;
+          if (apiTotalMs > 0 && spanNetMs > 0) {
+            finalMs = Math.min(apiTotalMs, spanNetMs);
+          } else if (spanNetMs > 0) {
+            finalMs = spanNetMs;
+          } else if (apiTotalMs > 0) {
+            finalMs = Math.max(apiTotalMs - mealMs, 0);
+          }
+
+          // 30-min gate phone offset — one per event session (mirrors ADMIN_RESPONSE_ENTRY_PROCESSING_MS)
+          if (finalMs > 0) finalMs += GATE_PHONE_OFFSET_MS;
+
+          // Round per session to 2 decimal places — matches roundHoursFromMs in vendor-payments API
+          const finalHours = Math.round(Math.max(finalMs, 0) / 3600000 * 100) / 100;
+
+          hoursByUser.set(userId, (hoursByUser.get(userId) || 0) + finalHours);
+
+          if (eventId) {
+            hoursByEvent.set(eventId, (hoursByEvent.get(eventId) || 0) + finalHours);
+            if (!workersByEvent.has(eventId)) workersByEvent.set(eventId, new Set());
+            workersByEvent.get(eventId)!.add(userId);
+          }
+        }
+      }
+
+      const totalHours = Array.from(hoursByUser.values()).reduce((sum, h) => sum + h, 0);
 
       result.time = {
         total_shifts: totalShifts,
@@ -438,7 +506,6 @@ export async function GET(req: NextRequest) {
         workers_by_event: Object.fromEntries(
           Array.from(workersByEvent.entries()).map(([eid, s]) => [eid, s.size])
         ),
-        shifts,
       };
     }
 

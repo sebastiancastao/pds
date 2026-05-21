@@ -4,6 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { safeDecrypt } from "@/lib/encryption";
+import { getTimezoneForState } from "@/lib/timezones";
 import * as XLSX from "xlsx";
 
 export const dynamic = "force-dynamic";
@@ -33,9 +34,19 @@ function dec(value: unknown): string {
   try { return safeDecrypt(value.trim()); } catch { return value.trim(); }
 }
 
-function fmtDate(iso: string | null | undefined): string {
+function fmtDate(iso: string | null | undefined, timezone?: string): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const tz = timezone || "UTC";
+  try {
+    const formatted = new Date(iso).toLocaleString("en-US", {
+      timeZone: tz,
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    return formatted;
+  } catch {
+    return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  }
 }
 
 /**
@@ -136,8 +147,31 @@ export async function GET(req: NextRequest) {
     const teamByEvent = new Map<string, any>();
     (teamRows || []).forEach((t: any) => teamByEvent.set(t.event_id, t));
 
+    // Build lookup maps before shift computation so they're in scope
+    const eventNameById = new Map<string, string>();
+    const eventLocationById = new Map<string, { venue: string; city: string; state: string; timezone: string }>();
+    events.forEach((e: any) => {
+      eventNameById.set(e.id, e.event_name || e.venue || e.id);
+      eventLocationById.set(e.id, {
+        venue: e.venue || "",
+        city: e.city || "",
+        state: e.state || "",
+        timezone: getTimezoneForState(e.state),
+      });
+    });
+
     // ── 4. Compute hours per event ─────────────────────────────────────────
-    type Shift = { event_id: string | null; date: string; clock_in: string; clock_out: string; hours: number };
+    type Shift = {
+      event_id: string | null;
+      date: string;
+      clock_in: string;
+      clock_out: string;
+      hours: number;
+      venue: string;
+      city: string;
+      state: string;
+      timezone: string;
+    };
     const shifts: Shift[] = [];
     const sortedEntries = [...(timeEntries || [])].sort(
       (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -149,21 +183,24 @@ export async function GET(req: NextRequest) {
         const startMs = new Date(openIn.timestamp).getTime();
         const endMs = new Date(row.timestamp).getTime();
         if (endMs > startMs) {
+          const eid = row.event_id || openIn.event_id || null;
+          const loc = eid ? eventLocationById.get(eid) : undefined;
+          const tz = loc?.timezone || "UTC";
           shifts.push({
-            event_id: row.event_id || openIn.event_id || null,
-            date: String(openIn.timestamp).slice(0, 10),
+            event_id: eid,
+            date: new Date(openIn.timestamp).toLocaleDateString("en-US", { timeZone: tz, month: "short", day: "numeric", year: "numeric" }),
             clock_in: openIn.timestamp,
             clock_out: row.timestamp,
             hours: Math.round(((endMs - startMs) / 3600000) * 100) / 100,
+            venue: loc?.venue || "",
+            city: loc?.city || "",
+            state: loc?.state || "",
+            timezone: tz,
           });
         }
         openIn = null;
       }
     }
-
-    // eventNameById is populated here initially and extended after createdEvents is fetched
-    const eventNameById = new Map<string, string>();
-    events.forEach((e: any) => eventNameById.set(e.id, e.event_name || e.venue || e.id));
 
     // ── 5. Background check ────────────────────────────────────────────────
     let bgCheck: any = null;
@@ -260,8 +297,18 @@ export async function GET(req: NextRequest) {
       .eq("created_by", userId)
       .order("event_date", { ascending: false });
 
-    // Extend the map with created events (covers timesheet edits referencing these events)
-    (createdEvents || []).forEach((e: any) => eventNameById.set(e.id, e.event_name || e.venue || e.id));
+    // Extend the maps with created events (covers timesheet edits referencing these events)
+    (createdEvents || []).forEach((e: any) => {
+      eventNameById.set(e.id, e.event_name || e.venue || e.id);
+      if (!eventLocationById.has(e.id)) {
+        eventLocationById.set(e.id, {
+          venue: e.venue || "",
+          city: e.city || "",
+          state: e.state || "",
+          timezone: getTimezoneForState(e.state),
+        });
+      }
+    });
 
     // ── 12. Invitations sent BY this user ──────────────────────────────────
     // Source 1: vendor_invitations (email-token based invites)
@@ -430,37 +477,49 @@ export async function GET(req: NextRequest) {
     XLSX.utils.book_append_sheet(wb, profileSheet, "Profile");
 
     // Sheet 2: Time Entries
-    const timeHeaders = ["Entry ID", "Action", "Date & Time", "Event ID", "Event Name", "Notes"];
-    const timeRows = (timeEntries || []).map((t: any) => [
-      t.id,
-      t.action,
-      fmtDate(t.timestamp),
-      t.event_id || "",
-      t.event_id ? (eventNameById.get(t.event_id) || "") : "",
-      t.notes || "",
-    ]);
+    const timeHeaders = ["Entry ID", "Action", "Date & Time (Local)", "Timezone", "Event ID", "Event Name", "Venue", "City", "State", "Notes"];
+    const timeRows = (timeEntries || []).map((t: any) => {
+      const loc = t.event_id ? eventLocationById.get(t.event_id) : undefined;
+      const tz = loc?.timezone || "UTC";
+      return [
+        t.id,
+        t.action,
+        fmtDate(t.timestamp, tz),
+        tz,
+        t.event_id || "",
+        t.event_id ? (eventNameById.get(t.event_id) || "") : "",
+        loc?.venue || "",
+        loc?.city || "",
+        loc?.state || "",
+        t.notes || "",
+      ];
+    });
     const timeSheet = XLSX.utils.aoa_to_sheet([timeHeaders, ...timeRows]);
-    timeSheet["!cols"] = [{ wch: 36 }, { wch: 14 }, { wch: 22 }, { wch: 36 }, { wch: 30 }, { wch: 40 }];
+    timeSheet["!cols"] = [{ wch: 36 }, { wch: 14 }, { wch: 28 }, { wch: 24 }, { wch: 36 }, { wch: 30 }, { wch: 22 }, { wch: 14 }, { wch: 8 }, { wch: 40 }];
     XLSX.utils.book_append_sheet(wb, timeSheet, "Time Entries");
 
     // Sheet 3: Shifts (computed)
-    const shiftHeaders = ["Date", "Clock In", "Clock Out", "Hours", "Event ID", "Event Name"];
+    const shiftHeaders = ["Date (Local)", "Clock In (Local)", "Clock Out (Local)", "Timezone", "Hours", "Event ID", "Event Name", "Venue", "City", "State"];
     const shiftRows = shifts.map(s => [
       s.date,
-      fmtDate(s.clock_in),
-      fmtDate(s.clock_out),
+      fmtDate(s.clock_in, s.timezone),
+      fmtDate(s.clock_out, s.timezone),
+      s.timezone,
       s.hours,
       s.event_id || "",
       s.event_id ? (eventNameById.get(s.event_id) || "") : "",
+      s.venue,
+      s.city,
+      s.state,
     ]);
     const totalHours = shifts.reduce((sum, s) => sum + s.hours, 0);
     const shiftSheet = XLSX.utils.aoa_to_sheet([
       shiftHeaders,
       ...shiftRows,
       [],
-      ["", "", "TOTAL HOURS", Math.round(totalHours * 100) / 100, "", ""],
+      ["", "", "", "TOTAL HOURS", Math.round(totalHours * 100) / 100, "", "", "", "", ""],
     ]);
-    shiftSheet["!cols"] = [{ wch: 12 }, { wch: 22 }, { wch: 22 }, { wch: 10 }, { wch: 36 }, { wch: 30 }];
+    shiftSheet["!cols"] = [{ wch: 16 }, { wch: 28 }, { wch: 28 }, { wch: 24 }, { wch: 8 }, { wch: 36 }, { wch: 30 }, { wch: 22 }, { wch: 14 }, { wch: 8 }];
     XLSX.utils.book_append_sheet(wb, shiftSheet, "Shifts & Hours");
 
     // Sheet 4: Events

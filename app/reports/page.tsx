@@ -165,13 +165,33 @@ export default function ReportsPage() {
   const [downloadingLoginExcel, setDownloadingLoginExcel] = useState(false);
 
   // Filters
-  const [fromDate, setFromDate] = useState('');
+  const [fromDate, setFromDate] = useState(`${new Date().getFullYear()}-01-01`);
   const [toDate, setToDate] = useState('');
   const [stateFilter, setStateFilter] = useState('all');
   const [userSearch, setUserSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
   const [eventSearch, setEventSearch] = useState('');
   const [loginSearch, setLoginSearch] = useState('');
+  const [timeQuickFilter, setTimeQuickFilter] = useState<'year' | 'last3months' | 'lastmonth' | 'custom'>('year');
+
+  const applyTimeQuickFilter = (filter: 'year' | 'last3months' | 'lastmonth') => {
+    const now = new Date();
+    if (filter === 'year') {
+      setFromDate(`${now.getFullYear()}-01-01`);
+      setToDate('');
+    } else if (filter === 'last3months') {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 3);
+      setFromDate(d.toISOString().slice(0, 10));
+      setToDate('');
+    } else {
+      const d = new Date(now);
+      d.setMonth(d.getMonth() - 1);
+      setFromDate(d.toISOString().slice(0, 10));
+      setToDate('');
+    }
+    setTimeQuickFilter(filter);
+  };
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -475,7 +495,7 @@ export default function ReportsPage() {
               <input
                 type="date"
                 value={fromDate}
-                onChange={e => setFromDate(e.target.value)}
+                onChange={e => { setFromDate(e.target.value); setTimeQuickFilter('custom'); }}
                 className="border border-gray-200 rounded-liquid px-3 py-2 text-sm bg-white/70 focus:outline-none focus:ring-2 focus:ring-ios-blue/30"
               />
             </div>
@@ -484,7 +504,7 @@ export default function ReportsPage() {
               <input
                 type="date"
                 value={toDate}
-                onChange={e => setToDate(e.target.value)}
+                onChange={e => { setToDate(e.target.value); setTimeQuickFilter('custom'); }}
                 className="border border-gray-200 rounded-liquid px-3 py-2 text-sm bg-white/70 focus:outline-none focus:ring-2 focus:ring-ios-blue/30"
               />
             </div>
@@ -542,7 +562,7 @@ export default function ReportsPage() {
               <StatCard label="Total Users" value={data?.users?.total ?? 0} sub={`${data?.users?.active ?? 0} active`} color="blue" />
               <StatCard label="Total Events" value={data?.events?.total ?? 0} sub={`${data?.events?.active ?? 0} active`} color="purple" />
               <StatCard label="Total Hours Worked" value={`${(data?.time?.total_hours ?? 0).toFixed(0)}`} sub={`${data?.time?.total_shifts ?? 0} shifts`} color="teal" />
-              <StatCard label="Ticket Revenue" value={fmtCurrency(data?.events?.total_ticket_sales)} sub={`${fmtCurrency(data?.events?.total_commission_pool)} commission`} color="orange" />
+              <StatCard label="Ticket Revenue" value={fmtCurrency(data?.events?.total_ticket_sales)} color="orange" />
             </div>
 
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -815,6 +835,28 @@ export default function ReportsPage() {
         {/* ── TIME & HOURS TAB ─────────────────────────────────────────────── */}
         {activeTab === 'time' && (
           <div className="space-y-6 animate-fade-in">
+            {/* Quick date filters */}
+            <div className="flex flex-wrap items-center gap-2">
+              {(['year', 'last3months', 'lastmonth'] as const).map(f => {
+                const labels = { year: `This Year (${new Date().getFullYear()})`, last3months: 'Last 3 Months', lastmonth: 'Last Month' };
+                const active = timeQuickFilter === f;
+                return (
+                  <button
+                    key={f}
+                    onClick={() => applyTimeQuickFilter(f)}
+                    className={`px-3 py-1.5 rounded-liquid text-xs font-semibold transition-all ${
+                      active ? 'bg-ios-blue text-white shadow-liquid-glow' : 'bg-white/60 text-gray-600 hover:bg-white/90 hover:text-gray-900'
+                    }`}
+                  >
+                    {labels[f]}
+                  </button>
+                );
+              })}
+              {timeQuickFilter === 'custom' && (
+                <span className="text-xs text-gray-400 ml-1">Custom range</span>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <StatCard label="Total Shifts" value={data?.time?.total_shifts ?? 0} color="blue" />
               <StatCard label="Total Hours" value={`${(data?.time?.total_hours ?? 0).toFixed(1)}`} color="teal" />

@@ -5522,7 +5522,7 @@ export default function EventDashboardPage() {
                     disabled={loadingTeam}
                     className="bg-gray-800 hover:bg-gray-900 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
                   >
-                    Complete Event
+                    Team Selection Closed
                   </button>
                   <button
                     onClick={() => loadTeam(false)}
