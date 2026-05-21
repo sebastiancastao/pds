@@ -42,7 +42,7 @@ var react_1 = require("react");
 var KNOW_YOUR_RIGHTS_PDF_URL = "/api/know-your-rights-notice";
 var PDF_JS_SCRIPT_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
 var PDF_JS_WORKER_URL = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-function KnowYourRightsNoticeSection() {
+function KnowYourRightsNoticeSectionInner() {
     var _this = this;
     var viewerRef = (0, react_1.useRef)(null);
     var canvasRefs = (0, react_1.useRef)([]);
@@ -263,4 +263,12 @@ function KnowYourRightsNoticeSection() {
         </div>
       </div>
     </section>);
+}
+function KnowYourRightsNoticeSection(_a) {
+    var state = _a.state;
+    var normalizedState = state === null || state === void 0 ? void 0 : state.trim().toUpperCase();
+    if (!normalizedState || (normalizedState !== "CA" && normalizedState !== "CALIFORNIA")) {
+        return null;
+    }
+    return <KnowYourRightsNoticeSectionInner />;
 }

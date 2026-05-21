@@ -1691,7 +1691,7 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
 
-            <KnowYourRightsNoticeSection />
+            <KnowYourRightsNoticeSection state={employee?.state ?? undefined} />
 
             {/* Personal Calendar */}
             {(() => {

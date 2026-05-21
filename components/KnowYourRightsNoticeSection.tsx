@@ -238,6 +238,10 @@ function KnowYourRightsNoticeSectionInner() {
 }
 
 export function KnowYourRightsNoticeSection({ state }: { state?: string }) {
-  if (!state || state.toUpperCase() !== "CA") return null;
+  const normalizedState = state?.trim().toUpperCase();
+  if (!normalizedState || (normalizedState !== "CA" && normalizedState !== "CALIFORNIA")) {
+    return null;
+  }
+
   return <KnowYourRightsNoticeSectionInner />;
 }

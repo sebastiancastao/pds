@@ -346,152 +346,154 @@ export async function GET(req: NextRequest) {
     // TIME ENTRIES SECTION
     // ─────────────────────────────────────────────
     if (section === "all" || section === "time") {
-      let timeQuery = supabaseAdmin
-        .from("time_entries")
-        .select("id, user_id, event_id, action, timestamp, notes")
-        .in("action", ["clock_in", "clock_out", "meal_start", "meal_end"])
-        .order("timestamp", { ascending: true });
-
-      if (fromDate) timeQuery = timeQuery.gte("timestamp", `${fromDate}T00:00:00`);
-      if (toDate) timeQuery = timeQuery.lte("timestamp", `${toDate}T23:59:59`);
-
-      const { data: timeEntries, error: timeError } = await timeQuery;
-      if (timeError) throw new Error(timeError.message);
-
-      // Mirrors vendor-payments API logic: per-event session calculation
-      // effectiveMs = min(apiTotalMs, spanNetMs), payableMs = effectiveMs + 30-min gate offset
+      // Mirror the vendor-payments API exactly:
+      //   1. Filter EVENTS by event_date (same axis as HR dashboard payroll tab)
+      //   2. For each (user, event): prefer freshly computed timesheet hours
+      //   3. Fall back to stored actual_hours from event_vendor_payments when no time entries exist
       const GATE_PHONE_OFFSET_MS = 30 * 60 * 1000;
 
-      // Step 1: group ALL entries by user_id so clock_in/clock_out pairs always join
-      // regardless of whether their event_id fields differ or are null.
-      const entriesByUser = new Map<string, any[]>();
-      for (const row of timeEntries || []) {
-        if (!row.user_id) continue;
-        if (!entriesByUser.has(row.user_id)) entriesByUser.set(row.user_id, []);
-        entriesByUser.get(row.user_id)!.push(row);
-      }
+      // Step 1: events in the date range
+      let eventsForTimeQuery = supabaseAdmin
+        .from("events")
+        .select("id")
+        .order("event_date", { ascending: true });
+      if (fromDate) eventsForTimeQuery = eventsForTimeQuery.gte("event_date", fromDate);
+      if (toDate)   eventsForTimeQuery = eventsForTimeQuery.lte("event_date", toDate);
+      if (stateFilter && stateFilter !== "all") eventsForTimeQuery = eventsForTimeQuery.eq("state", stateFilter);
 
-      const hoursByUser = new Map<string, number>();
-      const shiftsByUser = new Map<string, number>();
-      const hoursByEvent = new Map<string, number>();
+      const { data: eventsForTime, error: eventsForTimeErr } = await eventsForTimeQuery;
+      if (eventsForTimeErr) throw new Error(eventsForTimeErr.message);
+
+      const scopedEventIds = (eventsForTime || []).map((e: any) => e.id).filter(Boolean);
+
+      const hoursByUser    = new Map<string, number>();
+      const shiftsByUser   = new Map<string, number>();
+      const hoursByEvent   = new Map<string, number>();
       const workersByEvent = new Map<string, Set<string>>();
       let totalShifts = 0;
 
-      for (const [userId, userRows] of entriesByUser.entries()) {
-        const sorted = [...userRows].sort(
-          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-        );
+      if (scopedEventIds.length > 0) {
+        // Step 2: fetch payment records + time entries for those events in parallel
+        const [payRes, teRes] = await Promise.all([
+          supabaseAdmin
+            .from("event_vendor_payments")
+            .select("event_id, user_id, actual_hours, regular_hours, overtime_hours, doubletime_hours")
+            .in("event_id", scopedEventIds),
+          supabaseAdmin
+            .from("time_entries")
+            .select("id, user_id, event_id, action, timestamp")
+            .in("event_id", scopedEventIds)
+            .in("action", ["clock_in", "clock_out", "meal_start", "meal_end"])
+            .order("timestamp", { ascending: true }),
+        ]);
+        if (payRes.error)  throw new Error(payRes.error.message);
+        if (teRes.error)   throw new Error(teRes.error.message);
 
-        // Step 2: sequential clock_in → clock_out pairing (resolves null event_id mismatches)
-        const pairs: Array<{ inTs: string; outTs: string; eventId: string | null }> = [];
-        const allMealEntries: any[] = [];
-        let currentClockIn: any = null;
+        const paymentRows = payRes.data || [];
+        const timeEntries = teRes.data  || [];
 
-        for (const row of sorted) {
-          if (row.action === "clock_in") {
-            if (!currentClockIn) currentClockIn = row;
-          } else if (row.action === "clock_out") {
-            if (currentClockIn) {
-              const startMs = new Date(currentClockIn.timestamp).getTime();
-              const endMs = new Date(row.timestamp).getTime();
-              if (endMs > startMs) {
-                // Prefer non-null event_id from either half of the pair
-                const effectiveEventId = (currentClockIn.event_id || row.event_id) ?? null;
-                pairs.push({ inTs: currentClockIn.timestamp, outTs: row.timestamp, eventId: effectiveEventId });
-              }
-              currentClockIn = null;
-            }
-          } else if (row.action === "meal_start" || row.action === "meal_end") {
-            allMealEntries.push(row);
-          }
+        // Step 3: group time entries by (user, event) and compute timesheet hours
+        const entriesBySession = new Map<string, any[]>();
+        for (const row of timeEntries) {
+          if (!row.user_id || !row.event_id) continue;
+          const k = `${row.user_id}||${row.event_id}`;
+          if (!entriesBySession.has(k)) entriesBySession.set(k, []);
+          entriesBySession.get(k)!.push(row);
         }
 
-        if (pairs.length === 0) continue;
-        totalShifts += pairs.length;
-        shiftsByUser.set(userId, (shiftsByUser.get(userId) || 0) + pairs.length);
-
-        // Step 3: group pairs into event sessions by event_id so split shifts share one 30-min offset
-        const sessionMap = new Map<string, typeof pairs>();
-        for (const pair of pairs) {
-          const key = pair.eventId ?? "<<null>>";
-          if (!sessionMap.has(key)) sessionMap.set(key, []);
-          sessionMap.get(key)!.push(pair);
-        }
-
-        // Step 4: for each session apply the full vendor-payments calculation
-        for (const [sessionKey, sessionPairs] of sessionMap.entries()) {
-          const eventId = sessionKey === "<<null>>" ? null : sessionKey;
+        const computedBySession = new Map<string, number>();
+        for (const [key, rows] of entriesBySession.entries()) {
+          const sorted = [...rows].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          const mealStarts = sorted.filter(r => r.action === "meal_start");
+          const mealEnds   = sorted.filter(r => r.action === "meal_end");
 
           let apiTotalMs = 0;
           const workIntervals: Array<{ start: Date; end: Date }> = [];
-          for (const p of sessionPairs) {
-            const startMs = new Date(p.inTs).getTime();
-            const endMs = new Date(p.outTs).getTime();
-            apiTotalMs += endMs - startMs;
-            workIntervals.push({ start: new Date(p.inTs), end: new Date(p.outTs) });
+          let curIn: string | null = null;
+          for (const row of sorted) {
+            if (row.action === "clock_in") {
+              if (!curIn) curIn = row.timestamp;
+            } else if (row.action === "clock_out" && curIn) {
+              const s = new Date(curIn).getTime();
+              const e = new Date(row.timestamp).getTime();
+              if (e > s) { apiTotalMs += e - s; workIntervals.push({ start: new Date(curIn), end: new Date(row.timestamp) }); }
+              curIn = null;
+            }
           }
-          workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
+          if (workIntervals.length === 0) { computedBySession.set(key, 0); continue; }
+
+          workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
           const firstInMs = workIntervals[0].start.getTime();
           const lastOutMs = workIntervals[workIntervals.length - 1].end.getTime();
 
-          // Collect explicit meals within this session's time window
-          const sessionMealStarts = allMealEntries
-            .filter(m => m.action === "meal_start" && new Date(m.timestamp).getTime() >= firstInMs && new Date(m.timestamp).getTime() <= lastOutMs)
-            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-          const sessionMealEnds = allMealEntries
-            .filter(m => m.action === "meal_end" && new Date(m.timestamp).getTime() >= firstInMs && new Date(m.timestamp).getTime() <= lastOutMs)
-            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-
           let mealMs = 0;
-          const hasExplicitMeals = sessionMealStarts.length > 0 || sessionMealEnds.length > 0;
-          if (hasExplicitMeals) {
-            for (let i = 0; i < Math.min(sessionMealStarts.length, sessionMealEnds.length, 3); i++) {
-              const ms = new Date(sessionMealStarts[i].timestamp).getTime();
-              const me = new Date(sessionMealEnds[i].timestamp).getTime();
+          if (mealStarts.length > 0 || mealEnds.length > 0) {
+            for (let i = 0; i < Math.min(mealStarts.length, mealEnds.length, 3); i++) {
+              const ms = new Date(mealStarts[i].timestamp).getTime();
+              const me = new Date(mealEnds[i].timestamp).getTime();
               if (me > ms) mealMs += me - ms;
             }
           } else if (workIntervals.length >= 2) {
-            // Auto-detect gaps between pairs as meal breaks (mirrors timesheet API GET + vendor-payments)
             for (let i = 0; i < workIntervals.length - 1 && i < 3; i++) {
-              const gapMs = workIntervals[i + 1].start.getTime() - workIntervals[i].end.getTime();
-              if (gapMs > 0) mealMs += gapMs;
+              const g = workIntervals[i + 1].start.getTime() - workIntervals[i].end.getTime();
+              if (g > 0) mealMs += g;
             }
           }
 
-          // spanNetMs = firstIn → lastOut minus meal time (mirrors getMealDeductedWorkedMs)
-          let spanNetMs = 0;
-          if (lastOutMs > firstInMs) {
-            spanNetMs = Math.max(lastOutMs - firstInMs - mealMs, 0);
-          }
-
+          let spanNetMs = lastOutMs > firstInMs ? Math.max(lastOutMs - firstInMs - mealMs, 0) : 0;
           let finalMs = 0;
-          if (apiTotalMs > 0 && spanNetMs > 0) {
-            finalMs = Math.min(apiTotalMs, spanNetMs);
-          } else if (spanNetMs > 0) {
-            finalMs = spanNetMs;
-          } else if (apiTotalMs > 0) {
-            finalMs = Math.max(apiTotalMs - mealMs, 0);
-          }
+          if (apiTotalMs > 0 && spanNetMs > 0) finalMs = Math.min(apiTotalMs, spanNetMs);
+          else if (spanNetMs > 0) finalMs = spanNetMs;
+          else if (apiTotalMs > 0) finalMs = Math.max(apiTotalMs - mealMs, 0);
 
-          // 30-min gate phone offset — one per event session (mirrors ADMIN_RESPONSE_ENTRY_PROCESSING_MS)
           if (finalMs > 0) finalMs += GATE_PHONE_OFFSET_MS;
+          computedBySession.set(key, Math.round(Math.max(finalMs, 0) / 3600000 * 100) / 100);
+        }
 
-          // Round per session to 2 decimal places — matches roundHoursFromMs in vendor-payments API
-          const finalHours = Math.round(Math.max(finalMs, 0) / 3600000 * 100) / 100;
+        // Step 4: build payment lookup; helper mirrors getEffectiveHoursFromPaymentRow
+        const payByKey = new Map<string, any>();
+        for (const row of paymentRows) {
+          if (!row.user_id || !row.event_id) continue;
+          payByKey.set(`${row.user_id}||${row.event_id}`, row);
+        }
+        function storedHours(row: any): number {
+          const a = Number(row?.actual_hours  ?? 0); if (a > 0) return a;
+          const s = Number(row?.regular_hours ?? 0) + Number(row?.overtime_hours ?? 0) + Number(row?.doubletime_hours ?? 0);
+          return s > 0 ? s : 0;
+        }
 
-          hoursByUser.set(userId, (hoursByUser.get(userId) || 0) + finalHours);
+        // Step 5: merge — union of payment records and sessions with time entries
+        const allKeys = new Set([...payByKey.keys(), ...entriesBySession.keys()]);
+        for (const key of allKeys) {
+          const [userId, eventId] = key.split("||");
+          let finalHours: number;
 
-          if (eventId) {
-            hoursByEvent.set(eventId, (hoursByEvent.get(eventId) || 0) + finalHours);
-            if (!workersByEvent.has(eventId)) workersByEvent.set(eventId, new Set());
-            workersByEvent.get(eventId)!.add(userId);
+          if (entriesBySession.has(key)) {
+            // Time entries exist → use computed value (mirrors vendor-payments override)
+            finalHours = computedBySession.get(key) ?? 0;
+          } else {
+            // No time entries → fall back to stored payment hours
+            const row = payByKey.get(key);
+            finalHours = row ? storedHours(row) : 0;
           }
+
+          if (finalHours <= 0) continue;
+
+          const numClockOuts = (entriesBySession.get(key) || []).filter((r: any) => r.action === "clock_out").length;
+          const shifts = numClockOuts || 1;
+          totalShifts += shifts;
+          shiftsByUser.set(userId, (shiftsByUser.get(userId) || 0) + shifts);
+          hoursByUser.set(userId,  (hoursByUser.get(userId)  || 0) + finalHours);
+          hoursByEvent.set(eventId, (hoursByEvent.get(eventId) || 0) + finalHours);
+          if (!workersByEvent.has(eventId)) workersByEvent.set(eventId, new Set());
+          workersByEvent.get(eventId)!.add(userId);
         }
       }
 
       const totalHours = Array.from(hoursByUser.values()).reduce((sum, h) => sum + h, 0);
-
       result.time = {
         total_shifts: totalShifts,
         total_hours: Math.round(totalHours * 100) / 100,

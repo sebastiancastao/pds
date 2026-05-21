@@ -176,19 +176,25 @@ export default function ReportsPage() {
 
   const applyTimeQuickFilter = (filter: 'year' | 'last3months' | 'lastmonth') => {
     const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-based
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const isoDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
     if (filter === 'year') {
-      setFromDate(`${now.getFullYear()}-01-01`);
-      setToDate('');
+      setFromDate(`${y}-01-01`);
+      setToDate(isoDate(now));
     } else if (filter === 'last3months') {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 3);
-      setFromDate(d.toISOString().slice(0, 10));
-      setToDate('');
+      // 1st of the month 3 months ago → last day of last month
+      const from = new Date(y, m - 3, 1);
+      const to = new Date(y, m, 0); // last day of previous month
+      setFromDate(isoDate(from));
+      setToDate(isoDate(to));
     } else {
-      const d = new Date(now);
-      d.setMonth(d.getMonth() - 1);
-      setFromDate(d.toISOString().slice(0, 10));
-      setToDate('');
+      // previous full calendar month
+      const from = new Date(y, m - 1, 1);
+      const to = new Date(y, m, 0);
+      setFromDate(isoDate(from));
+      setToDate(isoDate(to));
     }
     setTimeQuickFilter(filter);
   };
