@@ -122,8 +122,19 @@ interface ReportData {
 
 function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—';
+  // date-only strings (YYYY-MM-DD) must be constructed as local midnight to avoid UTC-shift off-by-one
+  if (/^\d{4}-\d{2}-\d{2}$/.test(iso)) {
+    const [y, m, d] = iso.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
   const d = new Date(iso);
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
 function fmtCurrency(n: number | null | undefined): string {
@@ -363,7 +374,8 @@ export default function ReportsPage() {
     setDownloadingLoginExcel(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch('/api/reports/login-export', {
+      const tzOffset = new Date().getTimezoneOffset();
+      const res = await fetch(`/api/reports/login-export?tz_offset=${tzOffset}`, {
         headers: { Authorization: `Bearer ${session?.access_token}` },
       });
       if (!res.ok) {
@@ -1019,7 +1031,7 @@ export default function ReportsPage() {
                         r.email,
                         r.role,
                         r.is_active ? 'Yes' : 'No',
-                        r.last_sign_in_at ? new Date(r.last_sign_in_at).toLocaleString('en-US') : 'Never',
+                        fmtDateTime(r.last_sign_in_at) === '—' ? 'Never' : fmtDateTime(r.last_sign_in_at),
                         r.created_at ? fmtDate(r.created_at) : '—',
                       ])
                     )}
@@ -1079,7 +1091,7 @@ export default function ReportsPage() {
                           <td className="px-4 py-3 whitespace-nowrap">
                             {r.last_sign_in_at ? (
                               <span className={`text-xs font-medium ${signedInRecently ? 'text-green-600' : 'text-gray-500'}`}>
-                                {new Date(r.last_sign_in_at).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                                {fmtDateTime(r.last_sign_in_at)}
                               </span>
                             ) : (
                               <span className="text-xs text-gray-400">Never</span>

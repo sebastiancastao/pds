@@ -3833,7 +3833,6 @@ function HRDashboardContent() {
                                                       <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">OT Rate</th>
                                                     )}
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Commission Pay</th>
-                                                    <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Variable Incentive</th>
                                                   </>
                                                 )}
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Tips</th>
@@ -3921,7 +3920,6 @@ function HRDashboardContent() {
                                                           <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                         )}
                                                         <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
-                                                        <td className="p-2 text-sm text-gray-400">&mdash;</td>
                                                       </>
                                                     )}
                                                     <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>

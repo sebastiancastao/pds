@@ -33,9 +33,24 @@ function dec(value: unknown): string {
   try { return safeDecrypt(value.trim()); } catch { return value.trim(); }
 }
 
-function fmtDate(iso: string | null | undefined): string {
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+// Converts UTC ISO string to local time using the browser's UTC offset (minutes).
+// getTimezoneOffset() returns positive for west of UTC (e.g. UTC-5 → 300).
+// local = utc - offset_ms
+function fmtLocal(iso: string | null | undefined, offsetMin: number): string {
   if (!iso) return "";
-  return new Date(iso).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" });
+  const utc = new Date(iso);
+  if (isNaN(utc.getTime())) return "";
+  const local = new Date(utc.getTime() - offsetMin * 60_000);
+  const month = MONTHS[local.getUTCMonth()];
+  const day   = local.getUTCDate();
+  const year  = local.getUTCFullYear();
+  let   h     = local.getUTCHours();
+  const min   = String(local.getUTCMinutes()).padStart(2, "0");
+  const ampm  = h >= 12 ? "PM" : "AM";
+  h = h % 12 || 12;
+  return `${month} ${day}, ${year}, ${h}:${min} ${ampm}`;
 }
 
 /**
@@ -59,6 +74,9 @@ export async function GET(req: NextRequest) {
     if (!ALLOWED_ROLES.includes(role)) {
       return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
+
+    const { searchParams } = new URL(req.url);
+    const offsetMin = parseInt(searchParams.get("tz_offset") || "0", 10);
 
     // Fetch all auth users
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000, page: 1 });
@@ -89,6 +107,7 @@ export async function GET(req: NextRequest) {
           role: userData?.role || "",
           is_active: userData?.is_active ?? true,
           last_sign_in_at: au.last_sign_in_at || null,
+          email_confirmed_at: au.email_confirmed_at || null,
           created_at: au.created_at || null,
         };
       })
@@ -100,7 +119,7 @@ export async function GET(req: NextRequest) {
 
     // Build worksheet data
     const wsData: (string | number | boolean)[][] = [
-      ["#", "Name", "Email", "Role", "Active", "Last Sign-In", "Active Last 7 Days", "Joined"],
+      ["#", "Name", "Email", "Role", "Active", "Last Sign-In", "Email Confirmed", "Active Last 7 Days", "Joined"],
     ];
 
     rows.forEach((r: any, idx: number) => {
@@ -114,9 +133,10 @@ export async function GET(req: NextRequest) {
         r.email,
         r.role || "—",
         r.is_active ? "Yes" : "No",
-        r.last_sign_in_at ? fmtDate(r.last_sign_in_at) : "Never",
+        r.last_sign_in_at ? fmtLocal(r.last_sign_in_at, offsetMin) : "Never",
+        r.email_confirmed_at ? fmtLocal(r.email_confirmed_at, offsetMin) : "—",
         recentLogin ? "Yes" : "No",
-        r.created_at ? fmtDate(r.created_at) : "—",
+        r.created_at ? fmtLocal(r.created_at, offsetMin) : "—",
       ]);
     });
 
@@ -131,6 +151,7 @@ export async function GET(req: NextRequest) {
       { wch: 16 }, // Role
       { wch: 8 },  // Active
       { wch: 24 }, // Last Sign-In
+      { wch: 24 }, // Email Confirmed
       { wch: 18 }, // Active Last 7 Days
       { wch: 24 }, // Joined
     ];
