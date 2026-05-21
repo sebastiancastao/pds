@@ -1584,7 +1584,7 @@ export default function EventDashboardPage() {
       const eventName = event.event_name || "the event";
       const eventDate = event.event_date ? new Date(`${String(event.event_date).split("T")[0]}T12:00:00Z`).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" }) : "";
       const emails = closeEventVendors.map((v) => v.email).filter(Boolean).join(",");
-      const subject = `Event Team Complete – ${eventName}`;
+      const subject = `Team Selection Closed – ${eventName}`;
       const body = `Hello,\n\nWe wanted to let you know that the team for ${eventName}${eventDate ? ` on ${eventDate}` : ""}${event.venue ? ` at ${event.venue}` : ""} has been completed.\n\nThank you for your interest and availability. We look forward to working with you at future events.\n\nBest regards,\nPDS Events Team`;
       const form = new FormData();
       form.append("audience", "manual");
@@ -7832,9 +7832,9 @@ export default function EventDashboardPage() {
           >
             <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
               <div>
-                <h3 className="text-xl font-semibold text-gray-900">Close Event</h3>
+                <h3 className="text-xl font-semibold text-gray-900">Team Selection Closed</h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  Event Team Completed
+                  Team Selection Completed
                   {!loadingCloseEvent && ` (${closeEventVendors.length})`}
                 </p>
               </div>

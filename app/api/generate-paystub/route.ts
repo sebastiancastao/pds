@@ -2252,10 +2252,17 @@ export async function POST(req: NextRequest) {
         { label: "Bonus", color: black, rate: 0, hours: 0, thisPeriod: totalOtherRounded, ytd: ytdOther },
         { label: "Sick Pay", color: black, rate: 0, hours: 0, thisPeriod: sickThisPeriod, ytd: ytdSick },
         { label: "Meal Premium", color: black, rate: 0, hours: 0, thisPeriod: mealPremiumThisPeriod, ytd: ytdMealPremium },
-      ].map((row, index) => ({
-        ...row,
-        y: earningsRowStartY + index * earningsRowGap,
-      }));
+      ]
+        .filter((row) => {
+          if (!showHourlyEarningsRows) return true;
+          if (row.label === "Overtime") return row.hours > 0 || row.thisPeriod > 0;
+          if (row.label === "Double Time") return row.hours > 0 || row.thisPeriod > 0;
+          return true;
+        })
+        .map((row, index) => ({
+          ...row,
+          y: earningsRowStartY + index * earningsRowGap,
+        }));
 
       for (const row of earningsRows) {
         drawTopText(row.label, 43, row.y, { size: 8, color: row.color });
@@ -2389,15 +2396,18 @@ export async function POST(req: NextRequest) {
       drawTopText(fmt(netPay), 544.2, 268.4, { size: 8 });
 
       const hasCommissionReport = caCommissionRows.length > 0;
-      const showImportantNotes = totalHoursWorked > 0 && (showHourlyEarningsRows || hasCommissionReport);
+      const showCommissionRateNote = hasCommissionReport && !showHourlyEarningsRows;
+      const showImportantNotes = totalHoursWorked > 0 && (showHourlyEarningsRows || showCommissionRateNote);
 
-      // Important Notes (commission rate explanation)
+      // Important Notes
       if (showImportantNotes) {
         drawTopText("IMPORTANT NOTES", 353, 290, { bold: true, size: 8 });
         drawTopText("Total Hours Worked:", 353, 300, { size: 8 });
         drawTopText(Number(totalHoursWorked).toFixed(2), 492.9, 300, { size: 8 });
-        drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
-        drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
+        if (showCommissionRateNote) {
+          drawTopText("** Effective Rate = Total Commissions / Total Hours Worked", 353, 312, { size: 7 });
+          drawTopText("See Attached Commission Report in Employee Portal", 353, 322, { size: 7 });
+        }
       }
 
       drawTopText(`Your federal taxable wages this period are ${money(grossPayThisPeriod)}`, 349.4, 518.0, { size: 8 });
