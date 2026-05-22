@@ -1005,7 +1005,7 @@ export default function DashboardPage() {
         if (!endIso && startIso) endIso = addHours(startIso, 1);
         const abbrev = getVenueAbbreviation(ev.venue);
         const title = abbrev ? `${ev.event_name} (${abbrev})` : ev.event_name;
-        return { id: ev.id, title, start: startIso, end: endIso, allDay: false };
+        return { id: ev.id, title, start: startIso, end: endIso, allDay: false, color: "#007AFF" };
       }),
     [filteredEvents]
   );

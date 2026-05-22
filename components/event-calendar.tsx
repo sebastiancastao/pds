@@ -9,6 +9,10 @@ export type EventCalendarItem = {
   start?: string;
   end?: string;
   allDay: boolean;
+  color?: string;
+  backgroundColor?: string;
+  borderColor?: string;
+  textColor?: string;
 };
 
 type EventCalendarProps = {
