@@ -1,0 +1,28 @@
+/* Purple calendar overrides for planned-calendar page */
+.planned-calendar-wrapper .fc-button {
+  background: #7c3aed !important;
+  box-shadow: 0 1px 2px rgba(124, 58, 237, 0.2) !important;
+}
+
+.planned-calendar-wrapper .fc-button:hover {
+  background: #6d28d9 !important;
+}
+
+.planned-calendar-wrapper .fc-button-active,
+.planned-calendar-wrapper .fc-button:not(:disabled):active {
+  background: #5b21b6 !important;
+}
+
+.planned-calendar-wrapper .fc-today-button:disabled {
+  background: #a78bfa !important;
+  opacity: 0.6 !important;
+}
+
+.planned-calendar-wrapper .fc-daygrid-day.fc-day-today {
+  background: #f5f3ff !important;
+}
+
+.planned-calendar-wrapper .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
+  color: #7c3aed !important;
+  font-weight: 700 !important;
+}

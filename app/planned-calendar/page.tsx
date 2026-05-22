@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import "../global-calendar/dashboard-styles.css";
+import "./planned-calendar-styles.css";
 
 const EventCalendar = dynamic(
   () => import("@/components/event-calendar").then((mod) => mod.EventCalendar),
@@ -100,7 +101,7 @@ export default function PlannedCalendarPage() {
           return;
         }
         const role = userData.role as string;
-        if (!["admin", "exec", "manager", "supervisor3"].includes(role)) {
+        if (!["admin", "exec", "manager", "supervisor3", "supervisor4"].includes(role)) {
           router.replace("/dashboard");
           return;
         }
@@ -235,12 +236,14 @@ export default function PlannedCalendarPage() {
       <div className="bg-white border-b border-gray-100 sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <Link href="/dashboard" className="apple-button apple-button-secondary flex items-center gap-2 text-sm py-2 px-4">
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-              </svg>
-              Dashboard
-            </Link>
+            {userRole !== "supervisor4" && (
+              <Link href="/dashboard" className="apple-button apple-button-secondary flex items-center gap-2 text-sm py-2 px-4">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                </svg>
+                Dashboard
+              </Link>
+            )}
             <div>
               <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">Planned Calendar</h1>
               <p className="text-sm text-gray-500 mt-0.5">Manage and plan upcoming events</p>
@@ -266,7 +269,7 @@ export default function PlannedCalendarPage() {
 
         {/* Calendar — always visible */}
         <div className="apple-card mb-6">
-          <div className="apple-calendar-wrapper">
+          <div className="apple-calendar-wrapper planned-calendar-wrapper">
             <EventCalendar
               events={filteredEvents.map((ev) => ({
                 id: ev.id,

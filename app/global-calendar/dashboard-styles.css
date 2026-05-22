@@ -8,6 +8,9 @@
   padding: 0.625rem 1.25rem;
   font-size: 0.9375rem;
   font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  flex-shrink: 0;
   border-radius: 0.75rem;
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   border: none;
@@ -473,6 +476,12 @@
   border-radius: 0.375rem !important;
   padding: 0.125rem 0.375rem !important;
   font-weight: 500 !important;
+  color: #ffffff !important;
+}
+
+.apple-calendar-wrapper .fc-event .fc-event-title,
+.apple-calendar-wrapper .fc-event .fc-event-time {
+  color: #ffffff !important;
 }
 
 .apple-calendar-wrapper .fc-daygrid-day-number {
