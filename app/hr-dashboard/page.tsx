@@ -2410,74 +2410,50 @@ function HRDashboardContent() {
     XLSX.writeFile(wb, `non_event_payroll_${startStr}_to_${endStr}.xlsx`);
   }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getMileageApproval, adjustmentTypes]);
 
-  const exportSalariedPayroll = useCallback(() => {
-    const salariedEmployees = employees.filter(e => e.salary > 0);
-    if (salariedEmployees.length === 0) {
-      alert('No salaried employees found.');
-      return;
-    }
+  const exportSalariedPayroll = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = {};
+      if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
 
-    let periodDays = 0;
-    if (paymentsStartDate && paymentsEndDate) {
-      const start = new Date(paymentsStartDate);
-      const end = new Date(paymentsEndDate);
-      periodDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);
-    }
+      const res = await fetch('/api/salaried-paysheet', { headers });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || 'Failed to load salaried records');
 
-    const rows = salariedEmployees.map(e => {
-      const annualSalary = Number(e.salary);
-      const periodPay = periodDays > 0 ? Number(((annualSalary / 365) * periodDays).toFixed(2)) : null;
-      return {
-        'First Name': e.first_name,
-        'Last Name': e.last_name,
-        'Email': e.email,
-        'Department': e.department,
-        'Position': e.position,
-        'State': e.state,
-        'City': e.city || '',
-        'Status': e.status,
-        'Hire Date': e.hire_date,
-        'Annual Salary': Number(annualSalary.toFixed(2)),
-        ...(periodDays > 0 ? {
-          'Period Start': paymentsStartDate,
-          'Period End': paymentsEndDate,
-          'Period Days': periodDays,
-          'Period Gross Pay': periodPay,
-        } : {}),
+      const records: any[] = Array.isArray(json.records) ? json.records : [];
+      if (records.length === 0) {
+        alert('No salaried pay records found in the paysheet.');
+        return;
+      }
+
+      const rows = records.map(r => ({
+        'Employee': r.employee_name,
+        'Email': r.employee_email || '',
+        'Pay Period Start': r.pay_period_start,
+        'Pay Period End': r.pay_period_end,
+        'Salary': Number(r.gross_pay),
+        'Status': r.status ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : '',
+        'Notes': r.notes || '',
+      }));
+
+      const totalRow: any = {
+        'Employee': 'TOTAL', 'Email': '', 'Pay Period Start': '', 'Pay Period End': '',
+        'Salary': Number(rows.reduce((s, r) => s + r['Salary'], 0).toFixed(2)),
+        'Status': '', 'Notes': '',
       };
-    });
+      rows.push(totalRow);
 
-    if (rows.length === 0) {
-      alert('No salaried employee records to export.');
-      return;
+      const ws = XLSX.utils.json_to_sheet(rows);
+      ws['!cols'] = [
+        { wch: 25 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 30 },
+      ];
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Salaried Payroll');
+      XLSX.writeFile(wb, `salaried_payroll.xlsx`);
+    } catch (err: any) {
+      alert(err.message || 'Failed to export salaried payroll');
     }
-
-    const annualTotal = Number(rows.reduce((s, r) => s + r['Annual Salary'], 0).toFixed(2));
-    const totalRow: any = {
-      'First Name': 'TOTAL', 'Last Name': '', 'Email': '', 'Department': '',
-      'Position': '', 'State': '', 'City': '', 'Status': '', 'Hire Date': '',
-      'Annual Salary': annualTotal,
-    };
-    if (periodDays > 0) {
-      totalRow['Period Start'] = '';
-      totalRow['Period End'] = '';
-      totalRow['Period Days'] = '';
-      totalRow['Period Gross Pay'] = Number(rows.reduce((s, r) => s + (r['Period Gross Pay'] ?? 0), 0).toFixed(2));
-    }
-    rows.push(totalRow);
-
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [
-      { wch: 15 }, { wch: 15 }, { wch: 30 }, { wch: 20 }, { wch: 20 },
-      { wch: 8 }, { wch: 15 }, { wch: 12 }, { wch: 12 }, { wch: 16 },
-      ...(periodDays > 0 ? [{ wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 16 }] : []),
-    ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Salaried Payroll');
-    const startStr = paymentsStartDate || 'start';
-    const endStr = paymentsEndDate || 'end';
-    XLSX.writeFile(wb, `salaried_payroll_${startStr}_to_${endStr}.xlsx`);
-  }, [employees, paymentsStartDate, paymentsEndDate]);
+  }, []);
 
   // Load onboarding forms
   const loadOnboardingForms = useCallback(async () => {
@@ -3138,7 +3114,7 @@ function HRDashboardContent() {
               <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-              Global Calendar
+              Actual Calendar
             </button>
           </Link>
         </div>
@@ -3323,7 +3299,7 @@ function HRDashboardContent() {
                   <input id="pay-end" type="date" value={paymentsEndDate} onChange={(e) => setPaymentsEndDate(e.target.value)} className="apple-select" />
                 </div>
               </div>
-              <div className="mt-4 flex gap-3">
+              <div className="mt-4 flex flex-wrap gap-3">
                 <button onClick={loadPaymentsData} className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`} disabled={loadingPayments}>
                   {loadingPayments ? 'Loading…' : 'Load Payments'}
                 </button>
@@ -3336,8 +3312,8 @@ function HRDashboardContent() {
                 <button onClick={exportNonEventPayroll} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
                   Non Event
                 </button>
-                <button onClick={exportSalariedPayroll} className={`apple-button ${employees.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={employees.length === 0}>
-                  Salaried
+                <button onClick={() => void exportSalariedPayroll()} className="apple-button apple-button-secondary">
+                  Salaried Export
                 </button>
                 <Link href="/salaried-paysheet">
                   <button className="apple-button apple-button-secondary">Salaried Paysheet</button>

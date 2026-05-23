@@ -81,6 +81,7 @@ export default function PlannedCalendarPage() {
   const [filterVenue, setFilterVenue] = useState("all");
   const [periodStart, setPeriodStart] = useState("");
   const [periodEnd, setPeriodEnd] = useState("");
+  const [selectedCalendarEventId, setSelectedCalendarEventId] = useState<string | null>(null);
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -218,6 +219,10 @@ export default function PlannedCalendarPage() {
     return matchesSearch && matchesVenue && matchesPeriodStart && matchesPeriodEnd;
   });
 
+  const listEvents = selectedCalendarEventId
+    ? filteredEvents.filter((e) => e.id === selectedCalendarEventId)
+    : filteredEvents;
+
   const canDelete = userRole === "admin" || userRole === "exec";
 
   if (authChecking) {
@@ -245,7 +250,7 @@ export default function PlannedCalendarPage() {
               </Link>
             )}
             <div>
-              <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">Planned Calendar</h1>
+              <h1 className="text-2xl font-semibold text-gray-900 tracking-tight">Planning Calendar</h1>
               <p className="text-sm text-gray-500 mt-0.5">Manage and plan upcoming events</p>
             </div>
           </div>
@@ -276,8 +281,9 @@ export default function PlannedCalendarPage() {
                 title: `${ev.event_name} · ${ev.venue.venue_name}`,
                 start: ev.event_date,
                 allDay: true,
-                color: "#7c3aed",
+                color: selectedCalendarEventId && selectedCalendarEventId !== ev.id ? "#c4b5fd" : "#7c3aed",
               }))}
+              onEventClick={(id) => setSelectedCalendarEventId((prev) => (prev === id ? null : id))}
             />
           </div>
         </div>
@@ -338,12 +344,25 @@ export default function PlannedCalendarPage() {
           </div>
         </div>
 
-        {/* Event count */}
+        {/* Event count + active calendar selection */}
         {!loading && !error && (
-          <p className="text-sm text-gray-500 mb-4">
-            {filteredEvents.length} {filteredEvents.length === 1 ? "event" : "events"}
-            {(filterVenue !== "all" || searchQuery || periodStart || periodEnd) ? " (filtered)" : ""}
-          </p>
+          <div className="flex items-center justify-between mb-4">
+            <p className="text-sm text-gray-500">
+              {listEvents.length} {listEvents.length === 1 ? "event" : "events"}
+              {(selectedCalendarEventId || filterVenue !== "all" || searchQuery || periodStart || periodEnd) ? " (filtered)" : ""}
+            </p>
+            {selectedCalendarEventId && (
+              <button
+                onClick={() => setSelectedCalendarEventId(null)}
+                className="text-xs text-purple-600 hover:text-purple-800 font-medium flex items-center gap-1"
+              >
+                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+                Clear selection
+              </button>
+            )}
+          </div>
         )}
 
         {/* Loading spinner (cards area only) */}
@@ -355,14 +374,18 @@ export default function PlannedCalendarPage() {
         )}
 
         {/* Empty state below calendar */}
-        {!loading && !error && filteredEvents.length === 0 && (
-          <p className="text-center text-gray-400 text-sm py-4">No planned events yet. Click <strong>New Event</strong> to add one.</p>
+        {!loading && !error && listEvents.length === 0 && (
+          <p className="text-center text-gray-400 text-sm py-4">
+            {selectedCalendarEventId ? "Selected event not found in current filters." : "No planned events yet. Click "}
+            {!selectedCalendarEventId && <strong>New Event</strong>}
+            {!selectedCalendarEventId && " to add one."}
+          </p>
         )}
 
         {/* Events grid */}
-        {!loading && !error && filteredEvents.length > 0 && (
+        {!loading && !error && listEvents.length > 0 && (
           <div className="grid grid-cols-1 gap-4">
-            {filteredEvents.map((ev) => (
+            {listEvents.map((ev) => (
               <div key={ev.id} className="apple-card flex flex-col gap-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">

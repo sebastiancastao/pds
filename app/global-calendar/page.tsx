@@ -1297,7 +1297,7 @@ export default function DashboardPage() {
 
   const openTeamModal = async (event: EventItem) => {
     if (userRole !== "exec") {
-      setTeamMessage("Only executives can create teams from Global Calendar.");
+      setTeamMessage("Only executives can create teams from Actual Calendar.");
       return;
     }
 
@@ -1656,12 +1656,12 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-100">
-      <div className="container mx-auto max-w-6xl py-12 px-6">
+      <div className="container mx-auto max-w-7xl py-12 px-6">
         {/* Header */}
         <div className="mb-6">
           <div className={`flex ${userRole === "exec" || userRole === "hr" ? "flex-col gap-6" : "items-start justify-between"}`}>
             <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none mt-6" : "flex-1"}`}>
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Global Calendar</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Actual Calendar</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."
@@ -1737,7 +1737,7 @@ export default function DashboardPage() {
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
                 </svg>
-                Planned Calendar
+                Planning Calendar
               </Link>
               <Link
                 href="/dashboard"

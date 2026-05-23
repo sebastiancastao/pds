@@ -34,6 +34,7 @@ export function EventCalendar({ events, onEventClick, onVisibleRangeChange }: Ev
       plugins={[dayGridPlugin]}
       initialView="dayGridMonth"
       height="auto"
+      eventDisplay="block"
       events={events}
       datesSet={(info) => {
         onVisibleRangeChange?.({

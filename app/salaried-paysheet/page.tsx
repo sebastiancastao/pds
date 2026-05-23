@@ -14,18 +14,11 @@ type PayRecord = {
   employee_email: string | null;
   pay_period_start: string;
   pay_period_end: string;
-  annual_salary: number;
   gross_pay: number;
   bonus_amount: number;
   bonus_notes: string | null;
   reimbursement_amount: number;
   reimbursement_notes: string | null;
-  federal_tax: number;
-  state_tax: number;
-  social_security: number;
-  medicare: number;
-  other_deductions: number;
-  deduction_notes: string | null;
   net_pay: number;
   status: 'draft' | 'approved' | 'paid';
   notes: string | null;
@@ -37,25 +30,17 @@ type EmployeeOption = {
   id: string;
   name: string;
   email: string | null;
-  employment_type: string;
 };
 
 type FormState = {
   user_id: string;
   pay_period_start: string;
   pay_period_end: string;
-  annual_salary: string;
   gross_pay: string;
   bonus_amount: string;
   bonus_notes: string;
   reimbursement_amount: string;
   reimbursement_notes: string;
-  federal_tax: string;
-  state_tax: string;
-  social_security: string;
-  medicare: string;
-  other_deductions: string;
-  deduction_notes: string;
   notes: string;
   status: 'draft' | 'approved' | 'paid';
 };
@@ -64,18 +49,11 @@ const EMPTY_FORM: FormState = {
   user_id: '',
   pay_period_start: '',
   pay_period_end: '',
-  annual_salary: '',
   gross_pay: '',
   bonus_amount: '',
   bonus_notes: '',
   reimbursement_amount: '',
   reimbursement_notes: '',
-  federal_tax: '',
-  state_tax: '',
-  social_security: '',
-  medicare: '',
-  other_deductions: '',
-  deduction_notes: '',
   notes: '',
   status: 'draft',
 };
@@ -127,7 +105,6 @@ export default function SalariedPaysheetPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
 
@@ -181,12 +158,11 @@ export default function SalariedPaysheetPage() {
               id: e.id,
               name: `${e.first_name || ''} ${e.last_name || ''}`.trim() || e.email || e.id,
               email: e.email || null,
-              employment_type: e.employment_type || 'salaried',
             }))
         );
       }
     } catch {
-      // fallback: leave employees empty, user can type ID directly
+      // fallback: leave employees empty
     }
   }, []);
 
@@ -221,10 +197,9 @@ export default function SalariedPaysheetPage() {
 
   const stats = useMemo(() => ({
     count: records.length,
-    totalGross: records.reduce((s, r) => s + r.gross_pay, 0),
+    totalSalary: records.reduce((s, r) => s + r.gross_pay, 0),
     totalBonus: records.reduce((s, r) => s + (r.bonus_amount || 0), 0),
     totalReimbursement: records.reduce((s, r) => s + (r.reimbursement_amount || 0), 0),
-    totalDeductions: records.reduce((s, r) => s + r.federal_tax + r.state_tax + r.social_security + r.medicare + r.other_deductions, 0),
     totalNet: records.reduce((s, r) => s + r.net_pay, 0),
   }), [records]);
 
@@ -240,25 +215,17 @@ export default function SalariedPaysheetPage() {
       user_id: record.user_id,
       pay_period_start: record.pay_period_start,
       pay_period_end: record.pay_period_end,
-      annual_salary: record.annual_salary.toFixed(2),
       gross_pay: record.gross_pay.toFixed(2),
       bonus_amount: (record.bonus_amount || 0).toFixed(2),
       bonus_notes: record.bonus_notes || '',
       reimbursement_amount: (record.reimbursement_amount || 0).toFixed(2),
       reimbursement_notes: record.reimbursement_notes || '',
-      federal_tax: record.federal_tax.toFixed(2),
-      state_tax: record.state_tax.toFixed(2),
-      social_security: record.social_security.toFixed(2),
-      medicare: record.medicare.toFixed(2),
-      other_deductions: record.other_deductions.toFixed(2),
-      deduction_notes: record.deduction_notes || '',
       notes: record.notes || '',
       status: record.status,
     });
     setFormError('');
     setEditingId(record.id);
     setShowAddForm(false);
-    setExpandedId(null);
   }
 
   function closeForm() {
@@ -272,25 +239,11 @@ export default function SalariedPaysheetPage() {
     setForm((prev) => ({ ...prev, [field]: value }));
   }
 
-  function computedNet(): number {
-    const gross = parseFloat(form.gross_pay) || 0;
-    const bonus = parseFloat(form.bonus_amount) || 0;
-    const reimbursement = parseFloat(form.reimbursement_amount) || 0;
-    const deductions =
-      (parseFloat(form.federal_tax) || 0) +
-      (parseFloat(form.state_tax) || 0) +
-      (parseFloat(form.social_security) || 0) +
-      (parseFloat(form.medicare) || 0) +
-      (parseFloat(form.other_deductions) || 0);
-    return gross + bonus - deductions + reimbursement;
-  }
-
   async function submitForm() {
     if (!form.user_id.trim()) { setFormError('Employee is required'); return; }
     if (!form.pay_period_start) { setFormError('Pay period start is required'); return; }
     if (!form.pay_period_end) { setFormError('Pay period end is required'); return; }
-    if (!form.annual_salary || isNaN(parseFloat(form.annual_salary))) { setFormError('Annual salary is required'); return; }
-    if (!form.gross_pay || isNaN(parseFloat(form.gross_pay))) { setFormError('Gross pay is required'); return; }
+    if (!form.gross_pay || isNaN(parseFloat(form.gross_pay))) { setFormError('Salary is required'); return; }
 
     setSubmitting(true);
     setFormError('');
@@ -299,23 +252,24 @@ export default function SalariedPaysheetPage() {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (session?.access_token) headers.Authorization = `Bearer ${session.access_token}`;
 
+      const salary = parseFloat(form.gross_pay);
       const payload = {
         ...(editingId ? { id: editingId } : {}),
         user_id: form.user_id.trim(),
         pay_period_start: form.pay_period_start,
         pay_period_end: form.pay_period_end,
-        annual_salary: parseFloat(form.annual_salary),
-        gross_pay: parseFloat(form.gross_pay),
+        annual_salary: salary,
+        gross_pay: salary,
         bonus_amount: parseFloat(form.bonus_amount) || 0,
         bonus_notes: form.bonus_notes.trim() || null,
         reimbursement_amount: parseFloat(form.reimbursement_amount) || 0,
         reimbursement_notes: form.reimbursement_notes.trim() || null,
-        federal_tax: parseFloat(form.federal_tax) || 0,
-        state_tax: parseFloat(form.state_tax) || 0,
-        social_security: parseFloat(form.social_security) || 0,
-        medicare: parseFloat(form.medicare) || 0,
-        other_deductions: parseFloat(form.other_deductions) || 0,
-        deduction_notes: form.deduction_notes.trim() || null,
+        federal_tax: 0,
+        state_tax: 0,
+        social_security: 0,
+        medicare: 0,
+        other_deductions: 0,
+        deduction_notes: null,
         notes: form.notes.trim() || null,
         status: form.status,
       };
@@ -355,7 +309,6 @@ export default function SalariedPaysheetPage() {
       if (!res.ok) throw new Error(json.error || 'Failed to delete');
       setRecords((prev) => prev.filter((r) => r.id !== id));
       if (editingId === id) closeForm();
-      if (expandedId === id) setExpandedId(null);
     } catch (err: any) {
       setError(err.message || 'Failed to delete record');
     }
@@ -415,76 +368,8 @@ export default function SalariedPaysheetPage() {
         </div>
 
         <div>
-          <label className="apple-label text-xs mb-1 block">Annual Salary ($)</label>
-          <input type="number" min="0" step="0.01" placeholder="0.00" value={form.annual_salary} onChange={(e) => updateForm('annual_salary', e.target.value)} className="apple-select text-sm" />
-        </div>
-        <div>
-          <label className="apple-label text-xs mb-1 block">Gross Pay This Period ($)</label>
+          <label className="apple-label text-xs mb-1 block">Salary This Period ($)</label>
           <input type="number" min="0" step="0.01" placeholder="0.00" value={form.gross_pay} onChange={(e) => updateForm('gross_pay', e.target.value)} className="apple-select text-sm" />
-        </div>
-
-        <div className="md:col-span-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Additional Earnings</p>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="apple-label text-xs mb-1 block">Bonus ($) <span className="text-gray-400 font-normal normal-case">— taxable</span></label>
-              <input type="number" min="0" step="0.01" placeholder="0.00" value={form.bonus_amount} onChange={(e) => updateForm('bonus_amount', e.target.value)} className="apple-select text-sm" />
-              <input type="text" placeholder="Bonus reason (optional)" value={form.bonus_notes} onChange={(e) => updateForm('bonus_notes', e.target.value)} className="apple-select text-sm mt-2" />
-            </div>
-            <div>
-              <label className="apple-label text-xs mb-1 block">Reimbursement ($) <span className="text-gray-400 font-normal normal-case">— non-taxable</span></label>
-              <input type="number" min="0" step="0.01" placeholder="0.00" value={form.reimbursement_amount} onChange={(e) => updateForm('reimbursement_amount', e.target.value)} className="apple-select text-sm" />
-              <input type="text" placeholder="Reimbursement reason (optional)" value={form.reimbursement_notes} onChange={(e) => updateForm('reimbursement_notes', e.target.value)} className="apple-select text-sm mt-2" />
-            </div>
-          </div>
-        </div>
-
-        <div className="md:col-span-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Deductions</p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-            {(
-              [
-                { key: 'federal_tax', label: 'Federal Tax' },
-                { key: 'state_tax', label: 'State Tax' },
-                { key: 'social_security', label: 'Social Security' },
-                { key: 'medicare', label: 'Medicare' },
-                { key: 'other_deductions', label: 'Other' },
-              ] as { key: keyof FormState; label: string }[]
-            ).map(({ key, label }) => (
-              <div key={key}>
-                <label className="apple-label text-xs mb-1 block">{label} ($)</label>
-                <input type="number" min="0" step="0.01" placeholder="0.00" value={form[key] as string} onChange={(e) => updateForm(key, e.target.value)} className="apple-select text-sm" />
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="md:col-span-2">
-          <div className="rounded-2xl bg-gray-50 border border-gray-200 px-5 py-3 space-y-1">
-            <div className="flex items-center justify-between text-xs text-gray-500">
-              <span>Gross + Bonus − Deductions + Reimbursement</span>
-              <span>
-                {formatMoney(parseFloat(form.gross_pay) || 0)} + {formatMoney(parseFloat(form.bonus_amount) || 0)} − {formatMoney(
-                  (parseFloat(form.federal_tax) || 0) +
-                  (parseFloat(form.state_tax) || 0) +
-                  (parseFloat(form.social_security) || 0) +
-                  (parseFloat(form.medicare) || 0) +
-                  (parseFloat(form.other_deductions) || 0)
-                )} + {formatMoney(parseFloat(form.reimbursement_amount) || 0)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-gray-700">Computed Net Pay</span>
-              <span className={`text-xl font-bold ${computedNet() >= 0 ? 'text-green-700' : 'text-red-600'}`}>
-                {formatMoney(computedNet())}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div>
-          <label className="apple-label text-xs mb-1 block">Deduction Notes (optional)</label>
-          <input type="text" placeholder="e.g. 401k, health insurance..." value={form.deduction_notes} onChange={(e) => updateForm('deduction_notes', e.target.value)} className="apple-select text-sm" />
         </div>
         <div>
           <label className="apple-label text-xs mb-1 block">Status</label>
@@ -495,8 +380,19 @@ export default function SalariedPaysheetPage() {
           </select>
         </div>
 
+        <div>
+          <label className="apple-label text-xs mb-1 block">Bonus ($)</label>
+          <input type="number" min="0" step="0.01" placeholder="0.00" value={form.bonus_amount} onChange={(e) => updateForm('bonus_amount', e.target.value)} className="apple-select text-sm" />
+          <input type="text" placeholder="Bonus reason (optional)" value={form.bonus_notes} onChange={(e) => updateForm('bonus_notes', e.target.value)} className="apple-select text-sm mt-2" />
+        </div>
+        <div>
+          <label className="apple-label text-xs mb-1 block">Reimbursement ($)</label>
+          <input type="number" min="0" step="0.01" placeholder="0.00" value={form.reimbursement_amount} onChange={(e) => updateForm('reimbursement_amount', e.target.value)} className="apple-select text-sm" />
+          <input type="text" placeholder="Reimbursement reason (optional)" value={form.reimbursement_notes} onChange={(e) => updateForm('reimbursement_notes', e.target.value)} className="apple-select text-sm mt-2" />
+        </div>
+
         <div className="md:col-span-2">
-          <label className="apple-label text-xs mb-1 block">Internal Notes (optional)</label>
+          <label className="apple-label text-xs mb-1 block">Notes (optional)</label>
           <textarea rows={2} placeholder="Any additional notes..." value={form.notes} onChange={(e) => updateForm('notes', e.target.value)} className="apple-select resize-none text-sm" />
         </div>
       </div>
@@ -522,9 +418,7 @@ export default function SalariedPaysheetPage() {
         <div className="mb-8 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <h1 className="text-3xl font-bold text-gray-900">Salaried Paysheet</h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Manage salary-based pay records by pay period.
-            </p>
+            <p className="mt-1 text-sm text-gray-500">Manage salary-based pay records by pay period.</p>
           </div>
           <div className="flex flex-wrap gap-3">
             <button
@@ -570,20 +464,23 @@ export default function SalariedPaysheetPage() {
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
-          {[
-            { label: 'Employees', value: stats.count, color: 'text-gray-900', bg: 'bg-white' },
-            { label: 'Total Gross', value: formatMoney(stats.totalGross), color: 'text-blue-700', bg: 'bg-blue-50' },
-            { label: 'Total Bonus', value: formatMoney(stats.totalBonus), color: 'text-emerald-700', bg: 'bg-emerald-50' },
-            { label: 'Total Reimb.', value: formatMoney(stats.totalReimbursement), color: 'text-emerald-700', bg: 'bg-emerald-50' },
-            { label: 'Total Deductions', value: formatMoney(stats.totalDeductions), color: 'text-red-600', bg: 'bg-red-50' },
-            { label: 'Total Net Pay', value: formatMoney(stats.totalNet), color: 'text-green-700', bg: 'bg-green-50' },
-          ].map((stat) => (
-            <div key={stat.label} className={`rounded-2xl p-5 ${stat.bg} border border-black/5`}>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">{stat.label}</p>
-              <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
-            </div>
-          ))}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+          <div className="rounded-2xl p-5 bg-white border border-black/5">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Employees</p>
+            <p className="text-2xl font-bold text-gray-900">{stats.count}</p>
+          </div>
+          <div className="rounded-2xl p-5 bg-blue-50 border border-black/5">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Total Salary</p>
+            <p className="text-2xl font-bold text-blue-700">{formatMoney(stats.totalSalary)}</p>
+          </div>
+          <div className="rounded-2xl p-5 bg-emerald-50 border border-black/5">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Bonus + Reimb.</p>
+            <p className="text-2xl font-bold text-emerald-700">{formatMoney(stats.totalBonus + stats.totalReimbursement)}</p>
+          </div>
+          <div className="rounded-2xl p-5 bg-green-50 border border-black/5">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1">Total</p>
+            <p className="text-2xl font-bold text-green-700">{formatMoney(stats.totalSalary + stats.totalBonus + stats.totalReimbursement)}</p>
+          </div>
         </div>
 
         {error && <div className="apple-alert apple-alert-error mb-6">{error}</div>}
@@ -606,22 +503,12 @@ export default function SalariedPaysheetPage() {
         ) : (
           <div className="space-y-3 mt-4">
             {records.map((record) => {
-              const isExpanded = expandedId === record.id;
               const isEditing = editingId === record.id;
-              const totalDeductions =
-                record.federal_tax + record.state_tax + record.social_security +
-                record.medicare + record.other_deductions;
 
               return (
                 <div key={record.id} className="apple-card">
-                  {/* Row header */}
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div
-                      className="flex-1 min-w-0 cursor-pointer"
-                      onClick={() => {
-                        if (!isEditing) setExpandedId(isExpanded ? null : record.id);
-                      }}
-                    >
+                    <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
                         <span className="font-semibold text-gray-900">{record.employee_name}</span>
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border ${STATUS_STYLES[record.status]}`}>
@@ -634,17 +521,29 @@ export default function SalariedPaysheetPage() {
                           <span className="ml-2 text-gray-400">· {record.employee_email}</span>
                         )}
                       </p>
+                      {record.notes && (
+                        <p className="text-xs text-gray-400 mt-1">{record.notes}</p>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-6 shrink-0">
                       <div className="text-right">
-                        <p className="text-xs text-gray-400 uppercase tracking-wider">Gross</p>
-                        <p className="text-base font-semibold text-gray-900">{formatMoney(record.gross_pay)}</p>
+                        <p className="text-xs text-gray-400 uppercase tracking-wider">Salary</p>
+                        <p className="text-lg font-bold text-blue-700">{formatMoney(record.gross_pay)}</p>
+                        {(record.bonus_amount > 0 || record.reimbursement_amount > 0) && (
+                          <p className="text-xs text-emerald-600 mt-0.5">
+                            {record.bonus_amount > 0 && `+${formatMoney(record.bonus_amount)} bonus`}
+                            {record.bonus_amount > 0 && record.reimbursement_amount > 0 && ' · '}
+                            {record.reimbursement_amount > 0 && `+${formatMoney(record.reimbursement_amount)} reimb.`}
+                          </p>
+                        )}
                       </div>
-                      <div className="text-right">
-                        <p className="text-xs text-gray-400 uppercase tracking-wider">Net</p>
-                        <p className="text-lg font-bold text-green-700">{formatMoney(record.net_pay)}</p>
-                      </div>
+                      {(record.bonus_amount > 0 || record.reimbursement_amount > 0) && (
+                        <div className="text-right">
+                          <p className="text-xs text-gray-400 uppercase tracking-wider">Total</p>
+                          <p className="text-lg font-bold text-green-700">{formatMoney(record.gross_pay + (record.bonus_amount || 0) + (record.reimbursement_amount || 0))}</p>
+                        </div>
+                      )}
                       <div className="flex gap-2">
                         <button
                           onClick={() => isEditing ? closeForm() : openEditForm(record)}
@@ -662,102 +561,7 @@ export default function SalariedPaysheetPage() {
                     </div>
                   </div>
 
-                  {/* Edit form inline */}
                   {isEditing && formPanel}
-
-                  {/* Expanded deduction breakdown */}
-                  {isExpanded && !isEditing && (
-                    <div className="mt-4 pt-4 border-t border-gray-100">
-                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        <div className="rounded-2xl bg-slate-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">Earnings</p>
-                          <div className="space-y-1 text-sm">
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">Annual Salary</span>
-                              <span className="font-medium">{formatMoney(record.annual_salary)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-gray-600">Gross This Period</span>
-                              <span className="font-medium">{formatMoney(record.gross_pay)}</span>
-                            </div>
-                            {record.bonus_amount > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Bonus</span>
-                                <span className="font-medium text-emerald-700">+{formatMoney(record.bonus_amount)}</span>
-                              </div>
-                            )}
-                            {record.bonus_notes && (
-                              <p className="text-xs text-gray-500 italic pl-1">{record.bonus_notes}</p>
-                            )}
-                            {record.reimbursement_amount > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Reimbursement</span>
-                                <span className="font-medium text-emerald-700">+{formatMoney(record.reimbursement_amount)}</span>
-                              </div>
-                            )}
-                            {record.reimbursement_notes && (
-                              <p className="text-xs text-gray-500 italic pl-1">{record.reimbursement_notes}</p>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-red-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-wider text-red-400 mb-2">Deductions</p>
-                          <div className="space-y-1 text-sm">
-                            {record.federal_tax > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Federal Tax</span>
-                                <span className="text-red-700">-{formatMoney(record.federal_tax)}</span>
-                              </div>
-                            )}
-                            {record.state_tax > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">State Tax</span>
-                                <span className="text-red-700">-{formatMoney(record.state_tax)}</span>
-                              </div>
-                            )}
-                            {record.social_security > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Social Security</span>
-                                <span className="text-red-700">-{formatMoney(record.social_security)}</span>
-                              </div>
-                            )}
-                            {record.medicare > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Medicare</span>
-                                <span className="text-red-700">-{formatMoney(record.medicare)}</span>
-                              </div>
-                            )}
-                            {record.other_deductions > 0 && (
-                              <div className="flex justify-between">
-                                <span className="text-gray-600">Other</span>
-                                <span className="text-red-700">-{formatMoney(record.other_deductions)}</span>
-                              </div>
-                            )}
-                            <div className="flex justify-between pt-1 border-t border-red-100 font-semibold">
-                              <span className="text-gray-700">Total Deductions</span>
-                              <span className="text-red-700">-{formatMoney(totalDeductions)}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-2xl bg-green-50 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-wider text-green-500 mb-2">Take-Home</p>
-                          <p className="text-3xl font-bold text-green-700 mt-1">{formatMoney(record.net_pay)}</p>
-                          {record.deduction_notes && (
-                            <p className="mt-2 text-xs text-gray-500">{record.deduction_notes}</p>
-                          )}
-                        </div>
-                      </div>
-
-                      {record.notes && (
-                        <div className="mt-3 rounded-2xl bg-gray-50 border border-gray-100 px-4 py-3 text-sm text-gray-600">
-                          <span className="font-medium text-gray-700">Notes: </span>
-                          {record.notes}
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </div>
               );
             })}
