@@ -5,6 +5,10 @@ import {
   isI9FormName,
   logI9AuditEvent,
 } from '@/lib/i9-proxy-audit';
+import {
+  archivePdfFormProgressVersion,
+  isMissingPdfFormProgressVersionsError,
+} from '@/lib/pdf-form-progress-versions';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,7 +68,7 @@ export async function POST(request: NextRequest) {
 
     const { data: existingRecord, error: existingError } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('updated_at')
+      .select('id, user_id, form_name, form_data, form_date, updated_at')
       .eq('user_id', sanitizedUserId)
       .eq('form_name', sanitizedFormName)
       .maybeSingle();
@@ -77,6 +81,25 @@ export async function POST(request: NextRequest) {
     const previousUpdatedAt = existingRecord?.updated_at ?? null;
     const targetUpdatedAt = new Date().toISOString();
     const isProxyI9Upload = sanitizedUserId !== user.id && isI9FormName(sanitizedFormName);
+    const shouldArchiveExistingVersion = !!existingRecord && existingRecord.form_data !== formData;
+
+    if (shouldArchiveExistingVersion && existingRecord) {
+      try {
+        await archivePdfFormProgressVersion({
+          supabase: supabaseAdmin,
+          existingRecord,
+          replacedAt: targetUpdatedAt,
+          replacedByUserId: user.id,
+          entryPoint: I9_ENTRY_POINTS.ADMIN_UPLOAD,
+          isProxyEdit: sanitizedUserId !== user.id,
+        });
+      } catch (versionError: any) {
+        if (!isMissingPdfFormProgressVersionsError(versionError)) {
+          console.error('[PDF-UPLOAD] Failed to archive previous version', versionError);
+          return NextResponse.json({ error: 'Failed to archive previous version' }, { status: 500 });
+        }
+      }
+    }
 
     const { error: upsertError } = await supabaseAdmin
       .from('pdf_form_progress')

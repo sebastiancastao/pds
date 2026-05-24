@@ -793,6 +793,22 @@ export async function PUT(
       return Math.max(grossMs - meal1Ms - meal2Ms - meal3Ms, 0);
     })();
 
+    const { error: closeEditRequestError } = await supabaseAdmin
+      .from("timesheet_edit_requests")
+      .update({
+        status: "completed",
+        reviewed_by: user.id,
+        reviewed_at: new Date().toISOString(),
+        review_notes: "Timesheet was updated from the event dashboard edit flow.",
+      })
+      .eq("event_id", eventId)
+      .eq("user_id", targetUserId)
+      .in("status", ["submitted", "in_review", "approved"]);
+
+    if (closeEditRequestError) {
+      return NextResponse.json({ error: closeEditRequestError.message }, { status: 500 });
+    }
+
     return NextResponse.json({
       ok: true,
       totalMs,

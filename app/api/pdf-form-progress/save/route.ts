@@ -11,6 +11,10 @@ import {
 } from '@/lib/i9-proxy-audit';
 import { safeDecrypt } from '@/lib/encryption';
 import { getPdfFormDisplayName } from '@/lib/pdf-forms';
+import {
+  archivePdfFormProgressVersion,
+  isMissingPdfFormProgressVersionsError,
+} from '@/lib/pdf-form-progress-versions';
 
 export const dynamic = 'force-dynamic';
 
@@ -21,6 +25,18 @@ const supabaseAdmin = createClient(
 );
 
 const CUSTOM_FORM_NAME_PATTERN = /^custom-form-([a-f0-9-]{36})$/i;
+
+function normalizeAuditBaseFormName(formName: string): string {
+  const normalized = formName.trim().toLowerCase();
+  if (!normalized) return normalized;
+
+  const parts = normalized.split('-');
+  if (parts.length > 1 && parts[0].length === 2) {
+    return parts.slice(1).join('-');
+  }
+
+  return normalized;
+}
 
 function normalizeFormEntryPoint(value: unknown, isProxySave: boolean): string {
   const normalized = String(value || '').trim();
@@ -105,6 +121,9 @@ async function logProxyFormSaveAudit(params: {
   const formType = getFormAuditType(formName);
   const formDisplayName = await resolveFormDisplayName(formName);
   const resolvedEntryPoint = normalizeFormEntryPoint(entryPoint, true);
+  const normalizedBaseFormName = normalizeAuditBaseFormName(formName);
+  const isHrNoticeToEmployeeEdit =
+    resolvedEntryPoint === 'hr-employees' && normalizedBaseFormName === 'notice-to-employee';
 
   const actionDetails = {
     origin: 'pdf-form-progress/save',
@@ -125,6 +144,10 @@ async function logProxyFormSaveAudit(params: {
     form_display_name: formDisplayName,
     form_type: formType,
     form_date: formDate || null,
+    hr_notice_to_employee_edit: isHrNoticeToEmployeeEdit,
+    hrNoticeToEmployeeEdit: isHrNoticeToEmployeeEdit,
+    edit_context: isHrNoticeToEmployeeEdit ? 'hr-employees-notice-to-employee' : null,
+    editContext: isHrNoticeToEmployeeEdit ? 'hr-employees-notice-to-employee' : null,
   };
 
   let loggedToFormAuditTrail = false;
@@ -241,21 +264,53 @@ export async function POST(request: NextRequest) {
     const normalizedEntryPoint = normalizeFormEntryPoint(entryPoint, isProxySave);
     const shouldLogI9Save = isI9FormName(resolvedFormName);
     const shouldLogHrFormSave = !shouldLogI9Save && (isProxySave || normalizedEntryPoint === 'hr-employees');
-    let hadExistingFormRecord = false;
 
-    if (shouldLogI9Save || shouldLogHrFormSave) {
-      const { data: existingFormRecord } = await supabaseAdmin
-        .from('pdf_form_progress')
-        .select('id')
-        .eq('user_id', saveUserId)
-        .eq('form_name', resolvedFormName)
-        .maybeSingle();
+    const { data: existingFormRecord, error: existingFormLookupError } = await supabaseAdmin
+      .from('pdf_form_progress')
+      .select('id, user_id, form_name, form_data, form_date, updated_at')
+      .eq('user_id', saveUserId)
+      .eq('form_name', resolvedFormName)
+      .maybeSingle();
 
-      hadExistingFormRecord = !!existingFormRecord;
+    if (existingFormLookupError) {
+      console.error('[SAVE API] Failed to read existing form progress:', existingFormLookupError);
+      return NextResponse.json(
+        { error: 'Failed to read existing form progress', details: existingFormLookupError.message },
+        { status: 500 },
+      );
+    }
+
+    const hadExistingFormRecord = !!existingFormRecord;
+    const normalizedIncomingFormDate = formDate || null;
+    const normalizedExistingFormDate = existingFormRecord?.form_date || null;
+    const shouldArchiveExistingVersion = !!existingFormRecord && (
+      existingFormRecord.form_data !== formData
+      || normalizedExistingFormDate !== normalizedIncomingFormDate
+    );
+
+    const occurredAt = new Date().toISOString();
+    if (shouldArchiveExistingVersion && existingFormRecord) {
+      try {
+        await archivePdfFormProgressVersion({
+          supabase: supabaseAdmin,
+          existingRecord: existingFormRecord,
+          replacedAt: occurredAt,
+          replacedByUserId: userId,
+          entryPoint: normalizedEntryPoint,
+          isProxyEdit: isProxySave,
+        });
+      } catch (versionError: any) {
+        if (!isMissingPdfFormProgressVersionsError(versionError)) {
+          console.error('[SAVE API] Failed to archive previous form version:', versionError);
+          return NextResponse.json(
+            { error: 'Failed to archive previous form version', details: versionError?.message || 'Unknown error' },
+            { status: 500 },
+          );
+        }
+      }
     }
 
     console.log('[SAVE API] Upserting form:', resolvedFormName, 'for user:', saveUserId);
-    const occurredAt = new Date().toISOString();
 
     const { error } = await supabaseAdmin
       .from('pdf_form_progress')

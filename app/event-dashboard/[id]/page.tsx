@@ -917,12 +917,12 @@ export default function EventDashboardPage() {
     if (activeTab === "timesheet") {
       const needsTeam = !teamLoaded;
       const needsTimesheet = !timesheetLoaded;
-      if (!needsTeam && !needsTimesheet) return;
+      // Always reload team data when entering the timesheet tab to get up-to-date attestation status
       (async () => {
         setLoadingTimesheetTab(true);
         try {
           const promises: Promise<void>[] = [];
-          if (needsTeam) promises.push(loadTeam(true)); // Skip photos for timesheet tab
+          promises.push(loadTeam(true)); // Always refresh to pick up new attestations
           if (needsTimesheet) promises.push(loadTimesheetTotals());
           await Promise.all(promises);
         } finally {
@@ -967,6 +967,7 @@ export default function EventDashboardPage() {
     const interval = setInterval(() => {
       if (!editingTimesheetUserId) {
         loadTimesheetTotals();
+        loadTeam(true); // also refresh attestation status
       }
     }, 15000);
     return () => clearInterval(interval);
@@ -6484,6 +6485,24 @@ export default function EventDashboardPage() {
     <div className="flex items-center justify-between">
       <div className="flex items-center gap-3">
         <h2 className="text-2xl font-bold">TimeSheet</h2>
+        <button
+          onClick={async () => {
+            setLoadingTimesheetTab(true);
+            try {
+              await Promise.all([loadTimesheetTotals(), loadTeam(true)]);
+            } finally {
+              setLoadingTimesheetTab(false);
+            }
+          }}
+          disabled={loadingTimesheetTab}
+          className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-800 bg-gray-100 hover:bg-gray-200 disabled:opacity-50 rounded-lg transition-colors"
+          title="Refresh timesheet and attestation data"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          Refresh
+        </button>
         {userRole === "exec" && (
           <button
             onClick={async () => {
@@ -6829,6 +6848,12 @@ export default function EventDashboardPage() {
                           >
                             Edit
                           </button>
+                          <Link
+                            href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
+                            className="text-gray-600 hover:text-gray-800 font-medium text-xs ml-2"
+                          >
+                            View Timesheet
+                          </Link>
                           {userRole === "exec" && hasSubmittedAttestation && (
                             <button
                               onClick={async () => {
@@ -6869,7 +6894,12 @@ export default function EventDashboardPage() {
                         </>
                       )
                     ) : (
-                      <span className="text-xs text-gray-400">View only</span>
+                      <Link
+                        href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
+                        className="text-gray-600 hover:text-gray-800 font-medium text-xs"
+                      >
+                        View Timesheet
+                      </Link>
                     )}
                   </td>
                 </tr>

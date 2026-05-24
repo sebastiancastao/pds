@@ -53,6 +53,12 @@ type PerEvent = {
   hours: number;
   event_name: string | null;
   event_date: string | null; // YYYY-MM-DD
+  venue?: string | null;
+  event_type?: string | null;
+  is_team_member?: boolean;
+  timesheet_attestation_status?: "submitted" | "rejected" | "not_submitted";
+  timesheet_edit_request_status?: string | null;
+  timesheet_edit_request_created_at?: string | null;
 };
 
 type SickLeaveStatus = "pending" | "approved" | "denied";
@@ -128,6 +134,12 @@ type PDFForm = {
   created_at: string;
   form_date: string | null;
 };
+
+const normalizeStandardOnboardingFormName = (formName?: string | null) =>
+  String(formName || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z]{2}-/, '');
 
 type PaystubDistributionEntry = {
   id: string;
@@ -280,6 +292,7 @@ function formatDateTime(d?: string | null, state?: string | null) {
 export default function WorkerProfilePage() {
   const params = useParams<{ id: string }>();
   const employeeId = params?.id;
+  const timeSheetUserQuery = employeeId ? `?userId=${encodeURIComponent(employeeId)}` : "";
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -314,6 +327,162 @@ export default function WorkerProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  const [timesheetEditRequestTarget, setTimesheetEditRequestTarget] = useState<{
+    eventId: string;
+    eventName: string;
+  } | null>(null);
+  const [timesheetEditRequestReason, setTimesheetEditRequestReason] = useState("");
+  const [timesheetEditRequestError, setTimesheetEditRequestError] = useState("");
+  const [submittingTimesheetEditRequest, setSubmittingTimesheetEditRequest] = useState(false);
+
+  const renderTimeSheetAction = (
+    eventId: string | null | undefined,
+    attestationStatus: PerEvent["timesheet_attestation_status"] = "not_submitted",
+    editRequestStatus: PerEvent["timesheet_edit_request_status"] = null,
+    eventName = "this event",
+    className = "inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-gray-100 text-gray-700 hover:bg-gray-200 transition-colors"
+  ) => {
+    if (!eventId) return null;
+    if (attestationStatus !== "not_submitted") {
+      if (editRequestStatus === "approved") {
+        return (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-blue-200 bg-blue-50 text-blue-700">
+              Edit Approved
+            </span>
+            <Link
+              href={`/time-sheets/${eventId}${timeSheetUserQuery}`}
+              className={className}
+            >
+              Open Timesheet
+            </Link>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span
+            className={`inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border ${
+              attestationStatus === "submitted"
+                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                : "bg-red-50 text-red-700 border-red-200"
+            }`}
+          >
+            {attestationStatus === "submitted" ? "Attested" : "Rejected"}
+          </span>
+          {editRequestStatus === "submitted" || editRequestStatus === "in_review" ? (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-amber-200 bg-amber-50 text-amber-700">
+              Edit Requested
+            </span>
+          ) : editRequestStatus === "rejected" ? (
+            <>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+                Edit Request Rejected
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setTimesheetEditRequestTarget({ eventId, eventName });
+                  setTimesheetEditRequestReason("");
+                  setTimesheetEditRequestError("");
+                }}
+                className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Request Again
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setTimesheetEditRequestTarget({ eventId, eventName });
+                setTimesheetEditRequestReason("");
+                setTimesheetEditRequestError("");
+              }}
+              className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+            >
+              Request Edit
+            </button>
+          )}
+        </div>
+      );
+    }
+
+    return (
+      <Link href={`/time-sheets/${eventId}${timeSheetUserQuery}`} className={className}>
+        View Timesheet
+      </Link>
+    );
+  };
+
+  const submitTimesheetEditRequest = async () => {
+    if (!timesheetEditRequestTarget || !employeeId) return;
+
+    const trimmedReason = timesheetEditRequestReason.trim();
+    if (!trimmedReason) {
+      setTimesheetEditRequestError("Please explain why this timesheet needs to be edited.");
+      return;
+    }
+
+    setSubmittingTimesheetEditRequest(true);
+    setTimesheetEditRequestError("");
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const res = await fetch("/api/timesheet-edit-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          eventId: timesheetEditRequestTarget.eventId,
+          targetUserId: employeeId,
+          requestReason: trimmedReason,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit timesheet edit request.");
+      }
+
+      setSummary((prev) =>
+        prev
+          ? {
+              ...prev,
+              per_event: prev.per_event.map((row) =>
+                row.event_id === timesheetEditRequestTarget.eventId
+                  ? {
+                      ...row,
+                      timesheet_edit_request_status: data?.request?.status || "submitted",
+                      timesheet_edit_request_created_at:
+                        data?.request?.createdAt || new Date().toISOString(),
+                    }
+                  : row
+              ),
+            }
+          : prev
+      );
+      setTimesheetEditRequestTarget(null);
+      setTimesheetEditRequestReason("");
+    } catch (error: any) {
+      setTimesheetEditRequestError(
+        error?.message || "Failed to submit timesheet edit request."
+      );
+    } finally {
+      setSubmittingTimesheetEditRequest(false);
+    }
+  };
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
@@ -922,18 +1091,36 @@ export default function WorkerProfilePage() {
 
   // Embed a date string to the right of the signature block on the last PDF page.
   // Safe to call even if the date was already embedded — it just draws over itself.
-  const withDateEmbedded = async (base64Data: string, date: string): Promise<string> => {
+  const withDateEmbedded = async (
+    base64Data: string,
+    date: string,
+    formName?: string
+  ): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const lastPage = pdfDoc.getPages().at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const isNoticeToEmployee = normalizeStandardOnboardingFormName(formName) === 'notice-to-employee';
+    const footerYShift = isNoticeToEmployee ? -16 : 0;
     const [y, m, d] = date.split('-').map(Number);
     const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-    lastPage.drawRectangle({ x: 325, y: 28, width: 195, height: 85, color: rgb(1, 1, 1), borderWidth: 0 });
-    lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
-    lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    lastPage.drawRectangle({
+      x: 325,
+      y: isNoticeToEmployee ? 8 : 28,
+      width: 195,
+      height: isNoticeToEmployee ? 105 : 85,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+    lastPage.drawText('Date', { x: 330, y: 104 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(formatted, { x: 330, y: 60 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({
+      start: { x: 330, y: 38 + footerYShift },
+      end: { x: 510, y: 38 + footerYShift },
+      thickness: 0.5,
+      color: rgb(0.6, 0.6, 0.6),
+    });
     const saved = await pdfDoc.save();
     let b = '';
     for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
@@ -1014,7 +1201,8 @@ export default function WorkerProfilePage() {
     base64Data: string,
     venueName: string,
     employeeName?: string,
-    includeOpeningPrintName = false
+    includeOpeningPrintName = false,
+    formName?: string
   ): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
@@ -1023,13 +1211,26 @@ export default function WorkerProfilePage() {
     const firstPage = pages[0];
     const lastPage = pages.at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    try { pdfDoc.getForm().flatten(); } catch {}
-    lastPage.drawRectangle({ x: 35, y: 150, width: 445, height: 60, color: rgb(1, 1, 1), borderWidth: 0 });
+    const isNoticeToEmployee = normalizeStandardOnboardingFormName(formName) === 'notice-to-employee';
+    const footerYShift = isNoticeToEmployee ? -16 : 0;
+    lastPage.drawRectangle({
+      x: 35,
+      y: isNoticeToEmployee ? 138 : 150,
+      width: 445,
+      height: isNoticeToEmployee ? 78 : 60,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
     const trimmedEmployeeName = employeeName?.trim();
     if (trimmedEmployeeName) {
-      lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-      lastPage.drawText(trimmedEmployeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-      lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+      lastPage.drawText('Print Name', { x: 40, y: 200 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      lastPage.drawText(trimmedEmployeeName, { x: 40, y: 175 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
+      lastPage.drawLine({
+        start: { x: 40, y: 160 + footerYShift },
+        end: { x: 210, y: 160 + footerYShift },
+        thickness: 0.5,
+        color: rgb(0.6, 0.6, 0.6),
+      });
       if (includeOpeningPrintName) {
         const openingLineX = 80;
         const openingLineY = 523;
@@ -1059,9 +1260,14 @@ export default function WorkerProfilePage() {
         });
       }
     }
-    lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-    lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+    lastPage.drawText('Home Venue', { x: 220, y: 200 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 220, y: 175 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawLine({
+      start: { x: 220, y: 160 + footerYShift },
+      end: { x: 470, y: 160 + footerYShift },
+      thickness: 0.5,
+      color: rgb(0.6, 0.6, 0.6),
+    });
     const saved = await pdfDoc.save();
     let b = '';
     for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
@@ -1166,15 +1372,73 @@ export default function WorkerProfilePage() {
     return window.URL.createObjectURL(blob);
   };
 
-  const openPdfInNewTab = (base64Data: string) => {
+  const openPdfInNewTab = (base64Data: string, existingWindow?: Window | null) => {
     const url = createPdfBlobUrl(base64Data);
-    const popup = window.open(url, '_blank');
+    const popup = existingWindow || window.open('', '_blank');
     if (!popup) {
       window.URL.revokeObjectURL(url);
       throw new Error('Popup blocked');
     }
     popup.opener = null;
+    popup.location.replace(url);
     setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
+
+  const openPdfBlobInNewTab = (blob: Blob, existingWindow?: Window | null) => {
+    const url = window.URL.createObjectURL(blob);
+    const popup = existingWindow || window.open('', '_blank');
+    if (!popup) {
+      window.URL.revokeObjectURL(url);
+      throw new Error('Popup blocked');
+    }
+    popup.opener = null;
+    popup.location.replace(url);
+    setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
+
+  const downloadPdfBlob = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
+
+  const isEmployeeHandbookPdfForm = (form: Pick<PDFForm, 'form_name'>) =>
+    normalizeStandardOnboardingFormName(form.form_name) === 'employee-handbook';
+
+  const getOnboardingRenderedFormBlob = async (form: PDFForm): Promise<Blob | null> => {
+    if (!employeeId || !isEmployeeHandbookPdfForm(form)) {
+      return null;
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/user/${employeeId}?signatureSource=forms_signature&formName=${encodeURIComponent(form.form_name)}`,
+        {
+          cache: 'no-store',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        }
+      );
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const pdfBytes = await res.arrayBuffer();
+      if (!pdfBytes.byteLength) {
+        return null;
+      }
+
+      return new Blob([pdfBytes], { type: 'application/pdf' });
+    } catch (error) {
+      console.warn('Failed to fetch onboarding-rendered PDF form, falling back to per-form render', error);
+      return null;
+    }
   };
 
   const rebuildTempAgreementFromTemplate = async (
@@ -1209,6 +1473,124 @@ export default function WorkerProfilePage() {
       console.warn('Failed to rebuild temp agreement from template, falling back to saved PDF data', error);
       return base64Data;
     }
+  };
+
+  const rebuildNoticeToEmployeeFromTemplate = async (form: PDFForm): Promise<string> => {
+    const normalizedName = normalizeStandardOnboardingFormName(form.form_name);
+    if (normalizedName !== 'notice-to-employee') {
+      return form.form_data;
+    }
+
+    const stateCode = String(employee?.state || 'CA').trim().toLowerCase() || 'ca';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const templateRes = await fetch(`/api/payroll-packet-${stateCode}/notice-to-employee?role=employee`, {
+        cache: 'no-store',
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      });
+
+      if (!templateRes.ok) {
+        return form.form_data;
+      }
+
+      const templateBytes = new Uint8Array(await templateRes.arrayBuffer());
+      const savedBytes = Uint8Array.from(atob(form.form_data), (c) => c.charCodeAt(0));
+      const rebuiltBytes = await mergeSavedPdfFieldsOntoTemplate(templateBytes, savedBytes);
+
+      if (!rebuiltBytes) {
+        return form.form_data;
+      }
+
+      let binary = '';
+      for (let i = 0; i < rebuiltBytes.length; i++) binary += String.fromCharCode(rebuiltBytes[i]);
+      return btoa(binary);
+    } catch (error) {
+      console.warn('Failed to rebuild notice-to-employee from template, falling back to saved PDF data', error);
+      return form.form_data;
+    }
+  };
+
+  const getNoticeToEmployeeRenderData = async (
+    form: PDFForm
+  ): Promise<{ formData: string; signatureData: string | null; signatureType: string | null }> => {
+    if (!employeeId) {
+      return { formData: form.form_data, signatureData: null, signatureType: null };
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}&returnSignatureData=1`,
+        { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        return {
+          formData: json.formData || form.form_data,
+          signatureData: json.signatureData || null,
+          signatureType: json.signatureType || null,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to fetch notice-to-employee signature data, falling back to raw PDF data', e);
+    }
+
+    return { formData: form.form_data, signatureData: null, signatureType: null };
+  };
+
+  const withNoticeToEmployeeSignatureRedrawn = async (
+    base64Data: string,
+    signatureData?: string | null,
+    signatureType?: string | null
+  ): Promise<string> => {
+    const trimmedSignature = signatureData?.trim();
+    if (!trimmedSignature) return base64Data;
+
+    const { PDFDocument, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1);
+    if (!lastPage) return base64Data;
+
+    const { width, height } = lastPage.getSize();
+    const signatureWidth = 150;
+    const signatureHeight = 15;
+    const x = Math.max(0, width - 260);
+    const y = Math.min(height - signatureHeight, 235);
+    const signatureKind = (signatureType || '').toLowerCase();
+    const isImageDataUrl = trimmedSignature.toLowerCase().startsWith('data:image/');
+    const isTyped = signatureKind === 'typed' || signatureKind === 'type' || !isImageDataUrl;
+
+    if (isTyped) {
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      lastPage.drawText(trimmedSignature, {
+        x,
+        y: y + signatureHeight / 2,
+        size: 10,
+        font,
+      });
+    } else {
+      const match = trimmedSignature.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/i);
+      const format = (match?.[1] || 'png').toLowerCase();
+      const imageBase64 = match?.[2] || trimmedSignature;
+      const imageBytes = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
+      const signatureImage =
+        format === 'jpg' || format === 'jpeg'
+          ? await pdfDoc.embedJpg(imageBytes)
+          : await pdfDoc.embedPng(imageBytes);
+
+      lastPage.drawImage(signatureImage, {
+        x,
+        y,
+        width: signatureWidth,
+        height: signatureHeight,
+      });
+    }
+
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
   };
 
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
@@ -1286,6 +1668,12 @@ export default function WorkerProfilePage() {
 
   const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
+      const onboardingRenderedBlob = await getOnboardingRenderedFormBlob(form);
+      if (onboardingRenderedBlob) {
+        downloadPdfBlob(onboardingRenderedBlob, `${form.display_name}.pdf`);
+        return;
+      }
+
       const matchingCustomForm = getMatchingCustomFormForPdf(form);
       const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
       const isTempAgreementForm =
@@ -1310,22 +1698,50 @@ export default function WorkerProfilePage() {
           tempAgreementData.signatureType
         );
       } else {
-        data = await getFormDataWithSignature(form);
+        const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+        const noticeRenderData = isNoticeToEmployee
+          ? await getNoticeToEmployeeRenderData(form)
+          : null;
+        data = noticeRenderData?.formData || await getFormDataWithSignature(form);
+        if (isNoticeToEmployee) {
+          data = await rebuildNoticeToEmployeeFromTemplate({
+            ...form,
+            form_data: noticeRenderData?.formData || form.form_data,
+          });
+        }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
       const employeeFullName = employee ? `${employee.first_name} ${employee.last_name}` : undefined;
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+      const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
+      if (
+        shouldEmbedProfileFields &&
+        form.form_date &&
+        !isAttestationPdfForm &&
+        !isNoticeToEmployee
+      ) {
+        data = await withDateEmbedded(data, form.form_date, form.form_name);
+      }
       if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
         data = await withAttestationPrintNameEmbedded(data, employeeFullName);
       }
-      if (shouldEmbedProfileFields && venueName) {
+      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
           employeeFullName,
-          shouldEmbedOpeningPrintName
+          shouldEmbedOpeningPrintName,
+          form.form_name
+        );
+      }
+      if (isNoticeToEmployee) {
+        const noticeRenderData = await getNoticeToEmployeeRenderData(form);
+        data = await withNoticeToEmployeeSignatureRedrawn(
+          data,
+          noticeRenderData.signatureData,
+          noticeRenderData.signatureType
         );
       }
       const url = createPdfBlobUrl(data);
@@ -1335,7 +1751,7 @@ export default function WorkerProfilePage() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
     } catch (error) {
       console.error('Error downloading PDF:', error);
       alert('Failed to download PDF form');
@@ -1343,7 +1759,19 @@ export default function WorkerProfilePage() {
   };
 
   const viewPDFForm = async (form: PDFForm, venueName?: string) => {
+    const previewWindow = window.open('', '_blank');
+    if (previewWindow) {
+      previewWindow.document.title = form.display_name || 'PDF Preview';
+      previewWindow.document.body.innerHTML = '<div style="font-family: Arial, sans-serif; padding: 24px;">Preparing PDF preview...</div>';
+    }
+
     try {
+      const onboardingRenderedBlob = await getOnboardingRenderedFormBlob(form);
+      if (onboardingRenderedBlob) {
+        openPdfBlobInNewTab(onboardingRenderedBlob, previewWindow);
+        return;
+      }
+
       const matchingCustomForm = getMatchingCustomFormForPdf(form);
       const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
       const isTempAgreementForm =
@@ -1368,26 +1796,57 @@ export default function WorkerProfilePage() {
           tempAgreementData.signatureType
         );
       } else {
-        data = await getFormDataWithSignature(form);
+        const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+        const noticeRenderData = isNoticeToEmployee
+          ? await getNoticeToEmployeeRenderData(form)
+          : null;
+        data = noticeRenderData?.formData || await getFormDataWithSignature(form);
+        if (isNoticeToEmployee) {
+          data = await rebuildNoticeToEmployeeFromTemplate({
+            ...form,
+            form_data: noticeRenderData?.formData || form.form_data,
+          });
+        }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
       const employeeFullName = employee ? `${employee.first_name} ${employee.last_name}` : undefined;
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+      const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
+      if (
+        shouldEmbedProfileFields &&
+        form.form_date &&
+        !isAttestationPdfForm &&
+        !isNoticeToEmployee
+      ) {
+        data = await withDateEmbedded(data, form.form_date, form.form_name);
+      }
       if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
         data = await withAttestationPrintNameEmbedded(data, employeeFullName);
       }
-      if (shouldEmbedProfileFields && venueName) {
+      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
           employeeFullName,
-          shouldEmbedOpeningPrintName
+          shouldEmbedOpeningPrintName,
+          form.form_name
         );
       }
-      openPdfInNewTab(data);
+      if (isNoticeToEmployee) {
+        const noticeRenderData = await getNoticeToEmployeeRenderData(form);
+        data = await withNoticeToEmployeeSignatureRedrawn(
+          data,
+          noticeRenderData.signatureData,
+          noticeRenderData.signatureType
+        );
+      }
+      openPdfInNewTab(data, previewWindow);
     } catch (error) {
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.close();
+      }
       console.error('Error viewing PDF:', error);
       alert('Failed to open PDF form');
     }
@@ -1768,6 +2227,11 @@ export default function WorkerProfilePage() {
                 ) : (() => {
                   // Build lookup: event_id → per_event row
                   const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
+                  // Events with time entries but no team invitation (manually entered via self-timesheet)
+                  const invitedEventIds = new Set(eventInvitations.map(inv => inv.event_id));
+                  const orphanedPerEvents = (summary?.per_event ?? []).filter(r =>
+                    r.event_id && r.event_id !== "unknown" && !invitedEventIds.has(r.event_id) && r.is_team_member === false
+                  );
                   // Build lookup: event_id → time entries[]
                   const entriesByEvent = new Map<string, typeof entries>();
                   entries.forEach(e => {
@@ -1790,7 +2254,7 @@ export default function WorkerProfilePage() {
                           </tr>
                         </thead>
                         <tbody>
-                          {eventInvitations.length === 0 && (
+                          {eventInvitations.length === 0 && orphanedPerEvents.length === 0 && (entriesByEvent.get("__none__") ?? []).length === 0 && (
                             <tr>
                               <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>
@@ -1824,13 +2288,19 @@ export default function WorkerProfilePage() {
                                   </td>
                                   <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
                                   <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
-                                  <td className="p-3">
-                                    {inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") ? (
+                                  <td className="p-3 flex flex-wrap gap-1.5 items-center">
+                                    {inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") && (
                                       <Link href={`/team-confirmation/${inv.confirmation_token}`}
                                         className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors">
                                         Confirm Participation
                                       </Link>
-                                    ) : <span className="text-gray-400 text-xs">—</span>}
+                                    )}
+                                    {renderTimeSheetAction(
+                                      inv.event_id,
+                                      agg?.timesheet_attestation_status,
+                                      agg?.timesheet_edit_request_status,
+                                      inv.event_name || inv.event_id
+                                    )}
                                   </td>
                                 </tr>
                                 {/* Time entry sub-rows */}
@@ -1858,6 +2328,105 @@ export default function WorkerProfilePage() {
                               </>
                             );
                           })}
+                          {/* Events with time entries but no formal team invitation (e.g. manually entered via self-timesheet) */}
+                          {orphanedPerEvents.map((ev) => {
+                            const eventEntries = entriesByEvent.get(ev.event_id!) ?? [];
+                            const isNonEvent = ev.event_type === "special";
+                            return (
+                              <>
+                                <tr key={`orphan-${ev.event_id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                                  <td className="p-3 font-semibold text-gray-900">
+                                    <span>{ev.event_name || ev.event_id}</span>
+                                    {isNonEvent && (
+                                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200">Non-Event</span>
+                                    )}
+                                  </td>
+                                  <td className="p-3 text-gray-700 text-sm">{formatEventDate(ev.event_date)}</td>
+                                  <td className="p-3 text-gray-600 text-sm">{ev.venue || "—"}</td>
+                                  <td className="p-3">
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border bg-gray-100 text-gray-600 border-gray-200">
+                                      Recorded
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{ev.shifts}</td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(ev.hours)}</td>
+                                  <td className="p-3">
+                                    {renderTimeSheetAction(
+                                      ev.event_id,
+                                      ev.timesheet_attestation_status,
+                                      ev.timesheet_edit_request_status,
+                                      ev.event_name || ev.event_id || "this event"
+                                    )}
+                                  </td>
+                                </tr>
+                                {eventEntries.map(e => (
+                                  <tr key={`orphan-entry-${e.id}`} className="bg-gray-50 border-t border-gray-100">
+                                    <td className="pl-8 pr-3 py-2">
+                                      <span className="text-gray-400 text-xs">↳ Shift</span>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock In</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in, null)}</div>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock Out</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out, null)}</div>
+                                    </td>
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2 text-gray-900 text-xs font-medium">
+                                      {e.duration_hours != null ? formatHours(e.duration_hours) : "—"}
+                                    </td>
+                                    <td className="px-3 py-2" />
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })}
+                          {/* Non-event time entries (no associated event) */}
+                          {(() => {
+                            const nonEventEntries = entriesByEvent.get("__none__") ?? [];
+                            if (nonEventEntries.length === 0) return null;
+                            const totalHours = nonEventEntries.reduce((sum, e) => sum + (e.duration_hours ?? hoursBetween(e.clock_in, e.clock_out)), 0);
+                            return (
+                              <>
+                                <tr className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                                  <td className="p-3 font-semibold text-gray-900">Non-Event Time</td>
+                                  <td className="p-3 text-gray-400 text-sm">—</td>
+                                  <td className="p-3 text-gray-400 text-sm">—</td>
+                                  <td className="p-3">
+                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border bg-purple-50 text-purple-700 border-purple-200">
+                                      Non-Event
+                                    </span>
+                                  </td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{nonEventEntries.length}</td>
+                                  <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(totalHours)}</td>
+                                  <td className="p-3"><span className="text-gray-400 text-xs">—</span></td>
+                                </tr>
+                                {nonEventEntries.map(e => (
+                                  <tr key={`ne-entry-${e.id}`} className="bg-gray-50 border-t border-gray-100">
+                                    <td className="pl-8 pr-3 py-2">
+                                      <span className="text-gray-400 text-xs">↳ Shift</span>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock In</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in, null)}</div>
+                                    </td>
+                                    <td className="px-3 py-2">
+                                      <div className="text-xs text-gray-500 font-medium">Clock Out</div>
+                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out, null)}</div>
+                                    </td>
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2" />
+                                    <td className="px-3 py-2 text-gray-900 text-xs font-medium">
+                                      {e.duration_hours != null ? formatHours(e.duration_hours) : "—"}
+                                    </td>
+                                    <td className="px-3 py-2" />
+                                  </tr>
+                                ))}
+                              </>
+                            );
+                          })()}
                         </tbody>
                       </table>
                     </div>
@@ -2465,7 +3034,6 @@ export default function WorkerProfilePage() {
                               </Link>
                             )}
                           </div>
-
                           {/* Supporting documents uploaded with this form */}
                           {submitted &&
                             isI9PdfForm({
@@ -2602,6 +3170,119 @@ export default function WorkerProfilePage() {
                 ))}
               </div>
             </section>
+          )}
+
+          {/* Non-Event Timesheets */}
+          {(() => {
+            const nonEventSheets = (summary?.per_event ?? []).filter(e => e.event_type === "special" && e.event_id);
+            if (nonEventSheets.length === 0) return null;
+            return (
+              <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+                <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+                  <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  <h2 className="text-base font-semibold text-gray-900">Non-Event Timesheets</h2>
+                  <span className="ml-auto text-xs text-gray-400">{nonEventSheets.length} sheet{nonEventSheets.length !== 1 ? "s" : ""}</span>
+                </div>
+                <div className="divide-y divide-gray-50">
+                  {nonEventSheets.map((sheet) => (
+                    <div key={sheet.event_id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-gray-900">{sheet.event_name || sheet.event_id}</p>
+                        {sheet.event_date && (
+                          <p className="text-xs text-gray-500 mt-0.5">{formatEventDate(sheet.event_date)}</p>
+                        )}
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className="text-xs text-gray-500">{sheet.shifts} shift{sheet.shifts !== 1 ? "s" : ""}</span>
+                          <span className="text-xs text-gray-400">·</span>
+                          <span className="text-xs text-gray-500">{formatHours(sheet.hours)} hrs</span>
+                        </div>
+                      </div>
+                      {renderTimeSheetAction(
+                        sheet.event_id,
+                        sheet.timesheet_attestation_status,
+                        sheet.timesheet_edit_request_status,
+                        sheet.event_name || sheet.event_id || "this event",
+                        "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200 hover:bg-purple-100 transition-colors shrink-0"
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })()}
+
+          {timesheetEditRequestTarget && (
+            <div
+              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+              onClick={() => {
+                if (submittingTimesheetEditRequest) return;
+                setTimesheetEditRequestTarget(null);
+                setTimesheetEditRequestReason("");
+                setTimesheetEditRequestError("");
+              }}
+            >
+              <div
+                className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white shadow-2xl"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="border-b border-gray-200 px-6 py-4">
+                  <h3 className="text-lg font-semibold text-gray-900">Request Timesheet Edit</h3>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Submit a correction request for <span className="font-medium text-gray-700">{timesheetEditRequestTarget.eventName}</span>.
+                  </p>
+                </div>
+
+                <div className="space-y-4 px-6 py-5">
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    The attested timesheet will stay locked until a manager or exec reviews this request in the event dashboard.
+                  </div>
+
+                  <div>
+                    <label className="mb-2 block text-sm font-medium text-gray-700">
+                      Reason for edit <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      value={timesheetEditRequestReason}
+                      onChange={(e) => setTimesheetEditRequestReason(e.target.value)}
+                      rows={5}
+                      placeholder="Describe what needs to be corrected in this timesheet..."
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                    />
+                  </div>
+
+                  {timesheetEditRequestError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {timesheetEditRequestError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTimesheetEditRequestTarget(null);
+                      setTimesheetEditRequestReason("");
+                      setTimesheetEditRequestError("");
+                    }}
+                    disabled={submittingTimesheetEditRequest}
+                    className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void submitTimesheetEditRequest()}
+                    disabled={submittingTimesheetEditRequest}
+                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {submittingTimesheetEditRequest ? "Sending..." : "Send Request"}
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
 
           </>

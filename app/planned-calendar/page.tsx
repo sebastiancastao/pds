@@ -40,12 +40,6 @@ type PlannedEvent = {
   venue: Venue;
 };
 
-const fmt12h = (t: string): string => {
-  const [hStr, mStr = "00"] = t.split(":");
-  const h = parseInt(hStr, 10);
-  return `${h % 12 || 12}:${mStr.padStart(2, "0")} ${h >= 12 ? "PM" : "AM"}`;
-};
-
 const fmtDate = (d: string): string => {
   const [year, month, day] = d.split("-").map(Number);
   return new Date(year, month - 1, day).toLocaleDateString("en-US", {
@@ -69,7 +63,7 @@ export default function PlannedCalendarPage() {
   const [error, setError] = useState("");
 
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [form, setForm] = useState({ event_name: "", event_date: "", start_time: "", end_time: "", venue_id: "" });
+  const [form, setForm] = useState({ event_name: "", event_date: "", venue_id: "" });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -152,7 +146,7 @@ export default function PlannedCalendarPage() {
   }, [isAuthorized, fetchEvents, fetchVenues]);
 
   const handleCreate = async () => {
-    if (!form.event_name.trim() || !form.event_date || !form.start_time || !form.venue_id) {
+    if (!form.event_name.trim() || !form.event_date || !form.venue_id) {
       setFormError("All fields are required.");
       return;
     }
@@ -173,7 +167,7 @@ export default function PlannedCalendarPage() {
         throw new Error(body.error ?? "Failed to create event");
       }
       setShowCreateModal(false);
-      setForm({ event_name: "", event_date: "", start_time: "", end_time: "", venue_id: "" });
+      setForm({ event_name: "", event_date: "", venue_id: "" });
       await fetchEvents();
       setAlertModal({ title: "Event Created", message: "The planned event was added successfully.", type: "success" });
     } catch (err: any) {
@@ -254,15 +248,28 @@ export default function PlannedCalendarPage() {
               <p className="text-sm text-gray-500 mt-0.5">Manage and plan upcoming events</p>
             </div>
           </div>
-          <button
-            onClick={() => { setShowCreateModal(true); setFormError(""); }}
-            className="apple-button apple-button-primary flex items-center gap-2"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-            New Event
-          </button>
+          <div className="flex items-center gap-2">
+            {userRole === "supervisor4" && (
+              <button
+                onClick={async () => { await supabase.auth.signOut(); router.replace("/login"); }}
+                className="apple-button apple-button-secondary flex items-center gap-2 text-sm py-2 px-4"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                </svg>
+                Log Out
+              </button>
+            )}
+            <button
+              onClick={() => { setShowCreateModal(true); setFormError(""); }}
+              className="apple-button apple-button-primary flex items-center gap-2"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+              </svg>
+              New Event
+            </button>
+          </div>
         </div>
       </div>
 
@@ -412,12 +419,6 @@ export default function PlannedCalendarPage() {
                     </svg>
                     {fmtDate(ev.event_date)}
                   </span>
-                  <span className="flex items-center gap-1.5 text-gray-600">
-                    <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    {fmt12h(ev.start_time)}{ev.end_time ? ` – ${fmt12h(ev.end_time)}` : ""}
-                  </span>
                 </div>
 
                 {ev.venue.city && (
@@ -473,27 +474,6 @@ export default function PlannedCalendarPage() {
                   onChange={(e) => setForm((f) => ({ ...f, event_date: e.target.value }))}
                   className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 />
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="apple-label">Start Time</label>
-                  <input
-                    type="time"
-                    value={form.start_time}
-                    onChange={(e) => setForm((f) => ({ ...f, start_time: e.target.value }))}
-                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
-                <div>
-                  <label className="apple-label">End Time</label>
-                  <input
-                    type="time"
-                    value={form.end_time}
-                    onChange={(e) => setForm((f) => ({ ...f, end_time: e.target.value }))}
-                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                </div>
               </div>
 
               <div>

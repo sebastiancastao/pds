@@ -21,6 +21,8 @@ const supabaseAnon = createClient(
 const REQUEST_RECIPIENTS = [
   "sebastiancastao379@gmail.com",
   "jenvillar@1pds.net",
+  "hr@1pds.net",
+  "payroll@1pds.net",
 ];
 
 type UserWithProfile = {

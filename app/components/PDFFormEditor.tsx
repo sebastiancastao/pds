@@ -23,6 +23,7 @@ interface PDFFormEditorProps {
   continueUrl?: string;
   userId?: string; // When set, load/retrieve progress for this user (HR acting on behalf of employee)
   assignedVenueName?: string;
+  disableI9DateMirroring?: boolean;
 }
 
 interface FormField {
@@ -131,8 +132,15 @@ const getMirroringKey = (formId: string) => {
   return formId;
 };
 
-const getMirroredFieldName = (formId: string, fieldName: string) => {
+const getMirroredFieldName = (
+  formId: string,
+  fieldName: string,
+  disableI9DateMirroring?: boolean,
+) => {
   const mirrorKey = getMirroringKey(formId);
+  if (disableI9DateMirroring && (mirrorKey === 'i9' || mirrorKey === 'wi-i9')) {
+    return undefined;
+  }
   return MIRRORED_FIELDS[mirrorKey]?.[fieldName];
 };
 
@@ -400,6 +408,7 @@ export default function PDFFormEditor({
   continueUrl,
   userId,
   assignedVenueName,
+  disableI9DateMirroring = false,
 }: PDFFormEditorProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>('');
@@ -1201,7 +1210,11 @@ export default function PDFFormEditor({
 
   const handleFieldChange = useCallback(
     (fieldId: string, fieldName: string, value: string, widgetValue?: string) => {
-    const mirrorFieldName = getMirroredFieldName(formId, fieldName);
+    const mirrorFieldName = getMirroredFieldName(
+      formId,
+      fieldName,
+      disableI9DateMirroring,
+    );
     const mirrorFields =
       mirrorFieldName && mirrorFieldName !== fieldName
         ? formFields.filter((f) => f.baseName === mirrorFieldName)
@@ -1228,7 +1241,7 @@ export default function PDFFormEditor({
         onFieldChange();
       }
     },
-    [formFields, formId, onFieldChange],
+    [disableI9DateMirroring, formFields, formId, onFieldChange],
   );
 
   const updatePDFFields = async (updates: FieldUpdate[]) => {

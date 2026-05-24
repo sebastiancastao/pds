@@ -28,6 +28,17 @@ function FormViewerContent() {
     searchParams.get('entryPoint'),
     asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
   );
+  const viewerEntryPoint = searchParams.get('entryPoint') || (asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : '');
+  const buildViewerUrl = (nextFormName: string) => {
+    const params = new URLSearchParams({ form: nextFormName });
+    if (asUser) {
+      params.set('asUser', asUser);
+    }
+    if (viewerEntryPoint) {
+      params.set('entryPoint', viewerEntryPoint);
+    }
+    return `/payroll-packet-ca/form-viewer?${params.toString()}`;
+  };
 
   const escapeFieldNameForSelector = (fieldName: string) => {
     if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
@@ -173,7 +184,7 @@ function FormViewerContent() {
         <p>The form "{formName}" does not exist.</p>
         <p>Available forms: {Object.keys(formConfig).join(', ')}</p>
         <button
-          onClick={() => router.push('/payroll-packet-ca/form-viewer?form=fillable')}
+          onClick={() => router.push(buildViewerUrl('fillable'))}
           style={{
             padding: '12px 24px',
             backgroundColor: '#1976d2',
@@ -1423,7 +1434,7 @@ function FormViewerContent() {
       if (currentForm.next === 'meal-waiver-6hour') {
         router.push('/payroll-packet-ca/meal-waiver-6hour');
       } else {
-        router.push(`/payroll-packet-ca/form-viewer?form=${currentForm.next}`);
+        router.push(buildViewerUrl(currentForm.next));
       }
     } else {
       console.log('No next form, going to login');
@@ -1451,7 +1462,7 @@ function FormViewerContent() {
 
     if (prevFormEntry) {
       const [prevFormName] = prevFormEntry;
-      router.push(`/payroll-packet-ca/form-viewer?form=${prevFormName}`);
+      router.push(buildViewerUrl(prevFormName));
     } else {
       // No previous form found - this is the first form, go to home
       router.push('/');
@@ -1986,6 +1997,10 @@ function FormViewerContent() {
             showRequiredFieldErrors={missingRequiredFields.length > 0}
             continueUrl={continueUrl}
             userId={asUser}
+            disableI9DateMirroring={
+              formName === 'i9'
+              && (Boolean(asUser) || i9EntryPoint === I9_ENTRY_POINTS.HR_EMPLOYEES)
+            }
           />
         </div>
 

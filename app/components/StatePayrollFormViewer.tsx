@@ -255,12 +255,30 @@ export default function StatePayrollFormViewer({
 
   const basePath = `/payroll-packet-${stateCode}`;
   const isWiOrNv = stateCode === 'wi' || stateCode === 'nv';
+  const viewerEntryPoint = searchParams.get('entryPoint') || (asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : '');
+  const buildViewerUrl = (formId: string) => {
+    const params = new URLSearchParams({ form: formId });
+    if (asUser) {
+      params.set('asUser', asUser);
+    }
+    if (viewerEntryPoint) {
+      params.set('entryPoint', viewerEntryPoint);
+    }
+    return `${basePath}/form-viewer?${params.toString()}`;
+  };
 
   useEffect(() => {
     if (!formConfig[selectedForm]) {
-      router.replace(`${basePath}/form-viewer?form=${firstFormId}`);
+      const params = new URLSearchParams({ form: firstFormId });
+      if (asUser) {
+        params.set('asUser', asUser);
+      }
+      if (viewerEntryPoint) {
+        params.set('entryPoint', viewerEntryPoint);
+      }
+      router.replace(`${basePath}/form-viewer?${params.toString()}`);
     }
-  }, [basePath, firstFormId, formConfig, router, selectedForm]);
+  }, [asUser, basePath, firstFormId, formConfig, router, selectedForm, viewerEntryPoint]);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -2439,7 +2457,7 @@ export default function StatePayrollFormViewer({
     }
 
     if (currentForm?.next) {
-      router.push(`${basePath}/form-viewer?form=${currentForm.next}`);
+      router.push(buildViewerUrl(currentForm.next));
     } else {
       // Last form completed - mark onboarding as completed and redirect to login
       console.log('[FORM VIEWER] No next form, completing onboarding workflow');
@@ -2478,7 +2496,7 @@ export default function StatePayrollFormViewer({
     const currentIndex = formOrder.indexOf(selectedForm);
     if (currentIndex > 0) {
       const prevForm = formOrder[currentIndex - 1];
-      router.push(`${basePath}/form-viewer?form=${prevForm}`);
+      router.push(buildViewerUrl(prevForm));
     } else {
       router.push(basePath);
     }
@@ -2650,7 +2668,7 @@ export default function StatePayrollFormViewer({
         <h1>Form not found</h1>
         <p>The form "{selectedForm}" does not exist.</p>
         <button
-          onClick={() => router.push(`${basePath}/form-viewer?form=${firstFormId}`)}
+          onClick={() => router.push(buildViewerUrl(firstFormId))}
           style={{
             padding: '12px 24px',
             backgroundColor: '#1976d2',
@@ -2763,6 +2781,10 @@ export default function StatePayrollFormViewer({
             requiredFieldNames={missingRequiredFields}
             showRequiredFieldErrors={missingRequiredFields.length > 0}
             userId={asUser}
+            disableI9DateMirroring={
+              selectedForm === 'i9'
+              && (Boolean(asUser) || i9EntryPoint === I9_ENTRY_POINTS.HR_EMPLOYEES)
+            }
           />
         </div>
 

@@ -4,6 +4,7 @@ import { PDFDocument, PDFImage, PDFPage, PDFFont, StandardFonts, rgb } from 'pdf
 import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
+import { safeDecrypt } from '@/lib/encryption';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
@@ -106,13 +107,15 @@ const parseSignedAt = (value?: string | null): number | null => {
 };
 
 const buildDisplayName = (fullName?: string | null, firstName?: string | null, lastName?: string | null) => {
-  const trimmedFullName = (fullName || '').trim();
+  const trimmedFullName = safeDecrypt((fullName || '').trim()).trim();
   if (trimmedFullName) return trimmedFullName;
   return [firstName, lastName]
-    .map((value) => (value || '').trim())
+    .map((value) => safeDecrypt((value || '').trim()).trim())
     .filter(Boolean)
     .join(' ');
 };
+
+const normalizePdfTextValue = (value?: string | null) => safeDecrypt((value || '').trim()).trim();
 
 const drawTextInRect = (
   page: PDFPage,
@@ -1532,6 +1535,7 @@ export async function GET(
 ) {
   try {
     const userId = params.userId;
+    const requestedFormNameRaw = request.nextUrl.searchParams.get('formName')?.trim() || '';
 
     if (!userId) {
       return NextResponse.json({ error: 'User ID is required' }, { status: 400 });
@@ -1638,6 +1642,13 @@ export async function GET(
       return lower;
     };
 
+    const requestedCustomForm = requestedFormNameRaw
+      ? resolveCustomForm(requestedFormNameRaw)
+      : null;
+    const requestedFormKey =
+      requestedCustomForm?.dedupeKey ||
+      (requestedFormNameRaw ? normalizeFormKeyForDedup(requestedFormNameRaw) : null);
+
     // DEBUG: Track all handbook and i9 forms for WI state debugging
     const debugForms = allForms.filter((f) => {
       const name = (f.form_name || '').toLowerCase();
@@ -1733,15 +1744,30 @@ export async function GET(
       );
     }
 
-    console.log('[PDF_FORMS] Processing', forms.length, 'unique non-empty forms');
+    const formsToProcess = requestedFormKey
+      ? forms.filter((form) => {
+          const customForm = resolveCustomForm(form.form_name || '');
+          const normalizedKey = customForm?.dedupeKey || normalizeFormKeyForDedup(form.form_name || '');
+          return normalizedKey === requestedFormKey;
+        })
+      : forms;
 
-    const formsToProcess = forms;
     if (formsToProcess.length === 0) {
       return NextResponse.json(
-        { error: 'No onboarding forms available for download' },
+        {
+          error: requestedFormKey
+            ? `Requested form not found for this user: ${requestedFormNameRaw}`
+            : 'No onboarding forms available for download',
+        },
         { status: 404 }
       );
     }
+
+    console.log(
+      '[PDF_FORMS] Processing',
+      formsToProcess.length,
+      requestedFormKey ? 'requested forms' : 'unique non-empty forms'
+    );
 
     const { data: targetUserData } = await supabaseAdmin
       .from('users')
@@ -1787,7 +1813,7 @@ export async function GET(
     const normalizedUserState = (targetProfile?.state || '').toString().toLowerCase().trim();
     const isTargetStateWI = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin';
 
-    const latestFormTimestamp = maxTimestamp(forms.map((form) => form.updated_at));
+    const latestFormTimestamp = maxTimestamp(formsToProcess.map((form) => form.updated_at));
     let mealWaiverLatestUpdate: string | null = null;
 
     const signatureSource = request.nextUrl.searchParams.get('signatureSource')?.toLowerCase() || '';
@@ -2264,8 +2290,11 @@ export async function GET(
               if (normalizedFormName === 'attestation' && targetUserFullName) {
                 try {
                   const attestationNameField = pdfForm.getTextField(ATTESTATION_NAME_FIELD);
-                  const existingValue = attestationNameField.getText()?.trim() ?? '';
-                  if (!existingValue) {
+                  const rawExistingValue = attestationNameField.getText() ?? '';
+                  const existingValue = normalizePdfTextValue(rawExistingValue);
+                  if (existingValue && existingValue !== rawExistingValue.trim()) {
+                    attestationNameField.setText(existingValue);
+                  } else if (!existingValue) {
                     attestationNameField.setText(targetUserFullName);
                   }
                 } catch (error) {
@@ -2292,8 +2321,12 @@ export async function GET(
                     const fieldName = field.getName() || '';
                     const rawValue = textField.getText();
                     if (rawValue) {
+                      const preparedValue =
+                        normalizedFormName === 'attestation'
+                          ? normalizePdfTextValue(rawValue)
+                          : rawValue;
                       const normalizedValue = normalizeDateFieldValue(
-                        rawValue,
+                        preparedValue,
                         form.updated_at,
                         fieldName,
                         employeeDateOfBirth
@@ -2302,7 +2335,7 @@ export async function GET(
                       if (normalizedValue !== rawValue) {
                         textField.setText(normalizedValue);
                         console.log(
-                          `[PDF_FORMS] Normalized date field "${fieldName}": "${rawValue}" -> "${normalizedValue}"`
+                          `[PDF_FORMS] Normalized text field "${fieldName}": "${rawValue}" -> "${normalizedValue}"`
                         );
                       }
                     }
@@ -2711,7 +2744,8 @@ export async function GET(
 
     console.log(`[PDF_FORMS] ⏱️ Form processing took ${Date.now() - formProcessStart}ms (Signatures: ${totalSignatureTime}ms, Copying: ${totalCopyTime}ms)`);
 
-    // Add meal waivers to the merged PDF
+    if (!requestedFormKey) {
+      // Add meal waivers to the merged PDF only for full onboarding exports.
     const mealWaiverStart = Date.now();
     console.log('[PDF_FORMS] Adding meal waivers for user:', userId);
     const { waivers: mealWaivers, latestUpdate } = await fetchMealWaiversForUser(userId);
@@ -2725,6 +2759,8 @@ export async function GET(
     await addI9DocumentsToMergedPdf(mergedPdf, userId);
     console.log(`[PDF_FORMS] ⏱️ I-9 documents took ${Date.now() - i9Start}ms`);
 
+    }
+
     // Save the merged PDF
     const latestSourceTimestamp =
       maxTimestamp([latestFormTimestamp, mealWaiverLatestUpdate, latestSignatureTimestamp]) ||
@@ -2733,12 +2769,23 @@ export async function GET(
     const mergedPdfBytes = await mergedPdf.save();
     console.log(`[PDF_FORMS] ⏱️ PDF save took ${Date.now() - saveStart}ms, size: ${(mergedPdfBytes.length / 1024 / 1024).toFixed(2)} MB`);
 
-    const cacheStart = Date.now();
-    await cacheMergedPdf(userId, mergedPdfBytes, latestSourceTimestamp);
-    logElapsed('Cached merged PDF', cacheStart);
+    if (!requestedFormKey) {
+      const cacheStart = Date.now();
+      await cacheMergedPdf(userId, mergedPdfBytes, latestSourceTimestamp);
+      logElapsed('Cached merged PDF', cacheStart);
+    }
 
     const userName = targetUserData?.full_name || 'User';
-    const fileName = `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
+    const singleFormDisplayName =
+      requestedFormKey && formsToProcess.length === 1
+        ? displayNameForForm(
+            formsToProcess[0].form_name || requestedFormNameRaw || 'form',
+            resolveCustomForm(formsToProcess[0].form_name || '')
+          )
+        : null;
+    const fileName = singleFormDisplayName
+      ? `${singleFormDisplayName.replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, '_')}.pdf`
+      : `${userName.replace(/\s+/g, '_')}_Onboarding_Documents.pdf`;
 
     // Return the merged PDF as a downloadable file
     const pdfBuffer = Buffer.from(mergedPdfBytes);

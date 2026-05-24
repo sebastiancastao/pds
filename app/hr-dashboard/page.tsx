@@ -2431,21 +2431,31 @@ function HRDashboardContent() {
         'Email': r.employee_email || '',
         'Pay Period Start': r.pay_period_start,
         'Pay Period End': r.pay_period_end,
-        'Salary': Number(r.gross_pay),
+        'Gross Pay': Number(r.gross_pay),
+        'Bonus': Number(r.bonus_amount ?? 0),
+        'Bonus Notes': r.bonus_notes || '',
+        'Reimbursement': Number(r.reimbursement_amount ?? 0),
+        'Reimbursement Notes': r.reimbursement_notes || '',
+        'Net Pay': Number(r.net_pay),
         'Status': r.status ? r.status.charAt(0).toUpperCase() + r.status.slice(1) : '',
         'Notes': r.notes || '',
       }));
 
       const totalRow: any = {
         'Employee': 'TOTAL', 'Email': '', 'Pay Period Start': '', 'Pay Period End': '',
-        'Salary': Number(rows.reduce((s, r) => s + r['Salary'], 0).toFixed(2)),
+        'Gross Pay': Number(rows.reduce((s, r) => s + r['Gross Pay'], 0).toFixed(2)),
+        'Bonus': Number(rows.reduce((s, r) => s + r['Bonus'], 0).toFixed(2)),
+        'Bonus Notes': '',
+        'Reimbursement': Number(rows.reduce((s, r) => s + r['Reimbursement'], 0).toFixed(2)),
+        'Reimbursement Notes': '',
+        'Net Pay': Number(rows.reduce((s, r) => s + r['Net Pay'], 0).toFixed(2)),
         'Status': '', 'Notes': '',
       };
       rows.push(totalRow);
 
       const ws = XLSX.utils.json_to_sheet(rows);
       ws['!cols'] = [
-        { wch: 25 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 30 },
+        { wch: 25 }, { wch: 30 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 30 }, { wch: 14 }, { wch: 30 }, { wch: 14 }, { wch: 12 }, { wch: 30 },
       ];
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, 'Salaried Payroll');
@@ -3114,7 +3124,7 @@ function HRDashboardContent() {
               <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
-              Actual Calendar
+              Actual Global Calendar
             </button>
           </Link>
         </div>

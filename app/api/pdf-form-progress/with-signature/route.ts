@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
+import { safeDecrypt } from '@/lib/encryption';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
@@ -192,12 +193,16 @@ async function loadCustomFormTemplateBytes(formIdentifier?: string | null) {
 }
 
 function buildDisplayName(fullName?: string | null, firstName?: string | null, lastName?: string | null) {
-  const trimmedFullName = (fullName || '').trim();
+  const trimmedFullName = safeDecrypt((fullName || '').trim()).trim();
   if (trimmedFullName) return trimmedFullName;
   return [firstName, lastName]
-    .map((value) => (value || '').trim())
+    .map((value) => safeDecrypt((value || '').trim()).trim())
     .filter(Boolean)
     .join(' ');
+}
+
+function normalizePdfTextValue(value?: string | null) {
+  return safeDecrypt((value || '').trim()).trim();
 }
 
 function drawTextInRect(
@@ -825,8 +830,11 @@ export async function GET(request: NextRequest) {
         if (resolvedUserFullName) {
           try {
             const attestationNameField = attestPdfForm.getTextField(ATTESTATION_NAME_FIELD);
-            const currentValue = attestationNameField.getText()?.trim() ?? '';
-            if (!currentValue) {
+            const rawCurrentValue = attestationNameField.getText() ?? '';
+            const currentValue = normalizePdfTextValue(rawCurrentValue);
+            if (currentValue && currentValue !== rawCurrentValue.trim()) {
+              attestationNameField.setText(currentValue);
+            } else if (!currentValue) {
               attestationNameField.setText(resolvedUserFullName);
             }
           } catch (e) {
@@ -837,7 +845,11 @@ export async function GET(request: NextRequest) {
           try {
             const tf = attestPdfForm.getTextField(fieldName) as any;
             const tfWidgets = tf?.acroField?.getWidgets?.() || [];
-            const value = (tf.getText() || '').trim();
+            const rawValue = tf.getText() || '';
+            const value = normalizePdfTextValue(rawValue);
+            if (value && value !== rawValue.trim()) {
+              tf.setText(value);
+            }
             if (!tfWidgets.length) {
               if (fieldName === ATTESTATION_NAME_FIELD && value) {
                 const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];

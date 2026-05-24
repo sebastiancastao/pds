@@ -5,6 +5,10 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
+import {
+  PDFFormVersionHistoryModal,
+  type PDFFormHistoryEntry,
+} from "@/app/components/PDFFormVersionHistoryModal";
 import { supabase } from "@/lib/supabase";
 import {
   isCaTempAgreementCustomFormTitle,
@@ -151,6 +155,20 @@ type AssignedVenue = {
   city: string | null;
   state: string | null;
 };
+
+const PAYROLL_PACKET_FORM_VIEWER_BY_STATE: Record<string, string> = {
+  CA: '/payroll-packet-ca/form-viewer',
+  NY: '/payroll-packet-ny/form-viewer',
+  WI: '/payroll-packet-wi/form-viewer',
+  AZ: '/payroll-packet-az/form-viewer',
+  NV: '/payroll-packet-nv/form-viewer',
+};
+
+const normalizeStandardOnboardingFormName = (formName?: string | null) =>
+  String(formName || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z]{2}-/, '');
 
 type OnboardingTemplate = {
   id: string;
@@ -317,6 +335,11 @@ export default function EmployeeProfilePage() {
   const [pdfForms, setPdfForms] = useState<PDFForm[]>([]);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [formsError, setFormsError] = useState<string>('');
+  const [versionHistoryForm, setVersionHistoryForm] = useState<PDFForm | null>(null);
+  const [versionHistoryVenueName, setVersionHistoryVenueName] = useState<string | undefined>(undefined);
+  const [versionHistoryEntries, setVersionHistoryEntries] = useState<PDFFormHistoryEntry[]>([]);
+  const [versionHistoryLoading, setVersionHistoryLoading] = useState(false);
+  const [versionHistoryError, setVersionHistoryError] = useState('');
   const [formEditsLoading, setFormEditsLoading] = useState(false);
   const [formEditHistory, setFormEditHistory] = useState<LatestFormEdit[]>([]);
   const [formEditHistoryError, setFormEditHistoryError] = useState<string>('');
@@ -364,18 +387,10 @@ export default function EmployeeProfilePage() {
   const [i9ListADoc, setI9ListADoc] = useState('');
   const [i9ListBDoc, setI9ListBDoc] = useState('');
   const [i9ListCDoc, setI9ListCDoc] = useState('');
-  // State-to-payroll-packet route for HR editing I-9 on behalf of employee
-  const i9FormViewerUrl = useMemo(() => {
-    const stateRoutes: Record<string, string> = {
-      CA: '/payroll-packet-ca/form-viewer',
-      NY: '/payroll-packet-ny/form-viewer',
-      WI: '/payroll-packet-wi/form-viewer',
-      AZ: '/payroll-packet-az/form-viewer',
-      NV: '/payroll-packet-nv/form-viewer',
-    };
-    const base = (employee?.state && stateRoutes[employee.state.toUpperCase()]) || '/payroll-packet-ca/form-viewer';
-    return `${base}?form=i9&asUser=${employeeId}&entryPoint=hr-employees`;
-  }, [employee?.state, employeeId]);
+  const payrollPacketFormViewerBasePath = useMemo(() => {
+    const stateCode = String(employee?.state || '').trim().toUpperCase();
+    return PAYROLL_PACKET_FORM_VIEWER_BY_STATE[stateCode] || PAYROLL_PACKET_FORM_VIEWER_BY_STATE.CA;
+  }, [employee?.state]);
 
   useEffect(() => {
     if (!employeeId) return;
@@ -880,35 +895,106 @@ export default function EmployeeProfilePage() {
     return window.URL.createObjectURL(blob);
   };
 
-  const openPdfInNewTab = (base64Data: string) => {
+  const openPdfInNewTab = (base64Data: string, existingWindow?: Window | null) => {
     const url = createPdfBlobUrl(base64Data);
-    const popup = window.open(url, '_blank');
+    const popup = existingWindow || window.open('', '_blank');
     if (!popup) {
       window.URL.revokeObjectURL(url);
       throw new Error('Popup blocked');
     }
     popup.opener = null;
+    popup.location.replace(url);
     setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
   };
 
-  const withDateEmbedded = async (base64Data: string, date: string): Promise<string> => {
+  const openPdfBlobInNewTab = (blob: Blob, existingWindow?: Window | null) => {
+    const url = window.URL.createObjectURL(blob);
+    const popup = existingWindow || window.open('', '_blank');
+    if (!popup) {
+      window.URL.revokeObjectURL(url);
+      throw new Error('Popup blocked');
+    }
+    popup.opener = null;
+    popup.location.replace(url);
+    setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
+
+  const downloadPdfBlob = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
+  };
+
+  const isEmployeeHandbookPdfForm = (form: Pick<PDFForm, 'form_name'>) =>
+    normalizeStandardOnboardingFormName(form.form_name) === 'employee-handbook';
+
+  const getOnboardingRenderedFormBlob = async (form: PDFForm): Promise<Blob | null> => {
+    if (!employeeId || !isEmployeeHandbookPdfForm(form)) {
+      return null;
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/user/${employeeId}?signatureSource=forms_signature&formName=${encodeURIComponent(form.form_name)}`,
+        {
+          cache: 'no-store',
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        }
+      );
+
+      if (!res.ok) {
+        return null;
+      }
+
+      const pdfBytes = await res.arrayBuffer();
+      if (!pdfBytes.byteLength) {
+        return null;
+      }
+
+      return new Blob([pdfBytes], { type: 'application/pdf' });
+    } catch (error) {
+      console.warn('Failed to fetch onboarding-rendered PDF form, falling back to per-form render', error);
+      return null;
+    }
+  };
+
+  const withDateEmbedded = async (
+    base64Data: string,
+    date: string,
+    formName?: string
+  ): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const lastPage = pdfDoc.getPages().at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const isNoticeToEmployee = normalizeStandardOnboardingFormName(formName) === 'notice-to-employee';
+    const footerYShift = isNoticeToEmployee ? -16 : 0;
     const [y, m, d] = date.split('-').map(Number);
     const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
     });
-    lastPage.drawRectangle({ x: 325, y: 28, width: 195, height: 85, color: rgb(1, 1, 1), borderWidth: 0 });
-    lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawRectangle({
+      x: 325,
+      y: isNoticeToEmployee ? 8 : 28,
+      width: 195,
+      height: isNoticeToEmployee ? 105 : 85,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
+    lastPage.drawText('Date', { x: 330, y: 104 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(formatted, { x: 330, y: 60 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
     lastPage.drawLine({
-      start: { x: 330, y: 38 },
-      end: { x: 510, y: 38 },
+      start: { x: 330, y: 38 + footerYShift },
+      end: { x: 510, y: 38 + footerYShift },
       thickness: 0.5,
       color: rgb(0.6, 0.6, 0.6),
     });
@@ -922,7 +1008,8 @@ export default function EmployeeProfilePage() {
     base64Data: string,
     venueName: string,
     employeeName?: string,
-    includeOpeningPrintName = false
+    includeOpeningPrintName = false,
+    formName?: string
   ): Promise<string> => {
     const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
     const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
@@ -931,13 +1018,26 @@ export default function EmployeeProfilePage() {
     const firstPage = pages[0];
     const lastPage = pages.at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-    try { pdfDoc.getForm().flatten(); } catch {}
-    lastPage.drawRectangle({ x: 35, y: 150, width: 445, height: 60, color: rgb(1, 1, 1), borderWidth: 0 });
+    const isNoticeToEmployee = normalizeStandardOnboardingFormName(formName) === 'notice-to-employee';
+    const footerYShift = isNoticeToEmployee ? -16 : 0;
+    lastPage.drawRectangle({
+      x: 35,
+      y: isNoticeToEmployee ? 138 : 150,
+      width: 445,
+      height: isNoticeToEmployee ? 78 : 60,
+      color: rgb(1, 1, 1),
+      borderWidth: 0,
+    });
     const trimmedEmployeeName = employeeName?.trim();
     if (trimmedEmployeeName) {
-      lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-      lastPage.drawText(trimmedEmployeeName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-      lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+      lastPage.drawText('Print Name', { x: 40, y: 200 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+      lastPage.drawText(trimmedEmployeeName, { x: 40, y: 175 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
+      lastPage.drawLine({
+        start: { x: 40, y: 160 + footerYShift },
+        end: { x: 210, y: 160 + footerYShift },
+        thickness: 0.5,
+        color: rgb(0.6, 0.6, 0.6),
+      });
       if (includeOpeningPrintName) {
         const openingLineX = 80;
         const openingLineY = 523;
@@ -966,11 +1066,11 @@ export default function EmployeeProfilePage() {
         });
       }
     }
-    lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-    lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
+    lastPage.drawText('Home Venue', { x: 220, y: 200 + footerYShift, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+    lastPage.drawText(venueName, { x: 220, y: 175 + footerYShift, size: 11, font, color: rgb(0, 0, 0) });
     lastPage.drawLine({
-      start: { x: 220, y: 160 },
-      end: { x: 470, y: 160 },
+      start: { x: 220, y: 160 + footerYShift },
+      end: { x: 470, y: 160 + footerYShift },
       thickness: 0.5,
       color: rgb(0.6, 0.6, 0.6),
     });
@@ -1067,6 +1167,23 @@ export default function EmployeeProfilePage() {
     return isCaTempAgreementCustomFormTitle(matchingCustomForm.title) ? matchingCustomForm : null;
   };
 
+  const getHrEditableOnboardingFormUrl = (form: Pick<PDFForm, 'form_name'>) => {
+    if (!employeeId) return null;
+
+    const normalizedName = normalizeStandardOnboardingFormName(form.form_name);
+    if (normalizedName !== 'i9' && normalizedName !== 'notice-to-employee') {
+      return null;
+    }
+
+    const params = new URLSearchParams({
+      form: normalizedName,
+      asUser: employeeId,
+      entryPoint: 'hr-employees',
+    });
+
+    return `${payrollPacketFormViewerBasePath}?${params.toString()}`;
+  };
+
   const getVenueForCompletedOnboardingForm = (form: PDFForm): string | undefined => {
     const venueName = employeeHomeVenue?.venue_name;
     if (!venueName) return undefined;
@@ -1083,14 +1200,9 @@ export default function EmployeeProfilePage() {
       return venueName;
     }
 
-    const normalizedName = form.form_name
-      .toLowerCase()
-      .replace(/^[a-z]{2}-/, '');
+    const normalizedName = normalizeStandardOnboardingFormName(form.form_name);
 
-    if (
-      normalizedName.endsWith('employee-information') ||
-      normalizedName.endsWith('notice-to-employee')
-    ) {
+    if (normalizedName.endsWith('employee-information')) {
       return venueName;
     }
 
@@ -1129,6 +1241,124 @@ export default function EmployeeProfilePage() {
       console.warn('Failed to rebuild temp agreement from template, falling back to saved PDF data', error);
       return base64Data;
     }
+  };
+
+  const rebuildNoticeToEmployeeFromTemplate = async (form: PDFForm): Promise<string> => {
+    const normalizedName = normalizeStandardOnboardingFormName(form.form_name);
+    if (normalizedName !== 'notice-to-employee') {
+      return form.form_data;
+    }
+
+    const stateCode = String(employee?.state || 'CA').trim().toLowerCase() || 'ca';
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const templateRes = await fetch(`/api/payroll-packet-${stateCode}/notice-to-employee?role=employee`, {
+        cache: 'no-store',
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      });
+
+      if (!templateRes.ok) {
+        return form.form_data;
+      }
+
+      const templateBytes = new Uint8Array(await templateRes.arrayBuffer());
+      const savedBytes = Uint8Array.from(atob(form.form_data), (c) => c.charCodeAt(0));
+      const rebuiltBytes = await mergeSavedPdfFieldsOntoTemplate(templateBytes, savedBytes);
+
+      if (!rebuiltBytes) {
+        return form.form_data;
+      }
+
+      let binary = '';
+      for (let i = 0; i < rebuiltBytes.length; i++) binary += String.fromCharCode(rebuiltBytes[i]);
+      return btoa(binary);
+    } catch (error) {
+      console.warn('Failed to rebuild notice-to-employee from template, falling back to saved PDF data', error);
+      return form.form_data;
+    }
+  };
+
+  const getNoticeToEmployeeRenderData = async (
+    form: PDFForm
+  ): Promise<{ formData: string; signatureData: string | null; signatureType: string | null }> => {
+    if (!employeeId) {
+      return { formData: form.form_data, signatureData: null, signatureType: null };
+    }
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}&returnSignatureData=1`,
+        { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        return {
+          formData: json.formData || form.form_data,
+          signatureData: json.signatureData || null,
+          signatureType: json.signatureType || null,
+        };
+      }
+    } catch (e) {
+      console.warn('Failed to fetch notice-to-employee signature data, falling back to raw PDF data', e);
+    }
+
+    return { formData: form.form_data, signatureData: null, signatureType: null };
+  };
+
+  const withNoticeToEmployeeSignatureRedrawn = async (
+    base64Data: string,
+    signatureData?: string | null,
+    signatureType?: string | null
+  ): Promise<string> => {
+    const trimmedSignature = signatureData?.trim();
+    if (!trimmedSignature) return base64Data;
+
+    const { PDFDocument, StandardFonts } = await import('pdf-lib');
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const lastPage = pdfDoc.getPages().at(-1);
+    if (!lastPage) return base64Data;
+
+    const { width, height } = lastPage.getSize();
+    const signatureWidth = 150;
+    const signatureHeight = 15;
+    const x = Math.max(0, width - 260);
+    const y = Math.min(height - signatureHeight, 282);
+    const signatureKind = (signatureType || '').toLowerCase();
+    const isImageDataUrl = trimmedSignature.toLowerCase().startsWith('data:image/');
+    const isTyped = signatureKind === 'typed' || signatureKind === 'type' || !isImageDataUrl;
+
+    if (isTyped) {
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      lastPage.drawText(trimmedSignature, {
+        x,
+        y: y + signatureHeight / 2,
+        size: 10,
+        font,
+      });
+    } else {
+      const match = trimmedSignature.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.*)$/i);
+      const format = (match?.[1] || 'png').toLowerCase();
+      const imageBase64 = match?.[2] || trimmedSignature;
+      const imageBytes = Uint8Array.from(atob(imageBase64), c => c.charCodeAt(0));
+      const signatureImage =
+        format === 'jpg' || format === 'jpeg'
+          ? await pdfDoc.embedJpg(imageBytes)
+          : await pdfDoc.embedPng(imageBytes);
+
+      lastPage.drawImage(signatureImage, {
+        x,
+        y,
+        width: signatureWidth,
+        height: signatureHeight,
+      });
+    }
+
+    const saved = await pdfDoc.save();
+    let b = '';
+    for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+    return btoa(b);
   };
 
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
@@ -1185,6 +1415,12 @@ export default function EmployeeProfilePage() {
   // Download a single PDF form
   const downloadPDFForm = async (form: PDFForm, venueName?: string) => {
     try {
+      const onboardingRenderedBlob = await getOnboardingRenderedFormBlob(form);
+      if (onboardingRenderedBlob) {
+        downloadPdfBlob(onboardingRenderedBlob, `${form.display_name}.pdf`);
+        return;
+      }
+
       const matchingCustomForm = getMatchingCustomFormForPdf(form);
       const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
       const isTempAgreementForm =
@@ -1209,18 +1445,46 @@ export default function EmployeeProfilePage() {
           tempAgreementData.signatureType
         );
       } else {
-        data = await getFormDataWithSignature(form);
+        const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+        const noticeRenderData = isNoticeToEmployee
+          ? await getNoticeToEmployeeRenderData(form)
+          : null;
+        data = noticeRenderData?.formData || await getFormDataWithSignature(form);
+        if (isNoticeToEmployee) {
+          data = await rebuildNoticeToEmployeeFromTemplate({
+            ...form,
+            form_data: noticeRenderData?.formData || form.form_data,
+          });
+        }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+      const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
-      if (shouldEmbedProfileFields && venueName) {
+      if (
+        shouldEmbedProfileFields &&
+        form.form_date &&
+        !isAttestationPdfForm &&
+        !isNoticeToEmployee
+      ) {
+        data = await withDateEmbedded(data, form.form_date, form.form_name);
+      }
+      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
           employee ? `${employee.first_name} ${employee.last_name}` : undefined,
-          shouldEmbedOpeningPrintName
+          shouldEmbedOpeningPrintName,
+          form.form_name
+        );
+      }
+      if (isNoticeToEmployee) {
+        const noticeRenderData = await getNoticeToEmployeeRenderData(form);
+        data = await withNoticeToEmployeeSignatureRedrawn(
+          data,
+          noticeRenderData.signatureData,
+          noticeRenderData.signatureType
         );
       }
       const url = createPdfBlobUrl(data);
@@ -1230,7 +1494,7 @@ export default function EmployeeProfilePage() {
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
+      setTimeout(() => window.URL.revokeObjectURL(url), 60_000);
     } catch (error) {
       console.error('Error downloading PDF:', error);
       alert('Failed to download PDF form');
@@ -1238,7 +1502,19 @@ export default function EmployeeProfilePage() {
   };
 
   const viewPDFForm = async (form: PDFForm, venueName?: string) => {
+    const previewWindow = window.open('', '_blank');
+    if (previewWindow) {
+      previewWindow.document.title = form.display_name || 'PDF Preview';
+      previewWindow.document.body.innerHTML = '<div style="font-family: Arial, sans-serif; padding: 24px;">Preparing PDF preview...</div>';
+    }
+
     try {
+      const onboardingRenderedBlob = await getOnboardingRenderedFormBlob(form);
+      if (onboardingRenderedBlob) {
+        openPdfBlobInNewTab(onboardingRenderedBlob, previewWindow);
+        return;
+      }
+
       const matchingCustomForm = getMatchingCustomFormForPdf(form);
       const tempAgreementCustomForm = getTempAgreementCustomFormForPdf(form);
       const isTempAgreementForm =
@@ -1263,24 +1539,110 @@ export default function EmployeeProfilePage() {
           tempAgreementData.signatureType
         );
       } else {
-        data = await getFormDataWithSignature(form);
+        const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+        const noticeRenderData = isNoticeToEmployee
+          ? await getNoticeToEmployeeRenderData(form)
+          : null;
+        data = noticeRenderData?.formData || await getFormDataWithSignature(form);
+        if (isNoticeToEmployee) {
+          data = await rebuildNoticeToEmployeeFromTemplate({
+            ...form,
+            form_data: noticeRenderData?.formData || form.form_data,
+          });
+        }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
+      const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
-      if (shouldEmbedProfileFields && form.form_date && !isAttestationPdfForm) data = await withDateEmbedded(data, form.form_date);
-      if (shouldEmbedProfileFields && venueName) {
+      if (
+        shouldEmbedProfileFields &&
+        form.form_date &&
+        !isAttestationPdfForm &&
+        !isNoticeToEmployee
+      ) {
+        data = await withDateEmbedded(data, form.form_date, form.form_name);
+      }
+      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
           employee ? `${employee.first_name} ${employee.last_name}` : undefined,
-          shouldEmbedOpeningPrintName
+          shouldEmbedOpeningPrintName,
+          form.form_name
         );
       }
-      openPdfInNewTab(data);
+      if (isNoticeToEmployee) {
+        const noticeRenderData = await getNoticeToEmployeeRenderData(form);
+        data = await withNoticeToEmployeeSignatureRedrawn(
+          data,
+          noticeRenderData.signatureData,
+          noticeRenderData.signatureType
+        );
+      }
+      openPdfInNewTab(data, previewWindow);
     } catch (error) {
+      if (previewWindow && !previewWindow.closed) {
+        previewWindow.close();
+      }
       console.error('Error viewing PDF:', error);
       alert('Failed to open PDF form');
+    }
+  };
+
+  const closeVersionHistory = () => {
+    setVersionHistoryForm(null);
+    setVersionHistoryVenueName(undefined);
+    setVersionHistoryEntries([]);
+    setVersionHistoryError('');
+    setVersionHistoryLoading(false);
+  };
+
+  const openVersionHistory = async (form: PDFForm, venueName?: string) => {
+    setVersionHistoryForm(form);
+    setVersionHistoryVenueName(venueName);
+    setVersionHistoryEntries([]);
+    setVersionHistoryError('');
+    setVersionHistoryLoading(true);
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const query = new URLSearchParams({ formName: form.form_name });
+      if (employeeId) {
+        query.set('targetUserId', employeeId);
+      }
+
+      const response = await fetch(`/api/pdf-form-progress/versions?${query.toString()}`, {
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        cache: 'no-store',
+      });
+
+      let result: any = null;
+      try {
+        result = await response.json();
+      } catch {
+        result = null;
+      }
+
+      if (!response.ok) {
+        throw new Error(result?.error || 'Failed to load previous versions');
+      }
+
+      setVersionHistoryEntries(
+        (result?.versions || []).map((entry: any) => ({
+          ...entry,
+          display_name: form.display_name,
+        })),
+      );
+    } catch (error: any) {
+      console.error('Error loading PDF version history:', error);
+      setVersionHistoryEntries([]);
+      setVersionHistoryError(error?.message || 'Failed to load previous versions');
+    } finally {
+      setVersionHistoryLoading(false);
     }
   };
 
@@ -2431,7 +2793,7 @@ export default function EmployeeProfilePage() {
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                           {pdfForms.map((form) => {
-                            const isI9 = form.form_name === 'i9' || /^[a-z]+-i9$/.test(form.form_name);
+                            const editableFormViewerUrl = getHrEditableOnboardingFormUrl(form);
                             const venueForForm = getVenueForCompletedOnboardingForm(form);
                             return (
                               <div
@@ -2478,9 +2840,9 @@ export default function EmployeeProfilePage() {
                                       </svg>
                                       Download
                                     </button>
-                                    {isI9 && (
+                                    {editableFormViewerUrl && (
                                       <a
-                                        href={i9FormViewerUrl}
+                                        href={editableFormViewerUrl}
                                         target="_blank"
                                         rel="noopener noreferrer"
                                         className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-700"
@@ -2492,6 +2854,15 @@ export default function EmployeeProfilePage() {
                                       </a>
                                     )}
                                   </div>
+                                  <button
+                                    onClick={() => openVersionHistory(form, venueForForm)}
+                                    className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 transition-colors text-sm font-medium"
+                                  >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    Version History
+                                  </button>
                                 </div>
                               </div>
                             );
@@ -2621,6 +2992,17 @@ export default function EmployeeProfilePage() {
                               </>
                             )}
                           </div>
+                          {submitted && (
+                            <button
+                              onClick={() => openVersionHistory(submitted, venueForForm)}
+                              className="mt-2 w-full inline-flex items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                            >
+                              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              Version History
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -2843,6 +3225,18 @@ export default function EmployeeProfilePage() {
             </div>
           </div>
         )}
+        <PDFFormVersionHistoryModal
+          isOpen={!!versionHistoryForm}
+          formTitle={versionHistoryForm?.display_name || 'Document'}
+          versions={versionHistoryEntries}
+          isLoading={versionHistoryLoading}
+          error={versionHistoryError}
+          onClose={closeVersionHistory}
+          onView={(entry) => viewPDFForm(entry, versionHistoryVenueName)}
+          onDownload={(entry) => downloadPDFForm(entry, versionHistoryVenueName)}
+          formatDate={formatDate}
+          formatDateTime={(value) => formatDateTime(value, employee?.state || null)}
+        />
       </div>
     </div>
   );

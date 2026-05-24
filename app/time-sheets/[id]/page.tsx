@@ -51,6 +51,13 @@ type TeamMemberOption = {
   role: string;
 };
 
+type TimesheetEditRequestSummary = {
+  id: string;
+  status: string;
+  requestReason: string;
+  createdAt: string;
+};
+
 type LoadedPayload = {
   event: {
     id: string;
@@ -76,6 +83,7 @@ type LoadedPayload = {
   };
   timesheet: TimesheetSnapshot;
   teamMembers?: TeamMemberOption[];
+  editRequest?: TimesheetEditRequestSummary | null;
 };
 
 type PreviewResult = {
@@ -137,6 +145,16 @@ function formatClockValue(value?: string | null) {
   const date = new Date();
   date.setHours(hours, minutes, 0, 0);
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function subtractMinutes(timeHHMM: string, mins: number): string {
+  const [h, m] = timeHHMM.split(":").map(Number);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return timeHHMM;
+  const total = h * 60 + m - mins;
+  const wrapped = ((total % 1440) + 1440) % 1440;
+  const hh = String(Math.floor(wrapped / 60)).padStart(2, "0");
+  const mm = String(wrapped % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
 }
 
 function computePreview(form: TimeForm, strict: boolean): PreviewResult {
@@ -290,11 +308,17 @@ export default function TimeSheetsPage() {
   const [teamMembers, setTeamMembers] = useState<TeamMemberOption[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState<string>("");
   const [memberLoading, setMemberLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [editRequestModalOpen, setEditRequestModalOpen] = useState(false);
+  const [editRequestReason, setEditRequestReason] = useState("");
+  const [editRequestError, setEditRequestError] = useState("");
+  const [submittingEditRequest, setSubmittingEditRequest] = useState(false);
 
   const signatureCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const rejectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingSignatureRef = useRef(false);
   const isDrawingRejectionRef = useRef(false);
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const preview = useMemo(() => computePreview(form, false), [form]);
 
@@ -330,11 +354,44 @@ export default function TimeSheetsPage() {
         throw new Error(data?.error || "Failed to load time sheet.");
       }
 
-      const loaded = data as LoadedPayload;
-      setPayload(loaded);
-      if (loaded.teamMembers && loaded.teamMembers.length > 0) {
-        setTeamMembers(loaded.teamMembers);
+      const initialLoaded = data as LoadedPayload;
+      const requestedMemberId =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search).get("userId")?.trim() || ""
+          : "";
+
+      setTeamMembers(initialLoaded.teamMembers || []);
+
+      const selectedFromQuery =
+        requestedMemberId && requestedMemberId !== initialLoaded.user.id
+          ? requestedMemberId
+          : "";
+
+      let loaded = initialLoaded;
+      if (selectedFromQuery) {
+        const memberRes = await fetch(
+          `/api/events/${eventId}/self-timesheet?userId=${encodeURIComponent(selectedFromQuery)}`,
+          {
+            cache: "no-store",
+            headers: {
+              Authorization: `Bearer ${session.access_token}`,
+            },
+          }
+        );
+
+        const memberData = await memberRes.json().catch(() => ({}));
+        if (!memberRes.ok) {
+          throw new Error(memberData?.error || "Failed to load member time sheet.");
+        }
+
+        loaded = {
+          ...(memberData as LoadedPayload),
+          teamMembers: initialLoaded.teamMembers || [],
+        };
       }
+
+      setSelectedMemberId(selectedFromQuery);
+      setPayload(loaded);
       setForm({
         firstIn: loaded.timesheet.firstInDisplay || "",
         firstMealStart: loaded.timesheet.firstMealStartDisplay || "",
@@ -344,7 +401,10 @@ export default function TimeSheetsPage() {
         lastOut: loaded.timesheet.lastOutDisplay || "",
       });
 
-      if (loaded.timesheet.attestationStatus !== "not_submitted") {
+      if (
+        loaded.timesheet.attestationStatus !== "not_submitted" &&
+        loaded.editRequest?.status !== "approved"
+      ) {
         setSubmittedTimesheet(loaded.timesheet);
         setMode("complete");
       } else {
@@ -388,7 +448,10 @@ export default function TimeSheetsPage() {
         lastOut: loaded.timesheet.lastOutDisplay || "",
       });
 
-      if (loaded.timesheet.attestationStatus !== "not_submitted") {
+      if (
+        loaded.timesheet.attestationStatus !== "not_submitted" &&
+        loaded.editRequest?.status !== "approved"
+      ) {
         setSubmittedTimesheet(loaded.timesheet);
         setMode("complete");
       } else {
@@ -405,6 +468,53 @@ export default function TimeSheetsPage() {
   useEffect(() => {
     void loadPage();
   }, [loadPage]);
+
+  const draftSave = useCallback(async (currentForm: TimeForm, memberId: string) => {
+    if (!eventId || !currentForm.firstIn || !currentForm.lastOut) return;
+    setSaveStatus("saving");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      const res = await fetch(`/api/events/${eventId}/self-timesheet`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          spans: {
+            firstIn: currentForm.firstIn,
+            lastOut: currentForm.lastOut,
+            firstMealStart: currentForm.firstMealStart,
+            lastMealEnd: currentForm.lastMealEnd,
+            secondMealStart: currentForm.secondMealStart,
+            secondMealEnd: currentForm.secondMealEnd,
+          },
+          ...(memberId ? { targetUserId: memberId } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        setSaveStatus("saved");
+        setTimeout(() => setSaveStatus("idle"), 2000);
+      } else if (data.skipped) {
+        setSaveStatus("idle");
+      } else {
+        setSaveStatus("error");
+        setTimeout(() => setSaveStatus("idle"), 3000);
+      }
+    } catch {
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    }
+  }, [eventId]);
+
+  const scheduleAutoSave = useCallback((currentForm: TimeForm, memberId: string) => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void draftSave(currentForm, memberId);
+    }, 800);
+  }, [draftSave]);
 
   const clearCanvas = useCallback(
     (
@@ -559,13 +669,77 @@ export default function TimeSheetsPage() {
       const nextTimesheet = data?.timesheet as TimesheetSnapshot;
       if (nextTimesheet) {
         setSubmittedTimesheet(nextTimesheet);
-        setPayload((prev) => (prev ? { ...prev, timesheet: nextTimesheet } : prev));
+        setPayload((prev) => (prev ? { ...prev, timesheet: nextTimesheet, editRequest: null } : prev));
       }
       setMode("complete");
     } catch (err: any) {
       setError(err?.message || "Failed to submit time sheet.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const submitEditRequest = async () => {
+    if (!payload) return;
+
+    const trimmedReason = editRequestReason.trim();
+    if (!trimmedReason) {
+      setEditRequestError("Please explain what needs to be corrected.");
+      return;
+    }
+
+    setSubmittingEditRequest(true);
+    setEditRequestError("");
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        window.location.href = "/login";
+        return;
+      }
+
+      const res = await fetch("/api/timesheet-edit-requests", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          eventId,
+          targetUserId: selectedMemberId || payload.user.id,
+          requestReason: trimmedReason,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit edit request.");
+      }
+
+      setPayload((prev) =>
+        prev
+          ? {
+              ...prev,
+              editRequest: data?.request
+                ? {
+                    id: data.request.id,
+                    status: data.request.status,
+                    requestReason: data.request.requestReason,
+                    createdAt: data.request.createdAt,
+                  }
+                : prev.editRequest,
+            }
+          : prev
+      );
+      setEditRequestModalOpen(false);
+      setEditRequestReason("");
+    } catch (err: any) {
+      setEditRequestError(err?.message || "Failed to submit edit request.");
+    } finally {
+      setSubmittingEditRequest(false);
     }
   };
 
@@ -766,6 +940,74 @@ export default function TimeSheetsPage() {
               </div>
 
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+                <h3 className="text-lg font-semibold text-slate-900">Need a Correction?</h3>
+                {payload.editRequest ? (
+                  <>
+                    <div
+                      className={`mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
+                        payload.editRequest.status === "rejected"
+                          ? "border-red-200 bg-red-50 text-red-700"
+                          : payload.editRequest.status === "approved"
+                            ? "border-blue-200 bg-blue-50 text-blue-700"
+                            : "border-amber-200 bg-amber-50 text-amber-700"
+                      }`}
+                    >
+                      {payload.editRequest.status === "in_review"
+                        ? "Edit Request In Review"
+                        : payload.editRequest.status === "approved"
+                          ? "Edit Request Approved"
+                          : payload.editRequest.status === "rejected"
+                            ? "Edit Request Rejected"
+                            : "Edit Request Submitted"}
+                    </div>
+                    <p className="mt-3 text-sm text-slate-600">
+                      {payload.editRequest.status === "rejected"
+                        ? "The most recent correction request was reviewed on "
+                        : "A correction request was sent on "}
+                      {payload.editRequest.createdAt
+                        ? new Date(payload.editRequest.createdAt).toLocaleString()
+                        : "this timesheet"}.
+                    </p>
+                    {payload.editRequest.requestReason && (
+                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                        {payload.editRequest.requestReason}
+                      </div>
+                    )}
+                    {payload.editRequest.status === "rejected" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditRequestModalOpen(true);
+                          setEditRequestReason("");
+                          setEditRequestError("");
+                        }}
+                        className="mt-5 inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Request Again
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p className="mt-2 text-sm text-slate-600">
+                      This timesheet is attested and locked. Submit an edit request if a manager or exec needs to review and reopen it.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditRequestModalOpen(true);
+                        setEditRequestReason("");
+                        setEditRequestError("");
+                      }}
+                      className="mt-5 inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Request Edit
+                    </button>
+                  </>
+                )}
+              </div>
+
+              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-semibold text-slate-900">Next Step</h3>
                 <p className="mt-2 text-sm text-slate-600">
                   Your time and attestation are stored. If something needs to change, a manager or exec can update the event timesheet.
@@ -802,7 +1044,7 @@ export default function TimeSheetsPage() {
                           : "Enter Your Time"}
                       </h2>
                       <p className="mt-1 text-sm text-slate-600">
-                        Enter the workday exactly as worked. Meal fields are optional, but each meal requires a start and end time.
+                        Enter the workday exactly as worked. Meal fields are mandatory, and each meal requires a start and end time.
                       </p>
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -810,13 +1052,23 @@ export default function TimeSheetsPage() {
                     </div>
                   </div>
 
+                  {payload.editRequest?.status === "approved" && (
+                    <div className="mt-5 rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                      Edit permission approved. Update the timesheet and submit a new attestation to complete the correction.
+                    </div>
+                  )}
+
                   <div className="mt-6 grid gap-4 sm:grid-cols-2">
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-slate-700">Clock In</span>
                       <input
                         type="time"
                         value={form.firstIn}
-                        onChange={(event) => setForm((prev) => ({ ...prev, firstIn: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, firstIn: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -825,7 +1077,11 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.lastOut}
-                        onChange={(event) => setForm((prev) => ({ ...prev, lastOut: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, lastOut: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -834,7 +1090,11 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.firstMealStart}
-                        onChange={(event) => setForm((prev) => ({ ...prev, firstMealStart: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, firstMealStart: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -843,7 +1103,11 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.lastMealEnd}
-                        onChange={(event) => setForm((prev) => ({ ...prev, lastMealEnd: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, lastMealEnd: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -852,7 +1116,11 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.secondMealStart}
-                        onChange={(event) => setForm((prev) => ({ ...prev, secondMealStart: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, secondMealStart: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -861,11 +1129,28 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.secondMealEnd}
-                        onChange={(event) => setForm((prev) => ({ ...prev, secondMealEnd: event.target.value }))}
+                        onChange={(event) => {
+                          const next = { ...form, secondMealEnd: event.target.value };
+                          setForm(next);
+                          scheduleAutoSave(next, selectedMemberId);
+                        }}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
                   </div>
+
+                  {saveStatus !== "idle" && (
+                    <div className={`mt-3 flex items-center gap-1.5 text-xs ${
+                      saveStatus === "saving" ? "text-slate-400" :
+                      saveStatus === "saved" ? "text-emerald-600" :
+                      "text-rose-500"
+                    }`}>
+                      {saveStatus === "saving" && <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />}
+                      {saveStatus === "saving" && "Saving…"}
+                      {saveStatus === "saved" && "✓ Saved"}
+                      {saveStatus === "error" && "Failed to save"}
+                    </div>
+                  )}
 
                   <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                     <div>
@@ -1145,7 +1430,7 @@ export default function TimeSheetsPage() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Check In</div>
                     <div className="mt-1 text-lg font-semibold text-slate-900">
-                      {form.firstIn ? formatClockValue(form.firstIn) : "--"}
+                      {form.firstIn ? formatClockValue(subtractMinutes(form.firstIn, 30)) : "--"}
                     </div>
                   </div>
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -1218,6 +1503,78 @@ export default function TimeSheetsPage() {
                 <p className="mt-2 text-sm text-slate-600">
                   The attestation step stores your signature using the same clock-out attestation record used elsewhere in the system.
                 </p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {editRequestModalOpen && payload && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+            onClick={() => {
+              if (submittingEditRequest) return;
+              setEditRequestModalOpen(false);
+              setEditRequestReason("");
+              setEditRequestError("");
+            }}
+          >
+            <div
+              className="w-full max-w-lg rounded-3xl border border-slate-200 bg-white shadow-2xl"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <div className="border-b border-slate-200 px-6 py-4">
+                <h3 className="text-lg font-semibold text-slate-900">Request Timesheet Edit</h3>
+                <p className="mt-1 text-sm text-slate-500">
+                  Submit a correction request for {payload.user.name}.
+                </p>
+              </div>
+
+              <div className="space-y-4 px-6 py-5">
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  This attested timesheet will stay locked until a manager or exec reviews the request.
+                </div>
+
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">
+                    Reason for edit <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={editRequestReason}
+                    onChange={(event) => setEditRequestReason(event.target.value)}
+                    rows={5}
+                    placeholder="Describe the correction that needs to be made..."
+                    className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                  />
+                </div>
+
+                {editRequestError && (
+                  <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {editRequestError}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-end gap-3 border-t border-slate-200 px-6 py-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditRequestModalOpen(false);
+                    setEditRequestReason("");
+                    setEditRequestError("");
+                  }}
+                  disabled={submittingEditRequest}
+                  className="rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void submitEditRequest()}
+                  disabled={submittingEditRequest}
+                  className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submittingEditRequest ? "Sending..." : "Send Request"}
+                </button>
               </div>
             </div>
           </div>

@@ -310,7 +310,7 @@ export async function GET(
     // ---- Pull time_entries with action and timestamp columns
     const { data: rawEntries, error: teErr } = await supabaseAdmin
       .from("time_entries")
-      .select("id, event_id, action, timestamp, created_at, user_id")
+      .select("id, event_id, action, timestamp, created_at, user_id, attestation_accepted")
       .or(`user_id.eq.${userId}`)
       .order("timestamp", { ascending: false });
 
@@ -329,6 +329,7 @@ export async function GET(
       action: string;
       timestamp: string;
       created_at: string;
+      attestation_accepted?: boolean | null;
     };
 
     // Sort ALL entries globally by timestamp ascending.
@@ -446,25 +447,21 @@ export async function GET(
     // Get unique event IDs from event_teams
     const vendorEventIds = eventTeams ? [...new Set(eventTeams.map(et => et.event_id).filter(Boolean))] : [];
 
-    // Fetch event details from events table
-    let eventsMap: Record<string, { id: string; event_name: string | null; event_date: string | null; venue: string | null }> = {};
-    if (vendorEventIds.length > 0) {
-      const { data: events, error: evErr } = await supabaseAdmin
-        .from("events")
-        .select("id, event_name, event_date, venue")
-        .in("id", vendorEventIds);
-
-      console.log("🔵 [DEBUG] Queried event IDs from event_teams:", vendorEventIds);
-      console.log("🔵 [DEBUG] Events returned from DB:", events);
-      console.log("🔵 [DEBUG] Query error:", evErr);
-
-      if (!evErr && events) {
-        eventsMap = Object.fromEntries(
-          events.map((ev) => [
-            ev.id,
-            { id: ev.id, event_name: ev.event_name, event_date: ev.event_date, venue: ev.venue ?? null },
-          ])
-        );
+    const eventAttestationStatusMap = new Map<
+      string,
+      "submitted" | "rejected" | "not_submitted"
+    >();
+    for (const entry of [...allEntries].reverse()) {
+      if (!entry.event_id || (entry.action || "").toLowerCase() !== "clock_out") continue;
+      const nextStatus =
+        entry.attestation_accepted === true
+          ? "submitted"
+          : entry.attestation_accepted === false
+            ? "rejected"
+            : "not_submitted";
+      const existingStatus = eventAttestationStatusMap.get(entry.event_id);
+      if (!existingStatus || (existingStatus === "not_submitted" && nextStatus !== "not_submitted")) {
+        eventAttestationStatusMap.set(entry.event_id, nextStatus);
       }
     }
 
@@ -481,19 +478,85 @@ export async function GET(
       byEventMap.set(key, row);
     }
 
-    // Build per_event array from event_teams (not just time_entries)
-    const by_event = vendorEventIds.map(eventId => {
+    // All event IDs the employee has time entries for (excludes "unknown"/null)
+    const entryEventIds = [...byEventMap.keys()].filter(k => k !== "unknown");
+
+    // Event IDs from time entries that are NOT in event_teams (orphaned — e.g. manually entered via self-timesheet)
+    const vendorEventIdSet = new Set(vendorEventIds);
+    const orphanedEventIds = entryEventIds.filter(id => !vendorEventIdSet.has(id));
+
+    // All event IDs we need details for
+    const allEventIds = [...new Set([...vendorEventIds, ...orphanedEventIds])];
+
+    const eventEditRequestMap = new Map<
+      string,
+      { status: string; created_at: string }
+    >();
+    if (allEventIds.length > 0) {
+      const { data: editRequests, error: editRequestsError } = await supabaseAdmin
+        .from("timesheet_edit_requests")
+        .select("event_id, status, created_at")
+        .eq("user_id", userId)
+        .in("event_id", allEventIds)
+        .order("created_at", { ascending: false });
+
+      if (editRequestsError) {
+        console.error("timesheet_edit_requests query error:", editRequestsError);
+      } else {
+        for (const row of editRequests || []) {
+          if (!row.event_id || eventEditRequestMap.has(row.event_id)) continue;
+          const normalizedStatus = String(row.status || "").trim();
+          if (normalizedStatus === "completed" || normalizedStatus === "cancelled") {
+            eventEditRequestMap.set(row.event_id, {
+              status: "",
+              created_at: String(row.created_at || ""),
+            });
+            continue;
+          }
+          eventEditRequestMap.set(row.event_id, {
+            status: normalizedStatus,
+            created_at: String(row.created_at || ""),
+          });
+        }
+      }
+    }
+
+    // Fetch event details from events table
+    let eventsMap: Record<string, { id: string; event_name: string | null; event_date: string | null; venue: string | null; event_type: string | null }> = {};
+    if (allEventIds.length > 0) {
+      const { data: events, error: evErr } = await supabaseAdmin
+        .from("events")
+        .select("id, event_name, event_date, venue, event_type")
+        .in("id", allEventIds);
+
+      console.log("🔵 [DEBUG] Queried event IDs (team + orphaned):", allEventIds);
+      console.log("🔵 [DEBUG] Events returned from DB:", events);
+      console.log("🔵 [DEBUG] Query error:", evErr);
+
+      if (!evErr && events) {
+        eventsMap = Object.fromEntries(
+          events.map((ev) => [
+            ev.id,
+            { id: ev.id, event_name: ev.event_name, event_date: ev.event_date, venue: ev.venue ?? null, event_type: ev.event_type ?? null },
+          ])
+        );
+      }
+    }
+
+    // Build per_event array from event_teams + orphaned entry events
+    const by_event = allEventIds.map(eventId => {
       const timeData = byEventMap.get(eventId);
       return {
         event_id: eventId,
         shifts: timeData?.shifts || 0,
         hours: timeData?.hours || 0,
+        is_team_member: vendorEventIdSet.has(eventId),
       };
     }).sort((a, b) => b.hours - a.hours);
 
-    // Calculate totals based only on events in event_teams
-    const totalShiftsForTeamEvents = by_event.reduce((sum, e) => sum + e.shifts, 0);
-    const totalHoursForTeamEvents = by_event.reduce((sum, e) => sum + e.hours, 0);
+    // Calculate totals based only on events in event_teams (preserves HR accrual logic)
+    const totalShiftsForTeamEvents = by_event.filter(e => e.is_team_member).reduce((sum, e) => sum + e.shifts, 0);
+    const totalHoursForTeamEvents = by_event.filter(e => e.is_team_member).reduce((sum, e) => sum + e.hours, 0);
 
     const { data: sickLeaveRows, error: sickLeaveErr } = await supabaseAdmin
       .from("sick_leaves")
@@ -618,6 +681,14 @@ export async function GET(
                 event_name: eventData?.event_name || row.event_id,
                 event_date: eventData?.event_date ?? null,
                 venue: eventData?.venue ?? null,
+                event_type: eventData?.event_type ?? null,
+                is_team_member: row.is_team_member,
+                timesheet_attestation_status:
+                  eventAttestationStatusMap.get(row.event_id) ?? "not_submitted",
+                timesheet_edit_request_status:
+                  eventEditRequestMap.get(row.event_id)?.status || null,
+                timesheet_edit_request_created_at:
+                  eventEditRequestMap.get(row.event_id)?.created_at ?? null,
               };
             }),
           sick_leave: sickLeaveSummary,

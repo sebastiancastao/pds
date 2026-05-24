@@ -1297,7 +1297,7 @@ export default function DashboardPage() {
 
   const openTeamModal = async (event: EventItem) => {
     if (userRole !== "exec") {
-      setTeamMessage("Only executives can create teams from Actual Calendar.");
+      setTeamMessage("Only executives can create teams from Actual Global Calendar.");
       return;
     }
 
@@ -1661,7 +1661,7 @@ export default function DashboardPage() {
         <div className="mb-6">
           <div className={`flex ${userRole === "exec" || userRole === "hr" ? "flex-col gap-6" : "items-start justify-between"}`}>
             <div className={`${userRole === "exec" || userRole === "hr" ? "order-2 w-full max-w-none mt-6" : "flex-1"}`}>
-              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Actual Calendar</h1>
+              <h1 className="text-5xl font-semibold text-gray-900 mb-3 keeping-tight">Actual Global Calendar</h1>
               <p className="text-lg text-gray-600 font-normal">
                 {activeTab === "events"
                   ? "Manage all events and vendors across the organization."

@@ -146,7 +146,7 @@ async function fetchFormAuditTrailRows() {
 
     if (error) {
       if (isMissingFormAuditTrailError(error)) {
-        return { rows: [], sourceMode: 'audit_logs' as const };
+        return { rows: [], isAvailable: false as const };
       }
       throw new Error(error.message);
     }
@@ -158,10 +158,10 @@ async function fetchFormAuditTrailRows() {
     from += PAGE_SIZE;
   }
 
-  return { rows, sourceMode: 'form_audit_trail' as const };
+  return { rows, isAvailable: true as const };
 }
 
-async function fetchAuditLogFallbackRows() {
+async function fetchAuditLogRows() {
   const rows: any[] = [];
   let from = 0;
 
@@ -241,21 +241,42 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Access denied' }, { status: 403 });
     }
 
-    const { rows: formAuditRows, sourceMode } = await fetchFormAuditTrailRows();
-    const auditRows = sourceMode === 'form_audit_trail'
-      ? formAuditRows
-      : await fetchAuditLogFallbackRows();
+    const [{ rows: formAuditRows, isAvailable: formAuditTrailAvailable }, auditLogRows] = await Promise.all([
+      fetchFormAuditTrailRows(),
+      fetchAuditLogRows(),
+    ]);
 
-    if (!auditRows.length) {
+    const mergedAuditRows = [...formAuditRows, ...auditLogRows];
+    const dedupedAuditRows: any[] = [];
+    const seenAuditRowKeys = new Set<string>();
+
+    for (const row of mergedAuditRows) {
+      const details = normalizeActionDetails(row.action_details);
+      const key = [
+        String(row.user_id || '').trim(),
+        String(row.form_id || details.form_id || details.form_name || '').trim(),
+        String(row.action || details.action || '').trim().toLowerCase(),
+        normalizeIso(row.timestamp) || normalizeIso(details.occurred_at) || String(row.timestamp || '').trim(),
+      ].join('|');
+
+      if (!key || seenAuditRowKeys.has(key)) continue;
+      seenAuditRowKeys.add(key);
+      dedupedAuditRows.push(row);
+    }
+
+    if (!dedupedAuditRows.length) {
+      const sourceMode = formAuditTrailAvailable
+        ? (auditLogRows.length > 0 ? 'combined' : 'form_audit_trail')
+        : 'audit_logs';
       return NextResponse.json({
         latestByUser: {},
         recentEdits: [],
-        sourceMode: sourceMode === 'form_audit_trail' ? 'form_audit_trail' : 'audit_logs',
+        sourceMode,
       });
     }
 
     const actorUserIds = [...new Set(
-      auditRows
+      dedupedAuditRows
         .map((row: any) => getActorUserId(normalizeActionDetails(row.action_details)))
         .filter((value): value is string => !!value)
     )];
@@ -295,7 +316,7 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const normalizedEdits = auditRows
+    const normalizedEdits = dedupedAuditRows
       .map((row: any) => {
         const details = normalizeActionDetails(row.action_details);
         if (!isHrEmployeesFormEdit(details)) {
@@ -340,7 +361,9 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       latestByUser,
       recentEdits: scopedEdits.slice(0, MAX_RECENT_EDITS),
-      sourceMode: sourceMode === 'form_audit_trail' ? 'form_audit_trail' : 'audit_logs',
+      sourceMode: formAuditTrailAvailable
+        ? (auditLogRows.length > 0 ? 'combined' : 'form_audit_trail')
+        : 'audit_logs',
     });
   } catch (error: any) {
     console.error('[HR_FORM_EDITS] Error:', error);

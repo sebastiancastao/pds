@@ -746,6 +746,7 @@ export default function EmployeeFormPage() {
             requiredFieldNames={missingRequiredFields}
             showRequiredFieldErrors={missingRequiredFields.length > 0}
             assignedVenueName={assignedVenueName}
+            disableI9DateMirroring={Boolean(asUserId)}
           />
         )}
       </div>

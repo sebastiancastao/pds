@@ -68,6 +68,13 @@ type TimelineRow = {
   timestamp: string;
 };
 
+type TimesheetEditRequestSummary = {
+  id: string;
+  status: string;
+  requestReason: string;
+  createdAt: string;
+};
+
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
 }
@@ -372,6 +379,30 @@ async function loadAttestationState(userId: string, entries: TimeEntryRow[]) {
   };
 }
 
+async function loadLatestEditRequest(userId: string, eventId: string): Promise<TimesheetEditRequestSummary | null> {
+  const { data, error } = await supabaseAdmin
+    .from("timesheet_edit_requests")
+    .select("id, status, request_reason, created_at")
+    .eq("user_id", userId)
+    .eq("event_id", eventId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!data?.id) return null;
+  if (data.status === "completed" || data.status === "cancelled") return null;
+
+  return {
+    id: String(data.id),
+    status: String(data.status || ""),
+    requestReason: String(data.request_reason || ""),
+    createdAt: String(data.created_at || ""),
+  };
+}
+
 export async function GET(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -440,6 +471,7 @@ export async function GET(
 
     const { entries } = await loadCurrentEntries(targetUserId, eventId, eventDate, eventTimezone);
     const attestationState = await loadAttestationState(targetUserId, entries);
+    const editRequest = await loadLatestEditRequest(targetUserId, eventId);
     const timesheet = buildSnapshot(
       entries,
       eventTimezone,
@@ -473,6 +505,7 @@ export async function GET(
       },
       timesheet,
       teamMembers,
+      editRequest,
     });
   } catch (err: any) {
     return jsonError(err?.message || "Unhandled error.", 500);
@@ -765,10 +798,148 @@ export async function PUT(
       attestationState.rejectionReason
     );
 
+    const { error: closeEditRequestError } = await supabaseAdmin
+      .from("timesheet_edit_requests")
+      .update({
+        status: "completed",
+        reviewed_by: user.id,
+        reviewed_at: new Date().toISOString(),
+        review_notes: "Timesheet was updated and re-submitted from the attestation flow.",
+      })
+      .eq("event_id", eventId)
+      .eq("user_id", targetUserId)
+      .in("status", ["submitted", "in_review", "approved"]);
+
+    if (closeEditRequestError) {
+      return jsonError(closeEditRequestError.message, 500);
+    }
+
     return NextResponse.json({
       ok: true,
       timesheet,
     });
+  } catch (err: any) {
+    return jsonError(err?.message || "Unhandled error.", 500);
+  }
+}
+
+// PATCH: Draft-save time entries without requiring attestation or signature.
+// Saves clock_in/clock_out/meal times to time_entries so the event dashboard
+// reflects values immediately as the manager types them in the form.
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const user = await getAuthedUser(req);
+    if (!user?.id) {
+      return jsonError("Not authenticated.", 401);
+    }
+
+    const requester = await loadRequester(user.id);
+    if (!ALLOWED_ROLES.has(requester.role)) {
+      return jsonError("Only managers, supervisors, and execs can save timesheets.", 403);
+    }
+
+    const eventId = String(params.id || "").trim();
+    if (!eventId) {
+      return jsonError("Event ID is required.", 400);
+    }
+
+    const body = await req.json().catch(() => null);
+    const spans: TimesheetSpanPayload = body?.spans || {};
+    const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
+    const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
+
+    // Require at least clock_in and clock_out to save
+    if (!String(spans.firstIn || "").trim() || !String(spans.lastOut || "").trim()) {
+      return NextResponse.json({ ok: false, skipped: true, reason: "Incomplete — need clock in and out." });
+    }
+
+    const event = await loadEvent(eventId);
+    const eventDate = normalizeEventDate(event.event_date);
+    if (!eventDate) {
+      return jsonError("Event date is missing.", 400);
+    }
+
+    const eventTimezone = getTimezoneForState(event.state);
+    const { timeline, error: timelineError } = buildTimeline(eventDate, eventTimezone, spans);
+    if (timelineError) {
+      return NextResponse.json({ ok: false, skipped: true, reason: timelineError });
+    }
+
+    const { entries: existingEntries, range } = await loadCurrentEntries(
+      targetUserId,
+      eventId,
+      eventDate,
+      eventTimezone
+    );
+
+    const baseNote = targetUserId !== user.id
+      ? `Draft save by ${requester.name}`
+      : "Draft save";
+
+    const existingByAction: Record<string, TimeEntryRow[]> = {};
+    for (const entry of existingEntries) {
+      if (!existingByAction[entry.action]) existingByAction[entry.action] = [];
+      existingByAction[entry.action].push(entry);
+    }
+
+    const newByAction: Record<string, TimelineRow[]> = {};
+    for (const entry of timeline) {
+      if (!newByAction[entry.action]) newByAction[entry.action] = [];
+      newByAction[entry.action].push(entry);
+    }
+
+    const toUpdate: Array<{ id: string; action: string; timestamp: string }> = [];
+    const toInsert: Array<{ action: string; timestamp: string }> = [];
+    const toDelete: string[] = [];
+
+    const allActions = new Set([...Object.keys(existingByAction), ...Object.keys(newByAction)]);
+    for (const action of allActions) {
+      const existingList = existingByAction[action] || [];
+      const newList = newByAction[action] || [];
+      const maxLen = Math.max(existingList.length, newList.length);
+      for (let i = 0; i < maxLen; i++) {
+        if (i < existingList.length && i < newList.length) {
+          toUpdate.push({ id: existingList[i].id, action, timestamp: newList[i].timestamp });
+        } else if (i < newList.length) {
+          toInsert.push({ action, timestamp: newList[i].timestamp });
+        } else {
+          toDelete.push(existingList[i].id);
+        }
+      }
+    }
+
+    if (toDelete.length > 0) {
+      const { error: deleteError } = await supabaseAdmin
+        .from("time_entries")
+        .delete()
+        .in("id", toDelete);
+      if (deleteError) return jsonError(deleteError.message, 500);
+    }
+
+    for (const upd of toUpdate) {
+      const { error: updateError } = await supabaseAdmin
+        .from("time_entries")
+        .update({ timestamp: upd.timestamp, event_id: eventId, notes: baseNote })
+        .eq("id", upd.id);
+      if (updateError) return jsonError(updateError.message, 500);
+    }
+
+    for (const ins of toInsert) {
+      const { error: insertError } = await supabaseAdmin.from("time_entries").insert({
+        user_id: targetUserId,
+        division: targetRequester.division || "vendor",
+        action: ins.action,
+        timestamp: ins.timestamp,
+        event_id: eventId,
+        notes: baseNote,
+      });
+      if (insertError) return jsonError(insertError.message, 500);
+    }
+
+    return NextResponse.json({ ok: true });
   } catch (err: any) {
     return jsonError(err?.message || "Unhandled error.", 500);
   }

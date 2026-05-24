@@ -413,7 +413,10 @@ function VerifyMFAContent() {
         // Role-based routing
         console.log('[VERIFY-MFA DEBUG] User role:', userRole);
 
-        if (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
+        if (userRole === 'supervisor4') {
+          console.log('[VERIFY-MFA DEBUG] Supervisor4 role - Redirecting to /planned-calendar');
+          router.push('/planned-calendar');
+        } else if (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') {
           console.log('[VERIFY-MFA DEBUG] Manager/Supervisor role - Redirecting to /dashboard');
           router.push('/dashboard');
         } else if (userRole === 'exec') {
