@@ -3,6 +3,8 @@ import { PDFDocument, PDFTextField, PDFCheckBox, rgb, degrees, PDFName, PDFNumbe
 import { readFileSync, statSync } from 'fs';
 import { join } from 'path';
 
+export const dynamic = "force-dynamic";
+
 function loadAzBasePdf() {
   const primaryPath = join(process.cwd(), 'Arizona Form A-4-1.pdf');
   const secondaryPath = join(process.cwd(), 'Arizona Form A-4.pdf');

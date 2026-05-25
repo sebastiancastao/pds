@@ -5,6 +5,7 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
 import { decrypt, isEncrypted } from "@/lib/encryption";
 
+export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 const supabaseAdmin = createClient(

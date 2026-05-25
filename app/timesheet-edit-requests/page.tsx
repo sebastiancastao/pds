@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabase";
 
 type EditRequest = {
@@ -74,7 +74,7 @@ function statusLabel(status: string) {
     .join(" ");
 }
 
-export default function TimesheetEditRequestsPage() {
+function TimesheetEditRequestsPageInner() {
   const searchParams = useSearchParams();
   const highlightedRequestId = (searchParams.get("requestId") || "").trim();
 
@@ -536,5 +536,26 @@ export default function TimesheetEditRequestsPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function TimesheetEditRequestsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen bg-slate-50 px-4 py-10">
+          <div className="mx-auto max-w-6xl">
+            <div className="rounded-3xl border border-slate-200 bg-white p-10 shadow-sm">
+              <div className="flex items-center gap-3 text-slate-600">
+                <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-300 border-t-slate-700" />
+                Loading timesheet edit requests...
+              </div>
+            </div>
+          </div>
+        </div>
+      }
+    >
+      <TimesheetEditRequestsPageInner />
+    </Suspense>
   );
 }

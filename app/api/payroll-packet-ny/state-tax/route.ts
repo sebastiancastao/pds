@@ -3,6 +3,8 @@ import { readFile } from 'fs/promises';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
 
+export const dynamic = "force-dynamic";
+
 export async function GET() {
   try {
     // Read the NY State W4 PDF

@@ -3,6 +3,8 @@ import { PDFDocument, PDFRef, rgb, PDFName, PDFString, StandardFonts } from 'pdf
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
+export const dynamic = "force-dynamic";
+
 export async function GET(request: NextRequest) {
   try {
     console.log('[ADP-DEPOSIT] Starting PDF generation...');

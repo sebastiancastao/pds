@@ -6,6 +6,8 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 
+export const dynamic = "force-dynamic";
+
 const SAN_DIEGO_TEMP_EMPLOYMENT_FILE = 'San Diego final Temp Employment agreement 4.17.2026.pdf';
 const LA_NORCAL_TEMP_EMPLOYMENT_FILE = 'LA Region and Norcal Final Temp Employment Agreement 4.17.26.pdf';
 

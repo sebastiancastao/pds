@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+export const dynamic = "force-dynamic";
+
 const FILE_NAME = "1775227632016_Know-Your-Rights-Notice-English (1).pdf";
 const DOWNLOAD_NAME = "Know-Your-Rights-Notice-English.pdf";
 
