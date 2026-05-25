@@ -187,7 +187,11 @@ export async function POST(req: NextRequest) {
         )
       );
       for (const result of results) {
-        if (result.status === "fulfilled" && !(result.value as any).error) updated++;
+        if (result.status === "rejected") {
+          console.error("Profile update rejected:", result.reason);
+        } else if (!(result.value as any).error) {
+          updated++;
+        }
       }
     }
   }

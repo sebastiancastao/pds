@@ -3865,7 +3865,7 @@ function HRDashboardContent() {
                                                 const loadedRate = breakdown.rateInEffect;
                                                 const hours = breakdown.hours;
                                                 const otRate = Number(p.otRate || 0);
-                                                const displayedCommissionPay = breakdown.commissionPay;
+                                                const displayedCommissionPay = breakdown.commissionPaidTotal;
                                                 const tips = Number(p.tips || 0);
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
@@ -3876,11 +3876,14 @@ function HRDashboardContent() {
                                                 const travelOverrideS2 = (travelPayOverrides[ev.id] || {})[p.userId];
                                                 const mileagePay = mileageOverrideS2 !== undefined ? mileageOverrideS2 : (approval.mileage ? _mileagePay : 0);
                                                 const travelPay = travelOverrideS2 !== undefined ? travelOverrideS2 : (approval.travel ? _travelPay : 0);
+                                                const reimbursementForRow = reimbursementAmounts[ev.id]?.[p.userId] !== undefined ? Number(reimbursementAmounts[ev.id]?.[p.userId] || 0) : Number(p.reimbursementAmount || 0);
+                                                const otherForRow = adjustments[ev.id]?.[p.userId] !== undefined ? Number(adjustments[ev.id]?.[p.userId] || 0) : Number(p.otherAmount || 0);
                                                 const totalGrossPay =
                                                   breakdown.commissionPaidTotal +
                                                   tips +
                                                   restBreak +
-                                                  Number(p.adjustmentAmount || 0) +
+                                                  reimbursementForRow +
+                                                  otherForRow +
                                                   mileagePay +
                                                   travelPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
@@ -4006,7 +4009,7 @@ function HRDashboardContent() {
                                                         <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add other" onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'other' })}>+</button>
                                                       ); })()}
                                                     </td>
-                                                    <td className="p-2 text-sm font-semibold text-right">${formatPayrollMoney(totalGrossPay)}</td>
+                                                    <td className="p-2 text-sm font-semibold text-right">${formatExactMoney(totalGrossPay)}</td>
                                                   </>
                                                 );
                                               })()}
@@ -4034,8 +4037,7 @@ function HRDashboardContent() {
                                                     <td className="p-2"></td>
                                                     <td className="p-2">{formatHoursDecimal(eventTotals.eventHours)}</td>
                                                     {showOT && <td className="p-2"></td>}
-                                                    <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPay)}</td>
-                                                    <td className="p-2 text-purple-600">${formatPayrollMoney(eventTotals.totalVariableIncentive)}</td>
+                                                    <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPaid)}</td>
                                                   </>
                                                 )}
                                                 <td className="p-2 text-orange-600">${formatPayrollMoney(eventTotals.totalTips)}</td>
@@ -4044,7 +4046,7 @@ function HRDashboardContent() {
                                                 <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalReimbursement)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
-                                                <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalGross)}</td>
+                                                <td className="p-2 text-right">${formatExactMoney(eventTotals.totalGross)}</td>
                                               </tr>
                                             );
                                           })()}

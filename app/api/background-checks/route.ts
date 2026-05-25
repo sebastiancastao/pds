@@ -285,6 +285,18 @@ export async function POST(req: NextRequest) {
       updateData.notes = notes;
     }
 
+    // Read current state before upserting so we can detect a false→true transition
+    // and avoid sending duplicate approval emails on concurrent requests.
+    let wasAlreadyCompleted = false;
+    if (background_check_completed) {
+      const { data: existing } = await adminClient
+        .from('vendor_background_checks')
+        .select('background_check_completed')
+        .eq('profile_id', profile_id)
+        .maybeSingle();
+      wasAlreadyCompleted = existing?.background_check_completed === true;
+    }
+
     const { data: bgCheck, error: bgError } = await adminClient
       .from('vendor_background_checks')
       .upsert(updateData, {
@@ -303,8 +315,9 @@ export async function POST(req: NextRequest) {
 
     console.log('[Background Checks API] Background check updated successfully');
 
-    // Send email notification if background check was just completed
-    if (background_check_completed) {
+    // Send email only when this request is the one that transitioned the flag to true.
+    // wasAlreadyCompleted guards against duplicate emails from concurrent requests.
+    if (background_check_completed && !wasAlreadyCompleted) {
       console.log('[Background Checks API] Background check marked as completed, sending approval email');
 
       // Fetch the user's profile to get their email and name

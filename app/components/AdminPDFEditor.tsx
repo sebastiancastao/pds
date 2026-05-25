@@ -99,6 +99,21 @@ export default function AdminPDFEditor({
       // Load PDF.js for rendering
       if (!window.pdfjsLib) {
         await new Promise<void>((resolve, reject) => {
+          // Guard against injecting a second <script> tag if a concurrent load
+          // is already in progress (e.g. rapid pdfBase64 changes or React strict-mode double-effect).
+          const existing = document.querySelector<HTMLScriptElement>(
+            'script[src*="pdfjs-dist/build/pdf.min"]'
+          );
+          if (existing) {
+            const poll = setInterval(() => {
+              if (window.pdfjsLib) { clearInterval(poll); resolve(); }
+            }, 50);
+            existing.addEventListener('error', () => {
+              clearInterval(poll);
+              reject(new Error('Failed to load PDF.js'));
+            }, { once: true });
+            return;
+          }
           const script = document.createElement('script');
           script.src = 'https://unpkg.com/pdfjs-dist@3.4.120/build/pdf.min.js';
           script.onload = () => {

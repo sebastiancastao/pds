@@ -112,10 +112,12 @@ export default function CheckInMonitorPage() {
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
 
   const accessTokenRef = useRef<string | null>(null);
+  const fetchAbortRef = useRef<AbortController | null>(null);
 
   // ─── Auth ──────────────────────────────────────────────────────
   useEffect(() => {
     checkAuth();
+    return () => { fetchAbortRef.current?.abort(); };
   }, []);
 
   const checkAuth = async () => {
@@ -146,6 +148,11 @@ export default function CheckInMonitorPage() {
 
   // ─── Data fetching ────────────────────────────────────────────
   const fetchMonitorData = useCallback(async () => {
+    // Cancel any in-flight request so out-of-order responses can't overwrite
+    // newer data and so unmounted components don't set state.
+    fetchAbortRef.current?.abort();
+    fetchAbortRef.current = new AbortController();
+
     try {
       const token = accessTokenRef.current;
       if (!token) {
@@ -156,6 +163,7 @@ export default function CheckInMonitorPage() {
 
       const res = await fetch("/api/admin/check-in-monitor", {
         headers: { Authorization: `Bearer ${accessTokenRef.current}` },
+        signal: fetchAbortRef.current.signal,
       });
 
       if (!res.ok) {
@@ -169,6 +177,7 @@ export default function CheckInMonitorPage() {
       setLastRefreshed(new Date());
       setError("");
     } catch (err: any) {
+      if (err.name === "AbortError") return;
       setError(err.message || "Connection error");
     }
   }, []);
