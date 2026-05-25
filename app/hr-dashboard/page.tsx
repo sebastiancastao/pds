@@ -373,6 +373,7 @@ function HRDashboardContent() {
   const [travelPayOverrides, setTravelPayOverrides] = useState<Record<string, Record<string, number>>>({});
   const [editingMileageCell, setEditingMileageCell] = useState<{ eventId: string; userId: string; field: 'mileage' | 'travel' } | null>(null);
   const [editingMileageValue, setEditingMileageValue] = useState<string>('');
+  const [tipsEqualMode, setTipsEqualMode] = useState<Record<string, boolean>>({});
 
   // Onboarding forms state
   const [onboardingForms, setOnboardingForms] = useState<any[]>([]);
@@ -1575,6 +1576,25 @@ function HRDashboardContent() {
       doubletimePay,
     };
   }, [payPeriodCommission]);
+
+  const getDisplayedTips = useCallback((event: any, payment: any): number => {
+    const paymentHours = Number(payment?.actualHours || 0);
+    if (paymentHours <= 0 || isTrailersDivision(payment?.division)) return 0;
+    const totalTips = Number(event?.totalTips || 0);
+    if (totalTips <= 0) return 0;
+    const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
+    const eligible = payments.filter(
+      (p: any) => Number(p?.actualHours || 0) > 0 && !isTrailersDivision(p?.division)
+    );
+    if (eligible.length === 0) return 0;
+    if (tipsEqualMode[event?.id]) {
+      return totalTips / eligible.length;
+    } else {
+      const totalEligibleHours = eligible.reduce((sum: number, p: any) => sum + Number(p?.actualHours || 0), 0);
+      if (totalEligibleHours <= 0) return 0;
+      return (paymentHours / totalEligibleHours) * totalTips;
+    }
+  }, [tipsEqualMode]);
 
   const getDisplayedEventTotals = useCallback((event: any) => {
     const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
@@ -3775,6 +3795,15 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
                                   <div>${formatExactMoney(Number(ev.totalTips || 0))}</div>
+                                  {Number(ev.totalTips || 0) > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setTipsEqualMode(prev => ({ ...prev, [ev.id]: !prev[ev.id] }))}
+                                      className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tipsEqualMode[ev.id] ? 'bg-blue-100 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}`}
+                                    >
+                                      {tipsEqualMode[ev.id] ? 'Equal' : 'Prorated'}
+                                    </button>
+                                  )}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Rest Break</div>
@@ -3866,7 +3895,7 @@ function HRDashboardContent() {
                                                 const hours = breakdown.hours;
                                                 const otRate = Number(p.otRate || 0);
                                                 const displayedCommissionPay = breakdown.commissionPaidTotal;
-                                                const tips = Number(p.tips || 0);
+                                                const tips = getDisplayedTips(ev, p);
                                                 const restBreak = hideRest ? 0 : Number(p.restBreak || 0);
                                                 const _mileagePay = Number((mileageByEvent[ev.id] || {})[p.userId]?.mileagePay || 0);
                                                 const differentialMiles = (mileageByEvent[ev.id] || {})[p.userId]?.differentialMiles ?? null;
