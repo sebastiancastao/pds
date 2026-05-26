@@ -121,6 +121,58 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const supabase = createRouteHandlerClient({ cookies });
+    let { data: { user } } = await supabase.auth.getUser();
+
+    if (!user?.id) {
+      const authHeader = req.headers.get('authorization') || req.headers.get('Authorization');
+      const token = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+      if (token) {
+        const { data: tokenUser, error: tokenErr } = await supabaseAnon.auth.getUser(token);
+        if (!tokenErr && tokenUser?.user?.id) user = { id: tokenUser.user.id } as any;
+      }
+    }
+    if (!user?.id) return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+
+    const { data: userData, error: userError } = await supabaseAdmin
+      .from('users').select('role').eq('id', user.id).single();
+    if (userError || !userData) return NextResponse.json({ error: 'Failed to verify user role' }, { status: 403 });
+
+    const role = userData.role as string;
+    if (!ALLOWED_ROLES.includes(role)) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
+
+    const { searchParams } = new URL(req.url);
+    const id = searchParams.get("id");
+    if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
+
+    const body = await req.json();
+    const { event_name, event_date, venue_id } = body;
+
+    if (!event_name || !event_date || !venue_id) {
+      return NextResponse.json({ error: "event_name, event_date, and venue_id are required" }, { status: 400 });
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from("planned_calendar_events")
+      .update({ event_name, event_date, venue_id, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .select(EVENT_SELECT)
+      .single();
+
+    if (error) {
+      console.error("[PLANNED-EVENTS] Update error:", error);
+      return NextResponse.json({ error: "Failed to update planned event" }, { status: 500 });
+    }
+
+    return NextResponse.json({ event: data });
+  } catch (err) {
+    console.error("[PLANNED-EVENTS] PATCH error:", err);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const supabase = createRouteHandlerClient({ cookies });

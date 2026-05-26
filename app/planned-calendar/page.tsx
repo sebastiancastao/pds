@@ -70,6 +70,11 @@ export default function PlannedCalendarPage() {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  const [editEvent, setEditEvent] = useState<PlannedEvent | null>(null);
+  const [editForm, setEditForm] = useState({ event_name: "", event_date: "", venue_id: "" });
+  const [editSaving, setEditSaving] = useState(false);
+  const [editFormError, setEditFormError] = useState("");
+
   const [alertModal, setAlertModal] = useState<{ title: string; message: string; type: "success" | "error" } | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [filterVenue, setFilterVenue] = useState("all");
@@ -174,6 +179,44 @@ export default function PlannedCalendarPage() {
       setFormError(err.message ?? "Failed to save event");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openEdit = (ev: PlannedEvent) => {
+    setEditEvent(ev);
+    setEditForm({ event_name: ev.event_name, event_date: ev.event_date, venue_id: ev.venue.id });
+    setEditFormError("");
+  };
+
+  const handleEdit = async () => {
+    if (!editEvent) return;
+    if (!editForm.event_name.trim() || !editForm.event_date || !editForm.venue_id) {
+      setEditFormError("All fields are required.");
+      return;
+    }
+    setEditSaving(true);
+    setEditFormError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/planned-events?id=${editEvent.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify(editForm),
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error ?? "Failed to update event");
+      }
+      setEditEvent(null);
+      await fetchEvents();
+      setAlertModal({ title: "Event Updated", message: "The planned event was updated successfully.", type: "success" });
+    } catch (err: any) {
+      setEditFormError(err.message ?? "Failed to update event");
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -399,17 +442,28 @@ export default function PlannedCalendarPage() {
                     <h3 className="font-semibold text-gray-900 truncate">{ev.event_name}</h3>
                     <p className="text-sm text-blue-600 font-medium mt-0.5">{ev.venue.venue_name}</p>
                   </div>
-                  {canDelete && (
+                  <div className="flex items-center gap-1 flex-shrink-0">
                     <button
-                      onClick={() => setDeleteConfirmId(ev.id)}
-                      className="apple-icon-button apple-icon-button-danger flex-shrink-0"
-                      title="Delete event"
+                      onClick={() => openEdit(ev)}
+                      className="apple-icon-button flex-shrink-0"
+                      title="Edit event"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536M9 13l6.586-6.586a2 2 0 012.828 2.828L11.828 15.828A2 2 0 0110.414 16H8v-2.414a2 2 0 01.586-1.414z" />
                       </svg>
                     </button>
-                  )}
+                    {canDelete && (
+                      <button
+                        onClick={() => setDeleteConfirmId(ev.id)}
+                        className="apple-icon-button apple-icon-button-danger flex-shrink-0"
+                        title="Delete event"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2 text-sm">
@@ -506,6 +560,83 @@ export default function PlannedCalendarPage() {
                   className={`apple-button flex-1 ${saving ? "apple-button-disabled" : "apple-button-primary"}`}
                 >
                   {saving ? "Saving..." : "Create Event"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Event Modal */}
+      {editEvent && (
+        <div className="apple-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setEditEvent(null); }}>
+          <div className="apple-modal max-w-lg">
+            <div className="apple-modal-header">
+              <div>
+                <h2 className="text-xl font-semibold text-gray-900">Edit Event</h2>
+                <p className="text-sm text-gray-500 mt-1">Update the event details below.</p>
+              </div>
+              <button onClick={() => setEditEvent(null)} className="apple-close-button">
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            <div className="apple-modal-body space-y-4">
+              {editFormError && <div className="apple-alert apple-alert-error text-sm">{editFormError}</div>}
+
+              <div>
+                <label className="apple-label">Event Name</label>
+                <input
+                  type="text"
+                  value={editForm.event_name}
+                  onChange={(e) => setEditForm((f) => ({ ...f, event_name: e.target.value }))}
+                  placeholder="e.g. Concert Night"
+                  className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              <div>
+                <label className="apple-label">Date</label>
+                <input
+                  type="date"
+                  value={editForm.event_date}
+                  onChange={(e) => setEditForm((f) => ({ ...f, event_date: e.target.value }))}
+                  className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                />
+              </div>
+
+              <div>
+                <label className="apple-label">Venue</label>
+                <select
+                  value={editForm.venue_id}
+                  onChange={(e) => setEditForm((f) => ({ ...f, venue_id: e.target.value }))}
+                  className="apple-select text-sm"
+                >
+                  <option value="">Select a venue...</option>
+                  {venues.map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.venue_name} — {v.city}, {v.state}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setEditEvent(null)}
+                  className="apple-button apple-button-secondary flex-1"
+                  disabled={editSaving}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleEdit}
+                  disabled={editSaving}
+                  className={`apple-button flex-1 ${editSaving ? "apple-button-disabled" : "apple-button-primary"}`}
+                >
+                  {editSaving ? "Saving..." : "Save Changes"}
                 </button>
               </div>
             </div>
