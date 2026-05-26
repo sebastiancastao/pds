@@ -217,7 +217,7 @@ export default function PlannedCalendarPage() {
     ? filteredEvents.filter((e) => e.id === selectedCalendarEventId)
     : filteredEvents;
 
-  const canDelete = userRole === "admin" || userRole === "exec";
+  const canDelete = userRole === "admin" || userRole === "exec" || userRole === "supervisor4";
 
   if (authChecking) {
     return (
