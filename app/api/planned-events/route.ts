@@ -99,13 +99,13 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { event_name, event_date, start_time, end_time, venue_id } = body;
 
-    if (!event_name || !event_date || !start_time || !venue_id) {
-      return NextResponse.json({ error: "event_name, event_date, start_time, and venue_id are required" }, { status: 400 });
+    if (!event_name || !event_date || !venue_id) {
+      return NextResponse.json({ error: "event_name, event_date, and venue_id are required" }, { status: 400 });
     }
 
     const { data, error } = await supabaseAdmin
       .from("planned_calendar_events")
-      .insert({ event_name, event_date, start_time, end_time: end_time || null, venue_id })
+      .insert({ event_name, event_date, start_time: start_time || null, end_time: end_time || null, venue_id })
       .select(EVENT_SELECT)
       .single();
 
