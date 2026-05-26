@@ -101,7 +101,7 @@ export default function PlannedCalendarPage() {
           return;
         }
         const role = userData.role as string;
-        if (!["admin", "exec", "manager", "supervisor3", "supervisor4"].includes(role)) {
+        if (!["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"].includes(role)) {
           router.replace("/dashboard");
           return;
         }
@@ -260,7 +260,7 @@ export default function PlannedCalendarPage() {
     ? filteredEvents.filter((e) => e.id === selectedCalendarEventId)
     : filteredEvents;
 
-  const canDelete = ["admin", "exec", "manager", "supervisor3", "supervisor4"].includes(userRole ?? "");
+  const canDelete = ["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"].includes(userRole ?? "");
 
   if (authChecking) {
     return (

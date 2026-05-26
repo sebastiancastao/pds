@@ -15,7 +15,7 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-const ALLOWED_ROLES = ["admin", "exec", "manager", "supervisor3", "supervisor4"];
+const ALLOWED_ROLES = ["admin", "exec", "manager", "supervisor", "supervisor2", "supervisor3", "supervisor4"];
 
 const EVENT_SELECT = `
   id,
