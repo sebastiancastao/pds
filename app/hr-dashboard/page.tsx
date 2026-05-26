@@ -4363,11 +4363,6 @@ function HRDashboardContent() {
                           </div>
                           <p className="text-sm text-gray-600">{e.position} • {e.department}</p>
                           <p className="text-sm text-gray-500">{e.city || '—'}, {e.state}</p>
-                          {Number(e.salary) > 0 && (
-                            <p className="text-xs font-semibold text-emerald-700 mt-1">
-                              Salaried · ${Number(e.salary).toLocaleString()}/yr
-                            </p>
-                          )}
                         </div>
                       </div>
                     </div>
