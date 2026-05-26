@@ -58,7 +58,10 @@ function toBase64(data: any): string {
   return Buffer.from(uint).toString("base64");
 }
 
-function getDisplayName(formName: string): string {
+const CUSTOM_FORM_NAME_PATTERN = /^custom-form-([a-f0-9-]{36})$/i;
+
+function getDisplayName(formName: string, customFormTitle?: string): string {
+  if (customFormTitle) return customFormTitle;
   const lower = formName.toLowerCase();
   if (formDisplayNames[lower]) return formDisplayNames[lower];
   // Try without state prefix
@@ -100,6 +103,24 @@ export async function GET(
       return NextResponse.json({ forms: [] }, { status: 200 });
     }
 
+    // Batch-fetch titles for any custom-form-{id} entries
+    const customFormIds = allForms
+      .map((f) => f.form_name?.match(CUSTOM_FORM_NAME_PATTERN)?.[1])
+      .filter((id): id is string => !!id);
+
+    const customFormTitles: Record<string, string> = {};
+    if (customFormIds.length > 0) {
+      const { data: customForms } = await supabaseAdmin
+        .from("custom_pdf_forms")
+        .select("id, title")
+        .in("id", customFormIds);
+      for (const cf of customForms ?? []) {
+        if (cf.id && cf.title?.trim()) {
+          customFormTitles[cf.id] = cf.title.trim();
+        }
+      }
+    }
+
     const MIN_FORM_DATA_LENGTH = 1000;
     const forms = [];
 
@@ -110,12 +131,15 @@ export async function GET(
       const isCustomForm = formName.startsWith("custom-form-");
       if (!isCustomForm && base64Data.length < MIN_FORM_DATA_LENGTH) continue;
 
+      const customFormId = formName.match(CUSTOM_FORM_NAME_PATTERN)?.[1];
+      const customFormTitle = customFormId ? customFormTitles[customFormId] : undefined;
+
       // Each record is a distinct form — no deduplication by name.
       // Two forms with the same name for the same user are intentionally kept separate.
       forms.push({
         id: form.id,
         form_name: formName,
-        display_name: getDisplayName(formName),
+        display_name: getDisplayName(formName, customFormTitle),
         form_data: base64Data,
         updated_at: form.updated_at || "",
         created_at: form.updated_at || "",
