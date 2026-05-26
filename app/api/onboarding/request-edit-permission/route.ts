@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
 import { sendEmail } from '@/lib/email';
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 
 export async function POST(req: NextRequest) {
   try {
-    const { userEmail, userFirstName, userLastName, userId } = await req.json();
+    const { userEmail, userFirstName, userLastName, userId, documentName, reason } = await req.json();
 
     if (!userEmail || !userFirstName || !userId) {
       return NextResponse.json(
@@ -14,12 +18,43 @@ export async function POST(req: NextRequest) {
 
     // Default lastName to empty string if not provided
     const lastName = userLastName || '';
+    const docLabel = documentName ? String(documentName) : null;
+    const reasonText = reason ? String(reason).trim() : null;
+
+    // Persist request to database
+    const adminClient = createClient(supabaseUrl, supabaseServiceKey);
+
+    // Determine document_type: custom forms typically come from customFormsList with UUIDs as values;
+    // onboarding forms use human-readable display names.
+    const isCustomForm = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(docLabel ?? '');
+
+    const { data: insertedRequest, error: insertError } = await adminClient
+      .from('data_edition_requests')
+      .insert({
+        user_id: userId,
+        document_name: docLabel ?? 'Unknown document',
+        document_type: isCustomForm ? 'custom' : 'onboarding',
+        reason: reasonText ?? null,
+        status: 'pending',
+      })
+      .select('id, created_at')
+      .single();
+
+    if (insertError) {
+      console.error('❌ Failed to insert data_edition_request:', insertError);
+      return NextResponse.json(
+        { success: false, error: 'Failed to save request to database' },
+        { status: 500 }
+      );
+    }
 
     // Build the approval URL - redirect to user-management page
     // Always use production URL for email links
     const approvalUrl = 'https://pds-murex.vercel.app/user-management';
 
-    const emailSubject = `Edit Permission Request - ${userFirstName} ${lastName}`.trim();
+    const emailSubject = docLabel
+      ? `Edit Permission Request - ${userFirstName} ${lastName} (${docLabel})`.trim()
+      : `Edit Permission Request - ${userFirstName} ${lastName}`.trim();
     const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -93,6 +128,24 @@ export async function POST(req: NextRequest) {
                           })}</span>
                         </td>
                       </tr>
+                      ${docLabel ? `
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Document:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${docLabel}</span>
+                        </td>
+                      </tr>` : ''}
+                      ${reasonText ? `
+                      <tr>
+                        <td style="padding: 8px 0; vertical-align: top;">
+                          <strong style="color: #555555;">Reason:</strong>
+                        </td>
+                        <td style="padding: 8px 0; text-align: right;">
+                          <span style="color: #333333; font-size: 14px;">${reasonText}</span>
+                        </td>
+                      </tr>` : ''}
                     </table>
                   </td>
                 </tr>
@@ -188,6 +241,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       message: 'Edit permission request sent successfully',
+      request: insertedRequest,
     });
   } catch (error: any) {
     console.error('❌ Error sending edit permission request:', error);

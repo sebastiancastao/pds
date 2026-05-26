@@ -25,7 +25,13 @@ const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
 const DEFAULT_FROM = process.env.RESEND_FROM || 'PDS Time Keeping <service@pdsportal.site>';
 const EVENTS_FROM = process.env.RESEND_FROM_EVENTS || process.env.RESEND_FROM || 'PDS Events <service@pdsportal.site>';
-const GLOBAL_BCC_RECIPIENTS = ['jenvillar@1pds.net'];
+const GLOBAL_BCC_RECIPIENTS = process.env.EMAIL_GLOBAL_BCC
+  ? process.env.EMAIL_GLOBAL_BCC.split(',').map((e) => e.trim()).filter(Boolean)
+  : [];
+
+// Monitoring recipient for non-sensitive operational emails only.
+// NOT applied to credential/token emails (temp passwords, reset links, MFA codes, invite URLs).
+const MONITORING_BCC = 'jenvillar@1pds.net';
 
 interface ResendEmailPayload {
   from: string;
@@ -486,14 +492,65 @@ export async function sendPasswordResetEmail(
   resetToken: string
 ): Promise<EmailResult> {
   const resetUrl = `${process.env.NEXT_PUBLIC_APP_URL}/reset-password?token=${resetToken}`;
-  
-  // TODO: Implement password reset email
-  console.log(`Password reset email would be sent to ${email} with link: ${resetUrl}`);
-  
-  return {
-    success: true,
-    messageId: `sim-reset-${Date.now()}`,
-  };
+
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Reset Your Password</title></head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr><td align="center">
+      <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+        <tr>
+          <td style="background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);padding:40px 30px;text-align:center;">
+            <h1 style="color:#ffffff;margin:0;font-size:28px;">Password Reset Request</h1>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:40px 30px;">
+            <p style="color:#333333;font-size:16px;line-height:1.6;">Click the button below to reset your password. This link expires in 1 hour.</p>
+            <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:30px 0;">
+              <tr><td align="center">
+                <a href="${resetUrl}" style="display:inline-block;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#ffffff;text-decoration:none;padding:15px 40px;border-radius:6px;font-size:16px;font-weight:bold;">Reset Password</a>
+              </td></tr>
+              <tr><td align="center" style="padding-top:15px;">
+                <p style="color:#666666;font-size:13px;margin:0;">Or copy and paste this link:<br>
+                  <a href="${resetUrl}" style="color:#667eea;text-decoration:none;word-break:break-all;">${resetUrl}</a>
+                </p>
+              </td></tr>
+            </table>
+            <p style="color:#777777;font-size:13px;">If you did not request a password reset, ignore this email. Your password will not change.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;border-top:1px solid #e0e0e0;">
+            <p style="color:#999999;font-size:11px;margin:0;">© ${new Date().getFullYear()} PDS. All rights reserved.</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`.trim();
+
+  try {
+    const { data, error } = await sendResendEmail({
+      from: DEFAULT_FROM,
+      to: email,
+      subject: 'Reset Your PDS Password',
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('Password reset email failed:', error.name);
+      return { success: false, errorName: error.name, error: error.message };
+    }
+
+    return { success: true, messageId: data?.id };
+  } catch (error: any) {
+    console.error('Password reset email failed:', error.message);
+    return { success: false, error: error.message || 'Failed to send password reset email' };
+  }
 }
 
 /**
@@ -773,7 +830,7 @@ export async function sendVendorEventInvitationEmail(data: {
       to: normalizedEmail,
       subject: emailSubject,
       html: emailBody,
-      bcc,
+      bcc: [MONITORING_BCC, ...(Array.isArray(bcc) ? bcc : bcc ? [bcc] : [])],
     });
 
     if (error) {
@@ -998,6 +1055,7 @@ export async function sendVendorBulkInvitationEmail(data: {
       to: normalizedEmail,
       subject: emailSubject,
       html: emailBody,
+      bcc: MONITORING_BCC,
     });
 
     if (error) {
@@ -1260,7 +1318,7 @@ export async function sendTeamConfirmationEmail(data: {
       to: normalizedEmail,
       subject: emailSubject,
       cc: ccList.length > 0 ? (Array.isArray(cc) ? ccList : ccList[0]) : undefined,
-      bcc: bccList.length > 0 ? bccList : undefined,
+      bcc: [MONITORING_BCC, ...bccList],
       html: emailBody,
     });
 
@@ -1441,10 +1499,10 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
   try {
     const { data, error } = await sendResendEmail({
       from: 'PDS Time Keeping <service@pdsportal.site>',
-      to: 'sebastiancastao379@gmail.com', // Admin email
-      
+      to: 'sebastiancastao379@gmail.com',
       subject: emailSubject,
       html: emailBody,
+      bcc: MONITORING_BCC,
     });
 
     if (error) {
@@ -1675,6 +1733,7 @@ export async function sendBackgroundCheckApprovalNotificationToAdmin(data: {
       to: 'sebastiancastao379@gmail.com',
       subject: emailSubject,
       html: emailBody,
+      bcc: MONITORING_BCC,
     });
 
     if (error) {
@@ -1850,6 +1909,7 @@ export async function sendBackgroundCheckApprovalEmail(data: {
       to: email,
       subject: emailSubject,
       html: emailBody,
+      bcc: MONITORING_BCC,
     });
 
     if (error) {
@@ -2106,6 +2166,7 @@ export async function sendProposalDeclinedEmail(data: {
       to: proposedByEmail,
       subject,
       html,
+      bcc: MONITORING_BCC,
     });
 
     if (error) {
@@ -2376,7 +2437,7 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     createdById,
   } = data;
 
-  const recipients = ['sebastiancastao379@gmail.com', 'jenvillar@1pds.com'];
+  const recipients = ['sebastiancastao379@gmail.com', 'jenvillar@1pds.net'];
 
   const formatDate = (value?: string | null): string => {
     if (!value) return 'Date TBD';
