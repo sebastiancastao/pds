@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { canUserAccessLoadedEvent } from "@/lib/event-access";
 import { decrypt } from "@/lib/encryption";
-import { FIXED_REGION_RADIUS_MILES, geocodeAddress } from "@/lib/geocoding";
+import { geocodeAddress } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -145,9 +145,8 @@ export async function GET(
     // Get query params
     const { searchParams } = new URL(req.url);
     const regionId = searchParams.get('region_id');
-    const geoFilter = searchParams.get('geo_filter') === 'true';
 
-    console.log('[AVAILABLE-VENDORS] 🔍 Query params:', { eventId, regionId, geoFilter });
+    console.log('[AVAILABLE-VENDORS] Query params:', { eventId, regionId });
 
     // Authenticate user
     let { data: { user } } = await supabase.auth.getUser();
@@ -281,136 +280,10 @@ export async function GET(
       }
     }
 
-    // Get all vendor invitations that include this event date
-    // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
-    // Match the vendor-availability-calendar approach: fetch any invitation with
-    // availability data regardless of status/type. The per-day available===true
-    // check below is the real gate; status filters were excluding expired
-    // invitations that still carry valid availability data.
-    let invitationsQuery = supabaseAdmin
-      .from('vendor_invitations')
-      .select(`
-        vendor_id,
-        availability
-      `)
-      .not('availability', 'is', null);
-
-    const { data: invitations, error: invitationsError } = await invitationsQuery;
-
-    console.log('🔍 DEBUG - Invitations Query:', {
-      userId: user.id,
-      requesterRole,
-      invitationsCount: invitations?.length || 0,
-      invitationsError
-    });
-
-    if (invitationsError) {
-      console.error('❌ Error fetching invitations:', invitationsError);
-      return NextResponse.json({
-        vendors: []
-      }, { status: 200 });
-    }
-
-    // Filter vendors who are available on this event date
-    // IMPORTANT: This does NOT check if they're on other event teams
-    const eventDateKey =
-      typeof event.event_date === "string"
-        ? event.event_date.slice(0, 10)
-        : new Date(event.event_date).toISOString().slice(0, 10);
-    console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date, 'normalized:', eventDateKey);
-
-    const eventStart = typeof event.start_time === "string" ? event.start_time : null;
-    const eventEnd   = typeof event.end_time   === "string" ? event.end_time   : null;
-
-    // Map of vendorId → availability metadata (only vendors with at least partial overlap)
-    type VendorAvailMeta = { isPartial: boolean; startTime?: string; endTime?: string };
-    const vendorMetaMap = new Map<string, VendorAvailMeta>();
-
-    for (const inv of (invitations || [])) {
-      if (!inv.availability) {
-        console.log(`  ❌ No availability data for vendor ${inv.vendor_id}`);
-        continue;
-      }
-      // Use the most-recent invitation per vendor (already de-duped below)
-      if (vendorMetaMap.has(inv.vendor_id)) continue;
-
-      const availability = normalizeAvailabilityPayload(inv.availability);
-
-      for (const day of availability) {
-        const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
-        if (dayDate !== eventDateKey || day.available !== true) continue;
-
-        // All-day (or legacy without allDay) → full availability, not partial
-        if (day.allDay !== false) {
-          console.log(`  ✅ ${dayDate} all-day for vendor ${inv.vendor_id}`);
-          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
-          break;
-        }
-
-        const vendorStart: string | undefined = day.startTime;
-        const vendorEnd:   string | undefined = day.endTime;
-
-        // No event time data or no vendor times → treat as full availability
-        if (!eventStart || !eventEnd || !vendorStart || !vendorEnd) {
-          console.log(`  ✅ ${dayDate} partial (missing times, treating as all-day) for vendor ${inv.vendor_id}`);
-          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
-          break;
-        }
-
-        const mins = overlapMinutes(vendorStart, vendorEnd, eventStart, eventEnd);
-        if (mins >= MIN_OVERLAP_MINUTES) {
-          console.log(`  ✅ ${dayDate} partial ${vendorStart}-${vendorEnd} vs event ${eventStart}-${eventEnd} — overlap: ${mins}min`);
-          vendorMetaMap.set(inv.vendor_id, {
-            isPartial: true,
-            startTime: vendorStart,
-            endTime:   vendorEnd,
-          });
-        } else {
-          console.log(`  ❌ ${dayDate} partial ${vendorStart}-${vendorEnd} — no overlap with event ${eventStart}-${eventEnd} — excluding vendor ${inv.vendor_id}`);
-        }
-        break;
-      }
-    }
-
-    const uniqueAvailableVendorIds = Array.from(vendorMetaMap.keys());
-    console.log('🔍 DEBUG - Available Vendor IDs with meta:', uniqueAvailableVendorIds);
-
-    // Find vendors already confirmed in other events on the same date
-    const confirmedElsewhereIds = new Set<string>();
-    if (uniqueAvailableVendorIds.length > 0) {
-      const { data: sameDateEvents } = await supabaseAdmin
-        .from('events')
-        .select('id')
-        .eq('event_date', eventDateKey)
-        .neq('id', eventId);
-
-      if (sameDateEvents && sameDateEvents.length > 0) {
-        const sameEventIds = sameDateEvents.map((e: any) => e.id);
-        const { data: confirmedMembers } = await supabaseAdmin
-          .from('event_teams')
-          .select('vendor_id')
-          .in('event_id', sameEventIds)
-          .eq('status', 'confirmed')
-          .in('vendor_id', uniqueAvailableVendorIds);
-
-        if (confirmedMembers) {
-          for (const m of confirmedMembers) {
-            confirmedElsewhereIds.add(m.vendor_id);
-          }
-        }
-      }
-    }
-
-    if (uniqueAvailableVendorIds.length === 0) {
-      console.log('❌ No available vendors found for this date');
-      return NextResponse.json({
-        vendors: []
-      }, { status: 200 });
-    }
-
-    // Get vendor details for available vendors
-    // NO filtering by event_teams - vendors can work multiple events!
-    const { data: vendors, error: vendorsError } = await supabaseAdmin
+    // Step 1 — fetch active vendors, optionally pre-filtered by region_id at the DB level.
+    // Doing the vendor fetch first (instead of fetching all invitations first) lets us
+    // batch the invitation lookup by vendor IDs, avoiding Supabase's 1000-row default cap.
+    let vendorQuery = supabaseAdmin
       .from('users')
       .select(`
         id,
@@ -430,89 +303,135 @@ export async function GET(
           region_id
         )
       `)
-      .in('id', uniqueAvailableVendorIds)
       .eq('is_active', true);
 
-    console.log('🔍 DEBUG - Vendor Details Query:', {
-      availableVendorIds: uniqueAvailableVendorIds,
-      vendorsCount: vendors?.length || 0,
+    if (regionId && regionId !== 'all') {
+      vendorQuery = (vendorQuery as any).eq('profiles.region_id', regionId);
+    }
+
+    const { data: allVendors, error: vendorsError } = await vendorQuery;
+
+    console.log('🔍 DEBUG - Vendor fetch:', {
+      regionId,
+      vendorsCount: allVendors?.length || 0,
       vendorsError
     });
 
     if (vendorsError) {
       console.error('❌ Error fetching vendors:', vendorsError);
-      return NextResponse.json({
-        vendors: []
-      }, { status: 200 });
+      return NextResponse.json({ vendors: [] }, { status: 200 });
     }
 
-    let filteredVendors = vendors || [];
+    const vendorIds = (allVendors || []).map((v: any) => v.id).filter(Boolean);
 
-    // Apply region filtering if specified
-    if (regionId && regionId !== 'all') {
-      console.log('[AVAILABLE-VENDORS] 🌍 Applying region filter:', { regionId, geoFilter });
+    if (vendorIds.length === 0) {
+      return NextResponse.json({ vendors: [] }, { status: 200 });
+    }
 
-      if (geoFilter) {
-        // Geographic filtering: filter by distance from region center
-        const { data: regionData } = await supabaseAdmin
-          .from('regions')
-          .select('center_lat, center_lng, radius_miles')
-          .eq('id', regionId)
-          .single();
+    // Step 2 — fetch invitations for these vendors in batches of 200 to stay well
+    // under Supabase's default row cap. Matches availability-by-region's approach.
+    const BATCH_SIZE = 200;
+    const allInvitations: Array<{ vendor_id: string; availability: unknown }> = [];
 
-        if (regionData) {
-          const regionCenterLat = toFiniteNumber(regionData.center_lat);
-          const regionCenterLng = toFiniteNumber(regionData.center_lng);
+    for (let i = 0; i < vendorIds.length; i += BATCH_SIZE) {
+      const batch = vendorIds.slice(i, i + BATCH_SIZE);
+      const { data: invBatch, error: invBatchError } = await supabaseAdmin
+        .from('vendor_invitations')
+        .select('vendor_id, availability')
+        .in('vendor_id', batch)
+        .not('availability', 'is', null);
 
-          if (regionCenterLat == null || regionCenterLng == null) {
-            console.log('[AVAILABLE-VENDORS] ⚠️ Region center coordinates are invalid; skipping geo filter', {
-              regionId,
-              center_lat: regionData.center_lat,
-              center_lng: regionData.center_lng
-            });
-          } else {
-            console.log('[AVAILABLE-VENDORS] 📍 Region center:', {
-              lat: regionCenterLat,
-              lng: regionCenterLng,
-              radius: FIXED_REGION_RADIUS_MILES
-            });
+      if (invBatchError) {
+        console.error('❌ Error fetching invitation batch:', invBatchError);
+        continue;
+      }
+      if (invBatch) allInvitations.push(...invBatch);
+    }
 
-            filteredVendors = filteredVendors.filter((vendor: any) => {
-              const vendorLat = toFiniteNumber(vendor.profiles?.latitude);
-              const vendorLng = toFiniteNumber(vendor.profiles?.longitude);
+    console.log('🔍 DEBUG - Invitations fetched:', allInvitations.length);
 
-              if (vendorLat == null || vendorLng == null) {
-                console.log(`  ⚠️ Vendor ${vendor.id} has no coordinates, excluding`);
-                return false;
-              }
+    // Step 3 — find vendors available on the event date
+    const eventDateKey =
+      typeof event.event_date === "string"
+        ? event.event_date.slice(0, 10)
+        : new Date(event.event_date).toISOString().slice(0, 10);
+    console.log('🔍 DEBUG - Event Date for Comparison:', event.event_date, 'normalized:', eventDateKey);
 
-              const distance = calculateDistance(
-                regionCenterLat,
-                regionCenterLng,
-                vendorLat,
-                vendorLng
-              );
+    const eventStart = typeof event.start_time === "string" ? event.start_time : null;
+    const eventEnd   = typeof event.end_time   === "string" ? event.end_time   : null;
 
-              const isInRegion = distance <= FIXED_REGION_RADIUS_MILES;
-              console.log(`  ${isInRegion ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: ${distance.toFixed(1)}mi (limit: ${FIXED_REGION_RADIUS_MILES}mi)`);
-              return isInRegion;
-            });
+    type VendorAvailMeta = { isPartial: boolean; startTime?: string; endTime?: string };
+    const vendorMetaMap = new Map<string, VendorAvailMeta>();
 
-            console.log('[AVAILABLE-VENDORS] ✅ After geo filter:', filteredVendors.length, 'vendors');
-          }
+    for (const inv of allInvitations) {
+      if (!inv.availability) continue;
+      if (vendorMetaMap.has(inv.vendor_id)) continue;
+
+      const availability = normalizeAvailabilityPayload(inv.availability);
+
+      for (const day of availability) {
+        const dayDate = typeof day?.date === "string" ? day.date.slice(0, 10) : "";
+        if (dayDate !== eventDateKey || day.available !== true) continue;
+
+        if (day.allDay !== false) {
+          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+          break;
         }
-      } else {
-        // Simple region_id filtering
-        console.log('[AVAILABLE-VENDORS] 🔍 Filtering by region_id field');
-        filteredVendors = filteredVendors.filter((vendor: any) => {
-          const vendorRegionId = vendor.profiles?.region_id;
-          const matches = vendorRegionId === regionId;
-          console.log(`  ${matches ? '✅' : '❌'} Vendor ${vendor.profiles.first_name} ${vendor.profiles.last_name}: profiles.region_id=${vendorRegionId}`);
-          return matches;
-        });
-        console.log('[AVAILABLE-VENDORS] ✅ After region_id filter:', filteredVendors.length, 'vendors');
+
+        const vendorStart: string | undefined = day.startTime;
+        const vendorEnd:   string | undefined = day.endTime;
+
+        if (!eventStart || !eventEnd || !vendorStart || !vendorEnd) {
+          vendorMetaMap.set(inv.vendor_id, { isPartial: false });
+          break;
+        }
+
+        const mins = overlapMinutes(vendorStart, vendorEnd, eventStart, eventEnd);
+        if (mins >= MIN_OVERLAP_MINUTES) {
+          vendorMetaMap.set(inv.vendor_id, { isPartial: true, startTime: vendorStart, endTime: vendorEnd });
+        }
+        break;
       }
     }
+
+    console.log('🔍 DEBUG - Vendors available on date:', vendorMetaMap.size);
+
+    const uniqueAvailableVendorIds = Array.from(vendorMetaMap.keys());
+
+    // Step 4 — find vendors already confirmed in other events on the same date
+    const confirmedElsewhereIds = new Set<string>();
+    if (uniqueAvailableVendorIds.length > 0) {
+      const { data: sameDateEvents } = await supabaseAdmin
+        .from('events')
+        .select('id')
+        .eq('event_date', eventDateKey)
+        .neq('id', eventId);
+
+      if (sameDateEvents && sameDateEvents.length > 0) {
+        const sameEventIds = sameDateEvents.map((e: any) => e.id);
+        const { data: confirmedMembers } = await supabaseAdmin
+          .from('event_teams')
+          .select('vendor_id')
+          .in('event_id', sameEventIds)
+          .eq('status', 'confirmed')
+          .in('vendor_id', uniqueAvailableVendorIds);
+
+        if (confirmedMembers) {
+          for (const m of confirmedMembers) confirmedElsewhereIds.add(m.vendor_id);
+        }
+      }
+    }
+
+    if (uniqueAvailableVendorIds.length === 0) {
+      console.log('❌ No available vendors found for this date');
+      return NextResponse.json({ vendors: [] }, { status: 200 });
+    }
+
+    // Build lookup map from already-fetched vendor records
+    const vendorById = new Map<string, any>((allVendors || []).map((v: any) => [v.id, v]));
+    let filteredVendors = uniqueAvailableVendorIds
+      .map((id) => vendorById.get(id))
+      .filter(Boolean);
 
     // Calculate distances and sort by proximity
     const vendorsWithDistance = filteredVendors

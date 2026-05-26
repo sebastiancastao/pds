@@ -1121,18 +1121,15 @@ export default function DashboardPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
-      // Use geographic filtering when a specific region is selected
-      // This ensures vendors are filtered by geographic boundaries (radius from region center)
-      const useGeoFilter = regionId !== "all";
+      // Filter by region_id field (same approach as availability-by-region report),
+      // not geo distance — geo filter excludes vendors who lack coordinates or live
+      // outside the fixed radius even though they are assigned to that region.
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") {
         params.append("region_id", regionId);
-        if (useGeoFilter) {
-          params.append("geo_filter", "true");
-        }
       }
       const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
-      console.log('[DASHBOARD-TEAM] ð¡ Fetching available vendors from:', url, { useGeoFilter, regionId });
+      console.log('[DASHBOARD-TEAM] Fetching available vendors from:', url, { regionId });
 
       const res = await fetch(url, {
         method: "GET",

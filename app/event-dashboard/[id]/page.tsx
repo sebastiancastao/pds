@@ -1257,24 +1257,67 @@ export default function EventDashboardPage() {
     setLocationTeamProposalLocationId("");
   };
 
-  const loadLocationCreateTeamModalData = async () => {
+  // Merge available vendors from the API with already-known team members and
+  // update locationTeamVendors. Extracted so both initial load and region-change
+  // can reuse the same logic without re-fetching the team every time.
+  const mergeLocationTeamVendors = (
+    available: TeamVendorOption[],
+    existingTeam: any[]
+  ) => {
+    const existingVendors: TeamVendorOption[] = existingTeam.map((member: any) => ({
+      id: String(member?.vendor_id || ""),
+      email: String(member?.users?.email || ""),
+      division: String(member?.users?.division || ""),
+      distance: member?.distance ?? null,
+      status: String(member?.status || ""),
+      isExistingMember: true,
+      isOutOfVenue: Boolean(member?.isOutOfVenue),
+      profiles: {
+        first_name: String(member?.users?.profiles?.first_name || ""),
+        last_name: String(member?.users?.profiles?.last_name || ""),
+        phone: String(member?.users?.profiles?.phone || ""),
+        city: member?.users?.profiles?.city || null,
+        state: member?.users?.profiles?.state || null,
+        region_id: member?.users?.profiles?.region_id || null,
+      },
+    }));
+
+    const existingById = new Map<string, TeamVendorOption>(
+      existingVendors.filter((v) => v.id.length > 0).map((v) => [v.id, v])
+    );
+
+    const merged = available.map((vendor) => {
+      const existing = existingById.get(String(vendor?.id || ""));
+      if (!existing) return { ...vendor, isExistingMember: false };
+      return { ...vendor, status: existing.status, isExistingMember: true };
+    });
+
+    const mergedIds = new Set(merged.map((v) => String(v.id || "")));
+    const missingExisting = existingVendors.filter(
+      (v) => v.id.length > 0 && !mergedIds.has(v.id)
+    );
+
+    setLocationTeamVendors([...merged, ...missingExisting]);
+  };
+
+  const loadLocationCreateTeamModalData = async (regionId: string = "all") => {
     if (!eventId) return;
 
     setLoadingLocationTeamVendors(true);
     try {
       const token = await getSessionToken();
+      const params = new URLSearchParams();
+      if (regionId && regionId !== "all") params.append("region_id", regionId);
+      const availableUrl = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
+
       const [availableRes, teamRes] = await Promise.all([
-        fetch(`/api/events/${eventId}/available-vendors`, {
+        fetch(availableUrl, {
           method: "GET",
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
         fetch(`/api/events/${eventId}/team`, {
           method: "GET",
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         }),
       ]);
 
@@ -1297,61 +1340,43 @@ export default function EventDashboardPage() {
       } else {
         const teamError = await teamRes.json().catch(() => ({}));
         setLocationTeamMessage((prev) =>
-          prev
-            ? prev
-            : (teamError?.error || "Failed to load current team")
+          prev ? prev : (teamError?.error || "Failed to load current team")
         );
       }
 
-      const existingVendors: TeamVendorOption[] = existingTeam.map((member: any) => ({
-        id: String(member?.vendor_id || ""),
-        email: String(member?.users?.email || ""),
-        division: String(member?.users?.division || ""),
-        distance: member?.distance ?? null,
-        status: String(member?.status || ""),
-        isExistingMember: true,
-        isOutOfVenue: Boolean(member?.isOutOfVenue),
-        profiles: {
-          first_name: String(member?.users?.profiles?.first_name || ""),
-          last_name: String(member?.users?.profiles?.last_name || ""),
-          phone: String(member?.users?.profiles?.phone || ""),
-          city: member?.users?.profiles?.city || null,
-          state: member?.users?.profiles?.state || null,
-          region_id: member?.users?.profiles?.region_id || null,
-        },
-      }));
-
-      const existingById = new Map<string, TeamVendorOption>(
-        existingVendors
-          .filter((vendor) => vendor.id.length > 0)
-          .map((vendor) => [vendor.id, vendor])
-      );
-
-      const merged = available.map((vendor) => {
-        const vendorId = String(vendor?.id || "");
-        const existing = existingById.get(vendorId);
-        if (!existing) {
-          return {
-            ...vendor,
-            isExistingMember: false,
-          };
-        }
-        return {
-          ...vendor,
-          status: existing.status,
-          isExistingMember: true,
-        };
-      });
-
-      const mergedIds = new Set(merged.map((vendor) => String(vendor.id || "")));
-      const missingExisting = existingVendors.filter(
-        (vendor) => vendor.id.length > 0 && !mergedIds.has(vendor.id)
-      );
-
-      setLocationTeamVendors([...merged, ...missingExisting]);
-
-      // Start with no new selections; existing invited members are displayed as read-only rows.
+      mergeLocationTeamVendors(available, existingTeam);
       setSelectedLocationTeamMembers(new Set());
+    } catch (err: any) {
+      setLocationTeamMessage(err?.message || "Network error loading vendors");
+    } finally {
+      setLoadingLocationTeamVendors(false);
+    }
+  };
+
+  const handleLocationTeamRegionChange = async (regionId: string) => {
+    setLocationTeamRegion(regionId);
+    setLocationTeamState("all");
+    setLocationTeamCity("all");
+    if (!eventId) return;
+
+    setLoadingLocationTeamVendors(true);
+    try {
+      const token = await getSessionToken();
+      const params = new URLSearchParams();
+      if (regionId && regionId !== "all") params.append("region_id", regionId);
+      const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
+
+      const res = await fetch(url, {
+        method: "GET",
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      const data = await res.json().catch(() => ({}));
+      const available: TeamVendorOption[] = res.ok && Array.isArray(data?.vendors)
+        ? data.vendors
+        : [];
+
+      // Re-merge with the current team members already in state (no second team fetch needed)
+      mergeLocationTeamVendors(available, teamMembers);
     } catch (err: any) {
       setLocationTeamMessage(err?.message || "Network error loading vendors");
     } finally {
@@ -1505,8 +1530,8 @@ export default function EventDashboardPage() {
     }
   };
 
-  const loadVendorsForImmediateTeamAdd = async () => {
-    if (!event?.venue) {
+  const loadVendorsForImmediateTeamAdd = async (regionId: string = "all") => {
+    if (!eventId) {
       setAddVendorOptions([]);
       setSelectedVendorToAdd("");
       return;
@@ -1515,35 +1540,22 @@ export default function EventDashboardPage() {
     setLoadingAddVendors(true);
     try {
       const token = await getSessionToken();
-      const query = new URLSearchParams({ venue: event.venue });
-      const vendorsRes = await fetch(`/api/vendors?${query.toString()}`, {
+      const params = new URLSearchParams();
+      if (regionId && regionId !== "all") params.append("region_id", regionId);
+      const url = `/api/events/${eventId}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
+      const res = await fetch(url, {
         method: "GET",
         headers: {
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
       });
 
-      let vendors: TeamVendorOption[] = [];
-      if (vendorsRes.ok) {
-        const vendorsData = await vendorsRes.json().catch(() => ({}));
-        vendors = Array.isArray(vendorsData?.vendors) ? vendorsData.vendors : [];
-      } else {
-        const fallbackRes = await fetch(`/api/all-vendors`, {
-          method: "GET",
-          headers: {
-            ...(token ? { Authorization: `Bearer ${token}` } : {}),
-          },
-        });
-
-        if (!fallbackRes.ok) {
-          const vendorsError = await vendorsRes.json().catch(() => ({}));
-          const fallbackError = await fallbackRes.json().catch(() => ({}));
-          throw new Error(vendorsError?.error || fallbackError?.error || "Failed to load vendors");
-        }
-
-        const fallbackData = await fallbackRes.json().catch(() => ({}));
-        vendors = Array.isArray(fallbackData?.vendors) ? fallbackData.vendors : [];
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to load vendors");
       }
+
+      const vendors: TeamVendorOption[] = Array.isArray(data?.vendors) ? data.vendors : [];
 
       const existingTeamIds = new Set(
         (teamMembers || [])
@@ -7597,7 +7609,7 @@ export default function EventDashboardPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by Region</label>
                     <select
                       value={locationTeamRegion}
-                      onChange={(e) => setLocationTeamRegion(e.target.value)}
+                      onChange={(e) => handleLocationTeamRegionChange(e.target.value)}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                       disabled={loadingLocationTeamVendors}
                     >
@@ -8294,7 +8306,7 @@ export default function EventDashboardPage() {
                     <label className="block text-sm font-semibold text-gray-700 mb-1">Filter by Region</label>
                     <select
                       value={addVendorRegion}
-                      onChange={(e) => setAddVendorRegion(e.target.value)}
+                      onChange={(e) => { setAddVendorRegion(e.target.value); void loadVendorsForImmediateTeamAdd(e.target.value); }}
                       className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-sm"
                       disabled={loadingAddVendors || addingVendorToTeam}
                     >

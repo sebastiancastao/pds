@@ -1276,10 +1276,12 @@ export default function DashboardPage() {
     setLoadingAvailable(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
+      // Filter by region_id field (same approach as availability-by-region report),
+      // not geo distance — geo filter excludes vendors who lack coordinates or live
+      // outside the fixed radius even though they are assigned to that region.
       const params = new URLSearchParams();
       if (regionId && regionId !== "all") {
         params.append("region_id", regionId);
-        params.append("geo_filter", "true");
       }
       const url = `/api/events/${event.id}/available-vendors${params.toString() ? `?${params.toString()}` : ""}`;
       const res = await fetch(url, {
