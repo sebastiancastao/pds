@@ -193,8 +193,8 @@ export async function DELETE(req: NextRequest) {
     if (userError || !userData) return NextResponse.json({ error: 'Failed to verify user role' }, { status: 403 });
 
     const role = userData.role as string;
-    if (!['admin', 'exec', 'supervisor4'].includes(role)) {
-      return NextResponse.json({ error: "Only admin, exec, and supervisor4 can delete planned events" }, { status: 403 });
+    if (!ALLOWED_ROLES.includes(role)) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
     }
 
     const { searchParams } = new URL(req.url);
