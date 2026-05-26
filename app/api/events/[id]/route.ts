@@ -536,6 +536,44 @@ export async function PUT(
   }
 }
 
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: { id: string } }
+) {
+  try {
+    const supabase = createRouteHandlerClient({ cookies });
+    let { data: { user } } = await supabase.auth.getUser();
+    if (!user?.id) {
+      const authHeader = req.headers.get("authorization") || req.headers.get("Authorization");
+      const token = authHeader?.startsWith("Bearer ") ? authHeader.substring(7) : undefined;
+      if (token) {
+        const { data: tokenUser } = await supabaseAnon.auth.getUser(token);
+        if (tokenUser?.user?.id) user = { id: tokenUser.user.id } as any;
+      }
+    }
+    if (!user?.id) return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+
+    const eventId = params.id;
+    if (!eventId) return NextResponse.json({ error: "Event ID required" }, { status: 400 });
+
+    const body = await req.json();
+    const { tips_distribution_mode } = body;
+    if (tips_distribution_mode !== "equal" && tips_distribution_mode !== "prorated") {
+      return NextResponse.json({ error: "Invalid tips_distribution_mode" }, { status: 400 });
+    }
+
+    const { error } = await supabaseAdmin
+      .from("events")
+      .update({ tips_distribution_mode, updated_at: new Date().toISOString() })
+      .eq("id", eventId);
+
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message || "Internal error" }, { status: 500 });
+  }
+}
+
 export async function DELETE(
   req: NextRequest,
   { params }: { params: { id: string } }

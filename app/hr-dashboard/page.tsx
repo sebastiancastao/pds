@@ -1239,12 +1239,22 @@ function HRDashboardContent() {
           totalOther: eventTotalOther,
           eventTotal,
           eventHours,
+          tipsDistributionMode: eventInfo.tips_distribution_mode || 'prorated',
           payments: eventPayments
         });
       }
       console.log('[HR PAYMENTS] venues assembled', { venueCount: Object.keys(byVenue).length });
       const venuesArr = Object.values(byVenue);
       setPaymentsByVenue(venuesArr);
+
+      // Initialize tips distribution mode from persisted event data
+      const initialTipsMode: Record<string, boolean> = {};
+      venuesArr.forEach((v: any) => {
+        v.events.forEach((ev: any) => {
+          if (ev.tipsDistributionMode === 'equal') initialTipsMode[ev.id] = true;
+        });
+      });
+      setTipsEqualMode(initialTipsMode);
 
       // Fetch mileage pay data + approvals for all loaded events
       const allEventIdsForMileage = venuesArr.flatMap(v => v.events.map((ev: any) => ev.id)).filter(Boolean);
@@ -1588,8 +1598,10 @@ function HRDashboardContent() {
     );
     if (eligible.length === 0) return 0;
     if (tipsEqualMode[event?.id]) {
+      // Equal mode: everyone eligible gets the same share
       return totalTips / eligible.length;
     } else {
+      // Prorated mode: proportional to hours worked
       const totalEligibleHours = eligible.reduce((sum: number, p: any) => sum + Number(p?.actualHours || 0), 0);
       if (totalEligibleHours <= 0) return 0;
       return (paymentHours / totalEligibleHours) * totalTips;
@@ -1886,7 +1898,7 @@ function HRDashboardContent() {
       const reimbursementExport = Number(payment.reimbursementAmount ?? 0);
       const other = Number(payment.otherAmount ?? 0);
       const adjustmentAmt = reimbursementExport + other;
-      const tips = Number(payment.tips || 0);
+      const tips = getDisplayedTips(event, payment);
       const restBreak = hideRest ? 0 : Number(payment.restBreak || 0);
       const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
       const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
@@ -2062,7 +2074,7 @@ function HRDashboardContent() {
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + breakdown.commissionPaidTotal + Number(p.tips || 0) + (isEventSD ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
+          return sum + breakdown.commissionPaidTotal + getDisplayedTips(event, p) + (isEventSD ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
         }, 0) + totalDisplayedMileagePay + totalDisplayedTravelPay;
 
         summaryRows.push({
@@ -2168,7 +2180,8 @@ function HRDashboardContent() {
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
           const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(2));
           const varIncentive = isEventSD ? 0 : Number(breakdown.variableIncentive.toFixed(2));
-          const tips = Number(roundUpThousandsToNextHundred(Number(payment.tips || 0)).toFixed(2));
+          const tipsRaw = getDisplayedTips(event, payment);
+          const tips = Number(roundUpThousandsToNextHundred(tipsRaw).toFixed(2));
           const restBreak = isEventSD ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
           const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
@@ -2181,7 +2194,7 @@ function HRDashboardContent() {
           const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
-            breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
+            breakdown.commissionPaidTotal + tipsRaw + (isEventSD ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
           ).toFixed(2));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
@@ -2315,7 +2328,7 @@ function HRDashboardContent() {
 
     // Download file
     XLSX.writeFile(workbook, filename);
-  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedVendorTotals, adjustmentTypes]);
+  }, [paymentsByVenue, paymentsByVendor, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getDisplayedVendorTotals, adjustmentTypes]);
 
   const exportNonEventPayroll = useCallback(() => {
     const nonEventVenues = paymentsByVenue
@@ -2353,8 +2366,9 @@ function HRDashboardContent() {
           const diffMiles = (mileageByEvent[event.id] || {})[p.userId]?.differentialMiles ?? null;
           const travelHours = 0;
           const travelPay = exportApproval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0;
+          const pTipsRaw = getDisplayedTips(event, p);
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
-            breakdown.commissionPaidTotal + Number(p.tips || 0) + adjAmtNe + mileagePay + travelPay
+            breakdown.commissionPaidTotal + pTipsRaw + adjAmtNe + mileagePay + travelPay
           ).toFixed(2));
 
           rows.push({
@@ -2376,7 +2390,7 @@ function HRDashboardContent() {
             'Overtime Pay': overtimePay,
             'Double Time Hours': doubletimeHours,
             'Double Time Pay': doubletimePay,
-            'Tips': Number(roundUpThousandsToNextHundred(Number(p.tips || 0)).toFixed(2)),
+            'Tips': Number(roundUpThousandsToNextHundred(pTipsRaw).toFixed(2)),
             'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
             'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
@@ -2428,7 +2442,7 @@ function HRDashboardContent() {
     const startStr = paymentsStartDate || 'start';
     const endStr = paymentsEndDate || 'end';
     XLSX.writeFile(wb, `non_event_payroll_${startStr}_to_${endStr}.xlsx`);
-  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getMileageApproval, adjustmentTypes]);
+  }, [paymentsByVenue, paymentsStartDate, paymentsEndDate, mileageByEvent, getDisplayedPaymentBreakdown, getDisplayedTips, getMileageApproval, adjustmentTypes]);
 
   const exportSalariedPayroll = useCallback(async () => {
     try {
@@ -3798,7 +3812,21 @@ function HRDashboardContent() {
                                   {Number(ev.totalTips || 0) > 0 && (
                                     <button
                                       type="button"
-                                      onClick={() => setTipsEqualMode(prev => ({ ...prev, [ev.id]: !prev[ev.id] }))}
+                                      onClick={async () => {
+                                        const newEqual = !tipsEqualMode[ev.id];
+                                        setTipsEqualMode(prev => ({ ...prev, [ev.id]: newEqual }));
+                                        try {
+                                          const { data: { session: s } } = await supabase.auth.getSession();
+                                          await fetch(`/api/events/${ev.id}`, {
+                                            method: 'PATCH',
+                                            headers: {
+                                              'Content-Type': 'application/json',
+                                              ...(s?.access_token ? { Authorization: `Bearer ${s.access_token}` } : {}),
+                                            },
+                                            body: JSON.stringify({ tips_distribution_mode: newEqual ? 'equal' : 'prorated' }),
+                                          });
+                                        } catch { /* non-critical */ }
+                                      }}
                                       className={`mt-1 text-[10px] px-1.5 py-0.5 rounded border font-medium ${tipsEqualMode[ev.id] ? 'bg-blue-100 border-blue-400 text-blue-700' : 'border-gray-300 text-gray-500 hover:border-blue-400 hover:text-blue-600'}`}
                                     >
                                       {tipsEqualMode[ev.id] ? 'Equal' : 'Prorated'}
