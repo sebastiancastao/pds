@@ -283,18 +283,16 @@ export async function GET(
 
     // Get all vendor invitations that include this event date
     // NOTE: We do NOT filter by event_teams - vendors can work multiple events!
+    // Match the vendor-availability-calendar approach: fetch any invitation with
+    // availability data regardless of status/type. The per-day available===true
+    // check below is the real gate; status filters were excluding expired
+    // invitations that still carry valid availability data.
     let invitationsQuery = supabaseAdmin
       .from('vendor_invitations')
       .select(`
         vendor_id,
-        availability,
-        invitation_type,
-        status,
-        responded_at
+        availability
       `)
-      .or('invitation_type.eq.bulk,invitation_type.is.null')
-      .eq('status', 'accepted')
-      .not('responded_at', 'is', null)
       .not('availability', 'is', null);
 
     const { data: invitations, error: invitationsError } = await invitationsQuery;
