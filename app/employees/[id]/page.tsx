@@ -493,6 +493,23 @@ export default function WorkerProfilePage() {
   const [paystubHistoryLoading, setPaystubHistoryLoading] = useState(false);
   const [paystubHistoryError, setPaystubHistoryError] = useState<string | null>(null);
 
+  const [dataEditRequestDoc, setDataEditRequestDoc] = useState<string>("");
+  const [dataEditRequestReason, setDataEditRequestReason] = useState<string>("");
+  const [submittingDataEditRequest, setSubmittingDataEditRequest] = useState(false);
+  const [dataEditRequestError, setDataEditRequestError] = useState("");
+  const [dataEditRequestSuccess, setDataEditRequestSuccess] = useState("");
+  const [dataEditRequests, setDataEditRequests] = useState<{
+    id: string;
+    document_name: string;
+    document_type: string;
+    reason: string | null;
+    status: "pending" | "approved" | "rejected";
+    review_notes: string | null;
+    reviewed_at: string | null;
+    created_at: string;
+  }[]>([]);
+  const [dataEditRequestsLoading, setDataEditRequestsLoading] = useState(false);
+
   useEffect(() => {
     if (!employeeId) return;
 
@@ -862,6 +879,30 @@ export default function WorkerProfilePage() {
     loadRegionEvents();
   }, [employeeId, employee?.region_id, refreshTick]);
 
+  // Fetch data edition request history for this employee
+  useEffect(() => {
+    if (!employeeId) return;
+    const load = async () => {
+      setDataEditRequestsLoading(true);
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch(`/api/data-edition-requests?userId=${employeeId}`, {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: 'no-store',
+        });
+        if (res.ok) {
+          const body = await res.json();
+          setDataEditRequests(body.requests ?? []);
+        }
+      } catch (e) {
+        console.error('Error loading data edition requests:', e);
+      } finally {
+        setDataEditRequestsLoading(false);
+      }
+    };
+    load();
+  }, [employeeId, refreshTick]);
+
   // Fetch regions list
   useEffect(() => {
     const loadRegions = async () => {
@@ -1023,6 +1064,56 @@ export default function WorkerProfilePage() {
         },
       };
     });
+  };
+
+  const submitDataEditRequest = async () => {
+    if (!dataEditRequestDoc) {
+      setDataEditRequestError("Please select a document.");
+      return;
+    }
+
+    setSubmittingDataEditRequest(true);
+    setDataEditRequestError("");
+    setDataEditRequestSuccess("");
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const res = await fetch("/api/onboarding/request-edit-permission", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          userEmail: employee?.email,
+          userFirstName: employee?.first_name,
+          userLastName: employee?.last_name,
+          userId: employeeId,
+          documentName: dataEditRequestDoc,
+          reason: dataEditRequestReason.trim(),
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to submit request.");
+      }
+
+      setDataEditRequestSuccess("Your data edition request has been submitted. HR will be notified shortly.");
+      if (data?.request) {
+        setDataEditRequests((prev) => [
+          { ...data.request, document_name: dataEditRequestDoc, document_type: 'onboarding', reason: dataEditRequestReason.trim() || null, status: 'pending', review_notes: null, reviewed_at: null },
+          ...prev,
+        ]);
+      }
+      setDataEditRequestDoc("");
+      setDataEditRequestReason("");
+    } catch (error: any) {
+      setDataEditRequestError(error?.message || "Failed to submit request.");
+    } finally {
+      setSubmittingDataEditRequest(false);
+    }
   };
 
   const submitSickLeaveRequest = async (e: FormEvent<HTMLFormElement>) => {
@@ -3064,6 +3155,142 @@ export default function WorkerProfilePage() {
                         </div>
                       );
                     })}
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Data Edition Request */}
+            <section className="mb-8">
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Request Data Edition</h2>
+              <div className="apple-card p-6">
+                <p className="text-sm text-gray-500 mb-5">
+                  Select a submitted document below to request permission to edit your data. An HR administrator will be notified and will review your request.
+                </p>
+
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Document <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={dataEditRequestDoc}
+                      onChange={(e) => {
+                        setDataEditRequestDoc(e.target.value);
+                        setDataEditRequestError("");
+                        setDataEditRequestSuccess("");
+                      }}
+                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 bg-white"
+                    >
+                      <option value="">Select a document…</option>
+                      {pdfForms.length > 0 && (
+                        <optgroup label="Onboarding Forms">
+                          {pdfForms.map((form) => (
+                            <option key={form.form_name} value={form.display_name}>
+                              {form.display_name}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {customFormsList.filter((form) =>
+                        pdfForms.some((p) => matchesCustomFormSubmission(p, form))
+                      ).length > 0 && (
+                        <optgroup label="Custom Forms">
+                          {customFormsList
+                            .filter((form) =>
+                              pdfForms.some((p) => matchesCustomFormSubmission(p, form))
+                            )
+                            .map((form) => (
+                              <option key={form.id} value={form.title}>
+                                {form.title}
+                              </option>
+                            ))}
+                        </optgroup>
+                      )}
+                    </select>
+                    {pdfForms.length === 0 && customFormsList.filter((f) => pdfForms.some((p) => matchesCustomFormSubmission(p, f))).length === 0 && (
+                      <p className="mt-1.5 text-xs text-gray-400">No submitted documents found. Submit your onboarding forms first.</p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                      Reason <span className="text-gray-400 font-normal">(optional)</span>
+                    </label>
+                    <textarea
+                      value={dataEditRequestReason}
+                      onChange={(e) => setDataEditRequestReason(e.target.value)}
+                      rows={3}
+                      placeholder="Describe what needs to be corrected…"
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                    />
+                  </div>
+
+                  {dataEditRequestError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {dataEditRequestError}
+                    </div>
+                  )}
+
+                  {dataEditRequestSuccess && (
+                    <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                      {dataEditRequestSuccess}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void submitDataEditRequest()}
+                      disabled={submittingDataEditRequest || !dataEditRequestDoc}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-900 text-white text-sm font-medium hover:bg-slate-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                      </svg>
+                      {submittingDataEditRequest ? "Sending…" : "Submit Request"}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Request history */}
+                {(dataEditRequestsLoading || dataEditRequests.length > 0) && (
+                  <div className="mt-6 pt-6 border-t border-gray-100">
+                    <h3 className="text-sm font-semibold text-gray-700 mb-3">Request History</h3>
+                    {dataEditRequestsLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-gray-400">
+                        <div className="apple-spinner w-4 h-4" />
+                        Loading…
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {dataEditRequests.map((req) => (
+                          <div key={req.id} className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-gray-900 truncate">{req.document_name}</p>
+                              {req.reason && (
+                                <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{req.reason}</p>
+                              )}
+                              {req.review_notes && (
+                                <p className="text-xs text-blue-700 mt-0.5 italic">{req.review_notes}</p>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium border ${
+                                req.status === 'approved'
+                                  ? 'bg-green-50 text-green-700 border-green-200'
+                                  : req.status === 'rejected'
+                                  ? 'bg-red-50 text-red-700 border-red-200'
+                                  : 'bg-amber-50 text-amber-700 border-amber-200'
+                              }`}>
+                                {req.status === 'approved' ? 'Approved' : req.status === 'rejected' ? 'Rejected' : 'Pending'}
+                              </span>
+                              <span className="text-xs text-gray-400">{formatDate(req.created_at)}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
