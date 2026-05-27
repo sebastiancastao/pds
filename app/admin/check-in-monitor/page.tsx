@@ -111,6 +111,7 @@ export default function CheckInMonitorPage() {
 
   const [expandedEvents, setExpandedEvents] = useState<Set<string>>(new Set());
 
+
   const accessTokenRef = useRef<string | null>(null);
   const fetchAbortRef = useRef<AbortController | null>(null);
 

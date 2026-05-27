@@ -5605,33 +5605,33 @@ export default function EventDashboardPage() {
                       </div>
 
                       {/* List */}
-                      <div className="bg-white border rounded-lg overflow-hidden">
+                      <div className="bg-white border rounded-lg overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200">
                           <thead className="bg-gray-50">
                             <tr>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Vendor
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Email
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Phone
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Status
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Event Role
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Tip Eligible
                               </th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                              <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Invited On
                               </th>
                               {canUninviteTeamMember && (
-                                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">
                                   Actions
                                 </th>
                               )}
@@ -5640,7 +5640,7 @@ export default function EventDashboardPage() {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {filteredTeamListMembers.length === 0 ? (
                               <tr>
-                                <td colSpan={canUninviteTeamMember ? 8 : 7} className="px-6 py-8 text-center text-sm text-gray-500">
+                                <td colSpan={canUninviteTeamMember ? 8 : 7} className="px-3 py-8 text-center text-sm text-gray-500">
                                   No team members match your search
                                 </td>
                               </tr>
@@ -5718,8 +5718,8 @@ export default function EventDashboardPage() {
 
                               return (
                                 <tr key={member.id} className={rowBg}>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-2 flex-wrap">
+                                  <td className="px-3 py-3">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
                                       <div className="text-sm font-medium text-gray-900">
                                         {firstName} {lastName}
                                       </div>
@@ -5746,13 +5746,13 @@ export default function EventDashboardPage() {
                                       )}
                                     </div>
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-sm text-gray-900">{email}</div>
+                                  <td className="px-3 py-3 max-w-[160px]">
+                                    <div className="text-sm text-gray-900 truncate" title={email}>{email}</div>
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
+                                  <td className="px-3 py-3 whitespace-nowrap">
                                     <div className="text-sm text-gray-900">{phone}</div>
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
+                                  <td className="px-3 py-3 whitespace-nowrap">
                                     <span
                                       className={`px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${statusColor}`}
                                     >
@@ -5764,7 +5764,7 @@ export default function EventDashboardPage() {
                                       </div>
                                     )}
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
+                                  <td className="px-3 py-3 whitespace-nowrap">
                                     {!canEditEventRole ? (
                                       <span className="text-sm text-gray-700">
                                         {eventTeamRole === "manager"
@@ -5791,7 +5791,7 @@ export default function EventDashboardPage() {
                                       </select>
                                     )}
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
+                                  <td className="px-3 py-3 whitespace-nowrap">
                                     {!canConfigureTipEligibility ? (
                                       <span className="text-sm text-gray-400">Select manager/supervisor first</span>
                                     ) : !tipsOverridesLoaded ? (
@@ -5831,7 +5831,7 @@ export default function EventDashboardPage() {
                                       </div>
                                     )}
                                   </td>
-                                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                  <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">
                                     {new Date(member.created_at).toLocaleDateString("en-US", {
                                       year: "numeric",
                                       month: "short",
@@ -5839,7 +5839,7 @@ export default function EventDashboardPage() {
                                     })}
                                   </td>
                                   {canUninviteTeamMember && (
-                                    <td className="px-6 py-4 whitespace-nowrap text-right">
+                                    <td className="px-3 py-3 whitespace-nowrap text-right">
                                       <button
                                         onClick={() => {
                                           void handleUninviteTeamMember(member);
