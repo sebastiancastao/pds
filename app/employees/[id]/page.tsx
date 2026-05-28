@@ -1100,7 +1100,7 @@ export default function WorkerProfilePage() {
         throw new Error(data?.error || "Failed to submit request.");
       }
 
-      setDataEditRequestSuccess("Your data edition request has been submitted. HR will be notified shortly.");
+      setDataEditRequestSuccess("Your data update request has been submitted. HR will be notified shortly.");
       if (data?.request) {
         setDataEditRequests((prev) => [
           { ...data.request, document_name: dataEditRequestDoc, document_type: 'onboarding', reason: dataEditRequestReason.trim() || null, status: 'pending', review_notes: null, reviewed_at: null },
@@ -3160,9 +3160,9 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
-            {/* Data Edition Request */}
+            {/* Data Update Request */}
             <section className="mb-8">
-              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Request Data Edition</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Request Data Update</h2>
               <div className="apple-card p-6">
                 <p className="text-sm text-gray-500 mb-5">
                   Select a submitted document below to request permission to edit your data. An HR administrator will be notified and will review your request.

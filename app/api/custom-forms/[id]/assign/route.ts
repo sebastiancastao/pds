@@ -1,7 +1,7 @@
 // app/api/custom-forms/[id]/assign/route.ts
-// POST  /api/custom-forms/:id/assign  — assign form to specific users
-// GET   /api/custom-forms/:id/assign  — list current assignees for this form
-// DELETE /api/custom-forms/:id/assign — remove a user assignment
+// POST  /api/custom-forms/:id/assign  - assign form to specific users
+// GET   /api/custom-forms/:id/assign  - list current assignees for this form
+// DELETE /api/custom-forms/:id/assign - remove a user assignment
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -27,7 +27,7 @@ async function getExecUser(request: NextRequest) {
 }
 
 // POST: assign this form to one or more users
-// body: { userIds: string[] }
+// body: { userIds: string[], dataEditRequestId?: string, dataEditRequestUserId?: string }
 export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } }
@@ -36,14 +36,25 @@ export async function POST(
     const exec = await getExecUser(request);
     if (!exec) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
-    const { userIds }: { userIds: string[] } = await request.json();
-    if (!Array.isArray(userIds) || userIds.length === 0) {
+    const body = await request.json();
+    const userIds = Array.isArray(body?.userIds)
+      ? body.userIds
+          .map((value: unknown) => (typeof value === 'string' ? value.trim() : ''))
+          .filter(Boolean)
+      : [];
+    const dataEditRequestId = typeof body?.dataEditRequestId === 'string'
+      ? body.dataEditRequestId.trim()
+      : '';
+    const dataEditRequestUserId = typeof body?.dataEditRequestUserId === 'string'
+      ? body.dataEditRequestUserId.trim()
+      : '';
+
+    if (userIds.length === 0) {
       return NextResponse.json({ error: 'userIds array is required' }, { status: 400 });
     }
 
     const formId = params.id;
 
-    // Verify form exists
     const { data: form } = await supabase
       .from('custom_pdf_forms')
       .select('id, title')
@@ -53,20 +64,18 @@ export async function POST(
 
     if (!form) return NextResponse.json({ error: 'Form not found' }, { status: 404 });
 
-    const rows = userIds.map(userId => ({
+    const rows = userIds.map((userId: string) => ({
       form_id: formId,
       user_id: userId,
       assigned_by: exec.id,
     }));
 
-    // Upsert so re-assigning the same user is idempotent
     const { error } = await supabase
       .from('custom_form_assignments')
       .upsert(rows, { onConflict: 'form_id,user_id' });
 
     if (error) {
       console.error('[ASSIGN] upsert error:', error);
-      // If table doesn't exist yet, return helpful message
       if (error.code === '42P01') {
         return NextResponse.json({
           error: 'Setup required: run the custom_form_assignments migration',
@@ -76,7 +85,38 @@ export async function POST(
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, assigned: userIds.length });
+    let resolvedRequestId: string | null = null;
+    if (
+      dataEditRequestId &&
+      dataEditRequestUserId &&
+      userIds.includes(dataEditRequestUserId)
+    ) {
+      const { data: resolvedRequest, error: resolveError } = await supabase
+        .from('data_edition_requests')
+        .update({
+          status: 'approved',
+          reviewed_by: exec.id,
+          reviewed_at: new Date().toISOString(),
+          review_notes: `Custom form "${form.title}" was assigned directly to the user from PDF Forms.`,
+        })
+        .eq('id', dataEditRequestId)
+        .eq('user_id', dataEditRequestUserId)
+        .eq('status', 'pending')
+        .select('id')
+        .maybeSingle();
+
+      if (resolveError) {
+        console.error('[ASSIGN] failed to resolve linked data edit request:', resolveError);
+      } else {
+        resolvedRequestId = resolvedRequest?.id ?? null;
+      }
+    }
+
+    return NextResponse.json({
+      success: true,
+      assigned: userIds.length,
+      resolvedRequestId,
+    });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || 'Internal server error' }, { status: 500 });
   }
@@ -106,8 +146,7 @@ export async function GET(
       return NextResponse.json({ assignees: [] });
     }
 
-    // Fetch profile info for each assigned user
-    const userIds = assignments.map(a => a.user_id);
+    const userIds = assignments.map((assignment) => assignment.user_id);
     const { data: profileRows } = await supabase
       .from('profiles')
       .select('id, first_name, last_name')
@@ -118,17 +157,17 @@ export async function GET(
       .select('id, email')
       .in('id', userIds);
 
-    const profileMap = Object.fromEntries((profileRows || []).map(p => [p.id, p]));
-    const userMap = Object.fromEntries((userRows || []).map(u => [u.id, u]));
+    const profileMap = Object.fromEntries((profileRows || []).map((profile) => [profile.id, profile]));
+    const userMap = Object.fromEntries((userRows || []).map((user) => [user.id, user]));
 
-    const assignees = assignments.map(a => ({
-      user_id: a.user_id,
-      assigned_at: a.assigned_at,
-      profiles: profileMap[a.user_id]
+    const assignees = assignments.map((assignment) => ({
+      user_id: assignment.user_id,
+      assigned_at: assignment.assigned_at,
+      profiles: profileMap[assignment.user_id]
         ? {
-            first_name: profileMap[a.user_id].first_name,
-            last_name: profileMap[a.user_id].last_name,
-            email: userMap[a.user_id]?.email || '',
+            first_name: profileMap[assignment.user_id].first_name,
+            last_name: profileMap[assignment.user_id].last_name,
+            email: userMap[assignment.user_id]?.email || '',
           }
         : null,
     }));
