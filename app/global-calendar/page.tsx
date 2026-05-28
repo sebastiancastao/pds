@@ -1903,7 +1903,7 @@ export default function DashboardPage() {
               )}
               {error && <div className="apple-alert apple-alert-error">{error}</div>}
               {!loading && !error && (
-                <div className="apple-card apple-calendar-wrapper">
+                <div className="apple-card apple-calendar-wrapper apple-calendar-wrapper-expanded">
                   <EventCalendar
                     events={calendarEvents}
                     onVisibleRangeChange={handleCalendarRangeChange}
