@@ -1896,7 +1896,7 @@ export default function DashboardPage() {
                           </Link>
                         </div>
                       </div>
-                      {userRole === "exec" && (
+                      {(userRole === "exec" || userRole === "manager") && (
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={() => openDeleteConfirmModal(ev)}
