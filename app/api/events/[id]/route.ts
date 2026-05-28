@@ -265,53 +265,6 @@ export async function PUT(
       }
     }
 
-    const getAccessibleEvent = async (
-      candidateEventId: string,
-      selectClause = "*"
-    ) => {
-      if (!candidateEventId) return null;
-
-      if (isAdminOrExec) {
-        const { data: adminEvent, error: adminEventError } = await supabaseAdmin
-          .from("events")
-          .select(selectClause)
-          .eq("id", candidateEventId)
-          .maybeSingle();
-        if (adminEventError) throw adminEventError;
-        return adminEvent;
-      }
-
-      if (managerAssignedVenueNames.length > 0) {
-        const [byCreator, byVenue] = await Promise.all([
-          supabaseAdmin
-            .from("events")
-            .select(selectClause)
-            .eq("id", candidateEventId)
-            .in("created_by", allowedCreatorIds)
-            .maybeSingle(),
-          supabaseAdmin
-            .from("events")
-            .select(selectClause)
-            .eq("id", candidateEventId)
-            .in("venue", managerAssignedVenueNames)
-            .maybeSingle(),
-        ]);
-
-        if (byCreator.error) throw byCreator.error;
-        if (byVenue.error) throw byVenue.error;
-        return byCreator.data ?? byVenue.data ?? null;
-      }
-
-      const { data: creatorEvent, error: creatorEventError } = await supabaseAdmin
-        .from("events")
-        .select(selectClause)
-        .eq("id", candidateEventId)
-        .in("created_by", allowedCreatorIds)
-        .maybeSingle();
-      if (creatorEventError) throw creatorEventError;
-      return creatorEvent;
-    };
-
     const body = await req.json();
     const hasSalesFieldsInPayload =
       Object.prototype.hasOwnProperty.call(body, "ticket_sales") ||
@@ -326,10 +279,6 @@ export async function PUT(
     const hasTipsInPayload = Object.prototype.hasOwnProperty.call(body, "tips");
     const hasFeesInPayload = Object.prototype.hasOwnProperty.call(body, "fees");
     const hasOtherIncomeInPayload = Object.prototype.hasOwnProperty.call(body, "other_income");
-    const hasLinkedCommissionEventInPayload = Object.prototype.hasOwnProperty.call(
-      body,
-      "linked_commission_event_id"
-    );
 
     // Core fields
     const event_name = body.event_name?.trim() || "";
@@ -381,19 +330,6 @@ export async function PUT(
     const fees = body.fees === undefined || body.fees === "" ? null : Number(body.fees);
     const other_income = body.other_income === undefined || body.other_income === "" ? null : Number(body.other_income);
     const net_sales = body.net_sales === undefined || body.net_sales === "" ? null : Number(body.net_sales);
-    const linked_commission_event_id =
-      body.linked_commission_event_id === undefined ||
-      body.linked_commission_event_id === null ||
-      body.linked_commission_event_id === ""
-        ? null
-        : String(body.linked_commission_event_id).trim();
-
-    if (linked_commission_event_id && linked_commission_event_id === eventId) {
-      return NextResponse.json(
-        { error: "An event cannot share commission with itself." },
-        { status: 400 }
-      );
-    }
 
     // Debug
     console.log("EVENT UPDATE PAYLOAD:", {
@@ -420,7 +356,6 @@ export async function PUT(
       fees,
       other_income,
       net_sales,
-      linked_commission_event_id,
     });
 
     // Required fields
@@ -469,45 +404,6 @@ export async function PUT(
     }
     if (hasOtherIncomeInPayload) {
       updatePayload.other_income = other_income !== null && !Number.isNaN(other_income) ? other_income : null;
-    }
-    if (hasLinkedCommissionEventInPayload) {
-      updatePayload.linked_commission_event_id = linked_commission_event_id;
-    }
-
-    let existingEventForLinking: any = null;
-    let targetLinkedEvent: any = null;
-    if (hasLinkedCommissionEventInPayload) {
-      existingEventForLinking = await getAccessibleEvent(
-        eventId,
-        "id, linked_commission_event_id"
-      );
-      if (!existingEventForLinking) {
-        return NextResponse.json(
-          { error: "Event not found or you do not have permission to update it" },
-          { status: 404 }
-        );
-      }
-
-      if (linked_commission_event_id) {
-        targetLinkedEvent = await getAccessibleEvent(
-          linked_commission_event_id,
-          "id, linked_commission_event_id"
-        );
-        if (!targetLinkedEvent) {
-          return NextResponse.json(
-            { error: "Linked event not found or you do not have permission to use it." },
-            { status: 404 }
-          );
-        }
-
-        const targetExistingLink = (targetLinkedEvent.linked_commission_event_id || "").toString().trim();
-        if (targetExistingLink && targetExistingLink !== eventId) {
-          return NextResponse.json(
-            { error: "The selected linked event already shares commission with another event." },
-            { status: 400 }
-          );
-        }
-      }
     }
 
     // Build update query - admin/exec can edit any event, supervisors own + manager's, others only their own
@@ -558,42 +454,6 @@ export async function PUT(
         { error: "Event not found or you do not have permission to update it" },
         { status: 404 }
       );
-    }
-
-    if (hasLinkedCommissionEventInPayload) {
-      const previousLinkedEventId = (existingEventForLinking?.linked_commission_event_id || "").toString().trim();
-      const nextLinkedEventId = (linked_commission_event_id || "").toString().trim();
-
-      if (previousLinkedEventId && previousLinkedEventId !== nextLinkedEventId) {
-        const { error: clearPreviousLinkedEventError } = await supabaseAdmin
-          .from("events")
-          .update({
-            linked_commission_event_id: null,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", previousLinkedEventId)
-          .eq("linked_commission_event_id", eventId);
-
-        if (clearPreviousLinkedEventError) {
-          console.error("Failed to clear previous linked commission event:", clearPreviousLinkedEventError);
-          return NextResponse.json({ error: clearPreviousLinkedEventError.message }, { status: 500 });
-        }
-      }
-
-      if (nextLinkedEventId) {
-        const { error: syncLinkedEventError } = await supabaseAdmin
-          .from("events")
-          .update({
-            linked_commission_event_id: eventId,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", nextLinkedEventId);
-
-        if (syncLinkedEventError) {
-          console.error("Failed to sync linked commission event:", syncLinkedEventError);
-          return NextResponse.json({ error: syncLinkedEventError.message }, { status: 500 });
-        }
-      }
     }
 
     // Keep event_payments.net_sales aligned with Sales tab values so payroll can consume it directly.

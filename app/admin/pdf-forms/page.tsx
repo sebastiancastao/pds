@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import '../../dashboard/dashboard-styles.css';
 
@@ -68,13 +68,6 @@ type VenueRecipient = {
 type RegionOption = {
   id: string;
   name: string;
-};
-
-type LinkedDataEditRequest = {
-  requestId: string;
-  userId: string;
-  userName: string;
-  documentName: string;
 };
 
 const US_STATES = [
@@ -207,7 +200,6 @@ const PACKET_STATE_LABELS: Record<string, string> = {
 
 export default function AdminPdfFormsPage() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const [forms, setForms] = useState<CustomForm[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -270,29 +262,8 @@ export default function AdminPdfFormsPage() {
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
   const [sendSuccess, setSendSuccess] = useState('');
-  const [resolvedDataEditRequestId, setResolvedDataEditRequestId] = useState<string | null>(null);
 
   const currentYear = new Date().getFullYear();
-  const linkedDataEditRequest = useMemo<LinkedDataEditRequest | null>(() => {
-    const requestId = searchParams.get('requestId')?.trim() || '';
-    const userId = searchParams.get('userId')?.trim() || '';
-
-    if (!requestId || !userId) return null;
-
-    return {
-      requestId,
-      userId,
-      userName: searchParams.get('userName')?.trim() || 'Requested user',
-      documentName: searchParams.get('documentName')?.trim() || 'Requested document',
-    };
-  }, [searchParams]);
-  const activeLinkedDataEditRequest = useMemo(
-    () =>
-      linkedDataEditRequest?.requestId === resolvedDataEditRequestId
-        ? null
-        : linkedDataEditRequest,
-    [linkedDataEditRequest, resolvedDataEditRequestId]
-  );
   const regionNameById = useMemo(
     () => new Map(regions.map((region) => [region.id, region.name])),
     [regions]
@@ -718,64 +689,6 @@ export default function AdminPdfFormsPage() {
     );
   };
 
-  const buildAssignmentPayload = useCallback(
-    (userIds: string[], allowResolveLinkedRequest: boolean) => {
-      const payload: Record<string, unknown> = { userIds };
-
-      if (
-        allowResolveLinkedRequest &&
-        activeLinkedDataEditRequest &&
-        userIds.includes(activeLinkedDataEditRequest.userId)
-      ) {
-        payload.dataEditRequestId = activeLinkedDataEditRequest.requestId;
-        payload.dataEditRequestUserId = activeLinkedDataEditRequest.userId;
-      }
-
-      return payload;
-    },
-    [activeLinkedDataEditRequest]
-  );
-
-  const postUserAssignments = useCallback(async ({
-    formId,
-    userIds,
-    accessToken,
-    allowResolveLinkedRequest,
-  }: {
-    formId: string;
-    userIds: string[];
-    accessToken: string;
-    allowResolveLinkedRequest: boolean;
-  }) => {
-    const res = await fetch(`/api/custom-forms/${formId}/assign`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify(buildAssignmentPayload(userIds, allowResolveLinkedRequest)),
-    });
-
-    const json = await res.json().catch(() => null);
-    if (!res.ok) {
-      if (json?.setup_needed) {
-        throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
-      }
-      throw new Error(json?.error || 'Failed to save user assignments.');
-    }
-
-    const resolvedLinkedRequest = Boolean(
-      activeLinkedDataEditRequest &&
-      json?.resolvedRequestId === activeLinkedDataEditRequest.requestId
-    );
-
-    if (resolvedLinkedRequest) {
-      setResolvedDataEditRequestId(activeLinkedDataEditRequest!.requestId);
-    }
-
-    return { resolvedLinkedRequest };
-  }, [activeLinkedDataEditRequest, buildAssignmentPayload]);
-
   const handleSendToUsers = async () => {
     if (!sendModalForm) return;
 
@@ -794,27 +707,28 @@ export default function AdminPdfFormsPage() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      const { resolvedLinkedRequest } = await postUserAssignments({
-        formId: sendModalForm.id,
-        userIds,
-        accessToken: session.access_token,
-        allowResolveLinkedRequest: sendTab === 'users',
+      const res = await fetch(`/api/custom-forms/${sendModalForm.id}/assign`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userIds }),
       });
-      const linkedRequestNote = resolvedLinkedRequest
-        ? ' The linked data update request was approved.'
-        : '';
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error || 'Failed to assign');
       if (sendTab === 'venue') {
         const venueLabel = selectedVenue?.venue_name || 'selected venue';
         setSendSuccess(
-          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} at ${venueLabel}.${linkedRequestNote}`
+          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} at ${venueLabel}.`
         );
       } else if (sendTab === 'region') {
         const regionLabel = selectedSendRegion?.name || 'selected region';
         setSendSuccess(
-          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} in ${regionLabel}.${linkedRequestNote}`
+          `Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''} in ${regionLabel}.`
         );
       } else {
-        setSendSuccess(`Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''}.${linkedRequestNote}`);
+        setSendSuccess(`Form assigned to ${userIds.length} user${userIds.length !== 1 ? 's' : ''}.`);
         setSelectedUsers([]);
       }
 
@@ -996,20 +910,23 @@ export default function AdminPdfFormsPage() {
 
       // Assign to individually selected users (non-venue) if any
       const { userIds: stateUserIds, note: stateNote } = resolveAssignmentTargets();
-      let resolvedLinkedRequest = false;
       if (!pageVenueId && stateUserIds.length > 0 && json.form?.id) {
-        const assignResult = await postUserAssignments({
-          formId: json.form.id,
-          userIds: stateUserIds,
-          accessToken: session.access_token,
-          allowResolveLinkedRequest: true,
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: stateUserIds }),
         });
-        resolvedLinkedRequest = assignResult.resolvedLinkedRequest;
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
       }
 
       const venueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : stateNote;
-      const linkedRequestNote = resolvedLinkedRequest ? ' The linked data update request was approved.' : '';
-      setSuccessMsg(`"${title}" registered successfully${venueNote}.${linkedRequestNote}`);
+      setSuccessMsg(`"${title}" registered successfully${venueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
@@ -1084,20 +1001,23 @@ export default function AdminPdfFormsPage() {
       if (!res.ok) throw new Error(json.details || json.error || 'Registration failed');
 
       const { userIds: packetUserIds, note: packetNote } = resolveAssignmentTargets();
-      let resolvedLinkedRequest = false;
       if (!pageVenueId && packetUserIds.length > 0 && json.form?.id) {
-        const assignResult = await postUserAssignments({
-          formId: json.form.id,
-          userIds: packetUserIds,
-          accessToken: session.access_token,
-          allowResolveLinkedRequest: true,
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: packetUserIds }),
         });
-        resolvedLinkedRequest = assignResult.resolvedLinkedRequest;
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
       }
 
       const packetVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : packetNote;
-      const linkedRequestNote = resolvedLinkedRequest ? ' The linked data update request was approved.' : '';
-      setSuccessMsg(`"${title}" registered successfully${packetVenueNote}.${linkedRequestNote}`);
+      setSuccessMsg(`"${title}" registered successfully${packetVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -1164,20 +1084,23 @@ export default function AdminPdfFormsPage() {
 
       // Assign to individually selected users (non-venue) if any
       const { userIds: uploadUserIds, note: uploadNote } = resolveAssignmentTargets();
-      let resolvedLinkedRequest = false;
       if (!pageVenueId && uploadUserIds.length > 0 && json.form?.id) {
-        const assignResult = await postUserAssignments({
-          formId: json.form.id,
-          userIds: uploadUserIds,
-          accessToken: session.access_token,
-          allowResolveLinkedRequest: true,
+        const assignRes = await fetch(`/api/custom-forms/${json.form.id}/assign`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ userIds: uploadUserIds }),
         });
-        resolvedLinkedRequest = assignResult.resolvedLinkedRequest;
+        if (!assignRes.ok) {
+          const assignJson = await assignRes.json();
+          if (assignJson.setup_needed) {
+            throw new Error('Setup required: run database/migrations/20250311_create_custom_form_assignments.sql in Supabase to enable user-specific form restrictions.');
+          }
+          throw new Error(assignJson.error || 'Failed to save user assignments.');
+        }
       }
 
       const uploadVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : uploadNote;
-      const linkedRequestNote = resolvedLinkedRequest ? ' The linked data update request was approved.' : '';
-      setSuccessMsg(`"${title}" uploaded successfully${uploadVenueNote}.${linkedRequestNote}`);
+      setSuccessMsg(`"${title}" uploaded successfully${uploadVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -1382,17 +1305,6 @@ export default function AdminPdfFormsPage() {
             Back to Global Calendar
           </button>
         </div>
-
-        {activeLinkedDataEditRequest && (
-          <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
-            <p className="font-semibold">Linked Data Update Request</p>
-            <p className="mt-1">
-              {activeLinkedDataEditRequest.userName} requested an update for{' '}
-              <span className="font-medium">{activeLinkedDataEditRequest.documentName}</span>.
-              Keep this request pending until you assign a custom form directly to that user from this page.
-            </p>
-          </div>
-        )}
 
         {/* Upload Form */}
         <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">

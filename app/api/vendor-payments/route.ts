@@ -706,7 +706,7 @@ export async function GET(req: NextRequest) {
     // Fetch basic event metadata for display purposes
     const { data: eventsMeta, error: eventsMetaError } = await supabaseAdmin
       .from('events')
-      .select('id, event_name, event_date, venue, city, state, linked_commission_event_id, commission_pool, tips, ticket_sales, tax_rate_percent, fees, other_income')
+      .select('id, event_name, event_date, venue, city, state')
       .in('id', eventIdsToGroup);
     if (eventsMetaError) {
       console.log('[VENDOR-PAYMENTS] eventsMeta error', eventsMetaError.message);

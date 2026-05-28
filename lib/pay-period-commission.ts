@@ -16,7 +16,6 @@ export type PayPeriodCommissionWorkerInput = {
   hours: number;
   commissionDeleted?: boolean;
   commissionOverride?: number | null;
-  commissionShare?: number | null;
 };
 
 export type PayPeriodCommissionEventInput = {
@@ -152,17 +151,9 @@ export function computePayPeriodCommission({
         Number.isFinite(Number(worker.commissionOverride))
           ? roundMoney(Number(worker.commissionOverride))
           : null;
-      const explicitCommissionShare =
-        worker?.commissionShare != null &&
-        Number.isFinite(Number(worker.commissionShare))
-          ? roundMoney(Number(worker.commissionShare))
-          : null;
       const isVendor = isVendorDivision(worker?.division);
       const isTrailers = isTrailersDivision(worker?.division);
-      const commissionShare =
-        explicitCommissionShare != null
-          ? explicitCommissionShare
-          : roundMoney(Number(commissionSharesByUser[userId] || 0));
+      const commissionShare = roundMoney(Number(commissionSharesByUser[userId] || 0));
       const eligibleForPeriodRate =
         usesPeriodRate &&
         isVendor &&
