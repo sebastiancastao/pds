@@ -207,6 +207,20 @@ type SubmittedAvailabilityDay = {
   submitted_at?: string | null;
 };
 
+type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
+
+type HelpdeskTicket = {
+  id: string;
+  ticketNumber: string;
+  ticketDate: string;
+  urgency: HelpdeskTicketUrgency;
+  description: string;
+  createdAt: string;
+  createdBy: string;
+  createdByEmail: string;
+  createdByName: string;
+};
+
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
   if (!clock_in || !clock_out) return 0;
   const a = new Date(clock_in).getTime();
@@ -287,6 +301,25 @@ function formatDateTime(d?: string | null, state?: string | null) {
     hour: "numeric", minute: "2-digit", hour12: true,
     ...(tz ? { timeZone: tz } : {}),
   });
+}
+
+function getTodayInputValue() {
+  const today = new Date();
+  today.setMinutes(today.getMinutes() - today.getTimezoneOffset());
+  return today.toISOString().slice(0, 10);
+}
+
+function getHelpdeskUrgencyClasses(urgency: HelpdeskTicketUrgency) {
+  switch (urgency) {
+    case "critical":
+      return "bg-red-50 text-red-700 border-red-200";
+    case "high":
+      return "bg-orange-50 text-orange-700 border-orange-200";
+    case "medium":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    default:
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  }
 }
 
 export default function WorkerProfilePage() {
@@ -509,6 +542,17 @@ export default function WorkerProfilePage() {
     created_at: string;
   }[]>([]);
   const [dataEditRequestsLoading, setDataEditRequestsLoading] = useState(false);
+  const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
+  const [helpdeskTicketsLoading, setHelpdeskTicketsLoading] = useState(false);
+  const [helpdeskTicketError, setHelpdeskTicketError] = useState("");
+  const [helpdeskTicketSuccess, setHelpdeskTicketSuccess] = useState("");
+  const [submittingHelpdeskTicket, setSubmittingHelpdeskTicket] = useState(false);
+  const [isHelpdeskModalOpen, setIsHelpdeskModalOpen] = useState(false);
+  const [helpdeskForm, setHelpdeskForm] = useState({
+    ticketDate: getTodayInputValue(),
+    urgency: "medium" as HelpdeskTicketUrgency,
+    description: "",
+  });
 
   useEffect(() => {
     if (!employeeId) return;
@@ -903,6 +947,55 @@ export default function WorkerProfilePage() {
     load();
   }, [employeeId, refreshTick]);
 
+  useEffect(() => {
+    if (!employeeId) return;
+
+    const loadHelpdeskTickets = async () => {
+      setHelpdeskTicketsLoading(true);
+      setHelpdeskTicketError("");
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/helpdesk-tickets', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: 'no-store',
+        });
+
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body?.error || 'Failed to load helpdesk tickets.');
+        }
+
+        setHelpdeskTickets(body.tickets ?? []);
+      } catch (error: any) {
+        console.error('Error loading helpdesk tickets:', error);
+        setHelpdeskTicketError(error?.message || 'Failed to load helpdesk tickets.');
+      } finally {
+        setHelpdeskTicketsLoading(false);
+      }
+    };
+
+    loadHelpdeskTickets();
+  }, [employeeId, refreshTick]);
+
+  useEffect(() => {
+    if (!isHelpdeskModalOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsHelpdeskModalOpen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isHelpdeskModalOpen]);
+
   // Fetch regions list
   useEffect(() => {
     const loadRegions = async () => {
@@ -1113,6 +1206,58 @@ export default function WorkerProfilePage() {
       setDataEditRequestError(error?.message || "Failed to submit request.");
     } finally {
       setSubmittingDataEditRequest(false);
+    }
+  };
+
+  const submitHelpdeskTicket = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setHelpdeskTicketError("");
+    setHelpdeskTicketSuccess("");
+
+    if (!helpdeskForm.ticketDate) {
+      setHelpdeskTicketError("Please choose a ticket date.");
+      return;
+    }
+
+    if (!helpdeskForm.description.trim()) {
+      setHelpdeskTicketError("Please describe what the user needs.");
+      return;
+    }
+
+    setSubmittingHelpdeskTicket(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const res = await fetch("/api/helpdesk-tickets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify(helpdeskForm),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to create helpdesk ticket.");
+      }
+
+      if (data?.ticket) {
+        setHelpdeskTickets((prev) => [data.ticket, ...prev].slice(0, 25));
+      }
+      setHelpdeskTicketSuccess(
+        data?.ticket?.ticketNumber
+          ? `Ticket ${data.ticket.ticketNumber} submitted successfully.`
+          : "Helpdesk ticket submitted successfully."
+      );
+      setHelpdeskForm((current) => ({
+        ...current,
+        description: "",
+      }));
+    } catch (error: any) {
+      setHelpdeskTicketError(error?.message || "Failed to create helpdesk ticket.");
+    } finally {
+      setSubmittingHelpdeskTicket(false);
     }
   };
 
@@ -2018,6 +2163,16 @@ export default function WorkerProfilePage() {
               Cumulative hours, shifts, and event history
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsHelpdeskModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h8M8 14h5m-7 6h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Helpdesk
+          </button>
         </div>
 
         {/* Loading & Error */}
@@ -2182,6 +2337,176 @@ export default function WorkerProfilePage() {
                 </div>
               </div>
             </section>
+
+            {isHelpdeskModalOpen && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+                onClick={() => setIsHelpdeskModalOpen(false)}
+              >
+                <section
+                  id="helpdesk-section"
+                  className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Helpdesk</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Create a support ticket with urgency, date, and a clear description.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {!helpdeskTicketsLoading && (
+                    <span className="text-xs text-gray-400">
+                      {helpdeskTickets.length} ticket{helpdeskTickets.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsHelpdeskModalOpen(false)}
+                    className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div className="apple-card p-6">
+                <form onSubmit={submitHelpdeskTicket} className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        value={helpdeskForm.ticketDate}
+                        onChange={(e) =>
+                          setHelpdeskForm((current) => ({
+                            ...current,
+                            ticketDate: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Urgency <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={helpdeskForm.urgency}
+                        onChange={(e) =>
+                          setHelpdeskForm((current) => ({
+                            ...current,
+                            urgency: e.target.value as HelpdeskTicketUrgency,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                    Ticket numbers are generated automatically when your request is submitted.
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                      Description <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      value={helpdeskForm.description}
+                      onChange={(e) =>
+                        setHelpdeskForm((current) => ({
+                          ...current,
+                          description: e.target.value,
+                        }))
+                      }
+                      rows={4}
+                      placeholder="Describe what the user needs help with..."
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                    />
+                  </div>
+
+                  {helpdeskTicketError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {helpdeskTicketError}
+                    </div>
+                  )}
+
+                  {helpdeskTicketSuccess && (
+                    <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                      {helpdeskTicketSuccess}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={submittingHelpdeskTicket}
+                      className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      {submittingHelpdeskTicket ? "Submitting..." : "Create Ticket"}
+                    </button>
+                  </div>
+                </form>
+
+                <div className="mt-6 border-t border-gray-100 pt-6">
+                  <h3 className="mb-3 text-sm font-semibold text-gray-700">Recent Tickets</h3>
+                  {helpdeskTicketsLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <div className="apple-spinner w-4 h-4" />
+                      Loading...
+                    </div>
+                  ) : helpdeskTickets.length === 0 ? (
+                    <p className="text-sm text-gray-400">No helpdesk tickets submitted yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {helpdeskTickets.map((ticket) => (
+                        <div
+                          key={ticket.id}
+                          className="flex flex-col gap-3 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 sm:flex-row sm:items-center"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold text-gray-900">{ticket.ticketNumber}</p>
+                              <span
+                                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getHelpdeskUrgencyClasses(ticket.urgency)}`}
+                              >
+                                {ticket.urgency}
+                              </span>
+                            </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                <span>{formatEventDate(ticket.ticketDate)}</span>
+                                <span>•</span>
+                                <span>{formatDateTime(ticket.createdAt)}</span>
+                              </div>
+                              <p className="mt-2 text-sm text-gray-600">{ticket.description}</p>
+                            </div>
+                          <div className="text-xs text-gray-400 sm:text-right">
+                            <div>{ticket.createdByName || ticket.createdByEmail}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+                </section>
+              </div>
+            )}
 
             <KnowYourRightsNoticeSection state={employee?.state ?? undefined} />
 

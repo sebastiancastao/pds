@@ -14,6 +14,8 @@ type FormMeta = {
   allow_date_input: boolean;
   allow_print_name: boolean;
   allow_venue_display: boolean;
+  delivery_kind?: 'pdf' | 'viewer';
+  viewer_url?: string | null;
 };
 
 type AssignedVenue = {
@@ -156,7 +158,6 @@ export default function EmployeeFormPage() {
       const form = (data.forms as FormMeta[]).find(f => f.id === formId);
       if (!form) throw new Error('Form not found');
       setMeta(form);
-      setPdfUrl(`/api/custom-forms/${formId}/pdf?token=${session.access_token}`);
 
       // Check if already submitted — try the canonical "custom-form-{id}" key first,
       // then fall back to the legacy "{Title} {Year}" key for older submissions.
@@ -191,6 +192,33 @@ export default function EmployeeFormPage() {
           setSubmittedDocs(docsData.docs ?? []);
         }
       }
+
+      if (form.viewer_url) {
+        if (progressData.found && !asUserId) {
+          return;
+        }
+
+        const [viewerPathname, viewerQuery = ''] = form.viewer_url.split('?');
+        const viewerParams = new URLSearchParams(viewerQuery);
+        const returnTo = asUserId
+          ? `/hr/employees/${encodeURIComponent(asUserId)}`
+          : `/employee/form/${encodeURIComponent(formId)}`;
+
+        viewerParams.set('customFormId', form.id);
+        viewerParams.set('returnTo', returnTo);
+
+        if (asUserId) {
+          viewerParams.set('asUser', asUserId);
+        }
+        if (entryPoint) {
+          viewerParams.set('entryPoint', entryPoint);
+        }
+
+        router.replace(`${viewerPathname}?${viewerParams.toString()}`);
+        return;
+      }
+
+      setPdfUrl(`/api/custom-forms/${formId}/pdf?token=${session.access_token}`);
     } catch (err: any) {
       if (loadRequestIdRef.current !== requestId) return;
       setError(err.message);
@@ -198,7 +226,7 @@ export default function EmployeeFormPage() {
       if (loadRequestIdRef.current !== requestId) return;
       setLoading(false);
     }
-  }, [asUserId, formId, router]);
+  }, [asUserId, entryPoint, formId, router]);
 
   useEffect(() => {
     loadForm();

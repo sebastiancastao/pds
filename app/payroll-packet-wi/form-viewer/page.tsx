@@ -74,6 +74,10 @@ const getToday = () => new Date().toISOString().split('T')[0];
 
 function EmployeeInformationWIForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<EmployeeInfoState>({
     firstName: '',
@@ -152,7 +156,11 @@ function EmployeeInformationWIForm() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify(nextForm)
+        body: JSON.stringify({
+          ...nextForm,
+          customFormId: customFormId || undefined,
+          targetUserId: targetUserId || undefined,
+        })
       });
 
       if (!response.ok) {
@@ -177,12 +185,12 @@ function EmployeeInformationWIForm() {
   const handleContinue = async () => {
     const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-wi/form-viewer?form=attestation');
+      router.push(returnTo || '/payroll-packet-wi/form-viewer?form=attestation');
     }
   };
 
   const handleBack = () => {
-    router.push('/payroll-packet-wi/form-viewer?form=time-of-hire');
+    router.push(returnTo || '/payroll-packet-wi/form-viewer?form=time-of-hire');
   };
 
   const handleLogout = async () => {

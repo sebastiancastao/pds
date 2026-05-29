@@ -48,6 +48,7 @@ export async function POST(request: NextRequest) {
       requiresSignature,
       allowDateInput,
       allowPrintName,
+      deliveryMethod,
       targetState,
       targetRegion,
       packetState,
@@ -71,7 +72,10 @@ export async function POST(request: NextRequest) {
     // Virtual storage path — no actual file in Supabase storage.
     // The PDF route proxies this to /api/payroll-packet-{state}/{formType}.
     const resolvedFormType = formType?.trim() || 'fillable';
-    const storagePath = `payroll-packet:${routeSegment}:${resolvedFormType}`;
+    const resolvedDeliveryMethod = String(deliveryMethod || '').trim().toLowerCase() === 'viewer'
+      ? 'viewer'
+      : 'packet';
+    const storagePath = `${resolvedDeliveryMethod === 'viewer' ? 'payroll-viewer' : 'payroll-packet'}:${routeSegment}:${resolvedFormType}`;
 
     // If the same state form is already registered, reuse it for assignment
     const { data: existing } = await supabase

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { encrypt } from '@/lib/encryption';
+import { markEmployeeInformationCustomFormComplete } from '@/lib/employee-information-custom-form';
+import { syncProfileFromEmployeeInformation } from '@/lib/employee-information-profile-sync';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -11,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 /**
  * POST /api/employee-information/save
- * Saves employee information from Wisconsin form with encrypted SSN
+ * Saves employee information from the payroll-packet viewer forms with encrypted SSN
  */
 export async function POST(request: NextRequest) {
   try {
@@ -54,6 +56,8 @@ export async function POST(request: NextRequest) {
       emergencyName,
       emergencyRelationship,
       emergencyPhone,
+      customFormId,
+      targetUserId,
     } = body;
 
     // Validate required fields
@@ -77,6 +81,36 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    let saveUserId = userData.user.id;
+    const normalizedTargetUserId = String(targetUserId || '').trim();
+    if (normalizedTargetUserId && normalizedTargetUserId !== userData.user.id) {
+      const { data: caller } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden: cannot save for another user' }, { status: 403 });
+      }
+
+      saveUserId = normalizedTargetUserId;
+    }
+
+    await syncProfileFromEmployeeInformation({
+      supabase,
+      userId: saveUserId,
+      input: {
+        firstName,
+        lastName,
+        phone,
+        address,
+        city,
+        state,
+        zip,
+      },
+    });
+
     // Encrypt the SSN
     let encryptedSSN: string;
     try {
@@ -92,7 +126,7 @@ export async function POST(request: NextRequest) {
 
     // Prepare payload for database
     const payload = {
-      user_id: userData.user.id,
+      user_id: saveUserId,
       first_name: firstName,
       last_name: lastName,
       middle_initial: null,
@@ -134,6 +168,22 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[EMPLOYEE-INFO-SAVE] ✅ Saved successfully');
+
+    if (customFormId) {
+      try {
+        await markEmployeeInformationCustomFormComplete({
+          customFormId,
+          supabase,
+          userId: saveUserId,
+        });
+      } catch (completionError: any) {
+        console.error('[EMPLOYEE-INFO-SAVE] Custom form completion error:', completionError);
+        return NextResponse.json(
+          { error: completionError?.message || 'Failed to mark custom form complete' },
+          { status: 500 },
+        );
+      }
+    }
 
     return NextResponse.json(
       { success: true, message: 'Employee information saved successfully', data },

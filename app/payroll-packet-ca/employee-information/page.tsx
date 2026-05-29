@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, MouseEvent, TouchEvent } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
 const STATES = ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'];
@@ -41,6 +41,10 @@ const initialFormData = {
 
 export default function EmployeeInformationPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
   const [formData, setFormData] = useState(initialFormData);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -92,7 +96,8 @@ export default function EmployeeInformationPage() {
           return;
         }
 
-        const response = await fetch('/api/employee-information', {
+        const query = targetUserId ? `?targetUserId=${encodeURIComponent(targetUserId)}` : '';
+        const response = await fetch(`/api/employee-information${query}`, {
           headers: {
             ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
           },
@@ -141,7 +146,7 @@ export default function EmployeeInformationPage() {
     };
 
     loadExistingData();
-  }, [restoreSignatureOnCanvas, router]);
+  }, [restoreSignatureOnCanvas, router, targetUserId]);
 
   const handleFieldChange = (section: keyof typeof initialFormData, field: string) => (
     event: ChangeEvent<HTMLInputElement | HTMLSelectElement>
@@ -334,6 +339,8 @@ export default function EmployeeInformationPage() {
           emergency: formData.emergency,
           acknowledgements: formData.acknowledgements,
           signature: signatureData,
+          customFormId: customFormId || undefined,
+          targetUserId: targetUserId || undefined,
         }),
       });
 
@@ -348,29 +355,31 @@ export default function EmployeeInformationPage() {
         setFormData(prev => ({ ...prev, signature: signatureData }));
       }
 
-      try {
-        const notificationResponse = await fetch('/api/onboarding-notification', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-          },
-          body: JSON.stringify({
-            form: 'payroll-packet-ca/employee-information',
-            trigger: 'save-finish',
-          }),
-        });
-        if (!notificationResponse.ok) {
-          let detail = '';
-          try { detail = await notificationResponse.text(); } catch {}
-          console.warn('[EMPLOYEE-INFORMATION] Onboarding notification failed:', notificationResponse.status, detail);
+      if (!customFormId) {
+        try {
+          const notificationResponse = await fetch('/api/onboarding-notification', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+            body: JSON.stringify({
+              form: 'payroll-packet-ca/employee-information',
+              trigger: 'save-finish',
+            }),
+          });
+          if (!notificationResponse.ok) {
+            let detail = '';
+            try { detail = await notificationResponse.text(); } catch {}
+            console.warn('[EMPLOYEE-INFORMATION] Onboarding notification failed:', notificationResponse.status, detail);
+          }
+        } catch (error) {
+          console.warn('[EMPLOYEE-INFORMATION] Onboarding notification exception:', error);
         }
-      } catch (error) {
-        console.warn('[EMPLOYEE-INFORMATION] Onboarding notification exception:', error);
       }
 
       alert('Employee information captured. HR will follow up if anything else is required.');
-      router.push('/login');
+      router.push(returnTo || '/login');
     } catch (error) {
       console.error('[EMPLOYEE-INFORMATION] Save error:', error);
       alert(error instanceof Error ? error.message : 'Failed to save employee information.');

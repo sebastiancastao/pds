@@ -3,6 +3,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { buildPayrollPacketViewerUrl } from '@/lib/payroll-packet-custom-forms';
 import '../../dashboard/dashboard-styles.css';
 
 type CustomForm = {
@@ -150,6 +151,7 @@ type PacketFormPreset = {
   description: string;
   state: string;
   formType: string;
+  deliveryMethod?: 'packet' | 'viewer';
   requiresSignature: boolean;
   allowDateInput: boolean;
   allowPrintName: boolean;
@@ -165,6 +167,7 @@ const PACKET_FORM_PRESETS: PacketFormPreset[] = [
   { code: 'ca-notice-to-employee',   label: 'Notice to Employee',    description: 'LC 2810.5 Notice to Employee',                 state: 'CA', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ca-health-insurance',     label: 'Health Insurance',      description: 'Marketplace Coverage Options Notice',          state: 'CA', formType: 'health-insurance',     requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ca-time-of-hire',         label: 'Time of Hire',          description: 'Time of Hire Notice',                         state: 'CA', formType: 'time-of-hire',         requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ca-employee-information', label: 'Employee Information',  description: 'Employee Information web form',               state: 'CA', formType: 'employee-information', deliveryMethod: 'viewer', requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ca-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'CA', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ca-arbitration',          label: 'Arbitration',           description: 'Arbitration Agreement',                       state: 'CA', formType: 'arbitration-agreement', requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ca-sexual-harassment',    label: 'Sexual Harassment',     description: 'Prevention Policy Acknowledgment',             state: 'CA', formType: 'sexual-harassment',          requiresSignature: true,  allowDateInput: false, allowPrintName: false },
@@ -173,20 +176,24 @@ const PACKET_FORM_PRESETS: PacketFormPreset[] = [
   { code: 'az-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'AZ', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'az-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'AZ', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'az-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'AZ', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'az-employee-information', label: 'Employee Information',  description: 'Employee Information web form',               state: 'AZ', formType: 'employee-information', deliveryMethod: 'viewer', requiresSignature: false, allowDateInput: false, allowPrintName: false },
   // Nevada
   { code: 'nv-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NV', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'nv-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NV', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'nv-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NV', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'nv-employee-information', label: 'Employee Information',  description: 'Employee Information web form',               state: 'NV', formType: 'employee-information', deliveryMethod: 'viewer', requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'nv-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NV', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   // New York
   { code: 'ny-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'NY', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ny-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'NY', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'ny-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'NY', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'ny-employee-information', label: 'Employee Information',  description: 'Employee Information web form',               state: 'NY', formType: 'employee-information', deliveryMethod: 'viewer', requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'ny-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'NY', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   // Wisconsin
   { code: 'wi-i9',                   label: 'I-9',                   description: 'Employment Eligibility Verification',          state: 'WI', formType: 'i9',                   requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'wi-fw4',                  label: 'Federal W-4',           description: "Employee's Withholding Certificate",           state: 'WI', formType: 'fw4',                  requiresSignature: true,  allowDateInput: false, allowPrintName: false },
   { code: 'wi-notice-to-employee',   label: 'Notice to Employee',    description: 'Notice to Employee',                          state: 'WI', formType: 'notice-to-employee',   requiresSignature: false, allowDateInput: false, allowPrintName: false },
+  { code: 'wi-employee-information', label: 'Employee Information',  description: 'Employee Information web form',               state: 'WI', formType: 'employee-information', deliveryMethod: 'viewer', requiresSignature: false, allowDateInput: false, allowPrintName: false },
   { code: 'wi-employee-handbook',    label: 'Employee Handbook',     description: 'Employee Handbook Acknowledgment',             state: 'WI', formType: 'employee-handbook',    requiresSignature: true,  allowDateInput: false, allowPrintName: false },
 ];
 
@@ -994,6 +1001,7 @@ export default function AdminPdfFormsPage() {
           targetRegion: targetRegion || null,
           packetState: preset.state,
           formType: preset.formType,
+          deliveryMethod: preset.deliveryMethod || 'packet',
           venueId: pageVenueId || undefined,
         }),
       });
@@ -1685,9 +1693,20 @@ export default function AdminPdfFormsPage() {
             )}
             {selectedPacketPreset && (() => {
               const pp = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
+              const viewerRoute = pp && pp.deliveryMethod === 'viewer'
+                ? buildPayrollPacketViewerUrl(pp.state.toLowerCase(), pp.formType)
+                : null;
               return pp ? (
                 <div className="rounded-lg bg-emerald-50 border border-emerald-200 px-4 py-3 text-sm text-emerald-800">
+                  {viewerRoute ? (
+                    <>
+                      Form opens in <span className="font-semibold">{viewerRoute}</span> - no file upload needed.
+                    </>
+                  ) : (
+                    <>
                   PDF served from <span className="font-semibold">/api/payroll-packet-{pp.state.toLowerCase()}/{pp.formType}</span> — no file upload needed.
+                    </>
+                  )}
                 </div>
               ) : null;
             })()}

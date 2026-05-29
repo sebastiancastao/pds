@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { buildEmployeeInformationPdf } from "@/lib/employee-information-pdf";
+import { parsePayrollPacketVirtualStoragePath } from "@/lib/payroll-packet-custom-forms";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +40,9 @@ const formDisplayNames: Record<string, string> = {
   "az-state-tax": "AZ State Tax Form",
 };
 
+const CUSTOM_FORM_NAME_PATTERN = /^custom-form-([a-f0-9-]{36})$/i;
+const STATE_CODE_PREFIXES = new Set(["ca", "ny", "wi", "az", "nv", "tx", "fl", "il", "oh", "pa", "nj"]);
+
 function toBase64(data: any): string {
   if (!data) return "";
   if (typeof data === "string") {
@@ -46,25 +51,38 @@ function toBase64(data: any): string {
     }
     return data;
   }
+
   const uint =
     data instanceof Uint8Array
       ? data
       : Array.isArray(data)
-      ? Uint8Array.from(data)
-      : data?.data
-      ? Uint8Array.from(data.data)
-      : null;
+        ? Uint8Array.from(data)
+        : data?.data
+          ? Uint8Array.from(data.data)
+          : null;
   if (!uint) return "";
   return Buffer.from(uint).toString("base64");
 }
 
-const CUSTOM_FORM_NAME_PATTERN = /^custom-form-([a-f0-9-]{36})$/i;
+function normalizeFormKey(formName: string) {
+  const lower = formName.toLowerCase().trim();
+  const parts = lower.split("-");
+  if (parts.length > 1 && STATE_CODE_PREFIXES.has(parts[0])) {
+    return parts.slice(1).join("-");
+  }
+  return lower;
+}
+
+function isEmployeeInformationVirtualForm(storagePath?: string | null) {
+  const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
+  return parsed?.mode === "viewer" && normalizeFormKey(parsed.formType || "") === "employee-information";
+}
 
 function getDisplayName(formName: string, customFormTitle?: string): string {
   if (customFormTitle) return customFormTitle;
   const lower = formName.toLowerCase();
   if (formDisplayNames[lower]) return formDisplayNames[lower];
-  // Try without state prefix
+
   const parts = lower.split("-");
   if (parts.length > 1) {
     const withoutPrefix = parts.slice(1).join("-");
@@ -72,7 +90,7 @@ function getDisplayName(formName: string, customFormTitle?: string): string {
       return `${parts[0].toUpperCase()} ${formDisplayNames[withoutPrefix]}`;
     }
   }
-  // Fallback: title case the form name
+
   return formName
     .replace(/-/g, " ")
     .replace(/\b\w/g, (c) => c.toUpperCase());
@@ -99,43 +117,48 @@ export async function GET(
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    if (!allForms || allForms.length === 0) {
-      return NextResponse.json({ forms: [] }, { status: 200 });
-    }
-
-    // Batch-fetch titles for any custom-form-{id} entries
-    const customFormIds = allForms
-      .map((f) => f.form_name?.match(CUSTOM_FORM_NAME_PATTERN)?.[1])
+    const customFormIds = (allForms || [])
+      .map((form) => form.form_name?.match(CUSTOM_FORM_NAME_PATTERN)?.[1])
       .filter((id): id is string => !!id);
 
     const customFormTitles: Record<string, string> = {};
+    const employeeInformationCustomFormIds = new Set<string>();
+
     if (customFormIds.length > 0) {
       const { data: customForms } = await supabaseAdmin
         .from("custom_pdf_forms")
-        .select("id, title")
+        .select("id, title, storage_path")
         .in("id", customFormIds);
-      for (const cf of customForms ?? []) {
-        if (cf.id && cf.title?.trim()) {
-          customFormTitles[cf.id] = cf.title.trim();
+
+      for (const customForm of customForms ?? []) {
+        if (customForm.id && customForm.title?.trim()) {
+          customFormTitles[customForm.id] = customForm.title.trim();
+        }
+        if (customForm.id && isEmployeeInformationVirtualForm(customForm.storage_path)) {
+          employeeInformationCustomFormIds.add(customForm.id);
         }
       }
     }
 
     const MIN_FORM_DATA_LENGTH = 1000;
     const forms = [];
+    let hasEmployeeInformationForm = false;
 
-    for (const form of allForms) {
+    for (const form of allForms || []) {
       const formName = form.form_name || "unknown";
       const base64Data = toBase64(form.form_data);
-      // Never filter out custom forms — they must always appear regardless of PDF size
       const isCustomForm = formName.startsWith("custom-form-");
       if (!isCustomForm && base64Data.length < MIN_FORM_DATA_LENGTH) continue;
 
       const customFormId = formName.match(CUSTOM_FORM_NAME_PATTERN)?.[1];
       const customFormTitle = customFormId ? customFormTitles[customFormId] : undefined;
+      const isEmployeeInformationCustomForm =
+        !!customFormId && employeeInformationCustomFormIds.has(customFormId);
 
-      // Each record is a distinct form — no deduplication by name.
-      // Two forms with the same name for the same user are intentionally kept separate.
+      if (normalizeFormKey(formName) === "employee-information" || isEmployeeInformationCustomForm) {
+        hasEmployeeInformationForm = true;
+      }
+
       forms.push({
         id: form.id,
         form_name: formName,
@@ -145,6 +168,50 @@ export async function GET(
         created_at: form.updated_at || "",
         form_date: form.form_date || null,
       });
+    }
+
+    if (!hasEmployeeInformationForm) {
+      const { data: employeeInfo } = await supabaseAdmin
+        .from("employee_information")
+        .select(`
+          first_name,
+          last_name,
+          middle_initial,
+          address,
+          city,
+          state,
+          zip,
+          phone,
+          email,
+          date_of_birth,
+          ssn,
+          position,
+          department,
+          manager,
+          start_date,
+          employee_id,
+          emergency_contact_name,
+          emergency_contact_relationship,
+          emergency_contact_phone,
+          acknowledgements,
+          signature,
+          updated_at
+        `)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (employeeInfo) {
+        const renderedPdf = await buildEmployeeInformationPdf(employeeInfo);
+        forms.unshift({
+          id: "employee-information-synthetic",
+          form_name: "employee-information",
+          display_name: getDisplayName("employee-information"),
+          form_data: renderedPdf.toString("base64"),
+          updated_at: employeeInfo.updated_at || "",
+          created_at: employeeInfo.updated_at || "",
+          form_date: employeeInfo.updated_at ? employeeInfo.updated_at.slice(0, 10) : null,
+        });
+      }
     }
 
     return NextResponse.json({ forms }, { status: 200 });

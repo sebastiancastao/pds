@@ -3,10 +3,15 @@ import { createClient } from '@supabase/supabase-js';
 import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import { safeDecrypt } from '@/lib/encryption';
+import { buildEmployeeInformationPdf } from '@/lib/employee-information-pdf';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
 } from '@/app/lib/pdf-signature-placement';
+import {
+  isVirtualCustomFormStoragePath,
+  parsePayrollPacketVirtualStoragePath,
+} from '@/lib/payroll-packet-custom-forms';
 
 export const dynamic = 'force-dynamic';
 
@@ -66,6 +71,11 @@ type PayrollPacketStorageInfo = {
   stateCode: string | null;
   formType: string | null;
 };
+
+function isEmployeeInformationVirtualForm(storagePath?: string | null) {
+  const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
+  return parsed?.mode === 'viewer' && normalizeFormKey(parsed.formType || '') === 'employee-information';
+}
 
 function toBase64(data: any): string {
   if (!data) return '';
@@ -172,7 +182,7 @@ async function resolveCustomFormStoragePath(formIdentifier?: string | null) {
 
 async function loadCustomFormTemplateBytes(formIdentifier?: string | null) {
   const storagePath = await resolveCustomFormStoragePath(formIdentifier);
-  if (!storagePath || storagePath.startsWith('payroll-packet:')) {
+  if (!storagePath || isVirtualCustomFormStoragePath(storagePath)) {
     return null;
   }
 
@@ -275,24 +285,16 @@ function getCustomFormRecordId(value?: string | null) {
 }
 
 function parsePayrollPacketStoragePath(storagePath?: string | null): PayrollPacketStorageInfo | null {
-  const trimmed = (storagePath || '').trim();
-  if (!trimmed.toLowerCase().startsWith('payroll-packet:')) {
+  const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
+  const formType = normalizeFormKey(parsed?.formType || '');
+
+  if (!parsed || !formType) {
     return null;
   }
-
-  const parts = trimmed.split(':');
-  if (parts.length < 3) {
-    return null;
-  }
-
-  const rawStateCode = parts[1] || '';
-  const rawFormType = parts.slice(2).join(':');
-  const [pathFormType] = rawFormType.split('?');
-  const formType = normalizeFormKey(pathFormType);
 
   return {
-    stateCode: normalizeStateCode(rawStateCode),
-    formType: formType || null,
+    stateCode: normalizeStateCode(parsed.stateCode),
+    formType,
   };
 }
 
@@ -485,6 +487,14 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Missing userId or formName' }, { status: 400 });
     }
 
+    const normalizedName = normalizeFormKey(formName);
+    const requestedCustomFormStoragePath = isCustomFormId(formName)
+      ? await resolveCustomFormStoragePath(formName)
+      : null;
+    const isEmployeeInformationForm =
+      normalizedName === 'employee-information' ||
+      isEmployeeInformationVirtualForm(requestedCustomFormStoragePath);
+
     const { data: formRows, error: formError } = await supabaseAdmin
       .from('pdf_form_progress')
       .select('form_data')
@@ -493,12 +503,12 @@ export async function GET(request: NextRequest) {
       .order('updated_at', { ascending: false })
       .limit(1);
 
-    if (formError || !formRows || formRows.length === 0) {
+    if (formError) {
       return NextResponse.json({ error: 'Form not found' }, { status: 404 });
     }
 
-    const base64Data = toBase64(formRows[0].form_data);
-    if (!base64Data) {
+    const base64Data = formRows?.length ? toBase64(formRows[0].form_data) : '';
+    if (!base64Data && !isEmployeeInformationForm) {
       return NextResponse.json({ error: 'Empty form data' }, { status: 404 });
     }
 
@@ -516,7 +526,30 @@ export async function GET(request: NextRequest) {
 
     const { data: employeeInfo } = await supabaseAdmin
       .from('employee_information')
-      .select('state')
+      .select(`
+        first_name,
+        last_name,
+        middle_initial,
+        address,
+        city,
+        state,
+        zip,
+        phone,
+        email,
+        date_of_birth,
+        ssn,
+        position,
+        department,
+        manager,
+        start_date,
+        employee_id,
+        emergency_contact_name,
+        emergency_contact_relationship,
+        emergency_contact_phone,
+        acknowledgements,
+        signature,
+        updated_at
+      `)
       .eq('user_id', userId)
       .maybeSingle();
 
@@ -527,7 +560,6 @@ export async function GET(request: NextRequest) {
       (profileData as any)?.first_name,
       (profileData as any)?.last_name
     );
-    const normalizedName = normalizeFormKey(formName);
     const signatureLookupFormId = signatureFormId || formName;
     const formIdsToTry = isCustomFormId(signatureLookupFormId)
       ? await getCustomFormSignatureCandidates(signatureLookupFormId, preferredState)
@@ -652,6 +684,25 @@ export async function GET(request: NextRequest) {
     const responseExtras = returnSignatureData
       ? { signatureData, signatureType }
       : {};
+
+    if (isEmployeeInformationForm) {
+      if (!employeeInfo) {
+        if (!base64Data) {
+          return NextResponse.json({ error: 'Employee information not found' }, { status: 404 });
+        }
+        return NextResponse.json({ formData: base64Data, ...responseExtras });
+      }
+
+      const renderedPdf = await buildEmployeeInformationPdf(employeeInfo, {
+        externalSignatureData: signatureData,
+        externalSignatureType: signatureType,
+      });
+
+      return NextResponse.json({
+        formData: renderedPdf.toString('base64'),
+        ...responseExtras,
+      });
+    }
 
     const isAttestation = normalizedName === 'attestation';
     const hasSignatureData = Boolean(signatureData?.trim());

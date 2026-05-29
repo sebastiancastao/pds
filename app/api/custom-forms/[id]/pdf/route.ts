@@ -2,6 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
+import {
+  getCustomFormPdfProxyPathFromStoragePath,
+  isVirtualCustomFormStoragePath,
+} from '@/lib/payroll-packet-custom-forms';
 
 export const dynamic = 'force-dynamic';
 
@@ -56,11 +60,10 @@ export async function GET(
       return NextResponse.json({ error: 'Form is no longer available' }, { status: 410 });
     }
 
-    // Virtual path: proxy to the corresponding payroll-packet API route
-    if (form.storage_path.startsWith('payroll-packet:')) {
-      const [, stateCode, formType] = form.storage_path.split(':');
+    const virtualProxyPath = getCustomFormPdfProxyPathFromStoragePath(form.storage_path);
+    if (virtualProxyPath) {
       const origin = new URL(request.url).origin;
-      const packetUrl = `${origin}/api/payroll-packet-${stateCode}/${formType}`;
+      const packetUrl = `${origin}${virtualProxyPath}`;
 
       const authHeader = request.headers.get('authorization') || request.headers.get('Authorization');
       const queryToken = new URL(request.url).searchParams.get('token');
@@ -71,7 +74,7 @@ export async function GET(
       });
 
       if (!proxyRes.ok) {
-        console.error('[CUSTOM-FORMS PDF] Payroll-packet proxy failed:', stateCode, formType, proxyRes.status);
+        console.error('[CUSTOM-FORMS PDF] Payroll-packet proxy failed:', virtualProxyPath, proxyRes.status);
         return NextResponse.json({ error: 'Failed to load state form PDF' }, { status: 502 });
       }
 
@@ -83,6 +86,10 @@ export async function GET(
           'Cache-Control': 'private, no-cache',
         },
       });
+    }
+
+    if (isVirtualCustomFormStoragePath(form.storage_path)) {
+      return NextResponse.json({ error: 'Unsupported virtual form target' }, { status: 500 });
     }
 
     // Download from storage

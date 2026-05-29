@@ -5,10 +5,15 @@ import { PNG } from 'pngjs';
 import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { safeDecrypt } from '@/lib/encryption';
+import { buildEmployeeInformationPdf } from '@/lib/employee-information-pdf';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
 } from '@/app/lib/pdf-signature-placement';
+import {
+  isVirtualCustomFormStoragePath,
+  parsePayrollPacketVirtualStoragePath,
+} from '@/lib/payroll-packet-custom-forms';
 
 // Disable caching and increase body size limit for large PDFs
 export const dynamic = 'force-dynamic';
@@ -398,6 +403,11 @@ function normalizeFormKey(formName: string) {
   return lower;
 }
 
+function isEmployeeInformationVirtualForm(storagePath?: string | null) {
+  const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
+  return parsed?.mode === 'viewer' && normalizeFormKey(parsed.formType || '') === 'employee-information';
+}
+
 const normalizeComparableText = (value?: string | null) =>
   (value || '').toLowerCase().trim().replace(/\s+/g, ' ');
 
@@ -530,7 +540,7 @@ function displayNameForForm(formName: string, customForm?: ResolvedCustomForm | 
 
 async function loadCustomFormTemplateBytes(storagePath?: string | null) {
   const normalizedPath = (storagePath || '').trim();
-  if (!normalizedPath || normalizedPath.startsWith('payroll-packet:')) {
+  if (!normalizedPath || isVirtualCustomFormStoragePath(normalizedPath)) {
     return null;
   }
 
@@ -1620,7 +1630,54 @@ export async function GET(
 
     logElapsed('Fetched saved PDF progress', formsFetchStart);
 
-    if (!allForms || allForms.length === 0) {
+    const { data: employeeInfoRecord } = await supabaseAdmin
+      .from('employee_information')
+      .select(`
+        first_name,
+        last_name,
+        middle_initial,
+        address,
+        city,
+        state,
+        zip,
+        phone,
+        email,
+        date_of_birth,
+        ssn,
+        position,
+        department,
+        manager,
+        start_date,
+        employee_id,
+        emergency_contact_name,
+        emergency_contact_relationship,
+        emergency_contact_phone,
+        acknowledgements,
+        signature,
+        updated_at
+      `)
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    const formsSource = [...(allForms || [])];
+    const hasEmployeeInformationForm = formsSource.some((form) => {
+      const customForm = resolveCustomForm(form.form_name || '');
+      return (
+        normalizeFormKey(form.form_name || '') === 'employee-information' ||
+        isEmployeeInformationVirtualForm(customForm?.storagePath)
+      );
+    });
+
+    if (!hasEmployeeInformationForm && employeeInfoRecord) {
+      const syntheticPdf = await buildEmployeeInformationPdf(employeeInfoRecord);
+      formsSource.unshift({
+        form_name: 'employee-information',
+        form_data: syntheticPdf.toString('base64'),
+        updated_at: employeeInfoRecord.updated_at || new Date().toISOString(),
+      } as typeof allForms extends Array<infer T> ? T : never);
+    }
+
+    if (formsSource.length === 0) {
       return NextResponse.json(
         { error: 'No forms found for this user' },
         { status: 404 }
@@ -1650,7 +1707,7 @@ export async function GET(
       (requestedFormNameRaw ? normalizeFormKeyForDedup(requestedFormNameRaw) : null);
 
     // DEBUG: Track all handbook and i9 forms for WI state debugging
-    const debugForms = allForms.filter((f) => {
+    const debugForms = formsSource.filter((f) => {
       const name = (f.form_name || '').toLowerCase();
       return name.includes('handbook') || name.includes('i9') || name.startsWith('wi-');
     });
@@ -1673,7 +1730,7 @@ export async function GET(
     const skippedEmpty: string[] = [];
     const skippedDuplicates: string[] = [];
 
-    for (const form of allForms) {
+    for (const form of formsSource) {
       const formKey = form.form_name || 'unknown';
       const customForm = resolveCustomForm(formKey);
       const isCustomForm = !!customForm;
@@ -1791,14 +1848,7 @@ export async function GET(
       (targetProfile as any)?.last_name
     );
 
-    // Fetch date_of_birth from employee_information for birthdate field normalization
-    const { data: employeeInfo } = await supabaseAdmin
-      .from('employee_information')
-      .select('date_of_birth')
-      .eq('user_id', userId)
-      .maybeSingle();
-
-    const employeeDateOfBirth = employeeInfo?.date_of_birth || null;
+    const employeeDateOfBirth = employeeInfoRecord?.date_of_birth || null;
 
     // Fetch the user's assigned home venue name for stamping on home-venue-assignment PDFs
     const { data: venueAssignment } = await supabaseAdmin
@@ -2020,17 +2070,10 @@ export async function GET(
         const normalizedFormKey = customForm?.dedupeKey || normalizeFormKey(form.form_name || '');
         const isNoticeToEmployee = normalizedFormKey === 'notice-to-employee';
 
-        const base64Data = toBase64(form.form_data);
-        if (!base64Data) {
-          console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
-          logElapsed(`Skipped empty form ${form.form_name || 'unknown'}`, formProcessStart);
-          continue;
-        }
-
-        const pdfBytes = Buffer.from(base64Data, 'base64');
-        const formPdf = await PDFDocument.load(pdfBytes);
-
         const normalizedFormName = normalizedFormKey;
+        const isEmployeeInformationForm =
+          normalizedFormName === 'employee-information' ||
+          isEmployeeInformationVirtualForm(customForm?.storagePath);
         const formNameLower = (form.form_name || '').toLowerCase();
         const isCaliforniaTempEmploymentAgreement =
           normalizedFormName === 'temp-employment-agreement' &&
@@ -2049,6 +2092,25 @@ export async function GET(
           signatureForForm = legacySignature;
           signatureSourceForm = 'legacy-background-check';
         }
+
+        const base64Data =
+          isEmployeeInformationForm && employeeInfoRecord
+            ? (
+                await buildEmployeeInformationPdf(employeeInfoRecord, {
+                  externalSignatureData: signatureForForm?.signature_data || null,
+                  externalSignatureType: signatureForForm?.signature_type || null,
+                })
+              ).toString('base64')
+            : toBase64(form.form_data);
+
+        if (!base64Data) {
+          console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
+          logElapsed(`Skipped empty form ${form.form_name || 'unknown'}`, formProcessStart);
+          continue;
+        }
+
+        const pdfBytes = Buffer.from(base64Data, 'base64');
+        const formPdf = await PDFDocument.load(pdfBytes);
 
         let noticeSignatureDateFont: PDFFont | null = null;
         if (isNoticeToEmployee) {

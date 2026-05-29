@@ -116,6 +116,10 @@ const EMPLOYEE_INFO_STORAGE_KEY = 'nv-employee-information';
 
 function EmployeeInformationNVForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<EmployeeInfoState>({
     firstName: '',
@@ -177,7 +181,7 @@ function EmployeeInformationNVForm() {
     const updatedForm = { ...form, startDate: getTodayDate() };
     try {
       // Save to localStorage as backup
-      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
+      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(updatedForm));
 
       // Save to database with encrypted SSN
       const { data: { session } } = await supabase.auth.getSession();
@@ -193,7 +197,11 @@ function EmployeeInformationNVForm() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${session.access_token}`
         },
-        body: JSON.stringify(form)
+        body: JSON.stringify({
+          ...updatedForm,
+          customFormId: customFormId || undefined,
+          targetUserId: targetUserId || undefined,
+        })
       });
 
       if (!response.ok) {
@@ -218,12 +226,12 @@ function EmployeeInformationNVForm() {
   const handleContinue = async () => {
     const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-nv/form-viewer?form=attestation');
+      router.push(returnTo || '/payroll-packet-nv/form-viewer?form=attestation');
     }
   };
 
   const handleBack = () => {
-    router.push('/payroll-packet-nv/form-viewer?form=time-of-hire');
+    router.push(returnTo || '/payroll-packet-nv/form-viewer?form=time-of-hire');
   };
 
   const inputStyle = {
