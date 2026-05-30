@@ -3529,7 +3529,7 @@ export default function WorkerProfilePage() {
                       <option value="">Select a document…</option>
                       {pdfForms.length > 0 && (
                         <optgroup label="Onboarding Forms">
-                          {pdfForms.map((form) => (
+                          {Array.from(new Map(pdfForms.map((f) => [f.display_name, f])).values()).map((form) => (
                             <option key={form.form_name} value={form.display_name}>
                               {form.display_name}
                             </option>
@@ -3540,15 +3540,17 @@ export default function WorkerProfilePage() {
                         pdfForms.some((p) => matchesCustomFormSubmission(p, form))
                       ).length > 0 && (
                         <optgroup label="Custom Forms">
-                          {customFormsList
-                            .filter((form) =>
-                              pdfForms.some((p) => matchesCustomFormSubmission(p, form))
-                            )
-                            .map((form) => (
-                              <option key={form.id} value={form.title}>
-                                {form.title}
-                              </option>
-                            ))}
+                          {Array.from(
+                            new Map(
+                              customFormsList
+                                .filter((form) => pdfForms.some((p) => matchesCustomFormSubmission(p, form)))
+                                .map((form) => [form.title, form])
+                            ).values()
+                          ).map((form) => (
+                            <option key={form.id} value={form.title}>
+                              {form.title}
+                            </option>
+                          ))}
                         </optgroup>
                       )}
                     </select>
