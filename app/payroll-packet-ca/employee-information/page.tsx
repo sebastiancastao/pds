@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, MouseEvent, TouchEvent } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
@@ -39,7 +39,7 @@ const initialFormData = {
   signature: '',
 };
 
-export default function EmployeeInformationPage() {
+function EmployeeInformationPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const customFormId = searchParams.get('customFormId')?.trim() || '';
@@ -698,5 +698,13 @@ export default function EmployeeInformationPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function EmployeeInformationPageWrapper() {
+  return (
+    <Suspense>
+      <EmployeeInformationPage />
+    </Suspense>
   );
 }
