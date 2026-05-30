@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import * as XLSX from 'xlsx';
@@ -54,21 +54,46 @@ type LatestFormEdit = {
   editorRole: string | null;
 };
 
+type UserRoleRow = Pick<User, "role">;
+
 type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
+type HelpdeskTicketStatus  = "open" | "in_progress" | "resolved" | "closed";
 
 type HelpdeskTicket = {
   id: string;
   ticketNumber: string;
   ticketDate: string;
   urgency: HelpdeskTicketUrgency;
+  status: HelpdeskTicketStatus | undefined;
   description: string;
   createdAt: string;
-  createdBy: string;
-  createdByEmail: string;
   createdByName: string;
+  createdByEmail: string;
 };
 
-type UserRoleRow = Pick<User, "role">;
+function getUrgencyStyles(urgency: HelpdeskTicketUrgency) {
+  switch (urgency) {
+    case "critical": return { backgroundColor: "#fee2e2", color: "#b91c1c" };
+    case "high":     return { backgroundColor: "#ffedd5", color: "#c2410c" };
+    case "medium":   return { backgroundColor: "#fef3c7", color: "#92400e" };
+    default:         return { backgroundColor: "#dcfce7", color: "#15803d" };
+  }
+}
+
+function getStatusStyles(status: HelpdeskTicketStatus | undefined | null) {
+  switch (status) {
+    case "open":        return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+    case "in_progress": return { backgroundColor: "#fef3c7", color: "#92400e" };
+    case "resolved":    return { backgroundColor: "#dcfce7", color: "#15803d" };
+    case "closed":      return { backgroundColor: "#f3f4f6", color: "#6b7280" };
+    default:            return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+  }
+}
+
+function formatStatus(status: HelpdeskTicketStatus | undefined | null) {
+  if (!status) return "Open";
+  return status === "in_progress" ? "In Progress" : status.charAt(0).toUpperCase() + status.slice(1);
+}
 
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
@@ -88,12 +113,6 @@ function formatActionLabel(action?: string | null) {
   return action.charAt(0).toUpperCase() + action.slice(1);
 }
 
-function getTodayInputValue() {
-  const today = new Date();
-  today.setMinutes(today.getMinutes() - today.getTimezoneOffset());
-  return today.toISOString().slice(0, 10);
-}
-
 function formatDate(value?: string | null) {
   if (!value) return "-";
   const [year, month, day] = value.split("-").map(Number);
@@ -107,19 +126,6 @@ function formatDate(value?: string | null) {
     day: "numeric",
     year: "numeric",
   });
-}
-
-function getUrgencyStyles(urgency: HelpdeskTicketUrgency) {
-  switch (urgency) {
-    case "critical":
-      return { backgroundColor: "#fee2e2", color: "#b91c1c" };
-    case "high":
-      return { backgroundColor: "#ffedd5", color: "#c2410c" };
-    case "medium":
-      return { backgroundColor: "#fef3c7", color: "#92400e" };
-    default:
-      return { backgroundColor: "#dcfce7", color: "#15803d" };
-  }
 }
 
 export default function HREmployeesPage() {
@@ -139,15 +145,6 @@ export default function HREmployeesPage() {
   const [recentFormEdits, setRecentFormEdits] = useState<LatestFormEdit[]>([]);
   const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
   const [ticketsError, setTicketsError] = useState("");
-  const [ticketSuccess, setTicketSuccess] = useState("");
-  const [creatingTicket, setCreatingTicket] = useState(false);
-  const [isHelpdeskModalOpen, setIsHelpdeskModalOpen] = useState(false);
-  const [ticketForm, setTicketForm] = useState({
-    ticketDate: getTodayInputValue(),
-    urgency: "medium" as HelpdeskTicketUrgency,
-    description: "",
-  });
-
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -204,25 +201,6 @@ export default function HREmployeesPage() {
     }
   }, [searchTerm, users]);
 
-  useEffect(() => {
-    if (!isHelpdeskModalOpen) return;
-
-    const previousOverflow = document.body.style.overflow;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setIsHelpdeskModalOpen(false);
-      }
-    };
-
-    document.body.style.overflow = "hidden";
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [isHelpdeskModalOpen]);
-
   const loadUsers = async () => {
     setLoading(true);
     setError("");
@@ -237,37 +215,23 @@ export default function HREmployeesPage() {
       const [usersResponse, editsResponse, ticketsResponse] = await Promise.all([
         fetch('/api/users/all', {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         }),
         fetch('/api/hr/employees/form-edits', {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         }),
-        fetch('/api/helpdesk-tickets?scope=all', {
+        fetch('/api/hr/helpdesk-tickets?scope=all', {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         }),
       ]);
 
       const usersData = await usersResponse.json();
       let editsData: any = null;
       let ticketsData: any = null;
-      try {
-        editsData = await editsResponse.json();
-      } catch {
-        editsData = null;
-      }
-      try {
-        ticketsData = await ticketsResponse.json();
-      } catch {
-        ticketsData = null;
-      }
+      try { editsData = await editsResponse.json(); } catch { editsData = null; }
+      try { ticketsData = await ticketsResponse.json(); } catch { ticketsData = null; }
 
       if (!usersResponse.ok) {
         throw new Error(usersData.error || 'Failed to load users');
@@ -430,56 +394,6 @@ export default function HREmployeesPage() {
     }
   };
 
-  const createHelpdeskTicket = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setTicketsError("");
-    setTicketSuccess("");
-
-    if (!ticketForm.ticketDate) {
-      setTicketsError("Ticket date is required.");
-      return;
-    }
-
-    if (!ticketForm.description.trim()) {
-      setTicketsError("Description is required.");
-      return;
-    }
-
-    setCreatingTicket(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        throw new Error('No session found');
-      }
-
-      const res = await fetch('/api/helpdesk-tickets', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify(ticketForm),
-      });
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to create helpdesk ticket');
-      }
-
-      setHelpdeskTickets((prevTickets) => [data.ticket, ...prevTickets].slice(0, 25));
-      setTicketForm((current) => ({
-        ...current,
-        description: "",
-      }));
-      setTicketSuccess(`Ticket ${data.ticket.ticketNumber} created successfully.`);
-    } catch (err: any) {
-      console.error('[HR-EMPLOYEES] Error creating helpdesk ticket:', err);
-      setTicketsError(err.message || 'Failed to create helpdesk ticket');
-    } finally {
-      setCreatingTicket(false);
-    }
-  };
-
   const hasOnboardingSubmission = (user: User) =>
     user.has_vendor_onboarding_record || !!user.onboarding_completed_at;
 
@@ -573,21 +487,19 @@ export default function HREmployeesPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 'bold' }}>Employees</h1>
         <div style={{ display: 'flex', gap: '1rem' }}>
-          <button
-            type="button"
-            onClick={() => setIsHelpdeskModalOpen(true)}
+          <Link
+            href="/hr/helpdesk"
             style={{
               padding: '0.5rem 1rem',
               backgroundColor: '#2563eb',
               color: 'white',
-              border: 'none',
               borderRadius: '0.375rem',
-              fontWeight: '500',
-              cursor: 'pointer'
+              textDecoration: 'none',
+              fontWeight: '500'
             }}
           >
             Helpdesk
-          </button>
+          </Link>
           <button
             onClick={exportToExcel}
             disabled={loading || filteredUsers.length === 0}
@@ -634,273 +546,127 @@ export default function HREmployeesPage() {
         </div>
       </div>
 
-      {/* Helpdesk Tickets */}
-      {isHelpdeskModalOpen && (
-      <div
-        onClick={() => setIsHelpdeskModalOpen(false)}
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 50,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '1rem',
-          backgroundColor: 'rgba(15, 23, 42, 0.45)',
-          backdropFilter: 'blur(4px)'
-        }}
-      >
-      <div
-        id="helpdesk-tickets"
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: '100%',
-          maxWidth: '1100px',
-          maxHeight: '85vh',
-          overflowY: 'auto',
-          border: '1px solid #e5e7eb',
-          borderRadius: '0.75rem',
-          padding: '1.25rem',
-          backgroundColor: '#ffffff',
-          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)'
-        }}>
+      {/* Recent Helpdesk Tickets */}
+      <div style={{
+        backgroundColor: '#ffffff',
+        border: '1px solid #e5e7eb',
+        borderRadius: '0.75rem',
+        marginBottom: '2rem',
+        overflow: 'hidden',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+      }}>
         <div style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          gap: '1rem',
-          flexWrap: 'wrap',
-          marginBottom: '1rem'
+          padding: '1rem 1.25rem',
+          borderBottom: '1px solid #e5e7eb',
+          backgroundColor: '#f9fafb',
         }}>
           <div>
-            <h2 style={{ margin: 0, fontSize: '1.25rem', fontWeight: '600', color: '#111827' }}>
-              Helpdesk Tickets
-            </h2>
-            <p style={{ margin: '0.35rem 0 0', color: '#6b7280', fontSize: '0.95rem' }}>
-              Create internal helpdesk tickets with urgency, date, and a clear description.
-            </p>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            <span style={{ color: '#6b7280', fontSize: '0.875rem' }}>
-              {helpdeskTickets.length} recent ticket{helpdeskTickets.length === 1 ? '' : 's'}
+            <span style={{ fontWeight: '600', fontSize: '0.95rem', color: '#111827' }}>
+              Recent Helpdesk Tickets
             </span>
-            <button
-              type="button"
-              onClick={() => setIsHelpdeskModalOpen(false)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: '36px',
-                height: '36px',
-                borderRadius: '0.75rem',
-                border: '1px solid #e5e7eb',
-                backgroundColor: '#ffffff',
-                color: '#6b7280',
-                cursor: 'pointer'
-              }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
+            {helpdeskTickets.length > 0 && (
+              <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', color: '#6b7280' }}>
+                ({helpdeskTickets.length})
+              </span>
+            )}
           </div>
+          <Link
+            href="/hr/helpdesk"
+            style={{ fontSize: '0.85rem', color: '#2563eb', textDecoration: 'none', fontWeight: '500' }}
+          >
+            Manage all tickets →
+          </Link>
         </div>
 
         {ticketsError && (
-          <div style={{
-            padding: '0.875rem 1rem',
-            backgroundColor: '#fee2e2',
-            color: '#b91c1c',
-            borderRadius: '0.5rem',
-            marginBottom: '1rem'
-          }}>
+          <div style={{ padding: '0.75rem 1.25rem', backgroundColor: '#fee2e2', color: '#b91c1c', fontSize: '0.875rem' }}>
             {ticketsError}
           </div>
         )}
 
-        {ticketSuccess && (
-          <div style={{
-            padding: '0.875rem 1rem',
-            backgroundColor: '#dcfce7',
-            color: '#166534',
-            borderRadius: '0.5rem',
-            marginBottom: '1rem'
-          }}>
-            {ticketSuccess}
+        {!ticketsError && helpdeskTickets.length === 0 ? (
+          <div style={{ padding: '1.5rem 1.25rem', color: '#6b7280', fontSize: '0.875rem' }}>
+            No helpdesk tickets yet.
           </div>
-        )}
-
-        <form onSubmit={createHelpdeskTicket}>
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: '1rem',
-            alignItems: 'end',
-            marginBottom: '1.25rem'
-          }}>
-            <label style={{ display: 'grid', gap: '0.4rem', color: '#374151', fontSize: '0.875rem', fontWeight: '500' }}>
-              Date
-              <input
-                type="date"
-                value={ticketForm.ticketDate}
-                onChange={(e) => setTicketForm((current) => ({ ...current, ticketDate: e.target.value }))}
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '0.5rem',
-                  fontSize: '0.95rem'
-                }}
-              />
-            </label>
-
-            <label style={{ display: 'grid', gap: '0.4rem', color: '#374151', fontSize: '0.875rem', fontWeight: '500' }}>
-              Urgency
-              <select
-                value={ticketForm.urgency}
-                onChange={(e) => setTicketForm((current) => ({
-                  ...current,
-                  urgency: e.target.value as HelpdeskTicketUrgency,
-                }))}
-                style={{
-                  width: '100%',
-                  padding: '0.75rem',
-                  border: '1px solid #d1d5db',
-                  borderRadius: '0.5rem',
-                  fontSize: '0.95rem',
-                  backgroundColor: '#ffffff'
-                }}
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="critical">Critical</option>
-              </select>
-            </label>
-
-            <button
-              type="submit"
-              disabled={creatingTicket}
-              style={{
-                padding: '0.75rem 1rem',
-                backgroundColor: '#1d4ed8',
-                color: 'white',
-                border: 'none',
-                borderRadius: '0.5rem',
-                cursor: creatingTicket ? 'not-allowed' : 'pointer',
-                fontWeight: '600',
-                fontSize: '0.95rem',
-                opacity: creatingTicket ? 0.6 : 1,
-                minHeight: '46px'
-              }}
-            >
-              {creatingTicket ? 'Creating...' : 'Create Ticket'}
-            </button>
-          </div>
-
-          <div style={{
-            marginBottom: '1rem',
-            padding: '0.75rem 1rem',
-            borderRadius: '0.5rem',
-            backgroundColor: '#eff6ff',
-            color: '#1d4ed8',
-            fontSize: '0.875rem'
-          }}>
-            Ticket numbers are generated automatically when the ticket is created.
-          </div>
-
-          <label style={{ display: 'grid', gap: '0.4rem', color: '#374151', fontSize: '0.875rem', fontWeight: '500', marginBottom: '1.25rem' }}>
-            Description
-            <textarea
-              value={ticketForm.description}
-              onChange={(e) => setTicketForm((current) => ({ ...current, description: e.target.value }))}
-              placeholder="Describe what the user needs help with..."
-              rows={4}
-              style={{
-                width: '100%',
-                padding: '0.75rem',
-                border: '1px solid #d1d5db',
-                borderRadius: '0.5rem',
-                fontSize: '0.95rem',
-                resize: 'vertical'
-              }}
-            />
-          </label>
-        </form>
-
-        {helpdeskTickets.length === 0 ? (
-          <p style={{ margin: 0, color: '#6b7280' }}>No helpdesk tickets created yet.</p>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead>
-                <tr style={{ backgroundColor: '#f9fafb' }}>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                    Ticket
-                  </th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                    Date
-                  </th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                    Urgency
-                  </th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                    Created By
-                  </th>
-                  <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
-                    Logged At
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {helpdeskTickets.map((ticket) => {
-                  const urgencyStyles = getUrgencyStyles(ticket.urgency);
+          <div>
+            {helpdeskTickets.slice(0, 8).map((ticket, i) => {
+              const urgencyStyle = getUrgencyStyles(ticket.urgency);
+              const statusStyle  = getStatusStyles(ticket.status);
+              const statusLabel  = formatStatus(ticket.status);
+              return (
+                <div key={ticket.id} style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '1rem',
+                  padding: '0.875rem 1.25rem',
+                  borderBottom: i < Math.min(helpdeskTickets.length, 8) - 1 ? '1px solid #f3f4f6' : 'none',
+                  backgroundColor: i % 2 === 0 ? '#ffffff' : '#fafafa',
+                }}>
+                  {/* Left: ticket number + description */}
+                  <div style={{ flex: '1 1 0', minWidth: 0 }}>
+                    <div style={{ fontWeight: '600', fontSize: '0.875rem', color: '#111827', marginBottom: '0.25rem' }}>
+                      {ticket.ticketNumber}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#4b5563', lineHeight: 1.4 }}>
+                      {ticket.description.length > 100
+                        ? ticket.description.slice(0, 100) + '…'
+                        : ticket.description}
+                    </div>
+                  </div>
 
-                  return (
-                    <tr key={ticket.id} style={{ borderBottom: '1px solid #e5e7eb' }}>
-                      <td style={{ padding: '0.75rem', fontWeight: '600', color: '#111827' }}>
-                        <div>{ticket.ticketNumber}</div>
-                        <div style={{ marginTop: '0.35rem', fontWeight: '400', color: '#4b5563', fontSize: '0.875rem', lineHeight: 1.5 }}>
-                          {ticket.description}
-                        </div>
-                      </td>
-                      <td style={{ padding: '0.75rem', color: '#374151' }}>
-                        {formatDate(ticket.ticketDate)}
-                      </td>
-                      <td style={{ padding: '0.75rem' }}>
-                        <span style={{
-                          padding: '0.25rem 0.5rem',
-                          borderRadius: '9999px',
-                          fontSize: '0.875rem',
-                          fontWeight: '600',
-                          textTransform: 'capitalize',
-                          ...urgencyStyles
-                        }}>
-                          {ticket.urgency}
-                        </span>
-                      </td>
-                      <td style={{ padding: '0.75rem' }}>
-                        <div style={{ fontWeight: '500', color: '#111827' }}>
-                          {ticket.createdByName}
-                        </div>
-                        <div style={{ color: '#6b7280', fontSize: '0.875rem' }}>
-                          {ticket.createdByEmail}
-                        </div>
-                      </td>
-                      <td style={{ padding: '0.75rem', color: '#374151' }}>
-                        {formatDateTime(ticket.createdAt)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  {/* Center: badges + date */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      {/* Urgency chip */}
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: '9999px',
+                        fontSize: '0.72rem',
+                        fontWeight: '700',
+                        textTransform: 'capitalize',
+                        backgroundColor: urgencyStyle.backgroundColor,
+                        color: urgencyStyle.color,
+                      }}>
+                        {ticket.urgency}
+                      </span>
+                      {/* Status chip */}
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: '9999px',
+                        fontSize: '0.72rem',
+                        fontWeight: '700',
+                        backgroundColor: statusStyle.backgroundColor,
+                        color: statusStyle.color,
+                      }}>
+                        {statusLabel}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                      {formatDate(ticket.ticketDate)}
+                    </div>
+                  </div>
+
+                  {/* Right: submitter */}
+                  <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '120px' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: '500', color: '#111827' }}>
+                      {ticket.createdByName}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                      {ticket.createdByEmail}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
-      </div>
-      )}
 
       {/* Search Bar */}
       <div style={{ marginBottom: '1.5rem' }}>

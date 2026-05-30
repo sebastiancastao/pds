@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { createClient } from '@supabase/supabase-js';
 import { safeDecrypt } from '@/lib/encryption';
+import { sendHelpdeskTicketNotification } from '@/lib/email';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,6 +15,7 @@ const supabaseAdmin = createClient(
 
 const ALLOWED_ROLES = new Set(['exec', 'admin', 'hr', 'hr_admin']);
 const ALLOWED_URGENCIES = new Set(['low', 'medium', 'high', 'critical']);
+const ALLOWED_STATUSES = new Set(['open', 'in_progress', 'resolved', 'closed']);
 const MAX_TICKETS = 25;
 
 function dec(value: unknown): string {
@@ -141,6 +143,7 @@ async function decorateTickets(tickets: any[]) {
       ticketNumber: ticket.ticket_number,
       ticketDate: ticket.ticket_date,
       urgency: ticket.urgency,
+      status: ticket.status ?? 'open',
       description: ticket.description,
       createdAt: ticket.created_at,
       createdBy,
@@ -165,7 +168,7 @@ export async function GET(req: NextRequest) {
 
     let query = supabaseAdmin
       .from('helpdesk_tickets')
-      .select('id, ticket_number, ticket_date, urgency, description, created_at, created_by')
+      .select('id, ticket_number, ticket_date, urgency, status, description, created_at, created_by')
       .order('ticket_date', { ascending: false })
       .order('created_at', { ascending: false })
       .limit(MAX_TICKETS);
@@ -224,7 +227,7 @@ export async function POST(req: NextRequest) {
         description,
         created_by: authResult.authedUser.id,
       })
-      .select('id, ticket_number, ticket_date, urgency, description, created_at, created_by')
+      .select('id, ticket_number, ticket_date, urgency, status, description, created_at, created_by')
       .single();
 
     if (error) {
@@ -240,9 +243,66 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Ticket was created but could not be loaded' }, { status: 500 });
     }
 
+    // Fire-and-forget email — don't block the response on email delivery
+    sendHelpdeskTicketNotification({
+      ticketNumber: ticket.ticketNumber,
+      ticketDate: ticket.ticketDate,
+      urgency: ticket.urgency,
+      description: ticket.description,
+      submitterName: ticket.createdByName,
+      submitterEmail: ticket.createdByEmail,
+      submittedAt: new Date(ticket.createdAt).toLocaleString('en-US', { timeZone: 'America/New_York' }),
+    }).catch((err) => console.error('[HR-HELPDESK-TICKETS] email notification failed:', err));
+
     return NextResponse.json({ ticket }, { status: 201 });
   } catch (err: any) {
     console.error('[HR-HELPDESK-TICKETS][POST]', err);
+    return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const authResult = await requireAuthenticatedUser(req);
+    if ('errorResponse' in authResult) {
+      return authResult.errorResponse;
+    }
+
+    if (!authResult.isPrivileged) {
+      return NextResponse.json({ error: 'Insufficient permissions' }, { status: 403 });
+    }
+
+    const body = await req.json();
+    const ticketId = String(body.id || '').trim();
+    const status = String(body.status || '').trim().toLowerCase();
+
+    if (!ticketId) {
+      return NextResponse.json({ error: 'Ticket ID is required' }, { status: 400 });
+    }
+
+    if (!ALLOWED_STATUSES.has(status)) {
+      return NextResponse.json({ error: 'Status must be open, in_progress, resolved, or closed' }, { status: 400 });
+    }
+
+    const { data: updatedTicket, error } = await supabaseAdmin
+      .from('helpdesk_tickets')
+      .update({ status })
+      .eq('id', ticketId)
+      .select('id, ticket_number, ticket_date, urgency, status, description, created_at, created_by')
+      .single();
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    if (!updatedTicket) {
+      return NextResponse.json({ error: 'Ticket not found' }, { status: 404 });
+    }
+
+    const [ticket] = await decorateTickets([updatedTicket]);
+    return NextResponse.json({ ticket }, { status: 200 });
+  } catch (err: any) {
+    console.error('[HR-HELPDESK-TICKETS][PATCH]', err);
     return NextResponse.json({ error: err.message || 'Internal server error' }, { status: 500 });
   }
 }

@@ -742,6 +742,18 @@ export default function AdminPdfFormsPage() {
       await fetchFormAssignees(sendModalForm.id, session.access_token);
       await loadForms(session.access_token);
       setVenueFormsRefreshKey(k => k + 1);
+
+      // Update any pending data edition requests for the sent users to 'sent'
+      const patchRes = await fetch('/api/data-edition-requests', {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ userIds, status: 'sent', formTitle: sendModalForm.title }),
+      });
+      const patchJson = await patchRes.json().catch(() => null);
+      console.log('PATCH data-edition-requests response:', patchJson);
     } catch (err: any) {
       setSendError(err.message);
     } finally {
@@ -850,7 +862,7 @@ export default function AdminPdfFormsPage() {
     }
     setSelectedPreset(preset.code);
     setSelectedStatePreset(null);
-    setTitle(`${preset.code}-${currentYear}`);
+    setTitle(getDeduplicatedTitle(`${preset.code}-${currentYear}`));
     setRequiresSignature(preset.requiresSignature);
     setTargetState('');
     setTargetRegion('');
@@ -874,7 +886,7 @@ export default function AdminPdfFormsPage() {
     }
     setSelectedStatePreset(preset.code);
     setSelectedPreset(null);
-    setTitle(`${preset.code}-${currentYear}`);
+    setTitle(getDeduplicatedTitle(`${preset.code}-${currentYear}`));
     setRequiresSignature(preset.requiresSignature);
     setAllowDateInput(preset.allowDateInput);
     setAllowPrintName(preset.allowPrintName);
@@ -884,14 +896,29 @@ export default function AdminPdfFormsPage() {
     setSuccessMsg('');
   };
 
-  const isDuplicateTitle = () =>
-    forms.some(f => f.title.trim().toLowerCase() === title.trim().toLowerCase());
+  const isDuplicateTitle = (t = title) =>
+    forms.some(f => f.title.trim().toLowerCase() === t.trim().toLowerCase());
+
+  const getDeduplicatedTitle = (baseTitle: string): string => {
+    const trimmed = baseTitle.trim();
+    if (!forms.some(f => f.title.trim().toLowerCase() === trimmed.toLowerCase())) return trimmed;
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    return `${trimmed}-${mm}-${dd}`;
+  };
 
   const handleRegisterStateForm = async () => {
     setError('');
     setSuccessMsg('');
     if (!title.trim()) { setError('Please enter a form title.'); return; }
-    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
+    let effectiveTitle = title.trim();
+    if (isDuplicateTitle(effectiveTitle)) {
+      const deduped = getDeduplicatedTitle(effectiveTitle);
+      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
+      effectiveTitle = deduped;
+      setTitle(effectiveTitle);
+    }
     const preset = STATE_FORM_PRESETS.find(p => p.code === selectedStatePreset);
     if (!preset) { setError('No state form selected.'); return; }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
@@ -905,7 +932,7 @@ export default function AdminPdfFormsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
-          title: title.trim(),
+          title: effectiveTitle,
           requiresSignature,
           targetState,
           targetRegion: targetRegion || null,
@@ -933,7 +960,7 @@ export default function AdminPdfFormsPage() {
       }
 
       const venueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : stateNote;
-      setSuccessMsg(`"${title}" registered successfully${venueNote}.`);
+      setSuccessMsg(`"${effectiveTitle}" registered successfully${venueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setTargetState('');
@@ -965,7 +992,7 @@ export default function AdminPdfFormsPage() {
     setSelectedPacketPreset(preset.code);
     setSelectedPreset(null);
     setSelectedStatePreset(null);
-    setTitle(`${preset.code}-${currentYear}`);
+    setTitle(getDeduplicatedTitle(`${preset.code}-${currentYear}`));
     setRequiresSignature(preset.requiresSignature);
     setAllowDateInput(preset.allowDateInput);
     setAllowPrintName(preset.allowPrintName);
@@ -979,7 +1006,13 @@ export default function AdminPdfFormsPage() {
     setError('');
     setSuccessMsg('');
     if (!title.trim()) { setError('Please enter a form title.'); return; }
-    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
+    let effectiveTitle = title.trim();
+    if (isDuplicateTitle(effectiveTitle)) {
+      const deduped = getDeduplicatedTitle(effectiveTitle);
+      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
+      effectiveTitle = deduped;
+      setTitle(effectiveTitle);
+    }
     const preset = PACKET_FORM_PRESETS.find(p => p.code === selectedPacketPreset);
     if (!preset) { setError('No packet form selected.'); return; }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
@@ -993,7 +1026,7 @@ export default function AdminPdfFormsPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
         body: JSON.stringify({
-          title: title.trim(),
+          title: effectiveTitle,
           requiresSignature,
           allowDateInput,
           allowPrintName,
@@ -1025,7 +1058,7 @@ export default function AdminPdfFormsPage() {
       }
 
       const packetVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : packetNote;
-      setSuccessMsg(`"${title}" registered successfully${packetVenueNote}.`);
+      setSuccessMsg(`"${effectiveTitle}" registered successfully${packetVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -1046,11 +1079,13 @@ export default function AdminPdfFormsPage() {
 
   const handleTitleChange = (val: string) => {
     setTitle(val);
-    const match = FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
+    const matchesPresetBase = (base: string) =>
+      val === base || (val.startsWith(base + '-') && /^\d{2}-\d{2}$/.test(val.slice(base.length + 1)));
+    const match = FORM_PRESETS.find(p => matchesPresetBase(`${p.code}-${currentYear}`));
     setSelectedPreset(match?.code ?? null);
-    const stateMatch = STATE_FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
+    const stateMatch = STATE_FORM_PRESETS.find(p => matchesPresetBase(`${p.code}-${currentYear}`));
     setSelectedStatePreset(stateMatch?.code ?? null);
-    const packetMatch = PACKET_FORM_PRESETS.find(p => `${p.code}-${currentYear}` === val);
+    const packetMatch = PACKET_FORM_PRESETS.find(p => matchesPresetBase(`${p.code}-${currentYear}`));
     setSelectedPacketPreset(packetMatch?.code ?? null);
   };
 
@@ -1062,7 +1097,13 @@ export default function AdminPdfFormsPage() {
     const file = fileInputRef.current?.files?.[0];
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
-    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
+    let effectiveTitle = title.trim();
+    if (isDuplicateTitle(effectiveTitle)) {
+      const deduped = getDeduplicatedTitle(effectiveTitle);
+      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
+      effectiveTitle = deduped;
+      setTitle(effectiveTitle);
+    }
     if (pageVenueId && pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first, or clear the venue restriction.'); return; }
 
     setUploading(true);
@@ -1072,7 +1113,7 @@ export default function AdminPdfFormsPage() {
 
       const fd = new FormData();
       fd.append('file', file);
-      fd.append('title', title.trim());
+      fd.append('title', effectiveTitle);
       fd.append('requiresSignature', String(requiresSignature));
       fd.append('allowDateInput', String(allowDateInput));
       fd.append('allowPrintName', String(allowPrintName));
@@ -1108,7 +1149,7 @@ export default function AdminPdfFormsPage() {
       }
 
       const uploadVenueNote = pageVenueId ? ` (restricted to ${pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue'})` : uploadNote;
-      setSuccessMsg(`"${title}" uploaded successfully${uploadVenueNote}.`);
+      setSuccessMsg(`"${effectiveTitle}" uploaded successfully${uploadVenueNote}.`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);
@@ -1136,7 +1177,13 @@ export default function AdminPdfFormsPage() {
     const file = homeVenueFileRef.current?.files?.[0];
     if (!file) { setError('Please select a PDF file.'); return; }
     if (!title.trim()) { setError('Please enter a form title.'); return; }
-    if (isDuplicateTitle()) { setDuplicateTitleModal(true); return; }
+    let effectiveTitle = title.trim();
+    if (isDuplicateTitle(effectiveTitle)) {
+      const deduped = getDeduplicatedTitle(effectiveTitle);
+      if (isDuplicateTitle(deduped)) { setDuplicateTitleModal(true); return; }
+      effectiveTitle = deduped;
+      setTitle(effectiveTitle);
+    }
     if (!pageVenueId) { setError('Please select a venue.'); return; }
     if (pageVenueUsers.length === 0) { setError('No users are assigned to this venue. Assign users to the venue first.'); return; }
 
@@ -1147,7 +1194,7 @@ export default function AdminPdfFormsPage() {
 
       const fd = new FormData();
       fd.append('file', file);
-      fd.append('title', title.trim());
+      fd.append('title', effectiveTitle);
       fd.append('requiresSignature', String(requiresSignature));
       fd.append('allowDateInput', String(allowDateInput));
       fd.append('allowPrintName', String(allowPrintName));
@@ -1165,7 +1212,7 @@ export default function AdminPdfFormsPage() {
       if (!res.ok) throw new Error(json.details || json.error || 'Upload failed');
 
       const venueName = pageVenues.find(v => v.id === pageVenueId)?.venue_name || 'venue';
-      setSuccessMsg(`"${title}" uploaded successfully (restricted to ${venueName}).`);
+      setSuccessMsg(`"${effectiveTitle}" uploaded successfully (restricted to ${venueName}).`);
       setTitle('');
       setRequiresSignature(false);
       setAllowDateInput(false);

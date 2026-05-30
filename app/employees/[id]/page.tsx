@@ -209,11 +209,14 @@ type SubmittedAvailabilityDay = {
 
 type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
 
+type HelpdeskTicketStatus = "open" | "in_progress" | "resolved" | "closed";
+
 type HelpdeskTicket = {
   id: string;
   ticketNumber: string;
   ticketDate: string;
   urgency: HelpdeskTicketUrgency;
+  status: HelpdeskTicketStatus | undefined;
   description: string;
   createdAt: string;
   createdBy: string;
@@ -320,6 +323,21 @@ function getHelpdeskUrgencyClasses(urgency: HelpdeskTicketUrgency) {
     default:
       return "bg-emerald-50 text-emerald-700 border-emerald-200";
   }
+}
+
+function getHelpdeskStatusClasses(status: HelpdeskTicketStatus | undefined) {
+  switch (status) {
+    case "in_progress": return "bg-amber-50 text-amber-700 border-amber-200";
+    case "resolved":    return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "closed":      return "bg-gray-100 text-gray-600 border-gray-200";
+    default:            return "bg-blue-50 text-blue-700 border-blue-200";
+  }
+}
+
+function formatHelpdeskStatus(status: HelpdeskTicketStatus | undefined) {
+  if (!status || status === "open") return "Open";
+  if (status === "in_progress") return "In Progress";
+  return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 export default function WorkerProfilePage() {
@@ -536,7 +554,7 @@ export default function WorkerProfilePage() {
     document_name: string;
     document_type: string;
     reason: string | null;
-    status: "pending" | "approved" | "rejected";
+    status: "pending" | "sent" | "approved" | "rejected";
     review_notes: string | null;
     reviewed_at: string | null;
     created_at: string;
@@ -955,7 +973,7 @@ export default function WorkerProfilePage() {
       setHelpdeskTicketError("");
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const res = await fetch('/api/helpdesk-tickets', {
+        const res = await fetch('/api/hr/helpdesk-tickets', {
           headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
           cache: 'no-store',
         });
@@ -1228,7 +1246,7 @@ export default function WorkerProfilePage() {
     try {
       const { data: { session } } = await supabase.auth.getSession();
 
-      const res = await fetch("/api/helpdesk-tickets", {
+      const res = await fetch("/api/hr/helpdesk-tickets", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -2482,12 +2500,13 @@ export default function WorkerProfilePage() {
                             <div className="min-w-0 flex-1">
                               <div className="flex flex-wrap items-center gap-2">
                                 <p className="text-sm font-semibold text-gray-900">{ticket.ticketNumber}</p>
-                              <span
-                                className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getHelpdeskUrgencyClasses(ticket.urgency)}`}
-                              >
-                                {ticket.urgency}
-                              </span>
-                            </div>
+                                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getHelpdeskUrgencyClasses(ticket.urgency)}`}>
+                                  {ticket.urgency}
+                                </span>
+                                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${getHelpdeskStatusClasses(ticket.status)}`}>
+                                  {formatHelpdeskStatus(ticket.status)}
+                                </span>
+                              </div>
                               <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
                                 <span>{formatEventDate(ticket.ticketDate)}</span>
                                 <span>•</span>
@@ -3606,9 +3625,11 @@ export default function WorkerProfilePage() {
                                   ? 'bg-green-50 text-green-700 border-green-200'
                                   : req.status === 'rejected'
                                   ? 'bg-red-50 text-red-700 border-red-200'
+                                  : req.status === 'sent'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
                                   : 'bg-amber-50 text-amber-700 border-amber-200'
                               }`}>
-                                {req.status === 'approved' ? 'Approved' : req.status === 'rejected' ? 'Rejected' : 'Pending'}
+                                {req.status === 'approved' ? 'Approved' : req.status === 'rejected' ? 'Rejected' : req.status === 'sent' ? 'Form Sent' : 'Pending'}
                               </span>
                               <span className="text-xs text-gray-400">{formatDate(req.created_at)}</span>
                             </div>

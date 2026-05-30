@@ -1069,7 +1069,7 @@ export default function DashboardPage() {
   };
 
   const openDeleteConfirmModal = (event: EventItem) => {
-    if (userRole !== "exec" || deletingEventId) return;
+    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
     setDeleteConfirmEvent(event);
   };
 
@@ -1077,7 +1077,7 @@ export default function DashboardPage() {
     if (!deleteConfirmEvent) return;
 
     const event = deleteConfirmEvent;
-    if (userRole !== "exec" || deletingEventId) return;
+    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
 
     setDeletingEventId(event.id);
     setError("");
