@@ -541,7 +541,6 @@ export default function UserManagementPage() {
             { href: '/reset-user-password',    label: 'Reset Password',    bg: '#f59e0b' },
             { href: '/role-management',         label: 'Role Management',   bg: '#8b5cf6' },
             { href: '/admin/upload-emails',     label: 'Upload Emails',     bg: '#0891b2' },
-            { href: '/admin-email',             label: 'Email Sender',      bg: '#6366f1' },
             { href: '/admin/check-in-monitor',  label: 'Check-In Monitor',  bg: '#0ea5e9' },
             { href: '/employee-id-codes',       label: 'Employee ID Codes', bg: '#14b8a6' },
             { href: '/timesheet-edits',         label: 'Timesheet Edits',   bg: '#334155' },

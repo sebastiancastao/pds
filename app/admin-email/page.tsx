@@ -230,13 +230,21 @@ function AdminEmailPageContent() {
 
       const form = new FormData();
       form.set('audience', audience);
-      if (audience === 'manual') form.set('to', to);
-      if (audience === 'role') form.set('role', targetRole);
-      if (audience === 'region') form.set('region_id', selectedRegion);
+      if (audience === 'manual') {
+        form.set('to', 'service@pdsportal.site');
+        const recipientList = parseEmailList(to);
+        const bccList = parseEmailList(bcc);
+        const mergedBcc = [...new Set([...recipientList, ...bccList])];
+        form.set('bcc', mergedBcc.join(', '));
+      } else {
+        if (audience === 'role') form.set('role', targetRole);
+        if (audience === 'region') form.set('region_id', selectedRegion);
+        form.set('bcc_mode', 'true');
+        if (bcc.trim()) form.set('bcc', bcc);
+      }
       form.set('subject', subject.trim());
       form.set('body', body);
       form.set('bodyFormat', bodyFormat);
-      if (bcc.trim()) form.set('bcc', bcc);
       if (bulkMode) form.set('confirm', 'true');
       for (const file of attachments) {
         form.append('attachments', file, file.name);

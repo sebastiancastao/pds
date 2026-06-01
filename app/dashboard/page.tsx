@@ -1,4 +1,4 @@
-// app/(dashboard)/dashboard/page.tsx
+﻿// app/(dashboard)/dashboard/page.tsx
 "use client";
 
 import Link from "next/link";
@@ -121,8 +121,8 @@ const isScopedManagerRole = (role?: string | null) =>
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [activeTab, setActiveTab] = useState<"events" | "hr">("events");
-  const [hrView, setHrView] = useState<"overview" | "employees" | "leaves">("overview");
+  const [activeTab, setActiveTab] = useState<"events">("events");
+  const [showHelpDeskModal, setShowHelpDeskModal] = useState(false);
 
   // Auth & Access Control
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -131,6 +131,10 @@ export default function DashboardPage() {
   const [userRegionId, setUserRegionId] = useState<string | null>(null);
   const [userCoordinates, setUserCoordinates] = useState<{ lat: number; lng: number } | null>(null);
   const [detectedRegion, setDetectedRegion] = useState<{ id: string; name: string } | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string>("");
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>("");
+  const [currentUserFirstName, setCurrentUserFirstName] = useState<string>("");
+  const [currentUserLastName, setCurrentUserLastName] = useState<string>("");
 
   // Events
   const [events, setEvents] = useState<EventItem[]>([]);
@@ -309,15 +313,24 @@ export default function DashboardPage() {
     return list;
   }, [availableVendors, teamSearchQuery, selectedTeamState, selectedTeamCity]);
 
-  // HR tab state
-  const [employees, setEmployees] = useState<Employee[]>([]);
-  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [departments, setDepartments] = useState<Department[]>([]);
-  const [selectedState, setSelectedState] = useState<string>("all");
-  const [selectedEmployeeRegion, setSelectedEmployeeRegion] = useState<string>("all");
-  const [availableStates, setAvailableStates] = useState<string[]>([]);
-  const [loadingEmployees, setLoadingEmployees] = useState(false);
-  const [employeesError, setEmployeesError] = useState<string>("");
+  // Help Desk state
+  type HelpDeskTicket = {
+    id: string;
+    ticket_number: string;
+    ticket_date: string;
+    urgency: "low" | "medium" | "high" | "critical";
+    status: "open" | "in_progress" | "resolved" | "closed";
+    description: string;
+    created_at: string;
+  };
+  const [ticketDate, setTicketDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [ticketUrgency, setTicketUrgency] = useState("medium");
+  const [ticketDescription, setTicketDescription] = useState("");
+  const [submittingHelpDesk, setSubmittingHelpDesk] = useState(false);
+  const [helpDeskError, setHelpDeskError] = useState("");
+  const [helpDeskSuccess, setHelpDeskSuccess] = useState("");
+  const [helpDeskTickets, setHelpDeskTickets] = useState<HelpDeskTicket[]>([]);
+  const [helpDeskTicketsLoading, setHelpDeskTicketsLoading] = useState(false);
 
   // Helpers
   const toIsoDateTime = (dateStr: string, timeStr?: string | null) => {
@@ -360,58 +373,6 @@ export default function DashboardPage() {
     return "\uD83D\uDCCD";
   };
 
-  // Load employees function - needs to be outside useEffect to be called by handlers
-  const loadEmployees = useCallback(async (stateFilter: string = "all", regionFilter: string = "all") => {
-    setLoadingEmployees(true);
-    setEmployeesError("");
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const params = new URLSearchParams();
-      if (stateFilter !== "all") params.append("state", stateFilter);
-      if (regionFilter !== "all") {
-        params.append("region_id", regionFilter);
-        params.append("geo_filter", "true");
-      }
-      console.log('[DASHBOARD-HR] ð Loading employees with filters:', { stateFilter, regionFilter });
-      const res = await fetch(`/api/employees${params.toString() ? `?${params.toString()}` : ""}`, {
-        method: "GET",
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to load employees");
-      console.log('[DASHBOARD-HR] ð¦ Employees loaded:', {
-        count: data.employees?.length || 0,
-        region: data.region?.name || 'all',
-        geo_filtered: data.geo_filtered
-      });
-      setEmployees(data.employees || []);
-      if (data.stats?.states) setAvailableStates(data.stats.states);
-    } catch (err: any) {
-      console.error('[DASHBOARD-HR] â Error loading employees:', err);
-      setEmployeesError(err.message || "Failed to load employees");
-    }
-    setLoadingEmployees(false);
-  }, []);
-
-  const loadHRMockData = useCallback(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    const mockLeaves: LeaveRequest[] = [
-      { id: "1", employee_id: "4", employee_name: "Emily Davis", leave_type: "vacation", start_date: "2025-11-01", end_date: "2025-11-10", status: "pending", reason: "Family vacation", days: 10 },
-      { id: "2", employee_id: "2", employee_name: "Sarah Johnson", leave_type: "sick", start_date: "2025-10-28", end_date: "2025-10-29", status: "approved", reason: "Medical appointment", days: 2 },
-      { id: "3", employee_id: "1", employee_name: "John Smith", leave_type: "personal", start_date: "2025-11-15", end_date: "2025-11-15", status: "pending", reason: "Personal matter", days: 1 },
-    ];
-    const mockDepts: Department[] = [
-      { name: "Engineering", employee_count: 2, color: "blue" },
-      { name: "Marketing", employee_count: 1, color: "purple" },
-      { name: "Sales", employee_count: 1, color: "green" },
-      { name: "HR", employee_count: 1, color: "orange" },
-    ];
-
-    setLeaveRequests(mockLeaves);
-    setDepartments(mockDepts);
-  }, []);
 
   const initialRegion = detectedRegion?.id || userRegionId || "all";
 
@@ -480,6 +441,8 @@ export default function DashboardPage() {
 
         setUserRole(role);
         setUserRegionId(regionId);
+        setCurrentUserId(session.user.id);
+        setCurrentUserEmail(session.user.email ?? "");
         setIsAuthorized(true);
         setAuthChecking(false);
 
@@ -500,7 +463,7 @@ export default function DashboardPage() {
         // Try 1: user_id column
         const result1 = await supabase
           .from('profiles')
-          .select('city, state, latitude, longitude')
+          .select('city, state, latitude, longitude, first_name, last_name')
           .eq('user_id', session.user.id)
           .maybeSingle();
 
@@ -518,7 +481,7 @@ export default function DashboardPage() {
           console.log('[DASHBOARD] ð Trying with id column...');
           const result2 = await supabase
             .from('profiles')
-            .select('city, state, latitude, longitude')
+            .select('city, state, latitude, longitude, first_name, last_name')
             .eq('id', session.user.id)
             .maybeSingle();
 
@@ -543,6 +506,9 @@ export default function DashboardPage() {
         if (profileError) {
           console.warn('[DASHBOARD] â ï¸ Profile fetch error (non-fatal):', profileError);
         }
+
+        if (profileData?.first_name) setCurrentUserFirstName(profileData.first_name);
+        if (profileData?.last_name) setCurrentUserLastName(profileData.last_name);
 
         // Get coordinates from profiles table (they only exist there)
         let userLat = profileData?.latitude;
@@ -642,7 +608,6 @@ export default function DashboardPage() {
                 if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
-                  setSelectedEmployeeRegion(userRegion.id);
                 }
               } else {
                 console.warn('[DASHBOARD] â ï¸ No region found within radius for user coordinates');
@@ -669,7 +634,6 @@ export default function DashboardPage() {
                 setDetectedRegion({ id: region.id, name: region.name });
                 if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   setSelectedRegion(region.id);
-                  setSelectedEmployeeRegion(region.id);
                 }
                 regionDetected = true;
               }
@@ -717,7 +681,6 @@ export default function DashboardPage() {
                 if (role === 'manager' || role === 'supervisor' || role === 'supervisor2' || role === 'supervisor3') {
                   console.log('[DASHBOARD] ð¤ Setting manager region filters to:', userRegion.id);
                   setSelectedRegion(userRegion.id);
-                  setSelectedEmployeeRegion(userRegion.id);
                 }
                 regionDetected = true;
               } else {
@@ -854,18 +817,6 @@ export default function DashboardPage() {
     totalConfirmedStaff: filteredEvents.reduce((sum, e) => sum + (e.confirmed_staff || 0), 0),
   };
 
-  const hrStats = {
-    totalEmployees: employees.length,
-    activeEmployees: employees.filter((e) => e.status === "active").length,
-    onLeaveEmployees: employees.filter((e) => e.status === "on_leave").length,
-    newHiresThisMonth: employees.filter((e) => {
-      const d = new Date(e.hire_date);
-      const now = new Date();
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-    }).length,
-    pendingLeaves: leaveRequests.filter((l) => l.status === "pending").length,
-    totalDepartments: departments.length,
-  };
 
   // Region + vendors helpers
   const loadRegions = useCallback(async () => {
@@ -892,34 +843,62 @@ export default function DashboardPage() {
     return [];
   }, [regions.length]);
 
+  const loadHelpDeskTickets = useCallback(async () => {
+    setHelpDeskTicketsLoading(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/helpdesk/tickets", {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        cache: "no-store",
+      });
+      const body = await res.json();
+      if (res.ok) setHelpDeskTickets(body.tickets ?? []);
+    } catch (err) {
+      console.error("Error loading help desk tickets:", err);
+    } finally {
+      setHelpDeskTicketsLoading(false);
+    }
+  }, []);
+
+  const submitHelpDeskTicket = async () => {
+    if (!ticketDate) { setHelpDeskError("Date is required."); return; }
+    if (!ticketUrgency) { setHelpDeskError("Urgency is required."); return; }
+    if (!ticketDescription.trim()) { setHelpDeskError("Description is required."); return; }
+    setSubmittingHelpDesk(true);
+    setHelpDeskError("");
+    setHelpDeskSuccess("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/helpdesk/tickets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          ticket_date: ticketDate,
+          urgency: ticketUrgency,
+          description: ticketDescription.trim(),
+        }),
+      });
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || "Failed to submit ticket");
+      setHelpDeskTickets((prev) => [body.ticket, ...prev]);
+      setTicketDate(new Date().toISOString().slice(0, 10));
+      setTicketUrgency("medium");
+      setTicketDescription("");
+      setHelpDeskSuccess("Ticket submitted. The team will be notified shortly.");
+    } catch (err: any) {
+      setHelpDeskError(err.message || "Failed to submit ticket");
+    } finally {
+      setSubmittingHelpDesk(false);
+    }
+  };
+
   useEffect(() => {
-    if (!isAuthorized || activeTab !== "hr") return;
-
-    if (!employees.length && !loadingEmployees && !employeesError) {
-      void loadEmployees("all", managerScopedRegionId);
-    }
-
-    if (!leaveRequests.length && !departments.length) {
-      void loadHRMockData();
-    }
-
-    if (!regions.length) {
-      void loadRegions();
-    }
-  }, [
-    activeTab,
-    departments.length,
-    employees.length,
-    employeesError,
-    isAuthorized,
-    leaveRequests.length,
-    loadEmployees,
-    loadHRMockData,
-    loadRegions,
-    loadingEmployees,
-    managerScopedRegionId,
-    regions.length,
-  ]);
+    if (!isAuthorized || !showHelpDeskModal) return;
+    void loadHelpDeskTickets();
+  }, [showHelpDeskModal, isAuthorized, loadHelpDeskTickets]);
 
   const buildVendorUrl = (venue: string, regionId: string) => {
     const params = new URLSearchParams({ venue });
@@ -1441,10 +1420,6 @@ export default function DashboardPage() {
   };
 
   // Leaves
-  const handleApproveLeave = (id: string) =>
-    setLeaveRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: "approved" } : r)));
-  const handleRejectLeave = (id: string) =>
-    setLeaveRequests((prev) => prev.map((r) => (r.id === id ? { ...r, status: "rejected" } : r)));
 
   // Logout
   const handleLogout = async () => {
@@ -1458,36 +1433,6 @@ export default function DashboardPage() {
   };
 
   // HR filters
-  const handleStateFilterChange = async (newState: string) => {
-    setSelectedState(newState);
-    loadEmployees(newState, selectedEmployeeRegion);
-  };
-
-  const handleEmployeeRegionChange = async (newRegion: string) => {
-    // Prevent managers from changing regions
-    if ((userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3')) {
-      console.warn('[DASHBOARD-HR] â ï¸ Managers cannot change regions');
-      return;
-    }
-    console.log('[DASHBOARD-HR] ð Region changed:', { from: selectedEmployeeRegion, to: newRegion });
-    setSelectedEmployeeRegion(newRegion);
-    loadEmployees(selectedState, newRegion);
-  };
-
-  const getLeaveTypeColor = (t: string) => {
-    switch (t) {
-      case "vacation":
-        return "text-blue-600 bg-blue-100";
-      case "sick":
-        return "text-red-600 bg-red-100";
-      case "personal":
-        return "text-purple-600 bg-purple-100";
-      case "unpaid":
-        return "text-gray-600 bg-gray-100";
-      default:
-        return "text-gray-600 bg-gray-100";
-    }
-  };
 
   // Show loading screen while checking authorization
   if (authChecking) {
@@ -1559,6 +1504,15 @@ export default function DashboardPage() {
                 Planning Calendar
               </Link>
               <button
+                onClick={() => setShowHelpDeskModal(true)}
+                className="apple-button apple-button-secondary flex items-center gap-2"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 5.636l-3.536 3.536m0 5.656l3.536 3.536M9.172 9.172L5.636 5.636m3.536 9.192l-3.536 3.536M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-5 0a4 4 0 11-8 0 4 4 0 018 0z" />
+                </svg>
+                Help Desk
+              </button>
+              <button
                 onClick={handleLogout}
                 className="apple-button apple-button-secondary flex items-center gap-2"
               >
@@ -1583,7 +1537,6 @@ export default function DashboardPage() {
               Events
               {activeTab === "events" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
-            
           </div>
         </div>
 
@@ -1921,485 +1874,168 @@ export default function DashboardPage() {
           </>
         )}
 
-        {/* HR TAB */}
-        {activeTab === "hr" && (
-          <>
-            {/* Quick Actions */}
-            <div className="flex flex-wrap gap-3 mb-10">
-              <button className="apple-button apple-button-primary">
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                </svg>
-                Add Employee
-              </button>
-              <button className="apple-button apple-button-secondary">
-                <svg className="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                </svg>
-                View Calendar
-              </button>
-            </div>
 
-            {/* HR Subtabs */}
-            <div className="mb-8 border-b border-gray-200">
-              <div className="flex gap-6">
-                <button
-                  onClick={() => setHrView("overview")}
-                  className={`pb-4 px-2 font-semibold transition-colors relative ${
-                    hrView === "overview" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Overview
-                  {hrView === "overview" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-                </button>
-                <button
-                  onClick={() => setHrView("employees")}
-                  className={`pb-4 px-2 font-semibold transition-colors relative ${
-                    hrView === "employees" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Employees
-                  {hrView === "employees" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-                </button>
-                <button
-                  onClick={() => setHrView("leaves")}
-                  className={`pb-4 px-2 font-semibold transition-colors relative ${
-                    hrView === "leaves" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-                  }`}
-                >
-                  Leave Requests
-                  {hrStats.pendingLeaves > 0 && (
-                    <span className="ml-2 px-2 py-0.5 text-xs bg-red-500 text-white rounded-full">
-                      {hrStats.pendingLeaves}
-                    </span>
-                  )}
-                  {hrView === "leaves" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-                </button>
-              </div>
-            </div>
-
-            {/* HR Overview */}
-            {hrView === "overview" && (
-              <div className="space-y-8">
-                <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Key Metrics</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="apple-stat-card apple-stat-card-blue">
-                      <div className="apple-stat-icon apple-stat-icon-blue">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Total Employees</div>
-                        <div className="apple-stat-value">{hrStats.totalEmployees}</div>
-                        <div className="apple-stat-sublabel">{hrStats.activeEmployees} active</div>
-                      </div>
-                    </div>
-                    <div className="apple-stat-card apple-stat-card-purple">
-                      <div className="apple-stat-icon apple-stat-icon-purple">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Departments</div>
-                        <div className="apple-stat-value">{hrStats.totalDepartments}</div>
-                        <div className="apple-stat-sublabel">active divisions</div>
-                      </div>
-                    </div>
-                    <div className="apple-stat-card apple-stat-card-green">
-                      <div className="apple-stat-icon apple-stat-icon-green">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">New Hires</div>
-                        <div className="apple-stat-value">{hrStats.newHiresThisMonth}</div>
-                        <div className="apple-stat-sublabel">this month</div>
-                      </div>
-                    </div>
-                    <div className="apple-stat-card apple-stat-card-orange">
-                      <div className="apple-stat-icon apple-stat-icon-orange">
-                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </div>
-                      <div className="apple-stat-content">
-                        <div className="apple-stat-label">Pending Leaves</div>
-                        <div className="apple-stat-value">{hrStats.pendingLeaves}</div>
-                        <div className="apple-stat-sublabel">need approval</div>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                {/* Departments */}
-                <section>
-                  <h2 className="text-2xl font-semibold text-gray-900 mb-4 keeping-tight">Department Overview</h2>
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    {departments.map((dept) => (
-                      <div key={dept.name} className="apple-card p-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h3 className="text-lg font-semibold text-gray-900">{dept.name}</h3>
-                          <div className={`w-3 h-3 rounded-full bg-${dept.color}-500`} />
-                        </div>
-                        <div className="text-3xl font-bold text-gray-900 mb-2">{dept.employee_count}</div>
-                        <div className="text-sm text-gray-600">{dept.employee_count === 1 ? "employee" : "employees"}</div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-
-                {/* Recent Leaves */}
-                <section>
-                  <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Recent Leave Requests</h2>
-                    <button onClick={() => setHrView("leaves")} className="text-blue-600 hover:text-blue-700 font-medium text-sm">
-                      View All â
-                    </button>
-                  </div>
-                  <div className="apple-card overflow-hidden">
-                    <div className="overflow-x-auto">
-                      <table className="w-full">
-                        <thead className="bg-gray-50 border-b border-gray-200">
-                          <tr>
-                            <th className="text-left p-4 font-semibold text-gray-700">Employee</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Type</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Dates</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Days</th>
-                            <th className="text-left p-4 font-semibold text-gray-700">Status</th>
-                            <th className="text-right p-4 font-semibold text-gray-700">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200">
-                          {leaveRequests.slice(0, 3).map((r) => (
-                            <tr key={r.id} className="hover:bg-gray-50 transition-colors">
-                              <td className="p-4">
-                                <div className="font-medium text-gray-900">{r.employee_name}</div>
-                              </td>
-                              <td className="p-4">
-                                <span className={`px-3 py-1 rounded-full text-xs font-medium ${getLeaveTypeColor(r.leave_type)}`}>
-                                  {r.leave_type}
-                                </span>
-                              </td>
-                              <td className="p-4 text-gray-600 text-sm">
-                                {new Date(r.start_date).toLocaleDateString()} - {new Date(r.end_date).toLocaleDateString()}
-                              </td>
-                              <td className="p-4 text-gray-900 font-medium">{r.days}</td>
-                              <td className="p-4">
-                                <span
-                                  className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                    r.status === "pending"
-                                      ? "bg-yellow-100 text-yellow-700"
-                                      : r.status === "approved"
-                                      ? "bg-green-100 text-green-700"
-                                      : "bg-red-100 text-red-700"
-                                  }`}
-                                >
-                                  {r.status}
-                                </span>
-                              </td>
-                              <td className="p-4 text-right">
-                                {r.status === "pending" && (
-                                  <div className="flex items-center justify-end gap-2">
-                                    <button onClick={() => handleApproveLeave(r.id)} className="text-green-600 hover:text-green-700 font-medium text-sm">
-                                      Approve
-                                    </button>
-                                    <button onClick={() => handleRejectLeave(r.id)} className="text-red-600 hover:text-red-700 font-medium text-sm">
-                                      Reject
-                                    </button>
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            )}
-
-            {/* HR Employees */}
-            {hrView === "employees" && (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">
-                    All Employees
-                    {employees.length > 0 && <span className="ml-3 text-lg font-normal text-gray-500">({employees.length})</span>}
-                  </h2>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="search"
-                      placeholder="Search employees..."
-                      className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                      // (Optional) hook up local filter later
-                    />
-                    {/* Region filter - Show for both Managers and Executives */}
-                    <select
-                      value={selectedEmployeeRegion}
-                      onChange={(e) => handleEmployeeRegionChange(e.target.value)}
-                      className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="all">{"\uD83D\uDDFA\uFE0F All Regions"}</option>
-                      {regions.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {getRegionIcon(r.name)} {r.name} {detectedRegion?.id === r.id && (userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') ? '(Your Region)' : ''}
-                        </option>
-                      ))}
-                    </select>
-                    {/* State and Department filters - Only show for Executives */}
-                    {userRole === 'exec' && (
-                      <>
-                        <select
-                          value={selectedState}
-                          onChange={(e) => handleStateFilterChange(e.target.value)}
-                          className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
-                        >
-                          <option value="all">All States</option>
-                          {availableStates.map((state) => (
-                            <option key={state} value={state}>
-                              {state}
-                            </option>
-                          ))}
-                        </select>
-                        <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                          <option value="">All Departments</option>
-                          {departments.map((dept) => (
-                            <option key={dept.name} value={dept.name}>
-                              {dept.name}
-                            </option>
-                          ))}
-                        </select>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                {/* Manager Region Info Banner */}
-                {(userRole === 'manager' || userRole === 'supervisor' || userRole === 'supervisor2' || userRole === 'supervisor3') && detectedRegion && selectedEmployeeRegion !== "all" && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5">
-                    <div className="flex items-center text-xs text-blue-800">
-                      <svg className="w-4 h-4 mr-1.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                      <span>
-                        Your region was auto-detected: <strong>{detectedRegion.name}</strong> .
-                        Showing {employees.length} {employees.length === 1 ? "employee" : "employees"}
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Executive Filter Banner */}
-                {userRole === 'exec' && (selectedState !== "all" || selectedEmployeeRegion !== "all") && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 flex items-center justify-between">
-                    <div className="flex items-center text-sm text-blue-800">
-                      <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-                      </svg>
-                      <span className="font-medium">Filters Active:</span>
-                      {selectedEmployeeRegion !== "all" && (
-                        <span className="ml-1">{regions.find(r => r.id === selectedEmployeeRegion)?.name || selectedEmployeeRegion}</span>
-                      )}
-                      {selectedEmployeeRegion !== "all" && selectedState !== "all" && <span className="mx-1">.</span>}
-                      {selectedState !== "all" && <span>{selectedState}</span>}
-                      <span className="ml-2 text-blue-600">. {employees.length} {employees.length === 1 ? "employee" : "employees"} found</span>
-                    </div>
-                    <button
-                      onClick={() => {
-                        handleStateFilterChange("all");
-                        handleEmployeeRegionChange("all");
-                      }}
-                      className="text-xs text-blue-700 hover:text-blue-900 font-medium flex items-center"
-                    >
-                      <svg className="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                      </svg>
-                      Clear All Filters
-                    </button>
-                  </div>
-                )}
-
-                {loadingEmployees && (
-                  <div className="apple-card">
-                    <div className="flex items-center justify-center py-16">
-                      <div className="apple-spinner" />
-                      <span className="ml-3 text-gray-600">Loading employees...</span>
-                    </div>
-                  </div>
-                )}
-                {employeesError && <div className="apple-alert apple-alert-error">{employeesError}</div>}
-                {!loadingEmployees && !employeesError && employees.length === 0 && (
-                  <div className="apple-card text-center py-16">
-                    <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0z" />
-                    </svg>
-                    <p className="text-gray-500 text-lg">No employees found</p>
-                    <p className="text-gray-400 text-sm mt-2">
-                      {selectedState !== "all" ? "Try selecting a different state" : "No employees in the system yet"}
-                    </p>
-                  </div>
-                )}
-
-                {!loadingEmployees && !employeesError && employees.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {employees.map((e) => (
-                      <Link key={e.id} href={`/hr/employees/${e.id}`} className="block group">
-                        <div className="apple-card p-6 hover:shadow-lg transition-shadow group-hover:translate-y-[-1px]">
-                          <div className="flex items-start gap-4">
-                            {e.profile_photo_url ? (
-                              <img
-                                src={e.profile_photo_url}
-                                alt={`${e.first_name} ${e.last_name}`}
-                                className="w-16 h-16 rounded-full object-cover flex-shrink-0"
-                              />
-                            ) : (
-                              <div className="w-16 h-16 rounded-full bg-blue-500 flex items-center justify-center text-white font-semibold text-xl flex-shrink-0">
-                                {e.first_name.charAt(0)}
-                                {e.last_name.charAt(0)}
-                              </div>
-                            )}
-                            <div className="flex-1">
-                              <h3 className="text-lg font-semibold text-gray-900 mb-1">
-                                {e.first_name} {e.last_name}
-                              </h3>
-                              <p className="text-sm text-gray-600 mb-2">{e.position}</p>
-                              <div className="space-y-1">
-                                <div className="flex items-center text-xs text-gray-500">
-                                  <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-                                  </svg>
-                                  {e.department}
-                                </div>
-                                <div className="flex items-center text-xs text-gray-500">
-                                  <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                                  </svg>
-                                  {e.email}
-                                </div>
-                                {e.phone && (
-                                  <div className="flex items-center text-xs text-gray-500">
-                                    <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-                                    </svg>
-                                    {e.phone}
-                                  </div>
-                                )}
-                              </div>
-                              <div className="mt-3 flex items-center justify-between">
-                                <span
-                                  className={`px-2 py-1 rounded-full text-xs font-medium ${
-                                    e.status === "active"
-                                      ? "bg-green-100 text-green-700"
-                                      : e.status === "on_leave"
-                                      ? "bg-yellow-100 text-yellow-700"
-                                      : "bg-gray-100 text-gray-700"
-                                  }`}
-                                >
-                                  {e.status === "active" ? "Active" : e.status === "on_leave" ? "On Leave" : "Inactive"}
-                                </span>
-                                <span className="text-xs text-gray-500">Since {new Date(e.hire_date).toLocaleDateString()}</span>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </Link>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* HR Leaves */}
-            {hrView === "leaves" && (
-              <div className="space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Leave Requests</h2>
-                  <select className="px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500">
-                    <option value="">All Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="approved">Approved</option>
-                    <option value="rejected">Rejected</option>
-                  </select>
-                </div>
-
-                <div className="space-y-4">
-                  {leaveRequests.map((r) => (
-                    <div key={r.id} className="apple-card p-6">
-                      <div className="flex items-start justify-between">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3 mb-3">
-                            <h3 className="text-xl font-semibold text-gray-900">{r.employee_name}</h3>
-                            <span className={`px-3 py-1 rounded-full text-xs font-medium ${getLeaveTypeColor(r.leave_type)}`}>
-                              {r.leave_type}
-                            </span>
-                            <span
-                              className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                r.status === "pending"
-                                  ? "bg-yellow-100 text-yellow-700"
-                                  : r.status === "approved"
-                                  ? "bg-green-100 text-green-700"
-                                  : "bg-red-100 text-red-700"
-                              }`}
-                            >
-                              {r.status}
-                            </span>
-                          </div>
-                          <div className="space-y-2 text-sm text-gray-600">
-                            <div className="flex items-center">
-                              <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                              </svg>
-                              {new Date(r.start_date).toLocaleDateString()} - {new Date(r.end_date).toLocaleDateString()}
-                              <span className="ml-2 font-medium text-gray-900">({r.days} day{r.days !== 1 ? "s" : ""})</span>
-                            </div>
-                            <div className="flex items-start">
-                              <svg className="w-4 h-4 mr-2 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                              </svg>
-                              <span>{r.reason}</span>
-                            </div>
-                          </div>
-                        </div>
-                        {r.status === "pending" && (
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => handleApproveLeave(r.id)} className="apple-button apple-button-primary text-sm">
-                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                              </svg>
-                              Approve
-                            </button>
-                            <button onClick={() => handleRejectLeave(r.id)} className="apple-button apple-button-secondary text-sm">
-                              <svg className="w-4 h-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                              </svg>
-                              Reject
-                            </button>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {leaveRequests.length === 0 && (
-                  <div className="apple-card text-center py-16">
-                    <svg className="mx-auto h-16 w-16 text-gray-300 mb-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    <p className="text-gray-500 text-lg">No leave requests</p>
-                    <p className="text-gray-400 text-sm mt-2">All caught up!</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </>
-        )}
       </div>
+
+
+      {/* Help Desk Modal */}
+      {showHelpDeskModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
+          onClick={() => { if (submittingHelpDesk) return; setShowHelpDeskModal(false); setHelpDeskError(""); setHelpDeskSuccess(""); }}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl border border-gray-200 bg-white shadow-2xl max-h-[90vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between shrink-0">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Help Desk</h3>
+                <p className="mt-0.5 text-sm text-gray-500">Submit a new ticket or view recent requests.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { if (submittingHelpDesk) return; setShowHelpDeskModal(false); setHelpDeskError(""); setHelpDeskSuccess(""); }}
+                className="rounded-lg p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="overflow-y-auto flex-1">
+
+              {/* Create ticket form */}
+              <div className="px-6 pt-5 pb-4 space-y-4 border-b border-gray-100">
+                <h4 className="text-sm font-semibold text-gray-700">New Ticket</h4>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                      Date <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      type="date"
+                      value={ticketDate}
+                      onChange={(e) => { setTicketDate(e.target.value); setHelpDeskError(""); setHelpDeskSuccess(""); }}
+                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 bg-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                      Urgency <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={ticketUrgency}
+                      onChange={(e) => setTicketUrgency(e.target.value)}
+                      className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 bg-white"
+                    >
+                      <option value="low">Low</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                    Description <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    value={ticketDescription}
+                    onChange={(e) => { setTicketDescription(e.target.value); setHelpDeskError(""); setHelpDeskSuccess(""); }}
+                    rows={4}
+                    placeholder="Describe the issue in detail…"
+                    className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                  />
+                </div>
+
+                {helpDeskError && (
+                  <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{helpDeskError}</div>
+                )}
+                {helpDeskSuccess && (
+                  <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{helpDeskSuccess}</div>
+                )}
+              </div>
+
+              {/* Recent tickets */}
+              <div className="px-6 py-4">
+                <h4 className="text-sm font-semibold text-gray-700 mb-3">Recent Tickets</h4>
+                {helpDeskTicketsLoading ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-400 py-2">
+                    <div className="apple-spinner w-4 h-4" /> Loading…
+                  </div>
+                ) : helpDeskTickets.length === 0 ? (
+                  <p className="text-sm text-gray-400 py-2">No tickets yet.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {helpDeskTickets.map((t) => {
+                      const urgencyStyle: Record<string, string> = {
+                        low: "bg-gray-100 text-gray-600 border-gray-200",
+                        medium: "bg-blue-50 text-blue-700 border-blue-200",
+                        high: "bg-orange-50 text-orange-700 border-orange-200",
+                        critical: "bg-red-50 text-red-700 border-red-200",
+                      };
+                      const statusStyle: Record<string, string> = {
+                        open: "bg-amber-50 text-amber-700 border-amber-200",
+                        in_progress: "bg-blue-50 text-blue-700 border-blue-200",
+                        resolved: "bg-green-50 text-green-700 border-green-200",
+                        closed: "bg-gray-100 text-gray-500 border-gray-200",
+                      };
+                      const statusLabel: Record<string, string> = {
+                        open: "Open", in_progress: "In Progress", resolved: "Resolved", closed: "Closed",
+                      };
+                      return (
+                        <div key={t.id} className="rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+                          <div className="flex items-start justify-between gap-2 mb-1">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <span className="text-xs font-mono font-semibold text-gray-500 shrink-0">{t.ticket_number}</span>
+                              <p className="text-sm text-gray-700 truncate">{t.description}</p>
+                            </div>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${urgencyStyle[t.urgency] ?? urgencyStyle.medium}`}>
+                                {t.urgency.charAt(0).toUpperCase() + t.urgency.slice(1)}
+                              </span>
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${statusStyle[t.status] ?? statusStyle.open}`}>
+                                {statusLabel[t.status] ?? t.status}
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-xs text-gray-400">{t.ticket_date}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4 shrink-0">
+              <button
+                type="button"
+                onClick={() => { setShowHelpDeskModal(false); setHelpDeskError(""); setHelpDeskSuccess(""); }}
+                disabled={submittingHelpDesk}
+                className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitHelpDeskTicket()}
+                disabled={submittingHelpDesk || !ticketDate || !ticketUrgency || !ticketDescription.trim()}
+                className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submittingHelpDesk ? "Submitting…" : "Submit Ticket"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Calendar Availability Modal */}
       {showVendorModal && (

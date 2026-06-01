@@ -135,6 +135,7 @@ export async function POST(req: NextRequest) {
     const bccRaw = String(form.get("bcc") || "");
     const venue = String(form.get("venue") || "").trim();
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
+    const bccMode = String(form.get("bcc_mode") || "").toLowerCase() === "true";
 
     if (!["manual", "role", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
@@ -232,7 +233,12 @@ export async function POST(req: NextRequest) {
         : `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(body)}</pre>`;
 
     const venueBcc = venue ? await getVenueBccEmails(venue, supabaseAdmin) : [];
-    const mergedBcc = [...new Set([...bcc, ...venueBcc])];
+    let mergedBcc = [...new Set([...bcc, ...venueBcc])];
+
+    if (bccMode) {
+      mergedBcc = [...new Set([...to, ...mergedBcc])];
+      to = ["service@pdsportal.site"];
+    }
 
     const batchSize = resolveIntSetting(
       process.env.EMAIL_SEND_BATCH_SIZE,

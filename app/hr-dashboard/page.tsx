@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
+import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -793,6 +794,142 @@ function HRDashboardContent() {
       }
 
 
+      // Pre-build linked commission distribution so shared events are treated as one pool
+      const linkedCommissionInputs: LinkedCommissionEventInput[] = [];
+      for (const ei of filtered) {
+        if (isSanDiegoRegion(ei)) continue;
+        const epd = paymentsByEventId[ei.id];
+        const eps = epd?.eventPayment || {};
+        const eTips = Number(ei.tips || 0);
+        const tSales = Math.max(Number(ei.ticket_sales || 0) - eTips, 0);
+        const tax = tSales * (Number(ei.tax_rate_percent || 0) / 100);
+        const persAGRaw = Number(eps?.net_sales);
+        const hasPersAG = eps?.net_sales !== null && eps?.net_sales !== undefined && eps?.net_sales !== "" && Number.isFinite(persAGRaw);
+        const adjGross = hasPersAG ? Math.max(persAGRaw, 0) : Math.max(tSales - tax - Number(ei.fees || 0) + Number(ei.other_income || 0), 0);
+        const poolPct = Number(ei.commission_pool ?? eps?.commission_pool_percent ?? 0) || 0;
+        const eCommDollarsRaw = adjGross * poolPct;
+        const eCommDollars = Number.isFinite(eCommDollarsRaw) ? eCommDollarsRaw : 0;
+        const poolDollars = eCommDollars > 0 ? eCommDollars : (Number(eps?.commission_pool_dollars || 0) || Number(eps?.total_commissions || 0) || 0);
+        linkedCommissionInputs.push({
+          eventId: ei.id,
+          linkedCommissionEventId: (ei as any).linked_commission_event_id || null,
+          eventDate: ei.event_date || null,
+          commissionPoolDollars: poolDollars,
+          workers: (epd?.vendorPayments || []).flatMap((p: any) => {
+            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
+            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
+            const div = normalizeDivision(p?.users?.division);
+            if (!uid || (div !== '' && !isVendorDivision(div)) || p.commission_deleted === true || hrs <= 0) return [];
+            return [{ userId: uid, division: p?.users?.division, hours: hrs, commissionDeleted: p.commission_deleted === true }];
+          }),
+        });
+      }
+      const linkedCommissionDistribution = buildLinkedCommissionDistribution({ events: linkedCommissionInputs });
+
+      // Pre-build linked tips distribution using the same event groups
+      const totalTipsByEventId: Record<string, number> = {};
+      for (const ei of filtered) {
+        const epd = paymentsByEventId[ei.id];
+        const eps = epd?.eventPayment || {};
+        const eTips = Number(ei.tips || 0);
+        const persRaw = Number(eps?.total_tips);
+        const hasPers = eps?.total_tips !== null && eps?.total_tips !== undefined && eps?.total_tips !== "" && Number.isFinite(persRaw);
+        totalTipsByEventId[ei.id] = hasPers ? Math.max(persRaw, 0) : Math.max(eTips, 0);
+      }
+
+      const linkedTipsSharesByEventId: Record<string, Record<string, number>> = {};
+      const linkedGroupTipsByEventId: Record<string, number> = {};
+      // combined hours per (eventId, userId) — used for rest break tier and OT trigger
+      const linkedCombinedHoursByEventId: Record<string, Record<string, number>> = {};
+      const linkedRestBreakShareByEventId: Record<string, Record<string, number>> = {};
+
+      for (const groupKey of Object.keys(linkedCommissionDistribution.groupsByKey)) {
+        const group = linkedCommissionDistribution.groupsByKey[groupKey];
+        const groupEventIds = group.eventIds;
+        const groupTotalTips = groupEventIds.reduce((sum, eid) => sum + (totalTipsByEventId[eid] || 0), 0);
+
+        const groupDate = groupEventIds
+          .map(eid => ((filtered as any[]).find((e: any) => e.id === eid)?.event_date || '').toString().split('T')[0])
+          .filter(Boolean).sort()[0] || '';
+
+        // ── Tips: exclude trailers + tips_deleted ──────────────────────────
+        const tipsWorkerTotal: Record<string, number> = {};
+        const tipsWorkerEvent: Record<string, Record<string, number>> = {};
+        for (const eid of groupEventIds) {
+          for (const p of paymentsByEventId[eid]?.vendorPayments || []) {
+            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
+            if (!uid || isTrailersDivision(p?.users?.division) || p.tips_deleted === true) continue;
+            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
+            if (hrs <= 0) continue;
+            tipsWorkerTotal[uid] = (tipsWorkerTotal[uid] || 0) + hrs;
+            if (!tipsWorkerEvent[uid]) tipsWorkerEvent[uid] = {};
+            tipsWorkerEvent[uid][eid] = (tipsWorkerEvent[uid][eid] || 0) + hrs;
+          }
+        }
+
+        const groupTipsShares = distributePoolByHoursRule({
+          totalAmount: groupTotalTips,
+          members: Object.entries(tipsWorkerTotal).map(([id, hours]) => ({ id, hours })),
+          allShortShiftMode: shortShiftModeForDate(groupDate),
+        }).amountsById;
+
+        for (const eid of groupEventIds) {
+          linkedTipsSharesByEventId[eid] = {};
+          linkedGroupTipsByEventId[eid] = groupTotalTips;
+        }
+        for (const [uid, totalShare] of Object.entries(groupTipsShares)) {
+          const totalH = tipsWorkerTotal[uid] || 0;
+          if (totalH <= 0) continue;
+          for (const eid of groupEventIds) {
+            const eHours = tipsWorkerEvent[uid]?.[eid] || 0;
+            if (eHours <= 0) continue;
+            linkedTipsSharesByEventId[eid][uid] =
+              Math.round(((linkedTipsSharesByEventId[eid][uid] || 0) + Number(totalShare) * eHours / totalH) * 100) / 100;
+          }
+        }
+
+        // ── Combined hours for ALL workers (rest break + OT) ──────────────
+        // Include every worker; skip only SD events (no rest break there)
+        const allWorkerTotal: Record<string, number> = {};
+        const allWorkerEvent: Record<string, Record<string, number>> = {};
+        for (const eid of groupEventIds) {
+          const eiData = (filtered as any[]).find((e: any) => e.id === eid);
+          if (eiData && isSanDiegoRegion(eiData)) continue;
+          for (const p of paymentsByEventId[eid]?.vendorPayments || []) {
+            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
+            if (!uid) continue;
+            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
+            if (hrs <= 0) continue;
+            allWorkerTotal[uid] = (allWorkerTotal[uid] || 0) + hrs;
+            if (!allWorkerEvent[uid]) allWorkerEvent[uid] = {};
+            allWorkerEvent[uid][eid] = (allWorkerEvent[uid][eid] || 0) + hrs;
+          }
+        }
+
+        // Store combined hours per event+user and compute rest break share
+        for (const eid of groupEventIds) {
+          linkedCombinedHoursByEventId[eid] = {};
+          linkedRestBreakShareByEventId[eid] = {};
+        }
+        for (const [uid, totalH] of Object.entries(allWorkerTotal)) {
+          // Record combined hours for each event this worker appears in
+          for (const eid of groupEventIds) {
+            if ((allWorkerEvent[uid]?.[eid] || 0) > 0) {
+              linkedCombinedHoursByEventId[eid][uid] = totalH;
+            }
+          }
+          // Rest break based on combined hours, split proportionally back to events
+          const combinedRB = getRestBreakAmount(totalH, '', false);
+          if (combinedRB <= 0) continue;
+          for (const eid of groupEventIds) {
+            const eHours = allWorkerEvent[uid]?.[eid] || 0;
+            if (eHours <= 0) continue;
+            linkedRestBreakShareByEventId[eid][uid] =
+              Math.round(((linkedRestBreakShareByEventId[eid][uid] || 0) + combinedRB * eHours / totalH) * 100) / 100;
+          }
+        }
+      }
+
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
@@ -989,11 +1126,14 @@ function HRDashboardContent() {
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
-        const commissionPoolDollars = isEventSD
+        // For linked (shared-commission) events use the combined group pool so the display matches event-dashboard
+        const singleEventPoolDollars = isEventSD
           ? 0
           : eventCommissionDollars > 0
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
+        const linkedGroupPool = !isEventSD ? Number(linkedCommissionDistribution.groupPoolByEventId[eventId] || 0) : 0;
+        const commissionPoolDollars = linkedGroupPool > 0 ? linkedGroupPool : singleEventPoolDollars;
         const isAZorNY = eventState === "AZ" || eventState === "NY";
 
         // Vendor count for commission allocation
@@ -1007,30 +1147,12 @@ function HRDashboardContent() {
           ? commissionPoolDollars / vendorCountForCommission
           : 0;
 
-        // Tips: try event_payments summary first, then fall back to events table
-        const totalTips = eventTotalTips;
-        const commissionSharesByUser = distributePoolByHoursRule({
-          totalAmount: commissionPoolDollars,
-          members: vendorPayments.flatMap((payment: any) => {
-            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
-            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
-            const _divComm = normalizeDivision(payment?.users?.division);
-            const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
-            if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
-            return [{ id: paymentUserId, hours: payrollHours }];
-          }),
-          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
-        }).amountsById;
-        const tipsSharesByUser = distributePoolByHoursRule({
-          totalAmount: totalTips,
-          members: vendorPayments.flatMap((payment: any) => {
-            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
-            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
-            if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
-            return [{ id: paymentUserId, hours: payrollHours }];
-          }),
-          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
-        }).amountsById;
+        // Use linked group totals so shared events are treated as one combined pool for both commission and tips
+        const totalTips = linkedGroupTipsByEventId[eventId] ?? eventTotalTips;
+        const commissionSharesByUser: Record<string, number> =
+          linkedCommissionDistribution.commissionShareByEventId[eventId] ?? {};
+        const tipsSharesByUser: Record<string, number> =
+          linkedTipsSharesByEventId[eventId] ?? {};
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
           commissionPoolDollars, perVendorCommissionShare, totalTips, memberCount, vendorCountForCommission,
@@ -1063,7 +1185,9 @@ function HRDashboardContent() {
             const commissionShare = (isEventSD || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
             const priorWeeklyHours = (isAZorNY || isEventSD) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
-            const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
+            // For linked events use combined hours to correctly evaluate the 40-hour OT threshold
+            const combinedEventHours = linkedCombinedHoursByEventId[eventId]?.[paymentUserId] ?? actualHours;
+            const isWeeklyOT = isAZorNY && (priorWeeklyHours + combinedEventHours) > 40;
             const extAmtRegular = Math.round(roundedPayrollHours * baseRate * 100) / 100;
             const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * baseRate * 1.5 * 100) / 100;
 
@@ -1162,7 +1286,11 @@ function HRDashboardContent() {
               ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState, isEventSD);
+            // Use combined hours so linked events are treated as one shift for the rest-break tier
+            const restBreak = isEventSD
+              ? 0
+              : (linkedRestBreakShareByEventId[eventId]?.[paymentUserId]
+                  ?? getRestBreakAmount(actualHours, eventState, false));
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
@@ -1234,7 +1362,7 @@ function HRDashboardContent() {
           commissionDollars: eventCommissionDollars,
           commissionPoolDollars: safeCommissionPoolDollars,
           adjustedGrossAmount,
-          totalTips: eventTotalTips,
+          totalTips: linkedGroupTipsByEventId[eventId] ?? eventTotalTips,
           totalRestBreak: eventTotalRestBreak,
           totalOther: eventTotalOther,
           eventTotal,
@@ -1470,6 +1598,9 @@ function HRDashboardContent() {
           hours: roundHoursToTwoDecimals(Number(payment?.actualHours || 0)),
           commissionDeleted: payment?.commissionDeleted === true,
           commissionOverride: payment?.commissionOverride ?? null,
+          // Pass pre-computed share so computePayPeriodCommission uses combined-hours
+          // distribution (8-hour rule, allShortShift) instead of re-distributing per event
+          commissionShare: payment?.commissionShare ?? null,
         })),
       })),
     });
