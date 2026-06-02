@@ -904,6 +904,16 @@ export default function TimeSheetsPage() {
                     </div>
                   )}
 
+                  <div className="mt-5 rounded-2xl border border-sky-200 bg-sky-50 px-4 py-4 text-sm text-sky-900">
+                    <h3 className="font-semibold">Break And Meal Rules</h3>
+                    <ul className="mt-2 list-disc space-y-1.5 pl-5 text-sky-800">
+                      <li>A 10-minute break is required around the 3rd hour and should be taken without clocking out and back in.</li>
+                      <li>A 30-minute lunch break is required around the 4th hour and must be clocked out and back in.</li>
+                      <li>A second 10-minute break is required around the 6th hour.</li>
+                      <li>A second meal break is required if you work past 10 hours and must be clocked out and back in.</li>
+                    </ul>
+                  </div>
+
                   <div className="mt-6 grid gap-4 sm:grid-cols-2">
                     <label className="space-y-2">
                       <span className="text-sm font-medium text-slate-700">Clock In</span>
