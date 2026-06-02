@@ -3506,7 +3506,7 @@ export default function WorkerProfilePage() {
 
             {/* Data Edition Request */}
             <section className="mb-8">
-              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Request Data Edition</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">request data update</h2>
               <div className="apple-card p-6">
                 <p className="text-sm text-gray-500 mb-5">
                   Select a submitted document below to request permission to edit your data. An HR administrator will be notified and will review your request.
