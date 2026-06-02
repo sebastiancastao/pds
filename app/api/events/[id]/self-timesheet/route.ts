@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
-const ALLOWED_ROLES = new Set([
+const PROXY_ALLOWED_ROLES = new Set([
   "manager",
   "supervisor",
   "supervisor2",
@@ -77,6 +77,10 @@ type TimesheetEditRequestSummary = {
 
 function jsonError(message: string, status = 500) {
   return NextResponse.json({ error: message }, { status });
+}
+
+function canManageOtherTimesheets(role?: string | null) {
+  return PROXY_ALLOWED_ROLES.has(String(role || "").trim().toLowerCase());
 }
 
 function normalizeEventDate(dateValue?: string | null) {
@@ -280,6 +284,34 @@ async function loadEvent(eventId: string): Promise<EventRow> {
   return data as EventRow;
 }
 
+async function hasEventTimesheetAccess(userId: string, eventId: string) {
+  const [teamResult, entryResult] = await Promise.all([
+    supabaseAdmin
+      .from("event_teams")
+      .select("id")
+      .eq("event_id", eventId)
+      .eq("vendor_id", userId)
+      .limit(1)
+      .maybeSingle(),
+    supabaseAdmin
+      .from("time_entries")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("event_id", eventId)
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  if (teamResult.error) {
+    throw new Error(teamResult.error.message);
+  }
+  if (entryResult.error) {
+    throw new Error(entryResult.error.message);
+  }
+
+  return Boolean(teamResult.data?.id || entryResult.data?.id);
+}
+
 async function loadCurrentEntries(userId: string, eventId: string, eventDate: string, eventTimezone: string) {
   const range = getLocalDateRange(eventDate, eventTimezone, 2);
   if (!range) {
@@ -414,18 +446,31 @@ export async function GET(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
-      return jsonError("Only managers, supervisors, and execs can access this page.", 403);
-    }
+    const requesterCanProxy = canManageOtherTimesheets(requester.role);
 
     const eventId = String(params.id || "").trim();
     if (!eventId) {
       return jsonError("Event ID is required.", 400);
     }
 
-    // Support ?userId=xxx to load a specific team member's timesheet
     const url = new URL(req.url);
-    const targetUserId = url.searchParams.get("userId") || user.id;
+    const targetUserId = url.searchParams.get("userId")?.trim() || user.id;
+    const isProxyRequest = targetUserId !== user.id;
+    if (isProxyRequest && !requesterCanProxy) {
+      return jsonError("You can only access your own timesheet.", 403);
+    }
+    if (isProxyRequest) {
+      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+      if (!targetHasEventAccess) {
+        return jsonError("That user does not have a timesheet for this event.", 404);
+      }
+    } else if (!requesterCanProxy) {
+      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
+      if (!requesterHasEventAccess) {
+        return jsonError("You are not assigned to this event.", 403);
+      }
+    }
+
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     const event = await loadEvent(eventId);
@@ -436,9 +481,8 @@ export async function GET(
 
     const eventTimezone = getTimezoneForState(event.state);
 
-    // Load team members on the initial request (no ?userId param) so the page can populate the selector
     let teamMembers: Array<{ id: string; name: string; role: string }> = [];
-    if (!url.searchParams.get("userId")) {
+    if (requesterCanProxy && !url.searchParams.get("userId")) {
       const { data: teamRows } = await supabaseAdmin
         .from("event_teams")
         .select("vendor_id")
@@ -523,9 +567,7 @@ export async function PUT(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
-      return jsonError("Only managers, supervisors, and execs can submit this timesheet.", 403);
-    }
+    const requesterCanProxy = canManageOtherTimesheets(requester.role);
 
     const eventId = String(params.id || "").trim();
     if (!eventId) {
@@ -541,6 +583,22 @@ export async function PUT(
 
     // Support submitting for another team member
     const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
+    const isProxyRequest = targetUserId !== user.id;
+    if (isProxyRequest && !requesterCanProxy) {
+      return jsonError("You can only submit your own timesheet.", 403);
+    }
+    if (isProxyRequest) {
+      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+      if (!targetHasEventAccess) {
+        return jsonError("That user does not have a timesheet for this event.", 404);
+      }
+    } else if (!requesterCanProxy) {
+      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
+      if (!requesterHasEventAccess) {
+        return jsonError("You are not assigned to this event.", 403);
+      }
+    }
+
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     if (!signature.startsWith("data:image/png;base64,")) {
@@ -837,9 +895,7 @@ export async function PATCH(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
-      return jsonError("Only managers, supervisors, and execs can save timesheets.", 403);
-    }
+    const requesterCanProxy = canManageOtherTimesheets(requester.role);
 
     const eventId = String(params.id || "").trim();
     if (!eventId) {
@@ -849,6 +905,22 @@ export async function PATCH(
     const body = await req.json().catch(() => null);
     const spans: TimesheetSpanPayload = body?.spans || {};
     const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
+    const isProxyRequest = targetUserId !== user.id;
+    if (isProxyRequest && !requesterCanProxy) {
+      return jsonError("You can only save your own timesheet.", 403);
+    }
+    if (isProxyRequest) {
+      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+      if (!targetHasEventAccess) {
+        return jsonError("That user does not have a timesheet for this event.", 404);
+      }
+    } else if (!requesterCanProxy) {
+      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
+      if (!requesterHasEventAccess) {
+        return jsonError("You are not assigned to this event.", 403);
+      }
+    }
+
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     // Require at least clock_in and clock_out to save

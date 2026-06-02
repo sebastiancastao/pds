@@ -147,6 +147,17 @@ function formatClockValue(value?: string | null) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function canManageOtherTimesheets(role?: string | null) {
+  const normalized = String(role || "").trim().toLowerCase();
+  return (
+    normalized === "manager" ||
+    normalized === "supervisor" ||
+    normalized === "supervisor2" ||
+    normalized === "supervisor3" ||
+    normalized === "exec"
+  );
+}
+
 function subtractMinutes(timeHHMM: string, mins: number): string {
   const [h, m] = timeHHMM.split(":").map(Number);
   if (!Number.isFinite(h) || !Number.isFinite(m)) return timeHHMM;
@@ -744,7 +755,13 @@ export default function TimeSheetsPage() {
   };
 
   const timesheetForSummary = submittedTimesheet || payload?.timesheet || null;
-  const topRightLink = payload ? `/event-dashboard/${payload.event.id}` : "/dashboard";
+  const requesterCanProxy = canManageOtherTimesheets(payload?.requester?.role);
+  const profileLink = payload ? `/employees/${payload.requester?.id || payload.user.id}` : "/dashboard";
+  const topRightLink = payload
+    ? requesterCanProxy
+      ? `/event-dashboard/${payload.event.id}`
+      : profileLink
+    : "/dashboard";
 
   if (loading) {
     return (
@@ -1014,17 +1031,19 @@ export default function TimeSheetsPage() {
                 </p>
                 <div className="mt-5 flex flex-wrap gap-3">
                   <Link
-                    href="/dashboard"
+                    href={topRightLink}
                     className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
                   >
-                    Back to Dashboard
+                    {requesterCanProxy ? "Back to Event" : "Back to Profile"}
                   </Link>
-                  <Link
-                    href={`/event-dashboard/${payload.event.id}`}
-                    className="inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                  >
-                    Open Event
-                  </Link>
+                  {requesterCanProxy && (
+                    <Link
+                      href={`/event-dashboard/${payload.event.id}`}
+                      className="inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                    >
+                      Open Event
+                    </Link>
+                  )}
                 </div>
               </div>
             </div>
