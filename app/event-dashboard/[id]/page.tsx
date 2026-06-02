@@ -6860,12 +6860,14 @@ export default function EventDashboardPage() {
                           >
                             Edit
                           </button>
-                          <Link
-                            href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
-                            className="text-gray-600 hover:text-gray-800 font-medium text-xs ml-2"
-                          >
-                            View Timesheet
-                          </Link>
+                          {uid === currentUserId && (
+                            <Link
+                              href={`/time-sheets/${eventId}`}
+                              className="text-gray-600 hover:text-gray-800 font-medium text-xs ml-2"
+                            >
+                              My Timesheet
+                            </Link>
+                          )}
                           {userRole === "exec" && hasSubmittedAttestation && (
                             <button
                               onClick={async () => {
@@ -6906,12 +6908,14 @@ export default function EventDashboardPage() {
                         </>
                       )
                     ) : (
-                      <Link
-                        href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
-                        className="text-gray-600 hover:text-gray-800 font-medium text-xs"
-                      >
-                        View Timesheet
-                      </Link>
+                      uid === currentUserId ? (
+                        <Link
+                          href={`/time-sheets/${eventId}`}
+                          className="text-gray-600 hover:text-gray-800 font-medium text-xs"
+                        >
+                          My Timesheet
+                        </Link>
+                      ) : null
                     )}
                   </td>
                 </tr>

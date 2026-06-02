@@ -16,12 +16,14 @@ export const dynamic = "force-dynamic";
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
-const PROXY_ALLOWED_ROLES = new Set([
+const PRIVILEGED_ROLES = new Set([
+  "admin",
+  "exec",
+  "hr",
   "manager",
   "supervisor",
   "supervisor2",
   "supervisor3",
-  "exec",
 ]);
 
 const supabaseAdmin = createClient(
@@ -40,6 +42,7 @@ type EventRow = {
   event_date: string | null;
   start_time: string | null;
   end_time: string | null;
+  ends_next_day: boolean | null;
   venue: string | null;
   city: string | null;
   state: string | null;
@@ -80,7 +83,7 @@ function jsonError(message: string, status = 500) {
 }
 
 function canManageOtherTimesheets(role?: string | null) {
-  return PROXY_ALLOWED_ROLES.has(String(role || "").trim().toLowerCase());
+  return PRIVILEGED_ROLES.has(String(role || "").trim().toLowerCase());
 }
 
 function normalizeEventDate(dateValue?: string | null) {
@@ -88,10 +91,37 @@ function normalizeEventDate(dateValue?: string | null) {
   return String(dateValue).split("T")[0];
 }
 
+function timeToSeconds(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(trimmed);
+  if (!match) return null;
+
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = match[3] ? Number(match[3]) : 0;
+  if (![hours, minutes, seconds].every((part) => Number.isFinite(part))) return null;
+  if (hours < 0 || hours > 23) return null;
+  if (minutes < 0 || minutes > 59) return null;
+  if (seconds < 0 || seconds > 59) return null;
+
+  return hours * 3600 + minutes * 60 + seconds;
+}
+
+function eventAllowsOvernight(event: Pick<EventRow, "start_time" | "end_time" | "ends_next_day">) {
+  if (Boolean(event.ends_next_day)) return true;
+  const startSeconds = timeToSeconds(event.start_time);
+  const endSeconds = timeToSeconds(event.end_time);
+  return startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds;
+}
+
 function buildTimeline(
   eventDate: string,
   eventTimezone: string,
-  spans: TimesheetSpanPayload
+  spans: TimesheetSpanPayload,
+  allowOvernight = false
 ): { timeline: TimelineRow[]; error?: string } {
   const meal1Start = String(spans.firstMealStart || "").trim();
   const meal1End = String(spans.lastMealEnd || "").trim();
@@ -133,6 +163,12 @@ function buildTimeline(
       return { timeline: [], error: "One or more time values are invalid." };
     }
     if (currMs <= prevMs) {
+      if (!allowOvernight) {
+        return {
+          timeline: [],
+          error: "Times must stay in same-day order unless the event runs overnight.",
+        };
+      }
       timeline[i].timestamp = new Date(currMs + 24 * 60 * 60 * 1000).toISOString();
     }
   }
@@ -270,7 +306,7 @@ async function loadRequester(userId: string) {
 async function loadEvent(eventId: string): Promise<EventRow> {
   const { data, error } = await supabaseAdmin
     .from("events")
-    .select("id, event_name, event_date, start_time, end_time, venue, city, state, event_type")
+    .select("id, event_name, event_date, start_time, end_time, ends_next_day, venue, city, state, event_type")
     .eq("id", eventId)
     .maybeSingle();
 
@@ -453,24 +489,18 @@ export async function GET(
       return jsonError("Event ID is required.", 400);
     }
 
-    const url = new URL(req.url);
-    const targetUserId = url.searchParams.get("userId")?.trim() || user.id;
-    const isProxyRequest = targetUserId !== user.id;
-    if (isProxyRequest && !requesterCanProxy) {
+    const requestedUserId = new URL(req.url).searchParams.get("userId")?.trim() || "";
+    if (requestedUserId && requestedUserId !== user.id && !requesterCanProxy) {
       return jsonError("You can only access your own timesheet.", 403);
     }
-    if (isProxyRequest) {
-      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
-      if (!targetHasEventAccess) {
-        return jsonError("That user does not have a timesheet for this event.", 404);
-      }
-    } else if (!requesterCanProxy) {
-      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
-      if (!requesterHasEventAccess) {
-        return jsonError("You are not assigned to this event.", 403);
-      }
+    const targetUserId = requestedUserId || user.id;
+    const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+    if (!targetHasEventAccess) {
+      return jsonError(
+        targetUserId === user.id ? "You are not assigned to this event." : "That user does not have a timesheet for this event.",
+        targetUserId === user.id ? 403 : 404
+      );
     }
-
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     const event = await loadEvent(eventId);
@@ -480,38 +510,7 @@ export async function GET(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-
-    let teamMembers: Array<{ id: string; name: string; role: string }> = [];
-    if (requesterCanProxy && !url.searchParams.get("userId")) {
-      const { data: teamRows } = await supabaseAdmin
-        .from("event_teams")
-        .select("vendor_id")
-        .eq("event_id", eventId);
-
-      const vendorIds = (teamRows || []).map((t: any) => t.vendor_id).filter(Boolean);
-
-      if (vendorIds.length > 0) {
-        const [usersResult, profilesResult] = await Promise.all([
-          supabaseAdmin.from("users").select("id, email, role").in("id", vendorIds),
-          supabaseAdmin.from("profiles").select("user_id, first_name, last_name").in("user_id", vendorIds),
-        ]);
-
-        const usersMap = new Map((usersResult.data || []).map((u: any) => [u.id, u]));
-        const profilesMap = new Map((profilesResult.data || []).map((p: any) => [p.user_id, p]));
-
-        teamMembers = vendorIds.map((id: string) => {
-          const u = (usersMap.get(id) || {}) as any;
-          const p = (profilesMap.get(id) || {}) as any;
-          const first = p.first_name ? safeDecrypt(String(p.first_name)) : "";
-          const last = p.last_name ? safeDecrypt(String(p.last_name)) : "";
-          return {
-            id,
-            name: [first, last].filter(Boolean).join(" ").trim() || u.email || id,
-            role: u.role || "vendor",
-          };
-        });
-      }
-    }
+    const allowOvernight = eventAllowsOvernight(event);
 
     const { entries } = await loadCurrentEntries(targetUserId, eventId, eventDate, eventTimezone);
     const attestationState = await loadAttestationState(targetUserId, entries);
@@ -531,6 +530,7 @@ export async function GET(
         date: eventDate,
         startTime: event.start_time,
         endTime: event.end_time,
+        endsNextDay: allowOvernight,
         venue: event.venue,
         city: event.city,
         state: event.state,
@@ -548,7 +548,7 @@ export async function GET(
         role: requester.role,
       },
       timesheet,
-      teamMembers,
+      teamMembers: [],
       editRequest,
     });
   } catch (err: any) {
@@ -580,25 +580,18 @@ export async function PUT(
     const attestationAccepted =
       typeof body?.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const rejectionReason = String(body?.rejectionReason || "").trim();
-
-    // Support submitting for another team member
-    const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
-    const isProxyRequest = targetUserId !== user.id;
-    if (isProxyRequest && !requesterCanProxy) {
+    const requestedTargetUserId = String(body?.targetUserId || "").trim();
+    if (requestedTargetUserId && requestedTargetUserId !== user.id && !requesterCanProxy) {
       return jsonError("You can only submit your own timesheet.", 403);
     }
-    if (isProxyRequest) {
-      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
-      if (!targetHasEventAccess) {
-        return jsonError("That user does not have a timesheet for this event.", 404);
-      }
-    } else if (!requesterCanProxy) {
-      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
-      if (!requesterHasEventAccess) {
-        return jsonError("You are not assigned to this event.", 403);
-      }
+    const targetUserId = requestedTargetUserId || user.id;
+    const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+    if (!targetHasEventAccess) {
+      return jsonError(
+        targetUserId === user.id ? "You are not assigned to this event." : "That user does not have a timesheet for this event.",
+        targetUserId === user.id ? 403 : 404
+      );
     }
-
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     if (!signature.startsWith("data:image/png;base64,")) {
@@ -621,7 +614,12 @@ export async function PUT(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(eventDate, eventTimezone, spans);
+    const { timeline, error: timelineError } = buildTimeline(
+      eventDate,
+      eventTimezone,
+      spans,
+      eventAllowsOvernight(event)
+    );
     if (timelineError) {
       return jsonError(timelineError, 400);
     }
@@ -645,9 +643,10 @@ export async function PUT(
       newByAction[entry.action].push(entry);
     }
 
-    const baseNote = targetUserId !== user.id
-      ? `Manager-submitted timesheet (entered by ${requester.name})`
-      : "Self-submitted event timesheet";
+    const baseNote =
+      targetUserId !== user.id
+        ? `Manager-submitted timesheet (entered by ${requester.name})`
+        : "Self-submitted event timesheet";
     const toUpdate: Array<{ id: string; action: string; timestamp: string }> = [];
     const toInsert: Array<{ action: string; timestamp: string }> = [];
     const toDelete: string[] = [];
@@ -904,23 +903,18 @@ export async function PATCH(
 
     const body = await req.json().catch(() => null);
     const spans: TimesheetSpanPayload = body?.spans || {};
-    const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
-    const isProxyRequest = targetUserId !== user.id;
-    if (isProxyRequest && !requesterCanProxy) {
+    const requestedTargetUserId = String(body?.targetUserId || "").trim();
+    if (requestedTargetUserId && requestedTargetUserId !== user.id && !requesterCanProxy) {
       return jsonError("You can only save your own timesheet.", 403);
     }
-    if (isProxyRequest) {
-      const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
-      if (!targetHasEventAccess) {
-        return jsonError("That user does not have a timesheet for this event.", 404);
-      }
-    } else if (!requesterCanProxy) {
-      const requesterHasEventAccess = await hasEventTimesheetAccess(user.id, eventId);
-      if (!requesterHasEventAccess) {
-        return jsonError("You are not assigned to this event.", 403);
-      }
+    const targetUserId = requestedTargetUserId || user.id;
+    const targetHasEventAccess = await hasEventTimesheetAccess(targetUserId, eventId);
+    if (!targetHasEventAccess) {
+      return jsonError(
+        targetUserId === user.id ? "You are not assigned to this event." : "That user does not have a timesheet for this event.",
+        targetUserId === user.id ? 403 : 404
+      );
     }
-
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     // Require at least clock_in and clock_out to save
@@ -935,7 +929,12 @@ export async function PATCH(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(eventDate, eventTimezone, spans);
+    const { timeline, error: timelineError } = buildTimeline(
+      eventDate,
+      eventTimezone,
+      spans,
+      eventAllowsOvernight(event)
+    );
     if (timelineError) {
       return NextResponse.json({ ok: false, skipped: true, reason: timelineError });
     }
@@ -947,9 +946,7 @@ export async function PATCH(
       eventTimezone
     );
 
-    const baseNote = targetUserId !== user.id
-      ? `Draft save by ${requester.name}`
-      : "Draft save";
+    const baseNote = targetUserId !== user.id ? `Draft save by ${requester.name}` : "Draft save";
 
     const existingByAction: Record<string, TimeEntryRow[]> = {};
     for (const entry of existingEntries) {

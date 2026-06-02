@@ -378,13 +378,6 @@ export default function WorkerProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
-  const [timesheetEditRequestTarget, setTimesheetEditRequestTarget] = useState<{
-    eventId: string;
-    eventName: string;
-  } | null>(null);
-  const [timesheetEditRequestReason, setTimesheetEditRequestReason] = useState("");
-  const [timesheetEditRequestError, setTimesheetEditRequestError] = useState("");
-  const [submittingTimesheetEditRequest, setSubmittingTimesheetEditRequest] = useState(false);
 
   const renderTimeSheetAction = (
     eventId: string | null | undefined,
@@ -427,34 +420,13 @@ export default function WorkerProfilePage() {
               Edit Requested
             </span>
           ) : editRequestStatus === "rejected" ? (
-            <>
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
-                Edit Request Rejected
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setTimesheetEditRequestTarget({ eventId, eventName });
-                  setTimesheetEditRequestReason("");
-                  setTimesheetEditRequestError("");
-                }}
-                className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Request Again
-              </button>
-            </>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+              Edit Request Rejected
+            </span>
           ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setTimesheetEditRequestTarget({ eventId, eventName });
-                setTimesheetEditRequestReason("");
-                setTimesheetEditRequestError("");
-              }}
-              className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              Request Edit
-            </button>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
+              Locked
+            </span>
           )}
         </div>
       );
@@ -467,73 +439,6 @@ export default function WorkerProfilePage() {
     );
   };
 
-  const submitTimesheetEditRequest = async () => {
-    if (!timesheetEditRequestTarget || !employeeId) return;
-
-    const trimmedReason = timesheetEditRequestReason.trim();
-    if (!trimmedReason) {
-      setTimesheetEditRequestError("Please explain why this timesheet needs to be edited.");
-      return;
-    }
-
-    setSubmittingTimesheetEditRequest(true);
-    setTimesheetEditRequestError("");
-
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const res = await fetch("/api/timesheet-edit-requests", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          eventId: timesheetEditRequestTarget.eventId,
-          targetUserId: employeeId,
-          requestReason: trimmedReason,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to submit timesheet edit request.");
-      }
-
-      setSummary((prev) =>
-        prev
-          ? {
-              ...prev,
-              per_event: prev.per_event.map((row) =>
-                row.event_id === timesheetEditRequestTarget.eventId
-                  ? {
-                      ...row,
-                      timesheet_edit_request_status: data?.request?.status || "submitted",
-                      timesheet_edit_request_created_at:
-                        data?.request?.createdAt || new Date().toISOString(),
-                    }
-                  : row
-              ),
-            }
-          : prev
-      );
-      setTimesheetEditRequestTarget(null);
-      setTimesheetEditRequestReason("");
-    } catch (error: any) {
-      setTimesheetEditRequestError(
-        error?.message || "Failed to submit timesheet edit request."
-      );
-    } finally {
-      setSubmittingTimesheetEditRequest(false);
-    }
-  };
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
@@ -3787,78 +3692,6 @@ export default function WorkerProfilePage() {
               </section>
             );
           })()}
-
-          {timesheetEditRequestTarget && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-              onClick={() => {
-                if (submittingTimesheetEditRequest) return;
-                setTimesheetEditRequestTarget(null);
-                setTimesheetEditRequestReason("");
-                setTimesheetEditRequestError("");
-              }}
-            >
-              <div
-                className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white shadow-2xl"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="border-b border-gray-200 px-6 py-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Request Timesheet Edit</h3>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Submit a correction request for <span className="font-medium text-gray-700">{timesheetEditRequestTarget.eventName}</span>.
-                  </p>
-                </div>
-
-                <div className="space-y-4 px-6 py-5">
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    The attested timesheet will stay locked until a manager or exec reviews this request in the event dashboard.
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Reason for edit <span className="text-red-500">*</span>
-                    </label>
-                    <textarea
-                      value={timesheetEditRequestReason}
-                      onChange={(e) => setTimesheetEditRequestReason(e.target.value)}
-                      rows={5}
-                      placeholder="Describe what needs to be corrected in this timesheet..."
-                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                    />
-                  </div>
-
-                  {timesheetEditRequestError && (
-                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                      {timesheetEditRequestError}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTimesheetEditRequestTarget(null);
-                      setTimesheetEditRequestReason("");
-                      setTimesheetEditRequestError("");
-                    }}
-                    disabled={submittingTimesheetEditRequest}
-                    className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submitTimesheetEditRequest()}
-                    disabled={submittingTimesheetEditRequest}
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {submittingTimesheetEditRequest ? "Sending..." : "Send Request"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           </>
         )}
