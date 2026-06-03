@@ -28,6 +28,7 @@ const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
 const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 const SIGNATURE_Y_SHIFT = 80;
+const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
 const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
@@ -974,7 +975,7 @@ export async function GET(request: NextRequest) {
           ? 0
           : Math.max(pages.length - 1, 0);
         const handbookPageCount = Math.min(10, pages.length);
-        const handbookStartIndex = Math.max(0, pages.length - handbookPageCount);
+        const handbookStartIndex = Math.max(0, pages.length - handbookPageCount - EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT);
         const stateTaxPageIndex = Math.max(pages.length - 2, 0);
         const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
           ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)

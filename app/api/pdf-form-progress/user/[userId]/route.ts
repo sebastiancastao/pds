@@ -37,6 +37,7 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
+const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
@@ -48,6 +49,7 @@ const formDisplayNames: Record<string, string> = {
   'fw4': 'Federal W-4',
   'i9': 'I-9 Employment Verification',
   'adp-deposit': 'ADP Direct Deposit',
+  'employee-handbook': 'Employee Handbook',
   'ui-guide': 'UI Guide',
   'disability-insurance': 'Disability Insurance',
   'paid-family-leave': 'Paid Family Leave',
@@ -298,6 +300,16 @@ const BACKGROUND_CHECK_FORM_KEYS = new Set([
   'background-waiver',
   'background-disclosure',
   'background-addon',
+]);
+const KNOWN_EXPLICIT_SIGNATURE_FORMS = new Set([
+  ...Array.from(FIRST_PAGE_SIGNATURE_FORMS),
+  ...SIGNATURE_FALLBACK_PRIORITY,
+  'notice-to-employee',
+  'state-tax',
+  'wi-state-tax',
+  'ny-state-tax',
+  'az-state-tax',
+  'attestation',
 ]);
 const MEAL_WAIVER_TITLES: Record<string, string> = {
   '6_hour': '6 Hour Meal Break Waiver',
@@ -1480,6 +1492,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
+const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-shift-2';
 
 async function ensureCacheDirectory() {
   try {
@@ -1498,6 +1511,7 @@ async function tryServeCachedPdf(userId: string, sourceTimestamp: string) {
   try {
     const metaRaw = await fsPromises.readFile(metaPath, 'utf-8');
     const meta = JSON.parse(metaRaw);
+    if (meta.cacheVersion !== MERGED_PDF_CACHE_VERSION) return null;
     if (meta.sourceTimestamp !== sourceTimestamp) return null;
     console.log('[PDF_FORMS] Cache hit for user:', userId, 'timestamp:', sourceTimestamp);
     return await fsPromises.readFile(cachePath);
@@ -1518,6 +1532,7 @@ async function cacheMergedPdf(userId: string, pdfBytes: Uint8Array, sourceTimest
     await fsPromises.writeFile(
       metaPath,
       JSON.stringify({
+        cacheVersion: MERGED_PDF_CACHE_VERSION,
         sourceTimestamp,
         generatedAt: new Date().toISOString(),
       })
@@ -2571,10 +2586,9 @@ export async function GET(
           const isEmployeeHandbook = normalizedFormName.includes('handbook');
           const isStateTaxForm = normalizedFormName === 'state-tax' || formNameLower === 'state-tax';
 
-          // For employee handbook, add signatures to the LAST 10 pages
+          // For employee handbook, shift the signature window earlier across the last pages.
           const handbookPageCount = Math.min(10, pageCount);
-          const handbookEndIndex = pageCount - 1; // Last page (0-indexed)
-          const handbookStartIndex = Math.max(0, pageCount - handbookPageCount); // 10 pages before the end
+          const handbookStartIndex = Math.max(0, pageCount - handbookPageCount - EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT);
 
           // For state-tax form, place signature on the second-to-last page (previous page up)
           const stateTaxPageIndex = Math.max(pageCount - 2, 0);
@@ -2586,7 +2600,8 @@ export async function GET(
             : [defaultPageIndex];
 
           if (isEmployeeHandbook) {
-            console.log(`[PDF_FORMS] Employee handbook (${pageCount} pages): Adding signatures to pages ${handbookStartIndex + 1}-${handbookEndIndex + 1} (last ${signaturePageIndexes.length} pages)`);
+            const handbookEndIndex = signaturePageIndexes[signaturePageIndexes.length - 1] ?? handbookStartIndex;
+            console.log(`[PDF_FORMS] Employee handbook (${pageCount} pages): Adding signatures to pages ${handbookStartIndex + 1}-${handbookEndIndex + 1} (shifted up by ${EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT} pages)`);
           }
 
           if (isStateTaxForm) {
@@ -2623,7 +2638,7 @@ export async function GET(
               formNameLower === 'wi-state-tax';
             const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
             const hasExplicitSignaturePlacement =
-              Boolean(formDisplayNames[normalizedFormName]) ||
+              KNOWN_EXPLICIT_SIGNATURE_FORMS.has(normalizedFormName) ||
               BACKGROUND_CHECK_FORM_KEYS.has(normalizedFormName);
 
             let attestationSignaturePlacement:
