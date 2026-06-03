@@ -117,6 +117,40 @@ function eventAllowsOvernight(event: Pick<EventRow, "start_time" | "end_time" | 
   return startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds;
 }
 
+function getNextDayDate(dateStr: string): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  return [
+    next.getFullYear(),
+    String(next.getMonth() + 1).padStart(2, "0"),
+    String(next.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function validateTimelineWithinEventWindow(
+  timeline: TimelineRow[],
+  event: Pick<EventRow, "start_time" | "end_time" | "ends_next_day">,
+  eventDate: string,
+  eventTimezone: string
+): string | null {
+  const clockIn = timeline.find((r) => r.action === "clock_in");
+  const clockOut = [...timeline].reverse().find((r) => r.action === "clock_out");
+  const allowOvernight = eventAllowsOvernight(event);
+
+  if (clockIn && event.start_time) {
+    const eventStartIso = toZonedIso(eventDate, event.start_time, eventTimezone);
+    if (eventStartIso) {
+      const clockInMs = new Date(clockIn.timestamp).getTime();
+      const eventStartMs = new Date(eventStartIso).getTime();
+      if (Number.isFinite(clockInMs) && Number.isFinite(eventStartMs) && clockInMs < eventStartMs) {
+        return "Clock in time cannot be before the event start time.";
+      }
+    }
+  }
+
+  return null;
+}
+
 function buildTimeline(
   eventDate: string,
   eventTimezone: string,
@@ -624,6 +658,11 @@ export async function PUT(
       return jsonError(timelineError, 400);
     }
 
+    const windowError = validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone);
+    if (windowError) {
+      return jsonError(windowError, 400);
+    }
+
     const { entries: existingEntries, range } = await loadCurrentEntries(
       targetUserId,
       eventId,
@@ -937,6 +976,11 @@ export async function PATCH(
     );
     if (timelineError) {
       return NextResponse.json({ ok: false, skipped: true, reason: timelineError });
+    }
+
+    const draftWindowError = validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone);
+    if (draftWindowError) {
+      return NextResponse.json({ ok: false, skipped: true, reason: draftWindowError });
     }
 
     const { entries: existingEntries, range } = await loadCurrentEntries(

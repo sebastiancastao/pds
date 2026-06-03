@@ -39,6 +39,7 @@ function CreateEventPageInner() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
+  const isNonEvent = form.event_type === "special";
 
   // User and session check: block if not authenticated, with detailed logs
   useEffect(() => {
@@ -78,7 +79,20 @@ function CreateEventPageInner() {
 
   const handleSelectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setForm(prev => ({ ...prev, [name]: value }));
+    setForm(prev => {
+      if (name === "event_type" && value === "special") {
+        return {
+          ...prev,
+          [name]: value,
+          artist_share_percent: "",
+          venue_share_percent: "",
+          pds_share_percent: "",
+          commission_pool: "",
+        };
+      }
+
+      return { ...prev, [name]: value };
+    });
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -122,10 +136,18 @@ function CreateEventPageInner() {
       // Convert percentage values (50) to decimals (0.5) for backend
       const payload = {
         ...form,
-        artist_share_percent: form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined,
-        venue_share_percent: form.venue_share_percent !== "" ? Number(form.venue_share_percent) / 100 : undefined,
-        pds_share_percent: form.pds_share_percent !== "" ? Number(form.pds_share_percent) / 100 : undefined,
-        commission_pool: form.commission_pool !== "" ? Number(form.commission_pool) / 100 : undefined
+        artist_share_percent: isNonEvent
+          ? undefined
+          : (form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined),
+        venue_share_percent: isNonEvent
+          ? undefined
+          : (form.venue_share_percent !== "" ? Number(form.venue_share_percent) / 100 : undefined),
+        pds_share_percent: isNonEvent
+          ? undefined
+          : (form.pds_share_percent !== "" ? Number(form.pds_share_percent) / 100 : undefined),
+        commission_pool: isNonEvent
+          ? undefined
+          : (form.commission_pool !== "" ? Number(form.commission_pool) / 100 : undefined)
       };
       console.log('[DEBUG] CreateEvent - Submitting event payload:', payload);
       // Attach Supabase access token so the API can authenticate the user server-side
@@ -332,78 +354,79 @@ function CreateEventPageInner() {
               </div>
             </div>
 
-            {/* Revenue Share Section */}
-            <div className="pt-4 border-t border-slate-100">
-              <h3 className="text-lg font-semibold text-slate-800 mb-4">Revenue Share</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Artist Share %</label>
-                  <div className="relative">
-                    <input
-                      name="artist_share_percent"
-                      value={form.artist_share_percent}
-                      onChange={handleChange}
-                      type="number"
-                      min="0"
-                      max="100"
-                      className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
-                      placeholder="50"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+            {!isNonEvent && (
+              <div className="pt-4 border-t border-slate-100">
+                <h3 className="text-lg font-semibold text-slate-800 mb-4">Revenue Share</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Artist Share %</label>
+                    <div className="relative">
+                      <input
+                        name="artist_share_percent"
+                        value={form.artist_share_percent}
+                        onChange={handleChange}
+                        type="number"
+                        min="0"
+                        max="100"
+                        className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                        placeholder="50"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">Venue Share %</label>
+                    <div className="relative">
+                      <input
+                        name="venue_share_percent"
+                        value={form.venue_share_percent}
+                        onChange={handleChange}
+                        type="number"
+                        min="0"
+                        max="100"
+                        className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                        placeholder="30"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">PDS Share %</label>
+                    <div className="relative">
+                      <input
+                        name="pds_share_percent"
+                        value={form.pds_share_percent}
+                        onChange={handleChange}
+                        type="number"
+                        min="0"
+                        max="100"
+                        className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                        placeholder="20"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Venue Share %</label>
-                  <div className="relative">
-                    <input
-                      name="venue_share_percent"
-                      value={form.venue_share_percent}
-                      onChange={handleChange}
-                      type="number"
-                      min="0"
-                      max="100"
-                      className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
-                      placeholder="30"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">PDS Share %</label>
-                  <div className="relative">
-                    <input
-                      name="pds_share_percent"
-                      value={form.pds_share_percent}
-                      onChange={handleChange}
-                      type="number"
-                      min="0"
-                      max="100"
-                      className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
-                      placeholder="20"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
-                  </div>
-                </div>
-              </div>
 
-              <div className="mt-4">
-                <label className="text-sm font-semibold text-slate-700 block mb-2">Commission Pool %</label>
-                <div className="relative">
-                  <input
-                    name="commission_pool"
-                    value={form.commission_pool}
-                    onChange={handleChange}
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
-                    placeholder="0"
-                  />
-                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+                <div className="mt-4">
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">Commission Pool %</label>
+                  <div className="relative">
+                    <input
+                      name="commission_pool"
+                      value={form.commission_pool}
+                      onChange={handleChange}
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      className="w-full px-4 py-3 pr-8 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                      placeholder="0"
+                    />
+                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">%</span>
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             {/* Status Section */}
             <div className="pt-4 border-t border-slate-100">

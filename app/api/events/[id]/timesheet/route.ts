@@ -457,6 +457,11 @@ type TimesheetSpanPayload = {
   thirdMealEnd?: string;
 };
 
+type TimelineEntry = {
+  action: string;
+  timestamp: string | null;
+};
+
 const toEventIso = (eventDate: string, hhmm?: string) => {
   const value = (hhmm || "").trim();
   if (!value) return null;
@@ -484,6 +489,55 @@ const normalizeEventDate = (dateValue?: string | null) => {
   if (!dateValue) return null;
   return dateValue.split("T")[0];
 };
+
+function eventAllowsOvernight(event: {
+  start_time?: string | null;
+  end_time?: string | null;
+  ends_next_day?: boolean | null;
+}) {
+  if (Boolean(event.ends_next_day)) return true;
+  const startSeconds = timeToSeconds(event.start_time);
+  const endSeconds = timeToSeconds(event.end_time);
+  return startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds;
+}
+
+function getNextDayDate(dateStr: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  return [
+    next.getFullYear(),
+    String(next.getMonth() + 1).padStart(2, "0"),
+    String(next.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function validateTimelineWithinEventWindow(
+  timeline: TimelineEntry[],
+  event: {
+    start_time?: string | null;
+    end_time?: string | null;
+    ends_next_day?: boolean | null;
+  },
+  eventDate: string,
+  eventTimezone: string
+): string | null {
+  const clockIn = timeline.find((entry) => entry.action === "clock_in");
+  const clockOut = [...timeline].reverse().find((entry) => entry.action === "clock_out");
+  const allowOvernight = eventAllowsOvernight(event);
+
+  if (clockIn?.timestamp && event.start_time) {
+    const eventStartIso = toZonedIso(eventDate, event.start_time, eventTimezone);
+    if (eventStartIso) {
+      const clockInMs = new Date(clockIn.timestamp).getTime();
+      const eventStartMs = new Date(eventStartIso).getTime();
+      if (Number.isFinite(clockInMs) && Number.isFinite(eventStartMs) && clockInMs < eventStartMs) {
+        return "Clock in time cannot be before the event start time.";
+      }
+    }
+  }
+
+  return null;
+}
 
 export async function PUT(
   req: NextRequest,
@@ -583,7 +637,7 @@ export async function PUT(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("event_date, state")
+      .select("event_date, start_time, end_time, ends_next_day, state")
       .eq("id", eventId)
       .maybeSingle();
     if (eventError) {
@@ -594,6 +648,7 @@ export async function PUT(
       return NextResponse.json({ error: "Event date is missing" }, { status: 400 });
     }
     const eventTimezone = getTimezoneForState(event?.state);
+    const allowOvernight = eventAllowsOvernight(event || {});
 
     const { data: targetUser, error: targetUserError } = await supabaseAdmin
       .from("users")
@@ -616,7 +671,7 @@ export async function PUT(
     const useMeal2 = !!(meal2Start && meal2End);
     const useMeal3 = !!(meal3Start && meal3End);
 
-    const timeline = [
+    const timeline: TimelineEntry[] = [
       { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) },
       ...(useMeal1
         ? [
@@ -645,6 +700,12 @@ export async function PUT(
       const prevMs = new Date(String(timeline[i - 1].timestamp)).getTime();
       const currMs = new Date(String(timeline[i].timestamp)).getTime();
       if (currMs <= prevMs) {
+        if (!allowOvernight) {
+          return NextResponse.json(
+            { error: "Times must stay on the event date unless the event runs overnight." },
+            { status: 400 }
+          );
+        }
         timeline[i].timestamp = new Date(currMs + 24 * 60 * 60 * 1000).toISOString();
       }
     }
@@ -667,7 +728,12 @@ export async function PUT(
       }
     }
 
-    const dayRange = getLocalDateRange(eventDate, eventTimezone, 2);
+    const windowError = validateTimelineWithinEventWindow(timeline, event || {}, eventDate, eventTimezone);
+    if (windowError) {
+      return NextResponse.json({ error: windowError }, { status: 400 });
+    }
+
+    const dayRange = getLocalDateRange(eventDate, eventTimezone, allowOvernight ? 2 : 1);
     if (!dayRange) {
       return NextResponse.json({ error: "Invalid event date/timezone" }, { status: 400 });
     }

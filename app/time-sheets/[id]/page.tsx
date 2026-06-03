@@ -178,7 +178,13 @@ function eventAllowsOvernight(startTime?: string | null, endTime?: string | null
   return startMinutes !== null && endMinutes !== null && endMinutes <= startMinutes;
 }
 
-function computePreview(form: TimeForm, strict: boolean, allowOvernight: boolean): PreviewResult {
+function computePreview(
+  form: TimeForm,
+  strict: boolean,
+  allowOvernight: boolean,
+  eventStartTime?: string | null,
+  eventEndTime?: string | null
+): PreviewResult {
   const meal1HasAnyValue = Boolean(form.firstMealStart || form.lastMealEnd);
   const meal2HasAnyValue = Boolean(form.secondMealStart || form.secondMealEnd);
 
@@ -269,6 +275,20 @@ function computePreview(form: TimeForm, strict: boolean, allowOvernight: boolean
     previousAbsoluteMinutes = absoluteMinutes;
   }
 
+  if (eventStartTime) {
+    const eventStartMin = parseTimeToMinutes(String(eventStartTime).trim().slice(0, 5));
+    if (eventStartMin !== null && resolvedMinutes[0] < eventStartMin) {
+      return {
+        isComplete: false,
+        error: "Clock in time cannot be before the event start time.",
+        mealMs: 0,
+        totalMs: 0,
+        totalMsWithAdminResponse: 0,
+        overnight,
+      };
+    }
+  }
+
   const totalWindowMinutes = resolvedMinutes[resolvedMinutes.length - 1] - resolvedMinutes[0];
   if (totalWindowMinutes <= 0) {
     return {
@@ -350,7 +370,10 @@ export default function TimeSheetsPage() {
     () => eventAllowsOvernight(payload?.event.startTime, payload?.event.endTime, payload?.event.endsNextDay),
     [payload?.event.endTime, payload?.event.endsNextDay, payload?.event.startTime]
   );
-  const preview = useMemo(() => computePreview(form, false, allowOvernight), [allowOvernight, form]);
+  const preview = useMemo(
+    () => computePreview(form, false, allowOvernight, payload?.event.startTime, payload?.event.endTime),
+    [allowOvernight, form, payload?.event.startTime, payload?.event.endTime]
+  );
 
   const loadPage = useCallback(async () => {
     if (!eventId) {
@@ -438,6 +461,7 @@ export default function TimeSheetsPage() {
             secondMealStart: currentForm.secondMealStart,
             secondMealEnd: currentForm.secondMealEnd,
           },
+          targetUserId: requestedUserId || undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -454,7 +478,7 @@ export default function TimeSheetsPage() {
       setSaveStatus("error");
       setTimeout(() => setSaveStatus("idle"), 3000);
     }
-  }, [eventId]);
+  }, [eventId, requestedUserId]);
 
   const scheduleAutoSave = useCallback((currentForm: TimeForm) => {
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
@@ -527,7 +551,7 @@ export default function TimeSheetsPage() {
   }, []);
 
   const goToAttestation = () => {
-    const strictPreview = computePreview(form, true, allowOvernight);
+    const strictPreview = computePreview(form, true, allowOvernight, payload?.event.startTime, payload?.event.endTime);
     if (strictPreview.error) {
       setError(strictPreview.error);
       return;
@@ -543,7 +567,7 @@ export default function TimeSheetsPage() {
   const submitTimesheet = async (attestationAccepted: boolean) => {
     if (!payload) return;
 
-    const strictPreview = computePreview(form, true, allowOvernight);
+    const strictPreview = computePreview(form, true, allowOvernight, payload?.event.startTime, payload?.event.endTime);
     if (strictPreview.error) {
       setError(strictPreview.error);
       return;
@@ -604,6 +628,7 @@ export default function TimeSheetsPage() {
           signature,
           attestationAccepted,
           rejectionReason: resolvedRejectionReason,
+          targetUserId: requestedUserId || undefined,
         }),
       });
 
@@ -627,6 +652,24 @@ export default function TimeSheetsPage() {
 
   const timesheetForSummary = submittedTimesheet || payload?.timesheet || null;
   const requesterCanProxy = canManageOtherTimesheets(payload?.requester?.role);
+  const isEventDay = (() => {
+    if (!payload?.event?.date || !payload?.event?.timezone) return true;
+    try {
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat("en-US", {
+        timeZone: payload.event.timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+      }).formatToParts(now);
+      const y = parts.find((p) => p.type === "year")?.value ?? "";
+      const m = parts.find((p) => p.type === "month")?.value ?? "";
+      const d = parts.find((p) => p.type === "day")?.value ?? "";
+      return `${y}-${m}-${d}` === payload.event.date;
+    } catch {
+      return true;
+    }
+  })();
   const isProxyView = Boolean(
     payload?.user?.id &&
       payload?.requester?.id &&
@@ -882,6 +925,23 @@ export default function TimeSheetsPage() {
             <div className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm">
               {mode === "form" && (
                 <>
+                  {!isEventDay && !requesterCanProxy ? (
+                    <div className="flex flex-col items-center justify-center gap-4 py-12 text-center">
+                      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-amber-100">
+                        <svg className="h-7 w-7 text-amber-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <h2 className="text-xl font-bold text-slate-900">Time Sheet Unavailable</h2>
+                        <p className="mt-2 text-sm text-slate-600">
+                          This time sheet can only be filled out on the event date:{" "}
+                          <span className="font-semibold">{formatEventDate(payload.event.date)}</span>.
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                  <>
                   <div className="flex items-center justify-between">
                     <div>
                       <h2 className="text-2xl font-bold text-slate-900">
@@ -891,6 +951,10 @@ export default function TimeSheetsPage() {
                       </h2>
                       <p className="mt-1 text-sm text-slate-600">
                         Enter the workday exactly as worked. Meal fields are mandatory, and each meal requires a start and end time.
+                      </p>
+                      <p className="mt-2 text-sm text-slate-500">
+                        This page only records time for {formatEventDate(payload.event.date)}
+                        {allowOvernight ? " and the event's overnight continuation." : "."}
                       </p>
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
@@ -1023,6 +1087,8 @@ export default function TimeSheetsPage() {
                       Continue to Attestation
                     </button>
                   </div>
+                  </>
+                  )}
                 </>
               )}
 
