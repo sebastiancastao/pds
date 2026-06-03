@@ -235,8 +235,17 @@ export default function StatePayrollFormViewer({
 }: StatePayrollFormViewerProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, forms);
-  const selectedForm = searchParams.get('form') || startFormId || firstFormId;
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
+  const requestedForm = searchParams.get('form') || startFormId || '';
+  const baseForms = forms && forms.length > 0 ? forms : DEFAULT_FORMS;
+  const singleCustomFormMode = Boolean(customFormId && requestedForm);
+  const scopedForms = singleCustomFormMode
+    ? baseForms.filter((form) => form.id === requestedForm)
+    : baseForms;
+  const effectiveForms = scopedForms.length > 0 ? scopedForms : baseForms;
+  const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, effectiveForms);
+  const selectedForm = requestedForm || firstFormId;
   const asUser = searchParams.get('asUser') || undefined;
   const i9EntryPoint = normalizeI9EntryPoint(
     searchParams.get('entryPoint'),
@@ -300,6 +309,12 @@ export default function StatePayrollFormViewer({
     const params = new URLSearchParams({ form: formId });
     if (asUser) {
       params.set('asUser', asUser);
+    }
+    if (customFormId) {
+      params.set('customFormId', customFormId);
+    }
+    if (returnTo) {
+      params.set('returnTo', returnTo);
     }
     if (viewerEntryPoint) {
       params.set('entryPoint', viewerEntryPoint);
@@ -706,6 +721,33 @@ export default function StatePayrollFormViewer({
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
+        if (singleCustomFormMode && customFormId && isCurrentForm) {
+          const customFormPayload: any = {
+            formName: `custom-form-${customFormId}`,
+            formData: base64,
+            ...(asUser ? { targetUserId: asUser } : {}),
+            entryPoint: i9EntryPoint,
+          };
+
+          if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
+            customFormPayload.formDate = uniformPolicyDate;
+          }
+
+          const customFormResponse = await fetch('/api/pdf-form-progress/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(customFormPayload),
+          });
+
+          if (!customFormResponse.ok) {
+            const customFormError = await customFormResponse.json().catch(() => null);
+            throw new Error(customFormError?.error || 'Failed to save custom form progress');
+          }
+        }
         if (isCurrentForm) {
           setSaveStatus('saved');
           setLastSaved(new Date());
@@ -917,6 +959,8 @@ export default function StatePayrollFormViewer({
     if (!asUser && selectedForm === 'home-venue-assignment') {
       if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
       if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
+      const savedHomeVenue = await handleSaveHomeVenue();
+      if (!savedHomeVenue) return;
     }
 
     if (selectedForm === 'attestation' && pdfBytesRef.current) {
@@ -2540,6 +2584,11 @@ export default function StatePayrollFormViewer({
       await saveSignatureToDatabase(currentSignature);
     }
 
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     if (currentForm?.next) {
       router.push(buildViewerUrl(currentForm.next));
     } else {
@@ -2577,6 +2626,11 @@ export default function StatePayrollFormViewer({
   };
 
   const handleBack = () => {
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     const currentIndex = formOrder.indexOf(selectedForm);
     if (currentIndex > 0) {
       const prevForm = formOrder[currentIndex - 1];

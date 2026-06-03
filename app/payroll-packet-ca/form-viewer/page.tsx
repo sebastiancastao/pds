@@ -24,6 +24,9 @@ function FormViewerContent() {
   const searchParams = useSearchParams();
   const formName = searchParams.get('form') || 'fillable';
   const asUser = searchParams.get('asUser') || undefined;
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
+  const singleCustomFormMode = Boolean(customFormId && formName);
   const i9EntryPoint = normalizeI9EntryPoint(
     searchParams.get('entryPoint'),
     asUser ? I9_ENTRY_POINTS.HR_EMPLOYEES : I9_ENTRY_POINTS.PAYROLL_PACKET,
@@ -34,10 +37,33 @@ function FormViewerContent() {
     if (asUser) {
       params.set('asUser', asUser);
     }
+    if (customFormId) {
+      params.set('customFormId', customFormId);
+    }
+    if (returnTo) {
+      params.set('returnTo', returnTo);
+    }
     if (viewerEntryPoint) {
       params.set('entryPoint', viewerEntryPoint);
     }
     return `/payroll-packet-ca/form-viewer?${params.toString()}`;
+  };
+  const buildMealWaiverUrl = (path: string) => {
+    const params = new URLSearchParams();
+    if (asUser) {
+      params.set('asUser', asUser);
+    }
+    if (customFormId) {
+      params.set('customFormId', customFormId);
+    }
+    if (returnTo) {
+      params.set('returnTo', returnTo);
+    }
+    if (viewerEntryPoint) {
+      params.set('entryPoint', viewerEntryPoint);
+    }
+    const query = params.toString();
+    return query ? `${path}?${query}` : path;
   };
 
   const escapeFieldNameForSelector = (fieldName: string) => {
@@ -156,8 +182,8 @@ function FormViewerContent() {
   const mealWaiverRoute = MEAL_WAIVER_ROUTE_MAP[formName];
   const continueUrl = currentForm?.next
     ? currentForm.next === 'meal-waiver-6hour'
-      ? '/payroll-packet-ca/meal-waiver-6hour'
-      : `/payroll-packet-ca/form-viewer?form=${currentForm.next}`
+      ? buildMealWaiverUrl('/payroll-packet-ca/meal-waiver-6hour')
+      : buildViewerUrl(currentForm.next)
     : undefined;
 
   useEffect(() => {
@@ -172,9 +198,9 @@ function FormViewerContent() {
 
   useEffect(() => {
     if (!currentForm && mealWaiverRoute) {
-      router.push(mealWaiverRoute.path);
+      router.push(buildMealWaiverUrl(mealWaiverRoute.path));
     }
-  }, [currentForm, mealWaiverRoute, router]);
+  }, [buildMealWaiverUrl, currentForm, mealWaiverRoute, router]);
 
   // Handle invalid form name
   if (!currentForm) {
@@ -417,6 +443,28 @@ function FormViewerContent() {
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
+        if (singleCustomFormMode && customFormId && isCurrentForm) {
+          const customFormResponse = await fetch('/api/pdf-form-progress/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(finalSession?.access_token ? { Authorization: `Bearer ${finalSession.access_token}` } : {})
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify({
+              formName: `custom-form-${customFormId}`,
+              formData: base64,
+              ...(asUser ? { targetUserId: asUser } : {}),
+              entryPoint: i9EntryPoint,
+            }),
+          });
+
+          if (!customFormResponse.ok) {
+            const customFormError = await customFormResponse.json().catch(() => null);
+            throw new Error(customFormError?.error || 'Failed to save custom form progress');
+          }
+        }
+
         if (isCurrentForm) {
           setSaveStatus('saved');
           setLastSaved(new Date());
@@ -568,6 +616,8 @@ function FormViewerContent() {
     if (!asUser && formName === 'home-venue-assignment') {
       if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
       if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
+      const savedHomeVenue = await handleSaveHomeVenue();
+      if (!savedHomeVenue) return;
     }
 
     if (formName === 'attestation' && currentPdfBytes) {
@@ -1428,11 +1478,16 @@ function FormViewerContent() {
       });
     }
 
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     // Navigate to next form
     if (currentForm.next) {
       console.log('Navigating to:', currentForm.next);
       if (currentForm.next === 'meal-waiver-6hour') {
-        router.push('/payroll-packet-ca/meal-waiver-6hour');
+        router.push(buildMealWaiverUrl('/payroll-packet-ca/meal-waiver-6hour'));
       } else {
         router.push(buildViewerUrl(currentForm.next));
       }
@@ -1443,6 +1498,11 @@ function FormViewerContent() {
   };
 
   const handleBack = async () => {
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     // Capture formId at the start to prevent race conditions during async operations
     const formIdToSave = currentForm.formId;
     const currentPdfBytes = getPdfBytesForForm(formIdToSave);

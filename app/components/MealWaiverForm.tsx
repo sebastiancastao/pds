@@ -1,7 +1,7 @@
 ﻿'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
 type WaiverType = '6_hour' | '10_hour' | '12_hour';
@@ -36,6 +36,15 @@ export default function MealWaiverForm({
   signatureFormType,
 }: MealWaiverFormProps) {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const isCustomFormMode = Boolean(customFormId);
+  const customFormType =
+    pathname.includes('meal-waiver-10-12') ? 'meal-waiver-10-12' : 'meal-waiver-6hour';
+  const stateCode = basePath.replace('/payroll-packet-', '').replace(/\//g, '');
   const [selectedType, setSelectedType] = useState<WaiverType>(allowedTypes[0]);
   const [employeeName, setEmployeeName] = useState('');
   const [position, setPosition] = useState('');
@@ -241,6 +250,44 @@ export default function MealWaiverForm({
     }
   };
 
+  const markCustomFormComplete = async (sessionToken?: string | null) => {
+    if (!isCustomFormMode) return;
+
+    const pdfResponse = await fetch(
+      `/api/payroll-packet-common/${customFormType}?state=${encodeURIComponent(stateCode)}`,
+      {
+        headers: {
+          ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        },
+      }
+    );
+
+    if (!pdfResponse.ok) {
+      throw new Error('Failed to generate meal waiver PDF for custom form');
+    }
+
+    const pdfBytes = new Uint8Array(await pdfResponse.arrayBuffer());
+    const base64 = btoa(Array.from(pdfBytes).map((byte) => String.fromCharCode(byte)).join(''));
+
+    const saveResponse = await fetch('/api/pdf-form-progress/save', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
+      },
+      body: JSON.stringify({
+        formName: `custom-form-${customFormId}`,
+        formData: base64,
+        ...(targetUserId ? { targetUserId } : {}),
+      }),
+    });
+
+    if (!saveResponse.ok) {
+      const saveError = await saveResponse.json().catch(() => null);
+      throw new Error(saveError?.error || 'Failed to mark custom meal waiver as complete');
+    }
+  };
+
   const handleSave = async () => {
     if (!employeeName.trim()) {
       alert('Please enter your full name');
@@ -305,6 +352,22 @@ export default function MealWaiverForm({
   const handleContinue = async () => {
     const saved = await handleSave();
     if (saved) {
+      if (isCustomFormMode) {
+        try {
+          const {
+            data: { session },
+          } = await supabase.auth.getSession();
+          await markCustomFormComplete(session?.access_token);
+        } catch (error) {
+          console.error('[MEAL WAIVER] Failed to save custom-form completion:', error);
+          alert(error instanceof Error ? error.message : 'Failed to complete the custom meal waiver form.');
+          return;
+        }
+
+        router.push(returnTo || (targetUserId ? `/hr/employees/${targetUserId}` : '/employee'));
+        return;
+      }
+
       if (isLastForm || !nextHref) {
         // Last form completed - mark onboarding as completed and redirect to login
         console.log('[MEAL WAIVER] Last form completed, completing onboarding workflow');
@@ -343,6 +406,11 @@ export default function MealWaiverForm({
   };
 
   const handleBack = () => {
+    if (isCustomFormMode) {
+      router.push(returnTo || (targetUserId ? `/hr/employees/${targetUserId}` : '/employee'));
+      return;
+    }
+
     router.push(backHref);
   };
 

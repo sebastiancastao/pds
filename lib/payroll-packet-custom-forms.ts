@@ -79,8 +79,8 @@ export function getCustomFormPdfProxyPathFromStoragePath(storagePath?: string | 
     return `/api/payroll-packet-${parsed.stateCode}/${parsed.rawFormType}`;
   }
 
-  if (parsed.mode === 'viewer' && parsed.formType === 'employee-information') {
-    return `/api/payroll-packet-common/employee-information?state=${parsed.stateCode}`;
+  if (parsed.mode === 'viewer') {
+    return `/api/payroll-packet-common/${parsed.formType}?state=${parsed.stateCode}`;
   }
 
   return null;
