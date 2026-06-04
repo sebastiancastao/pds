@@ -1076,7 +1076,29 @@ export async function GET(request: NextRequest) {
           }
         }
 
-        for (const pageIdx of signaturePageIndexes) {
+        // Try to place the signature on the real employee signature line first;
+        // fall back to this form's tuned fixed offset only if no line is found.
+        let placedOnDetectedLine = false;
+        if (!isEmployeeHandbook) {
+          try {
+            const detectedPlacement = await resolveExistingEmployeeSignaturePlacement({
+              pdfBytes: new Uint8Array(pdfBytes),
+              templateBytes: null,
+            });
+            if (detectedPlacement.placement) {
+              placedOnDetectedLine = await drawSignatureIntoExistingPlacement({
+                pdfDoc,
+                placement: detectedPlacement.placement,
+                signatureData: signatureData!,
+                signatureType,
+              });
+            }
+          } catch (detectErr) {
+            console.warn('[WITH_SIGNATURE] Signature line detection failed; using fixed placement', formName, (detectErr as Error).message);
+          }
+        }
+
+        for (const pageIdx of placedOnDetectedLine ? [] : signaturePageIndexes) {
           if (isEmployeeHandbook) continue; // handled above on real signature lines
           const page = pages[pageIdx];
           const { width, height } = page.getSize();

@@ -1509,7 +1509,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-on-lines-1';
+const MERGED_PDF_CACHE_VERSION = '2026-06-03-forms-signature-on-lines-1';
 let employeeHandbookTemplateBytesPromise: Promise<Uint8Array | null> | null = null;
 
 async function ensureCacheDirectory() {
@@ -2815,7 +2815,34 @@ export async function GET(
                 }
               }
             } else {
-              for (const pageIdx of signaturePageIndexes) {
+              // Try to place the signature on the real employee signature line
+              // first; fall back to this form's tuned fixed offset only if no line
+              // is confidently detected.
+              const skipEmployeeSignature = isNoticeToEmployee && noticeHasEmployeeSignatureAppearance;
+              let placedOnDetectedLine = false;
+              if (!skipEmployeeSignature) {
+                try {
+                  const detectedPlacement = await resolveExistingEmployeeSignaturePlacement({
+                    pdfBytes: new Uint8Array(pdfBytes),
+                    templateBytes: null,
+                  });
+                  if (detectedPlacement.placement) {
+                    placedOnDetectedLine = await drawSignatureIntoExistingPlacement({
+                      pdfDoc: formPdf,
+                      placement: detectedPlacement.placement,
+                      signatureData: signatureValue,
+                      signatureType: signatureForForm.signature_type || null,
+                    });
+                    if (placedOnDetectedLine) {
+                      console.log('[PDF_FORMS] Placed signature on detected line for', form.form_name, `(source: ${detectedPlacement.placement.source})`);
+                    }
+                  }
+                } catch (detectErr) {
+                  console.warn('[PDF_FORMS] Signature line detection failed; using fixed placement', form.form_name, (detectErr as Error).message);
+                }
+              }
+
+              for (const pageIdx of placedOnDetectedLine ? [] : signaturePageIndexes) {
                 if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
                   console.log('[PDF_FORMS] notice-to-employee: skipping employee signature embed (already present)');
                   continue;
