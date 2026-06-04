@@ -75,6 +75,10 @@ export function getCustomFormPdfProxyPathFromStoragePath(storagePath?: string | 
   const parsed = parsePayrollPacketVirtualStoragePath(storagePath);
   if (!parsed) return null;
 
+  if (parsed.formType === 'meal-period-rest-break-acknowledgement') {
+    return `/api/payroll-packet-common/meal-period-rest-break-acknowledgement?state=${parsed.stateCode}`;
+  }
+
   if (parsed.mode === 'packet') {
     return `/api/payroll-packet-${parsed.stateCode}/${parsed.rawFormType}`;
   }

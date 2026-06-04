@@ -54,6 +54,69 @@ const EMPLOYEE_HANDBOOK_SIGNATURE_LINES = [
   { fromEnd: 3, x: 254, y: 366, maxWidth: 215 }, // Arbitration Agreement (employee copy)
   { fromEnd: 0, x: 254, y: 347, maxWidth: 215 }, // Arbitration Agreement (employer copy)
 ];
+
+// Hardcoded employee-signature-line positions for forms where the auto-detector
+// can't reliably find the line (no drawn line near a recognized label, etc.).
+// Checked BEFORE detection. Coordinates are pdf-lib points (origin bottom-left);
+// the signature's bottom-left is drawn here, sitting on the printed line.
+type SignatureLineOverride = {
+  match: (normalizedFormName: string, formNameLower: string, customTitle: string) => boolean;
+  spots: Array<{ pageFromStart?: number; pageFromEnd?: number; x: number; y: number; maxWidth: number; maxHeight?: number }>;
+};
+const FORM_SIGNATURE_LINE_OVERRIDES: SignatureLineOverride[] = [
+  // Federal W-4 — signature line sits just above the "Employee's signature" label (page 1).
+  { match: (n) => n === 'fw4', spots: [{ pageFromStart: 0, x: 103, y: 116, maxWidth: 330 }] },
+  // CA DE-4 state tax — line is to the right of the "Employee's Signature" label (page 1).
+  { match: (n) => n === 'de4' || n === 'ca-de4', spots: [{ pageFromStart: 0, x: 138, y: 375, maxWidth: 285 }] },
+  // LC 2810.5 Notice to Employee — employee signs on the right, on the "(SIGNATURE of
+  // Employee)" line, level with the employer signature on the left.
+  { match: (n) => n === 'notice-to-employee', spots: [{ pageFromEnd: 0, x: 327, y: 230, maxWidth: 160 }] },
+  // Temporary Employment / Retail Sales Commission agreement — sit on the "____"
+  // signature line (y≈412), just above the "Employee signature" label.
+  {
+    match: (n, lower, title) =>
+      n === 'temp-employment-agreement' ||
+      /temporary employment services agreement/i.test(title) ||
+      /temporary employment services agreement/i.test(lower) ||
+      /retail|commission/i.test(title) ||
+      /retail|commission/i.test(lower),
+    spots: [{ pageFromEnd: 0, x: 74, y: 390, maxWidth: 150, maxHeight: 15 }],
+  },
+  // "Welcome to Print and Design Solutions ... part-time/seasonal as-needed"
+  // offer letter — the real signature line is higher on the last page (y≈469).
+  {
+    match: (_n, lower, title) =>
+      /welcome to print and design solutions|part[\s-]*time\s*\/\s*seasonal|seasonal\s+as[-\s]*needed/i.test(title) ||
+      /welcome to print and design solutions|part[\s-]*time\s*\/\s*seasonal|seasonal\s+as[-\s]*needed/i.test(lower),
+    spots: [{ pageFromEnd: 0, x: 74, y: 447, maxWidth: 150, maxHeight: 15 }],
+  },
+  // Home Venue Assignment — no dedicated signature line; sit it on the right, on the
+  // Date line, instead of floating (per request). Best-guess coords; tune if off.
+  {
+    match: (_n, lower) => lower.includes('home-venue-assignment'),
+    spots: [{ pageFromEnd: 0, x: 440, y: 42, maxWidth: 80 }],
+  },
+];
+function getFormSignatureLineOverrides(
+  normalizedFormName: string,
+  formNameLower: string,
+  customTitle: string,
+  pageCount: number
+) {
+  const entry = FORM_SIGNATURE_LINE_OVERRIDES.find((e) =>
+    e.match(normalizedFormName, formNameLower, customTitle)
+  );
+  if (!entry) return [] as Array<{ pageIndex: number; x: number; y: number; maxWidth: number; maxHeight?: number }>;
+  return entry.spots
+    .map((s) => ({
+      pageIndex: s.pageFromEnd != null ? pageCount - 1 - s.pageFromEnd : s.pageFromStart ?? 0,
+      x: s.x,
+      y: s.y,
+      maxWidth: s.maxWidth,
+      maxHeight: s.maxHeight,
+    }))
+    .filter((s) => s.pageIndex >= 0 && s.pageIndex < pageCount);
+}
 const EMPLOYEE_HANDBOOK_TEMPLATE_PATH = '/api/payroll-packet-ca/employee-handbook';
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
@@ -1509,7 +1572,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-03-forms-signature-on-lines-1';
+const MERGED_PDF_CACHE_VERSION = '2026-06-04-seasonal-offer-signature-5';
 let employeeHandbookTemplateBytesPromise: Promise<Uint8Array | null> | null = null;
 
 async function ensureCacheDirectory() {
@@ -2737,7 +2800,33 @@ export async function GET(
               }
             }
 
-            if (isAttestationForm && attestationSignaturePlacement) {
+            const signatureLineOverrides = getFormSignatureLineOverrides(
+              normalizedFormName,
+              formNameLower,
+              customForm?.title || '',
+              pageCount
+            );
+
+            if (signatureLineOverrides.length) {
+              // Forms the auto-detector can't place reliably: pin the signature on
+              // the real signature line.
+              for (const spot of signatureLineOverrides) {
+                const page = pages[spot.pageIndex];
+                if (!page) continue;
+                if (isTyped && !isDataUrl) {
+                  page.drawText(signatureValue, { x: spot.x, y: spot.y + 2, size: 11 });
+                } else if (signatureImage) {
+                  const aspect = signatureImage.width / signatureImage.height || 6;
+                  let drawH = spot.maxHeight ?? 18;
+                  let drawW = drawH * aspect;
+                  if (drawW > spot.maxWidth) {
+                    drawW = spot.maxWidth;
+                    drawH = drawW / aspect;
+                  }
+                  page.drawImage(signatureImage, { x: spot.x, y: spot.y, width: drawW, height: drawH });
+                }
+              }
+            } else if (isAttestationForm && attestationSignaturePlacement) {
               const { page, rect } = attestationSignaturePlacement;
               page.drawRectangle({
                 x: rect.x - 2,
