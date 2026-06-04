@@ -38,10 +38,22 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
-const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
+// 0 = the signature window ends on the handbook's final page (the last
+// acknowledgment/signature block). Increase to pull the window earlier.
+const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 0;
 // Applied to every handbook signature page so the whole batch sits at one
 // consistent height. Larger = higher on the page. Tune this single value.
-const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 170;
+const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 220;
+// Actual signature-line positions in the fixed handbook template, as pages-from-end
+// (so they survive front-matter edits). Coordinates are pdf-lib points (origin
+// bottom-left); the signature image is drawn with its bottom-left here, sitting on
+// the printed line. Tune x / y per spot if a signature lands slightly off its line.
+const EMPLOYEE_HANDBOOK_SIGNATURE_LINES = [
+  { fromEnd: 8, x: 290, y: 697, maxWidth: 230 }, // Employee Acknowledgment (employee copy)
+  { fromEnd: 6, x: 290, y: 656, maxWidth: 230 }, // Employee Acknowledgment (employer copy)
+  { fromEnd: 3, x: 254, y: 366, maxWidth: 215 }, // Arbitration Agreement (employee copy)
+  { fromEnd: 0, x: 254, y: 347, maxWidth: 215 }, // Arbitration Agreement (employer copy)
+];
 const EMPLOYEE_HANDBOOK_TEMPLATE_PATH = '/api/payroll-packet-ca/employee-handbook';
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
@@ -1497,7 +1509,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-all-pages-1';
+const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-on-lines-1';
 let employeeHandbookTemplateBytesPromise: Promise<Uint8Array | null> | null = null;
 
 async function ensureCacheDirectory() {
@@ -2781,6 +2793,26 @@ export async function GET(
                   failureTier: placementResult.failureTier,
                   reason: placementResult.failureReason,
                 });
+              }
+            } else if (isEmployeeHandbook) {
+              // Place the signature directly on the handbook's printed signature
+              // lines instead of stamping it across pages at a fixed height.
+              for (const lineSpec of EMPLOYEE_HANDBOOK_SIGNATURE_LINES) {
+                const pageIdx = pageCount - 1 - lineSpec.fromEnd;
+                if (pageIdx < 0 || pageIdx >= pages.length) continue;
+                const page = pages[pageIdx];
+                if (isTyped && !isDataUrl) {
+                  page.drawText(signatureValue, { x: lineSpec.x, y: lineSpec.y + 4, size: 12 });
+                } else if (signatureImage) {
+                  const aspect = signatureImage.width / signatureImage.height || 6;
+                  let drawH = 20;
+                  let drawW = drawH * aspect;
+                  if (drawW > lineSpec.maxWidth) {
+                    drawW = lineSpec.maxWidth;
+                    drawH = drawW / aspect;
+                  }
+                  page.drawImage(signatureImage, { x: lineSpec.x, y: lineSpec.y, width: drawW, height: drawH });
+                }
               }
             } else {
               for (const pageIdx of signaturePageIndexes) {

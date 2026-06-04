@@ -29,10 +29,22 @@ const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
 const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 const SIGNATURE_Y_SHIFT = 80;
-const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
+// 0 = the signature window ends on the handbook's final page (the last
+// acknowledgment/signature block). Increase to pull the window earlier.
+const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 0;
 // Applied to every handbook signature page so the whole batch sits at one
 // consistent height. Larger = higher on the page. Tune this single value.
-const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 170;
+const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 220;
+// Actual signature-line positions in the fixed handbook template, as pages-from-end
+// (so they survive front-matter edits). Coordinates are pdf-lib points (origin
+// bottom-left); the signature image is drawn with its bottom-left here, sitting on
+// the printed line. Tune x / y per spot if a signature lands slightly off its line.
+const EMPLOYEE_HANDBOOK_SIGNATURE_LINES = [
+  { fromEnd: 8, x: 290, y: 697, maxWidth: 230 }, // Employee Acknowledgment (employee copy)
+  { fromEnd: 6, x: 290, y: 656, maxWidth: 230 }, // Employee Acknowledgment (employer copy)
+  { fromEnd: 3, x: 254, y: 366, maxWidth: 215 }, // Arbitration Agreement (employee copy)
+  { fromEnd: 0, x: 254, y: 347, maxWidth: 215 }, // Arbitration Agreement (employer copy)
+];
 const EMPLOYEE_HANDBOOK_TEMPLATE_PATH = '/api/payroll-packet-ca/employee-handbook';
 const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
@@ -1042,7 +1054,30 @@ export async function GET(request: NextRequest) {
           font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         }
 
+        if (isEmployeeHandbook) {
+          // Place the signature directly on the handbook's printed signature
+          // lines instead of stamping it across pages at a fixed height.
+          for (const lineSpec of EMPLOYEE_HANDBOOK_SIGNATURE_LINES) {
+            const pageIdx = pages.length - 1 - lineSpec.fromEnd;
+            if (pageIdx < 0 || pageIdx >= pages.length) continue;
+            const page = pages[pageIdx];
+            if (isTyped && font) {
+              page.drawText(signatureData!, { x: lineSpec.x, y: lineSpec.y + 4, size: 12, font });
+            } else if (signatureImage) {
+              const aspect = signatureImage.width / signatureImage.height || 6;
+              let drawH = 20;
+              let drawW = drawH * aspect;
+              if (drawW > lineSpec.maxWidth) {
+                drawW = lineSpec.maxWidth;
+                drawH = drawW / aspect;
+              }
+              page.drawImage(signatureImage, { x: lineSpec.x, y: lineSpec.y, width: drawW, height: drawH });
+            }
+          }
+        }
+
         for (const pageIdx of signaturePageIndexes) {
+          if (isEmployeeHandbook) continue; // handled above on real signature lines
           const page = pages[pageIdx];
           const { width, height } = page.getSize();
           const baseX = width - signatureWidth - 50;
