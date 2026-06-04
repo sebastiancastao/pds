@@ -6,6 +6,7 @@ import { existsSync, promises as fsPromises } from 'fs';
 import { join } from 'path';
 import { safeDecrypt } from '@/lib/encryption';
 import { buildEmployeeInformationPdf } from '@/lib/employee-information-pdf';
+import { mergeSavedPdfFieldsOntoTemplate } from '@/app/lib/pdf-template-field-merge';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
@@ -38,6 +39,10 @@ const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
 const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
+// Applied to every handbook signature page so the whole batch sits at one
+// consistent height. Larger = higher on the page. Tune this single value.
+const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 170;
+const EMPLOYEE_HANDBOOK_TEMPLATE_PATH = '/api/payroll-packet-ca/employee-handbook';
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
@@ -1492,13 +1497,54 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-shift-2';
+const MERGED_PDF_CACHE_VERSION = '2026-06-03-handbook-signature-all-pages-1';
+let employeeHandbookTemplateBytesPromise: Promise<Uint8Array | null> | null = null;
 
 async function ensureCacheDirectory() {
   try {
     await fsPromises.mkdir(CACHE_DIR, { recursive: true });
   } catch (error) {
     console.warn('[PDF_FORMS] Could not ensure cache directory', error);
+  }
+}
+
+async function getEmployeeHandbookTemplateBytes(origin: string) {
+  if (!employeeHandbookTemplateBytesPromise) {
+    employeeHandbookTemplateBytesPromise = (async () => {
+      try {
+        const response = await fetch(`${origin}${EMPLOYEE_HANDBOOK_TEMPLATE_PATH}`, {
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          console.warn('[PDF_FORMS] Failed to fetch employee handbook template:', response.status, response.statusText);
+          return null;
+        }
+
+        return new Uint8Array(await response.arrayBuffer());
+      } catch (error) {
+        console.warn('[PDF_FORMS] Failed to load employee handbook template', error);
+        return null;
+      }
+    })();
+  }
+
+  return employeeHandbookTemplateBytesPromise;
+}
+
+async function rebuildEmployeeHandbookFromTemplate(base64Data: string, origin: string) {
+  try {
+    const templateBytes = await getEmployeeHandbookTemplateBytes(origin);
+    if (!templateBytes) return base64Data;
+
+    const savedBytes = Uint8Array.from(Buffer.from(base64Data, 'base64'));
+    const rebuiltBytes = await mergeSavedPdfFieldsOntoTemplate(templateBytes, savedBytes);
+    if (!rebuiltBytes) return base64Data;
+
+    return Buffer.from(rebuiltBytes).toString('base64');
+  } catch (error) {
+    console.warn('[PDF_FORMS] Failed to rebuild employee handbook from template', error);
+    return base64Data;
   }
 }
 
@@ -2089,6 +2135,7 @@ export async function GET(
         const isEmployeeInformationForm =
           normalizedFormName === 'employee-information' ||
           isEmployeeInformationVirtualForm(customForm?.storagePath);
+        const isEmployeeHandbookForm = normalizedFormName === 'employee-handbook';
         const formNameLower = (form.form_name || '').toLowerCase();
         const isCaliforniaTempEmploymentAgreement =
           normalizedFormName === 'temp-employment-agreement' &&
@@ -2108,7 +2155,7 @@ export async function GET(
           signatureSourceForm = 'legacy-background-check';
         }
 
-        const base64Data =
+        let base64Data =
           isEmployeeInformationForm && employeeInfoRecord
             ? (
                 await buildEmployeeInformationPdf(employeeInfoRecord, {
@@ -2117,6 +2164,10 @@ export async function GET(
                 })
               ).toString('base64')
             : toBase64(form.form_data);
+
+        if (isEmployeeHandbookForm && base64Data) {
+          base64Data = await rebuildEmployeeHandbookFromTemplate(base64Data, request.nextUrl.origin);
+        }
 
         if (!base64Data) {
           console.warn('[PDF_FORMS] Skipping form with no data:', form.form_name);
@@ -2770,7 +2821,10 @@ export async function GET(
                       );
                 const y = Math.min(
                   height - signatureHeight,
-                  rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+                  rawY +
+                    SIGNATURE_Y_SHIFT +
+                    (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0) +
+                    (isEmployeeHandbook ? EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA : 0)
                 );
 
                 if (isTyped && !isDataUrl) {

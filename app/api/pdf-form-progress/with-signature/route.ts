@@ -4,6 +4,7 @@ import { PDFDocument, PDFImage, PDFFont, rgb } from 'pdf-lib';
 import { PNG } from 'pngjs';
 import { safeDecrypt } from '@/lib/encryption';
 import { buildEmployeeInformationPdf } from '@/lib/employee-information-pdf';
+import { mergeSavedPdfFieldsOntoTemplate } from '@/app/lib/pdf-template-field-merge';
 import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
@@ -29,6 +30,10 @@ const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
 const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 const SIGNATURE_Y_SHIFT = 80;
 const EMPLOYEE_HANDBOOK_SIGNATURE_PAGE_SHIFT = 2;
+// Applied to every handbook signature page so the whole batch sits at one
+// consistent height. Larger = higher on the page. Tune this single value.
+const EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA = 170;
+const EMPLOYEE_HANDBOOK_TEMPLATE_PATH = '/api/payroll-packet-ca/employee-handbook';
 const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
 const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
@@ -60,6 +65,7 @@ const KNOWN_EXPLICIT_SIGNATURE_FORMS = new Set([
   'az-state-tax',
   'attestation',
 ]);
+let employeeHandbookTemplateBytesPromise: Promise<Uint8Array | null> | null = null;
 
 type SignatureEntry = {
   form_id?: string | null;
@@ -98,6 +104,46 @@ function toBase64(data: any): string {
 
   if (!uint) return '';
   return Buffer.from(uint).toString('base64');
+}
+
+async function getEmployeeHandbookTemplateBytes(origin: string) {
+  if (!employeeHandbookTemplateBytesPromise) {
+    employeeHandbookTemplateBytesPromise = (async () => {
+      try {
+        const response = await fetch(`${origin}${EMPLOYEE_HANDBOOK_TEMPLATE_PATH}`, {
+          cache: 'no-store',
+        });
+
+        if (!response.ok) {
+          console.warn('[WITH_SIGNATURE] Failed to fetch employee handbook template:', response.status, response.statusText);
+          return null;
+        }
+
+        return new Uint8Array(await response.arrayBuffer());
+      } catch (error) {
+        console.warn('[WITH_SIGNATURE] Failed to load employee handbook template', error);
+        return null;
+      }
+    })();
+  }
+
+  return employeeHandbookTemplateBytesPromise;
+}
+
+async function rebuildEmployeeHandbookFromTemplate(base64Data: string, origin: string) {
+  try {
+    const templateBytes = await getEmployeeHandbookTemplateBytes(origin);
+    if (!templateBytes) return base64Data;
+
+    const savedBytes = Uint8Array.from(Buffer.from(base64Data, 'base64'));
+    const rebuiltBytes = await mergeSavedPdfFieldsOntoTemplate(templateBytes, savedBytes);
+    if (!rebuiltBytes) return base64Data;
+
+    return Buffer.from(rebuiltBytes).toString('base64');
+  } catch (error) {
+    console.warn('[WITH_SIGNATURE] Failed to rebuild employee handbook from template', error);
+    return base64Data;
+  }
 }
 
 function normalizeSignatureImage(signatureData: string) {
@@ -675,11 +721,18 @@ export async function GET(request: NextRequest) {
 
     const signatureData = selectedSignature?.signature_data || null;
     const signatureType = selectedSignature?.signature_type || null;
+    let normalizedBase64Data = base64Data;
+    if (isEmployeeHandbook && normalizedBase64Data) {
+      normalizedBase64Data = await rebuildEmployeeHandbookFromTemplate(
+        normalizedBase64Data,
+        request.nextUrl.origin
+      );
+    }
     const isTempEmploymentAgreement = normalizedName === 'temp-employment-agreement';
     if (isTempEmploymentAgreement) {
       // Temp-agreement custom-form view/download requests raw form data here and
       // completes signature placement in the dedicated client-side redraw pipeline.
-      return NextResponse.json({ formData: base64Data, signatureData, signatureType });
+      return NextResponse.json({ formData: normalizedBase64Data, signatureData, signatureType });
     }
 
     const responseExtras = returnSignatureData
@@ -709,10 +762,10 @@ export async function GET(request: NextRequest) {
     const hasSignatureData = Boolean(signatureData?.trim());
 
     if (!hasSignatureData && !isAttestation) {
-      return NextResponse.json({ formData: base64Data, ...responseExtras });
+      return NextResponse.json({ formData: normalizedBase64Data, ...responseExtras });
     }
 
-    const pdfBytes = Buffer.from(base64Data, 'base64');
+    const pdfBytes = Buffer.from(normalizedBase64Data, 'base64');
     const pdfDoc = await PDFDocument.load(pdfBytes);
     const pages = pdfDoc.getPages();
 
@@ -1037,7 +1090,8 @@ export async function GET(request: NextRequest) {
             rawY +
               SIGNATURE_Y_SHIFT +
               (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
-              (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+              (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0) +
+              (isEmployeeHandbook ? EMPLOYEE_HANDBOOK_SIGNATURE_Y_DELTA : 0)
           );
 
           if (isTyped && font) {

@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
@@ -22,7 +22,16 @@ type MealWaiverFormProps = {
 
 const getDefaultDate = () => new Date().toISOString().split('T')[0];
 
-export default function MealWaiverForm({
+function MealWaiverFormFallback() {
+  return (
+    <div style={{ padding: '40px', textAlign: 'center' }}>
+      <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      <p style={{ marginTop: '20px', color: '#666' }}>Loading...</p>
+    </div>
+  );
+}
+
+function MealWaiverFormContent({
   stateName,
   basePath,
   title,
@@ -417,12 +426,7 @@ export default function MealWaiverForm({
   const typeLabel = selectedType === '6_hour' ? '6 Hour Waiver' : selectedType === '10_hour' ? '10 Hour Waiver' : '12 Hour Waiver';
 
   if (loading) {
-    return (
-      <div style={{ padding: '40px', textAlign: 'center' }}>
-        <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
-        <p style={{ marginTop: '20px', color: '#666' }}>Loading...</p>
-      </div>
-    );
+    return <MealWaiverFormFallback />;
   }
 
   return (
@@ -758,5 +762,13 @@ export default function MealWaiverForm({
         </div>
       </div>
     </div>
+  );
+}
+
+export default function MealWaiverForm(props: MealWaiverFormProps) {
+  return (
+    <Suspense fallback={<MealWaiverFormFallback />}>
+      <MealWaiverFormContent {...props} />
+    </Suspense>
   );
 }
