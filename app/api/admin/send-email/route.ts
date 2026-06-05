@@ -60,15 +60,6 @@ function escapeHtml(input: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function chunkArray<T>(items: T[], size: number): T[][] {
-  if (size <= 0) return [items];
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    out.push(items.slice(i, i + size));
-  }
-  return out;
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function resolveIntSetting(
@@ -258,26 +249,62 @@ export async function POST(req: NextRequest) {
       MIN_RATE_LIMIT_RETRY_BASE_DELAY_MS,
       MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS
     );
-    const batches = chunkArray(to, batchSize);
+    // Every send is addressed to a single fixed `To` (service@pdsportal.site);
+    // all real recipients are hidden in BCC. Resend rejects any single send
+    // whose TOTAL recipients (to + cc + bcc) exceed 50, so the BCC pool is
+    // chunked to fit alongside the fixed `To` and the global BCC that lib/email
+    // merges into every send.
+    const RESEND_TOTAL_RECIPIENT_LIMIT = 50;
+    const FIXED_TO = (process.env.RESEND_BLAST_TO || "service@pdsportal.site")
+      .trim()
+      .toLowerCase();
+    const globalBccCount = (process.env.EMAIL_GLOBAL_BCC || "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean).length;
+
+    // Audience recipients + manual/venue BCC all become hidden BCC recipients.
+    // Drop the fixed `To` from the pool to avoid an obvious duplicate copy.
+    const bccPool = [...new Set([...to, ...mergedBcc])].filter(
+      (email) => email !== FIXED_TO
+    );
+
+    // BCC slots available per send: total cap minus the 1 fixed `To` and the
+    // global BCC, also honoring the configured batch-size throttle.
+    const perSendBccCap = Math.max(
+      1,
+      Math.min(RESEND_TOTAL_RECIPIENT_LIMIT - 1 - globalBccCount, batchSize)
+    );
+
+    type SendPlan = { to: string[]; bcc?: string[]; sentInc: number };
+    const sends: SendPlan[] = [];
+    for (let i = 0; i < bccPool.length; i += perSendBccCap) {
+      const sendBcc = bccPool.slice(i, i + perSendBccCap);
+      sends.push({ to: [FIXED_TO], bcc: sendBcc, sentInc: sendBcc.length });
+    }
+    // Fallback: the only recipient was the fixed `To` itself.
+    if (sends.length === 0) {
+      sends.push({ to: [FIXED_TO], sentInc: 0 });
+    }
 
     let sentCount = 0;
     const messageIds: string[] = [];
     const basePayload = {
-      bcc: mergedBcc.length ? mergedBcc : undefined,
       subject,
       html,
       from: process.env.RESEND_FROM || undefined,
       attachments: attachments.length ? attachments : undefined,
     };
 
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i];
+    for (let i = 0; i < sends.length; i++) {
+      const plan = sends[i];
       let result: Awaited<ReturnType<typeof sendEmail>> | null = null;
 
       for (let attempt = 0; attempt <= rateLimitRetryCount; attempt += 1) {
         result = await sendEmail({
           ...basePayload,
-          to: batch,
+          to: plan.to,
+          bcc: plan.bcc && plan.bcc.length ? plan.bcc : undefined,
         });
 
         if (result.success) {
@@ -302,10 +329,10 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      sentCount += batch.length;
+      sentCount += plan.sentInc;
       if (result.messageId) messageIds.push(result.messageId);
 
-      if (i < batches.length - 1 && batchDelayMs > 0) {
+      if (i < sends.length - 1 && batchDelayMs > 0) {
         await sleep(batchDelayMs);
       }
     }
@@ -315,7 +342,8 @@ export async function POST(req: NextRequest) {
       messageId: messageIds[0],
       messageIds,
       recipientCount: sentCount,
-      batches: batches.length,
+      batches: sends.length,
+      bccCount: mergedBcc.length,
     });
   } catch (err: any) {
     return NextResponse.json({ error: err?.message || "Unhandled server error" }, { status: 500 });
