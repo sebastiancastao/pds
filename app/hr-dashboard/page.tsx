@@ -116,16 +116,41 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
+// Fallback hourly rate used for sick-leave pay when no state rate is configured.
+const DEFAULT_SICK_PAY_RATE = 17.28;
+
+type SickPayRow = {
+  user_id: string;
+  employee_name: string;
+  employee_email: string;
+  employee_state: string | null;
+  used_hours: number;
+  base_rate: number;
+  effective_rate: number;
+  amount: number;
+  request_count: number;
+};
+
+function currentMonthRange(): { start: string; end: string } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+  return {
+    start: start.toISOString().slice(0, 10),
+    end: end.toISOString().slice(0, 10),
+  };
+}
+
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const initialView = (searchParams?.get("view") as "overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub" | null) || "overview";
+  const initialView = (searchParams?.get("view") as "overview" | "employees" | "sickleave" | "sickpayroll" | "payments" | "forms" | "paystub" | null) || "overview";
   const initialFormState = searchParams?.get("state") || "all";
 
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [hrView, setHrView] = useState<"overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub">(initialView);
+  const [hrView, setHrView] = useState<"overview" | "employees" | "sickleave" | "sickpayroll" | "payments" | "forms" | "paystub">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState<string>("");
@@ -404,6 +429,13 @@ function HRDashboardContent() {
     denied: 0,
     total_hours: 0,
   });
+
+  // Sick-leave payroll tab state
+  const [sickPayPeriodStart, setSickPayPeriodStart] = useState<string>(() => currentMonthRange().start);
+  const [sickPayPeriodEnd, setSickPayPeriodEnd] = useState<string>(() => currentMonthRange().end);
+  const [sickPaySearch, setSickPaySearch] = useState("");
+  const [sickPayBaseRates, setSickPayBaseRates] = useState<Record<string, number>>({});
+  const [sickPayRateOverrides, setSickPayRateOverrides] = useState<Record<string, string>>({});
 
   const handleLogout = async () => {
     try {
@@ -2764,6 +2796,36 @@ function HRDashboardContent() {
     }
   }, [hrView, appliedSickLeavePeriod, loadSickLeaves]);
 
+  const loadSickPayBaseRates = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/rates", {
+        method: "GET",
+        headers: {
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+      });
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const map: Record<string, number> = {};
+      for (const row of data?.rates || []) {
+        const stateCode = normalizeState(row?.state_code);
+        const baseRate = Number(row?.base_rate || 0);
+        if (stateCode && baseRate > 0) map[stateCode] = baseRate;
+      }
+      setSickPayBaseRates(map);
+    } catch (e) {
+      console.warn("[HR SICK PAY] Failed to load /api/rates for base rates.", e);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (hrView === "sickpayroll") {
+      loadSickLeaves();
+      loadSickPayBaseRates();
+    }
+  }, [hrView, loadSickLeaves, loadSickPayBaseRates]);
+
   useEffect(() => {
     if (hrView === "payments") {
       loadApprovalSubmissions();
@@ -2976,6 +3038,130 @@ function HRDashboardContent() {
   const hasAppliedSickLeavePeriod = Boolean(
     appliedSickLeavePeriod.start || appliedSickLeavePeriod.end
   );
+
+  const getSickPayBaseRate = useCallback(
+    (state?: string | null) => {
+      const configured = Number(sickPayBaseRates[normalizeState(state)] || 0);
+      return configured > 0 ? configured : DEFAULT_SICK_PAY_RATE;
+    },
+    [sickPayBaseRates]
+  );
+
+  const formatSickPayMoney = (amount: number) =>
+    `$${Number(amount || 0).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+
+  // Pay only sick-leave hours that were USED (approved) within the selected period.
+  const sickPayRows = useMemo<SickPayRow[]>(() => {
+    const start = sickPayPeriodStart;
+    const end = sickPayPeriodEnd;
+    const byUser = new Map<
+      string,
+      { row: SickLeaveRecord; used_hours: number; request_count: number }
+    >();
+
+    for (const record of sickLeaves) {
+      if (record.status !== "approved") continue;
+      const day = String(record.start_date || "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
+      if (start && day < start) continue;
+      if (end && day > end) continue;
+
+      const existing = byUser.get(record.user_id);
+      const hours = Number(record.duration_hours || 0);
+      if (existing) {
+        existing.used_hours += hours;
+        existing.request_count += 1;
+      } else {
+        byUser.set(record.user_id, { row: record, used_hours: hours, request_count: 1 });
+      }
+    }
+
+    const rows: SickPayRow[] = [];
+    for (const [userId, entry] of byUser.entries()) {
+      const used_hours = Number(entry.used_hours.toFixed(2));
+      if (used_hours <= 0) continue;
+      const base_rate = getSickPayBaseRate(entry.row.employee_state);
+      const overrideRaw = sickPayRateOverrides[userId];
+      const overrideNum = overrideRaw !== undefined && overrideRaw !== "" ? Number(overrideRaw) : NaN;
+      const effective_rate =
+        Number.isFinite(overrideNum) && overrideNum >= 0 ? overrideNum : base_rate;
+      rows.push({
+        user_id: userId,
+        employee_name: entry.row.employee_name || "Unknown",
+        employee_email: entry.row.employee_email || "",
+        employee_state: entry.row.employee_state ?? null,
+        used_hours,
+        base_rate,
+        effective_rate,
+        amount: Number((used_hours * effective_rate).toFixed(2)),
+        request_count: entry.request_count,
+      });
+    }
+
+    return rows.sort((a, b) =>
+      a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: "base" })
+    );
+  }, [sickLeaves, sickPayPeriodStart, sickPayPeriodEnd, getSickPayBaseRate, sickPayRateOverrides]);
+
+  const filteredSickPayRows = useMemo(() => {
+    const q = sickPaySearch.trim().toLowerCase();
+    if (!q) return sickPayRows;
+    return sickPayRows.filter((row) =>
+      `${row.employee_name} ${row.employee_email} ${row.employee_state || ""}`
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [sickPayRows, sickPaySearch]);
+
+  const sickPayTotals = useMemo(() => {
+    return filteredSickPayRows.reduce(
+      (acc, row) => {
+        acc.employees += 1;
+        acc.total_hours += row.used_hours;
+        acc.total_amount += row.amount;
+        return acc;
+      },
+      { employees: 0, total_hours: 0, total_amount: 0 }
+    );
+  }, [filteredSickPayRows]);
+
+  const handleSickPayRateChange = useCallback((userId: string, value: string) => {
+    setSickPayRateOverrides((prev) => ({ ...prev, [userId]: value }));
+  }, []);
+
+  const handleResetSickPayRates = useCallback(() => {
+    setSickPayRateOverrides({});
+  }, []);
+
+  const exportSickPayroll = useCallback(() => {
+    if (filteredSickPayRows.length === 0) return;
+    const periodLabel = `${sickPayPeriodStart || "start"}_to_${sickPayPeriodEnd || "end"}`;
+    const sheetData = filteredSickPayRows.map((row) => ({
+      Employee: row.employee_name,
+      Email: row.employee_email,
+      State: row.employee_state || "",
+      "Used Hours": row.used_hours,
+      "Rate ($/hr)": row.effective_rate,
+      "Sick Pay ($)": row.amount,
+      Requests: row.request_count,
+    }));
+    sheetData.push({
+      Employee: "TOTAL",
+      Email: "",
+      State: "",
+      "Used Hours": Number(sickPayTotals.total_hours.toFixed(2)),
+      "Rate ($/hr)": "" as any,
+      "Sick Pay ($)": Number(sickPayTotals.total_amount.toFixed(2)),
+      Requests: "" as any,
+    });
+    const worksheet = XLSX.utils.json_to_sheet(sheetData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Sick Pay");
+    XLSX.writeFile(workbook, `sick-leave-payroll_${periodLabel}.xlsx`);
+  }, [filteredSickPayRows, sickPayPeriodStart, sickPayPeriodEnd, sickPayTotals]);
 
   const hrStats = {
     totalEmployees: employees.length,
@@ -3322,6 +3508,15 @@ function HRDashboardContent() {
             >
               Sick Leave
               {hrView === "sickleave" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
+            </button>
+            <button
+              onClick={() => setHrView("sickpayroll")}
+              className={`pb-4 px-2 font-semibold transition-colors relative ${
+                hrView === "sickpayroll" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              Sick Pay
+              {hrView === "sickpayroll" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
             <button
               onClick={() => setHrView("payments")}
@@ -5254,6 +5449,189 @@ function HRDashboardContent() {
                       </tr>
                     )}
                   </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {hrView === "sickpayroll" && (
+          <div className="space-y-6">
+            <div>
+              <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Sick Leave Payroll</h2>
+              <p className="text-sm text-gray-500 mt-1">
+                Pays approved sick-leave hours used within the selected period. Rates default to each
+                employee&apos;s state base rate and can be overridden per employee.
+              </p>
+            </div>
+
+            {/* Summary cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+                <p className="text-sm text-gray-500">Employees</p>
+                <p className="text-3xl font-semibold text-sky-700">{sickPayTotals.employees}</p>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+                <p className="text-sm text-gray-500">Total Hours Paid</p>
+                <p className="text-3xl font-semibold text-purple-700">
+                  {formatSickLeaveHours(sickPayTotals.total_hours)}
+                </p>
+              </div>
+              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+                <p className="text-sm text-gray-500">Total Sick Pay</p>
+                <p className="text-3xl font-semibold text-green-700">
+                  {formatSickPayMoney(sickPayTotals.total_amount)}
+                </p>
+              </div>
+            </div>
+
+            {/* Controls */}
+            <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Pay Period Start</label>
+                  <input
+                    type="date"
+                    value={sickPayPeriodStart}
+                    onChange={(e) => setSickPayPeriodStart(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Pay Period End</label>
+                  <input
+                    type="date"
+                    value={sickPayPeriodEnd}
+                    onChange={(e) => setSickPayPeriodEnd(e.target.value)}
+                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex-1 min-w-[200px]">
+                  <label className="block text-xs font-medium text-gray-500 mb-1">Search</label>
+                  <input
+                    type="text"
+                    placeholder="Search by name, email, or state"
+                    value={sickPaySearch}
+                    onChange={(e) => setSickPaySearch(e.target.value)}
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => loadSickLeaves()}
+                    disabled={loadingSickLeaves}
+                    className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {loadingSickLeaves ? "Loading..." : "Refresh"}
+                  </button>
+                  <button
+                    onClick={handleResetSickPayRates}
+                    className="px-4 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  >
+                    Reset Rates
+                  </button>
+                  <button
+                    onClick={exportSickPayroll}
+                    disabled={filteredSickPayRows.length === 0}
+                    className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
+                  >
+                    Export
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {sickLeavesError && (
+              <div className="apple-error-banner">{sickLeavesError}</div>
+            )}
+
+            {/* Payroll table */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Employee</th>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">State</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Used Hours</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Rate ($/hr)</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Sick Pay</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {loadingSickLeaves && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500">
+                          Loading sick leave payroll...
+                        </td>
+                      </tr>
+                    )}
+                    {!loadingSickLeaves &&
+                      filteredSickPayRows.map((row) => {
+                        const isOverridden =
+                          sickPayRateOverrides[row.user_id] !== undefined &&
+                          sickPayRateOverrides[row.user_id] !== "" &&
+                          Number(sickPayRateOverrides[row.user_id]) !== row.base_rate;
+                        return (
+                          <tr key={row.user_id} className="hover:bg-gray-50">
+                            <td className="px-4 py-3">
+                              <div className="text-sm font-medium text-gray-900">{row.employee_name}</div>
+                              <div className="text-xs text-gray-500">{row.employee_email}</div>
+                            </td>
+                            <td className="px-4 py-3 text-sm text-gray-700">{row.employee_state || "-"}</td>
+                            <td className="px-4 py-3 text-right text-sm text-gray-700">
+                              {formatSickLeaveHours(row.used_hours)}
+                            </td>
+                            <td className="px-4 py-3 text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <span className="text-gray-400 text-sm">$</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={
+                                    sickPayRateOverrides[row.user_id] !== undefined
+                                      ? sickPayRateOverrides[row.user_id]
+                                      : String(row.base_rate)
+                                  }
+                                  onChange={(e) => handleSickPayRateChange(row.user_id, e.target.value)}
+                                  className={`w-24 border rounded-lg px-2 py-1 text-sm text-right ${
+                                    isOverridden ? "border-blue-400 bg-blue-50" : "border-gray-300"
+                                  }`}
+                                  title={`State base rate: ${formatSickPayMoney(row.base_rate)}`}
+                                />
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">
+                              {formatSickPayMoney(row.amount)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    {!loadingSickLeaves && filteredSickPayRows.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-500">
+                          No approved sick-leave hours used in this pay period.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  {!loadingSickLeaves && filteredSickPayRows.length > 0 && (
+                    <tfoot className="bg-gray-50 border-t border-gray-200">
+                      <tr>
+                        <td className="px-4 py-3 text-sm font-semibold text-gray-900" colSpan={2}>
+                          Total ({sickPayTotals.employees} employees)
+                        </td>
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">
+                          {formatSickLeaveHours(sickPayTotals.total_hours)}
+                        </td>
+                        <td className="px-4 py-3" />
+                        <td className="px-4 py-3 text-right text-sm font-semibold text-green-700">
+                          {formatSickPayMoney(sickPayTotals.total_amount)}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </div>
