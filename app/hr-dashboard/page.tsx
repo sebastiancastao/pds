@@ -167,6 +167,8 @@ function HRDashboardContent() {
     employee_email: string;
   };
   const [sickPaysheets, setSickPaysheets] = useState<SickLeavePaysheet[]>([]);
+  // Toggle for the sick-leave panels (Payment Cycles + Sick Leave Pay Sheet) in the payroll tab
+  const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
   const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
   const [sickPaysheetError, setSickPaysheetError] = useState<string>("");
   const [sickPaysheetSuccess, setSickPaysheetSuccess] = useState<string>("");
@@ -3768,9 +3770,18 @@ function HRDashboardContent() {
                 <Link href="/payroll-approvals">
                   <button className="apple-button apple-button-secondary">View Approvals</button>
                 </Link>
+                <button
+                  onClick={() => setShowSickLeavePanels((prev) => !prev)}
+                  className={`apple-button ${showSickLeavePanels ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                  aria-expanded={showSickLeavePanels}
+                >
+                  {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
+                </button>
               </div>
             </div>
 
+            {showSickLeavePanels && (
+            <>
             {/* Payment Cycles */}
             <div className="apple-card mb-6">
               <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -4177,6 +4188,8 @@ function HRDashboardContent() {
                 )}
               </div>
             </div>
+            </>
+            )}
 
             {/* Send to Approval Modal */}
             {showApprovalModal && (
