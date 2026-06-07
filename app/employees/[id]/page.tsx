@@ -75,6 +75,17 @@ type SickLeaveEntry = {
   created_at: string | null;
 };
 
+type SickLeavePaysheet = {
+  id: string;
+  hours: number;
+  rate: number;
+  amount: number;
+  payment_date: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string | null;
+};
+
 type SickLeaveSummary = {
   total_hours: number;
   total_days: number;
@@ -86,6 +97,7 @@ type SickLeaveSummary = {
   carry_over_days?: number;
   balance_hours: number;
   balance_days: number;
+  paysheets?: SickLeavePaysheet[];
 };
 
 type SummaryPayload = {
@@ -979,6 +991,7 @@ export default function WorkerProfilePage() {
 
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+  const sickLeavePaysheets = sickLeaveSummary?.paysheets ?? [];
 
   // Build a map of YYYY-MM-DD → set of marker types for the calendar
   // and a map of YYYY-MM-DD → confirmed event details
@@ -2901,6 +2914,32 @@ export default function WorkerProfilePage() {
                     })}
                   </div>
                 )}
+
+                {/* Sick Leave Pay Sheets */}
+                <div className="border-t border-gray-100 pt-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-2">Sick Leave Pay Sheets</p>
+                  {sickLeavePaysheets.length === 0 ? (
+                    <div className="text-center py-3 text-sm text-gray-400">
+                      No sick leave pay sheets yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {sickLeavePaysheets.map((ps) => (
+                        <div key={ps.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center gap-4 text-gray-700">
+                            <span className="font-medium text-gray-900">Payment date: {formatDate(ps.payment_date)}</span>
+                            <span className="text-gray-500">{formatHours(ps.hours)} hrs</span>
+                            <span className="text-gray-500">${ps.amount.toFixed(2)}</span>
+                            {ps.notes && <span className="text-gray-400 text-xs">{ps.notes}</span>}
+                          </div>
+                          <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                            {ps.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 

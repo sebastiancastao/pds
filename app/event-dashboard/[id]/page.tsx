@@ -4556,7 +4556,7 @@ export default function EventDashboardPage() {
                         onChange={handleChange}
                         type="number"
                         min="0"
-                        step="1"
+                        step="0.01"
                         className="w-full pl-8 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
                         placeholder="0"
                       />
@@ -6875,7 +6875,7 @@ export default function EventDashboardPage() {
                               My Timesheet
                             </Link>
                           )}
-                          {userRole === "exec" && hasSubmittedAttestation && (
+                          {userRole === "exec" && (hasSubmittedAttestation || isRejectedAttestation) && (
                             <button
                               onClick={async () => {
                                 try {
@@ -6897,7 +6897,7 @@ export default function EventDashboardPage() {
                                   const blobUrl = URL.createObjectURL(blob);
                                   const a = document.createElement("a");
                                   a.href = blobUrl;
-                                  a.download = `attestation-${firstName}_${lastName}.pdf`;
+                                  a.download = `attestation${isRejectedAttestation ? "-rejected" : ""}-${firstName}_${lastName}.pdf`;
                                   document.body.appendChild(a);
                                   a.click();
                                   a.remove();
@@ -6906,10 +6906,10 @@ export default function EventDashboardPage() {
                                   console.error("Failed to download attestation PDF", err);
                                 }
                               }}
-                              className="text-purple-600 hover:text-purple-700 font-medium text-xs ml-2"
-                              title="Download submitted attestation PDF"
+                              className={`font-medium text-xs ml-2 ${isRejectedAttestation ? "text-rose-600 hover:text-rose-700" : "text-purple-600 hover:text-purple-700"}`}
+                              title={isRejectedAttestation ? "Download rejected attestation PDF" : "Download submitted attestation PDF"}
                             >
-                              Attestation PDF
+                              {isRejectedAttestation ? "Rejected PDF" : "Attestation PDF"}
                             </button>
                           )}
                         </>

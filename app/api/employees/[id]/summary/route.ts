@@ -572,6 +572,28 @@ export async function GET(
       );
     }
 
+    // Sick leave pay sheets (queued sick-leave payroll for this employee)
+    const { data: paysheetRows, error: paysheetErr } = await supabaseAdmin
+      .from("sick_leave_paysheets")
+      .select("id, hours, rate, amount, payment_date, status, notes, created_at")
+      .eq("user_id", userId)
+      .order("payment_date", { ascending: false });
+
+    if (paysheetErr) {
+      console.error("sick_leave_paysheets query error:", paysheetErr);
+    }
+
+    const sickLeavePaysheets = (paysheetRows ?? []).map((row: any) => ({
+      id: row.id,
+      hours: Number(row.hours ?? 0),
+      rate: Number(row.rate ?? 0),
+      amount: Number(row.amount ?? 0),
+      payment_date: row.payment_date ?? null,
+      status: String(row.status ?? "queued").toLowerCase(),
+      notes: row.notes ?? null,
+      created_at: row.created_at ?? null,
+    }));
+
     const currentYearStart = new Date(Date.UTC(new Date().getUTCFullYear(), 0, 1));
     const teamEventIdSet = new Set(vendorEventIds);
 
@@ -662,6 +684,7 @@ export async function GET(
       year_to_date_days: Number((year_to_date_hours / HOURS_PER_WORKDAY).toFixed(2)),
       balance_hours: availableHours,
       balance_days: Number((availableHours / HOURS_PER_WORKDAY).toFixed(2)),
+      paysheets: sickLeavePaysheets,
     };
 
     return NextResponse.json(

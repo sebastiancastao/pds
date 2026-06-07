@@ -153,6 +153,67 @@ function HRDashboardContent() {
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
   const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
+  // Sick leave pay sheet (queued sick-leave payroll) state
+  type SickLeavePaysheet = {
+    id: string;
+    user_id: string;
+    hours: number;
+    rate: number;
+    amount: number;
+    payment_date: string;
+    status: "queued" | "paid";
+    notes: string | null;
+    employee_name: string;
+    employee_email: string;
+  };
+  const [sickPaysheets, setSickPaysheets] = useState<SickLeavePaysheet[]>([]);
+  const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
+  const [sickPaysheetError, setSickPaysheetError] = useState<string>("");
+  const [sickPaysheetSuccess, setSickPaysheetSuccess] = useState<string>("");
+  const [creatingSickPaysheet, setCreatingSickPaysheet] = useState(false);
+  const [updatingSickPaysheetId, setUpdatingSickPaysheetId] = useState<string | null>(null);
+  const [sickPayBaseRatesByState, setSickPayBaseRatesByState] = useState<Record<string, number>>({});
+  const [sickPaysheetForm, setSickPaysheetForm] = useState({
+    userId: "",
+    paymentDate: "",
+    hours: "",
+    rate: "",
+    notes: "",
+  });
+  // Payment cycles (recurring pay periods that auto-fill sick-leave paysheets)
+  type PaymentCycle = {
+    id: string;
+    label: string;
+    start_date: string;
+    end_date: string;
+    pay_date: string;
+    frequency: string;
+    status: "open" | "processed";
+    paysheet_count?: number;
+  };
+  type CyclePreviewRow = {
+    user_id: string;
+    name: string;
+    email: string;
+    state: string;
+    sick_hours: number;
+    worked_hours: number;
+    rate: number;
+    amount: number;
+    already_has_paysheet: boolean;
+  };
+  const [paymentCycles, setPaymentCycles] = useState<PaymentCycle[]>([]);
+  const [cycleConfig, setCycleConfig] = useState<{ frequency: string; anchor_date: string; pay_offset_days: number } | null>(null);
+  const [loadingCycles, setLoadingCycles] = useState(false);
+  const [cycleError, setCycleError] = useState("");
+  const [cycleSuccess, setCycleSuccess] = useState("");
+  const [savingCadence, setSavingCadence] = useState(false);
+  const [cadenceForm, setCadenceForm] = useState({ frequency: "biweekly", anchorDate: "", payOffsetDays: "0" });
+  const [retrieveCycle, setRetrieveCycle] = useState<PaymentCycle | null>(null);
+  const [retrieveRows, setRetrieveRows] = useState<CyclePreviewRow[]>([]);
+  const [retrieveSelected, setRetrieveSelected] = useState<Set<string>>(new Set());
+  const [retrieving, setRetrieving] = useState(false);
+  const [processingCycle, setProcessingCycle] = useState(false);
   // Create salaried user modal
   const [showCreateSalariedModal, setShowCreateSalariedModal] = useState(false);
   const [createSalariedForm, setCreateSalariedForm] = useState({
@@ -2846,6 +2907,331 @@ function HRDashboardContent() {
     appliedSickLeavePeriod.start || appliedSickLeavePeriod.end
   );
 
+  // ---- Sick leave pay sheet (queued sick-leave payroll) ----
+  const getSickPayBaseRate = useCallback(
+    (employee?: Employee | null) => {
+      if (!employee) return 0;
+      if (normalizeState(employee.state) === "CA" && /san\s*diego/i.test(employee.city || "")) {
+        return SAN_DIEGO_BASE_RATE;
+      }
+      const configured = Number(sickPayBaseRatesByState[normalizeState(employee.state)] || 0);
+      return configured > 0 ? configured : 17.28;
+    },
+    [sickPayBaseRatesByState]
+  );
+
+  const loadSickPayBaseRates = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/rates", {
+        method: "GET",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      if (!res.ok) return;
+      const json = await res.json();
+      const map: Record<string, number> = {};
+      for (const row of json?.rates || []) {
+        const st = normalizeState(row?.state_code);
+        const baseRate = Number(row?.base_rate || 0);
+        if (st && baseRate > 0) map[st] = baseRate;
+      }
+      setSickPayBaseRatesByState(map);
+    } catch (e) {
+      console.warn("[SICK PAYSHEET] Failed to load base rates", e);
+    }
+  }, []);
+
+  const loadSickPaysheets = useCallback(async () => {
+    setLoadingSickPaysheets(true);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/sick-leave-payments?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load sick leave pay sheets");
+      setSickPaysheets(Array.isArray(json.paysheets) ? json.paysheets : []);
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to load sick leave pay sheets");
+    } finally {
+      setLoadingSickPaysheets(false);
+    }
+  }, []);
+
+  const sickPaysheetSelectedEmployee = useMemo(
+    () => employees.find((e) => e.id === sickPaysheetForm.userId) || null,
+    [employees, sickPaysheetForm.userId]
+  );
+
+  const sickPaysheetComputedAmount = useMemo(() => {
+    const hours = Number(sickPaysheetForm.hours) || 0;
+    const rate = Number(sickPaysheetForm.rate) || 0;
+    return Number((hours * rate).toFixed(2));
+  }, [sickPaysheetForm.hours, sickPaysheetForm.rate]);
+
+  const handleSickPaysheetEmployeeChange = (userId: string) => {
+    const employee = employees.find((e) => e.id === userId) || null;
+    const rate = getSickPayBaseRate(employee);
+    setSickPaysheetForm((prev) => ({
+      ...prev,
+      userId,
+      rate: rate > 0 ? rate.toFixed(2) : prev.rate,
+    }));
+  };
+
+  const handleCreateSickPaysheet = async () => {
+    setSickPaysheetError("");
+    setSickPaysheetSuccess("");
+    const hours = Number(sickPaysheetForm.hours);
+    const rate = Number(sickPaysheetForm.rate);
+    if (!sickPaysheetForm.userId) {
+      setSickPaysheetError("Select an employee.");
+      return;
+    }
+    if (!sickPaysheetForm.paymentDate) {
+      setSickPaysheetError("Select a payment date.");
+      return;
+    }
+    if (!Number.isFinite(hours) || hours <= 0) {
+      setSickPaysheetError("Enter sick leave hours greater than 0.");
+      return;
+    }
+    if (!Number.isFinite(rate) || rate < 0) {
+      setSickPaysheetError("Enter a valid hourly rate.");
+      return;
+    }
+    setCreatingSickPaysheet(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leave-payments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          user_id: sickPaysheetForm.userId,
+          payment_date: sickPaysheetForm.paymentDate,
+          hours,
+          rate,
+          amount: sickPaysheetComputedAmount,
+          notes: sickPaysheetForm.notes,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to queue sick leave pay sheet");
+      setSickPaysheetSuccess("Sick leave pay sheet queued for payroll.");
+      setSickPaysheetForm((prev) => ({ ...prev, hours: "", notes: "" }));
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to queue sick leave pay sheet");
+    } finally {
+      setCreatingSickPaysheet(false);
+    }
+  };
+
+  const handleUpdateSickPaysheet = async (id: string, updates: { status?: "queued" | "paid"; payment_date?: string }) => {
+    setUpdatingSickPaysheetId(id);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leave-payments", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ id, ...updates }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to update sick leave pay sheet");
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to update sick leave pay sheet");
+    } finally {
+      setUpdatingSickPaysheetId(null);
+    }
+  };
+
+  const handleDeleteSickPaysheet = async (id: string) => {
+    setUpdatingSickPaysheetId(id);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/sick-leave-payments?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to remove sick leave pay sheet");
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to remove sick leave pay sheet");
+    } finally {
+      setUpdatingSickPaysheetId(null);
+    }
+  };
+
+  // ---- Payment cycles ----
+  const loadPaymentCycles = useCallback(async () => {
+    setLoadingCycles(true);
+    setCycleError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load payment cycles");
+      setPaymentCycles(Array.isArray(json.cycles) ? json.cycles : []);
+      setCycleConfig(json.config || null);
+      if (json.config) {
+        setCadenceForm({
+          frequency: json.config.frequency || "biweekly",
+          anchorDate: json.config.anchor_date || "",
+          payOffsetDays: String(json.config.pay_offset_days ?? 0),
+        });
+      }
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to load payment cycles");
+    } finally {
+      setLoadingCycles(false);
+    }
+  }, []);
+
+  const handleSaveCadence = async () => {
+    setCycleError("");
+    setCycleSuccess("");
+    if (!cadenceForm.anchorDate) {
+      setCycleError("Pick an anchor date (the first period's start).");
+      return;
+    }
+    setSavingCadence(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/payment-cycles", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          frequency: cadenceForm.frequency,
+          anchorDate: cadenceForm.anchorDate,
+          payOffsetDays: Number(cadenceForm.payOffsetDays) || 0,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to save cadence");
+      setCycleSuccess("Payment cadence saved and cycles generated.");
+      await loadPaymentCycles();
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to save cadence");
+    } finally {
+      setSavingCadence(false);
+    }
+  };
+
+  const handleRetrieveCycle = async (cycle: PaymentCycle) => {
+    setCycleError("");
+    setCycleSuccess("");
+    setRetrieveCycle(cycle);
+    setRetrieveRows([]);
+    setRetrieveSelected(new Set());
+    setRetrieving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles/${cycle.id}/retrieve?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to retrieve cycle time");
+      const rows: CyclePreviewRow[] = Array.isArray(json.rows) ? json.rows : [];
+      setRetrieveRows(rows);
+      // Default-select everyone who doesn't already have a paysheet for this cycle.
+      setRetrieveSelected(new Set(rows.filter((r) => !r.already_has_paysheet).map((r) => r.user_id)));
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to retrieve cycle time");
+      setRetrieveCycle(null);
+    } finally {
+      setRetrieving(false);
+    }
+  };
+
+  const toggleRetrieveUser = (userId: string) => {
+    setRetrieveSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
+    });
+  };
+
+  const handleProcessCycle = async () => {
+    if (!retrieveCycle) return;
+    const userIds = [...retrieveSelected];
+    if (userIds.length === 0) {
+      setCycleError("Select at least one employee to create paysheets for.");
+      return;
+    }
+    setCycleError("");
+    setProcessingCycle(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles/${retrieveCycle.id}/process`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ userIds }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to create paysheets");
+      setCycleSuccess(json.message || "Paysheets created.");
+      setRetrieveCycle(null);
+      setRetrieveRows([]);
+      setRetrieveSelected(new Set());
+      await Promise.all([loadPaymentCycles(), loadSickPaysheets()]);
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to create paysheets");
+    } finally {
+      setProcessingCycle(false);
+    }
+  };
+
+  const handleDeleteCycle = async (cycle: PaymentCycle) => {
+    setCycleError("");
+    setCycleSuccess("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles?id=${encodeURIComponent(cycle.id)}`, {
+        method: "DELETE",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to remove cycle");
+      await loadPaymentCycles();
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to remove cycle");
+    }
+  };
+
+  useEffect(() => {
+    if (hrView === "payments") {
+      loadSickPayBaseRates();
+      loadSickPaysheets();
+      loadPaymentCycles();
+    }
+  }, [hrView, loadSickPayBaseRates, loadSickPaysheets, loadPaymentCycles]);
+
   const hrStats = {
     totalEmployees: employees.length,
     activeEmployees: employees.filter((e) => e.status === "active").length,
@@ -3382,6 +3768,413 @@ function HRDashboardContent() {
                 <Link href="/payroll-approvals">
                   <button className="apple-button apple-button-secondary">View Approvals</button>
                 </Link>
+              </div>
+            </div>
+
+            {/* Payment Cycles */}
+            <div className="apple-card mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Payment Cycles</h2>
+                  <p className="text-sm text-gray-500">Set a recurring pay cadence, then retrieve each employee&apos;s sick-leave &amp; worked hours for a cycle to auto-fill paysheets.</p>
+                </div>
+                <button
+                  onClick={loadPaymentCycles}
+                  disabled={loadingCycles}
+                  className="apple-button apple-button-secondary"
+                >
+                  {loadingCycles ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+
+              {/* Cadence config */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <label className="apple-label" htmlFor="cycle-frequency">Frequency</label>
+                  <select
+                    id="cycle-frequency"
+                    value={cadenceForm.frequency}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, frequency: e.target.value }))}
+                    className="apple-select w-full"
+                  >
+                    <option value="weekly">Weekly</option>
+                    <option value="biweekly">Bi-weekly</option>
+                    <option value="semimonthly">Semi-monthly (1–15 / 16–end)</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="cycle-anchor">Anchor Date (first period start)</label>
+                  <input
+                    id="cycle-anchor"
+                    type="date"
+                    value={cadenceForm.anchorDate}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, anchorDate: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="cycle-offset">Pay Offset (days after period end)</label>
+                  <input
+                    id="cycle-offset"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={cadenceForm.payOffsetDays}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, payOffsetDays: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleSaveCadence}
+                    disabled={savingCadence}
+                    className={`apple-button w-full ${savingCadence ? "apple-button-disabled" : "apple-button-primary"}`}
+                  >
+                    {savingCadence ? "Saving…" : cycleConfig ? "Update & Regenerate" : "Save Cadence"}
+                  </button>
+                </div>
+              </div>
+
+              {cycleError && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{cycleError}</div>
+              )}
+              {cycleSuccess && (
+                <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{cycleSuccess}</div>
+              )}
+
+              {/* Cycle list */}
+              <div className="mt-6 overflow-x-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Generated Cycles</h3>
+                  <span className="text-xs text-gray-500">{paymentCycles.length} total</span>
+                </div>
+                {paymentCycles.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-gray-400">No cycles yet. Save a cadence above to generate them.</div>
+                ) : (
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Cycle</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Pay Date</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Paysheets</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {paymentCycles.map((cycle) => (
+                        <tr key={cycle.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 text-sm text-gray-900">
+                            <div className="font-medium">{cycle.label}</div>
+                            <div className="text-xs text-gray-400">
+                              {formatSickLeaveDate(cycle.start_date)} – {formatSickLeaveDate(cycle.end_date)}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700">{formatSickLeaveDate(cycle.pay_date)}</td>
+                          <td className="px-3 py-2 text-sm">
+                            <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${cycle.status === "processed" ? "bg-green-100 text-green-700 border-green-200" : "bg-gray-100 text-gray-600 border-gray-200"}`}>
+                              {cycle.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">{cycle.paysheet_count ?? 0}</td>
+                          <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
+                            <button
+                              onClick={() => handleRetrieveCycle(cycle)}
+                              disabled={retrieving}
+                              className="text-purple-600 hover:text-purple-800 font-medium mr-3 disabled:opacity-50"
+                            >
+                              Retrieve &amp; auto-fill
+                            </button>
+                            <button
+                              onClick={() => handleDeleteCycle(cycle)}
+                              disabled={(cycle.paysheet_count ?? 0) > 0}
+                              title={(cycle.paysheet_count ?? 0) > 0 ? "Remove its paysheets first" : "Delete cycle"}
+                              className="text-red-600 hover:text-red-800 font-medium disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            {/* Retrieve & auto-fill preview modal */}
+            {retrieveCycle && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">Retrieve time for cycle</h2>
+                      <p className="text-sm text-gray-500 mt-0.5">{retrieveCycle.label} · pays {formatSickLeaveDate(retrieveCycle.pay_date)}</p>
+                    </div>
+                    <button
+                      onClick={() => { setRetrieveCycle(null); setRetrieveRows([]); setRetrieveSelected(new Set()); }}
+                      className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100"
+                      aria-label="Close"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto px-6 py-4">
+                    {retrieving ? (
+                      <div className="text-center py-10 text-sm text-gray-400">Retrieving sick-leave &amp; worked hours…</div>
+                    ) : retrieveRows.length === 0 ? (
+                      <div className="text-center py-10 text-sm text-gray-400">No employees used sick leave in this cycle window.</div>
+                    ) : (
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider w-8"></th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Sick Hrs</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Worked Hrs</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {retrieveRows.map((row) => (
+                            <tr key={row.user_id} className={row.already_has_paysheet ? "bg-gray-50" : "hover:bg-gray-50"}>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={retrieveSelected.has(row.user_id)}
+                                  disabled={row.already_has_paysheet}
+                                  onChange={() => toggleRetrieveUser(row.user_id)}
+                                />
+                              </td>
+                              <td className="px-3 py-2 text-sm text-gray-900">
+                                <div className="font-medium">{row.name}{row.state ? ` (${row.state})` : ""}</div>
+                                {row.already_has_paysheet && <div className="text-xs text-amber-600">Already has a paysheet for this cycle</div>}
+                              </td>
+                              <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">{formatSickLeaveHours(row.sick_hours)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-gray-500">{formatSickLeaveHours(row.worked_hours)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-gray-700">${formatPayrollMoney(row.rate)}</td>
+                              <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">${formatPayrollMoney(row.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-gray-200 flex items-center gap-3">
+                    <button
+                      onClick={() => { setRetrieveCycle(null); setRetrieveRows([]); setRetrieveSelected(new Set()); }}
+                      className="flex-1 apple-button apple-button-secondary"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleProcessCycle}
+                      disabled={processingCycle || retrieving || retrieveSelected.size === 0}
+                      className={`flex-1 apple-button ${processingCycle || retrieveSelected.size === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
+                    >
+                      {processingCycle ? "Creating…" : `Create ${retrieveSelected.size} Paysheet${retrieveSelected.size !== 1 ? "s" : ""}`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sick Leave Pay Sheet */}
+            <div className="apple-card mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Sick Leave Pay Sheet</h2>
+                  <p className="text-sm text-gray-500">Create a sick-leave payroll sheet and queue it with a payment date.</p>
+                </div>
+                <button
+                  onClick={loadSickPaysheets}
+                  disabled={loadingSickPaysheets}
+                  className="apple-button apple-button-secondary"
+                >
+                  {loadingSickPaysheets ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                <div className="lg:col-span-2">
+                  <label className="apple-label" htmlFor="sick-pay-employee">Employee</label>
+                  <select
+                    id="sick-pay-employee"
+                    value={sickPaysheetForm.userId}
+                    onChange={(e) => handleSickPaysheetEmployeeChange(e.target.value)}
+                    className="apple-select w-full"
+                  >
+                    <option value="">Select employee…</option>
+                    {[...employees]
+                      .sort((a, b) =>
+                        `${a.last_name} ${a.first_name}`.localeCompare(
+                          `${b.last_name} ${b.first_name}`,
+                          undefined,
+                          { sensitivity: "base" }
+                        )
+                      )
+                      .map((emp) => (
+                        <option key={emp.id} value={emp.id}>
+                          {emp.last_name}, {emp.first_name}
+                          {emp.state ? ` (${emp.state})` : ""}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-date">Payment Date</label>
+                  <input
+                    id="sick-pay-date"
+                    type="date"
+                    value={sickPaysheetForm.paymentDate}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, paymentDate: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-hours">Hours</label>
+                  <input
+                    id="sick-pay-hours"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sickPaysheetForm.hours}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, hours: e.target.value }))}
+                    placeholder="0.00"
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-rate">Rate ($/hr)</label>
+                  <input
+                    id="sick-pay-rate"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sickPaysheetForm.rate}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, rate: e.target.value }))}
+                    placeholder="0.00"
+                    className="apple-select w-full"
+                  />
+                  {sickPaysheetSelectedEmployee && (
+                    <p className="mt-1 text-xs text-gray-400">
+                      Default for {sickPaysheetSelectedEmployee.state || "—"}: ${getSickPayBaseRate(sickPaysheetSelectedEmployee).toFixed(2)}/hr
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="apple-label">Amount</label>
+                  <div className="apple-select w-full bg-gray-50 font-semibold text-gray-900 flex items-center">
+                    ${formatPayrollMoney(sickPaysheetComputedAmount)}
+                  </div>
+                  <p className="mt-1 text-xs text-gray-400">Hours × Rate</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div className="md:col-span-2">
+                  <label className="apple-label" htmlFor="sick-pay-notes">Notes (optional)</label>
+                  <input
+                    id="sick-pay-notes"
+                    type="text"
+                    value={sickPaysheetForm.notes}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, notes: e.target.value }))}
+                    placeholder="e.g. Sick leave for week of …"
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleCreateSickPaysheet}
+                    disabled={creatingSickPaysheet}
+                    className={`apple-button w-full ${creatingSickPaysheet ? "apple-button-disabled" : "apple-button-primary"}`}
+                  >
+                    {creatingSickPaysheet ? "Queuing…" : "Create & Queue Pay Sheet"}
+                  </button>
+                </div>
+              </div>
+
+              {sickPaysheetError && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{sickPaysheetError}</div>
+              )}
+              {sickPaysheetSuccess && (
+                <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{sickPaysheetSuccess}</div>
+              )}
+
+              {/* Queue */}
+              <div className="mt-6 overflow-x-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Queued Sick Leave Pay Sheets</h3>
+                  <span className="text-xs text-gray-500">{sickPaysheets.length} total</span>
+                </div>
+                {sickPaysheets.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-gray-400">No sick leave pay sheets queued yet.</div>
+                ) : (
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Payment Date</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Amount</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {sickPaysheets.map((ps) => (
+                        <tr key={ps.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 text-sm text-gray-900">
+                            <div className="font-medium">{ps.employee_name}</div>
+                            {ps.notes && <div className="text-xs text-gray-400">{ps.notes}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700">{formatSickLeaveDate(ps.payment_date)}</td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">{formatSickLeaveHours(ps.hours)}</td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">${formatPayrollMoney(ps.rate)}</td>
+                          <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">${formatPayrollMoney(ps.amount)}</td>
+                          <td className="px-3 py-2 text-sm">
+                            <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                              {ps.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
+                            {ps.status === "queued" ? (
+                              <button
+                                onClick={() => handleUpdateSickPaysheet(ps.id, { status: "paid" })}
+                                disabled={updatingSickPaysheetId === ps.id}
+                                className="text-green-600 hover:text-green-800 font-medium mr-3 disabled:opacity-50"
+                              >
+                                Mark Paid
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleUpdateSickPaysheet(ps.id, { status: "queued" })}
+                                disabled={updatingSickPaysheetId === ps.id}
+                                className="text-blue-600 hover:text-blue-800 font-medium mr-3 disabled:opacity-50"
+                              >
+                                Re-queue
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteSickPaysheet(ps.id)}
+                              disabled={updatingSickPaysheetId === ps.id}
+                              className="text-red-600 hover:text-red-800 font-medium disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
             </div>
 
