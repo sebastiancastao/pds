@@ -173,6 +173,7 @@ export default function ReportsPage() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [selectedUsers, setSelectedUsers] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState<string | null>(null);
+  const [downloadingEvent, setDownloadingEvent] = useState<string | null>(null);
   const [downloadingLoginExcel, setDownloadingLoginExcel] = useState(false);
 
   // Filters
@@ -333,6 +334,30 @@ export default function ReportsPage() {
       URL.revokeObjectURL(url);
     } finally {
       setDownloading(null);
+    }
+  };
+
+  const downloadEventExcel = async (eventId: string) => {
+    setDownloadingEvent(eventId);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/reports/event-export?eventId=${eventId}`, {
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({}));
+        alert(json.error || 'Export failed');
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = res.headers.get('Content-Disposition')?.match(/filename="(.+)"/)?.[1] || `event_${eventId}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } finally {
+      setDownloadingEvent(null);
     }
   };
 
@@ -819,6 +844,7 @@ export default function ReportsPage() {
                       <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Req. Staff</th>
                       <th className="text-right px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Assigned</th>
                       <th className="text-center px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Active</th>
+                      <th className="text-center px-4 py-3 font-semibold text-gray-600 whitespace-nowrap">Report</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -838,10 +864,23 @@ export default function ReportsPage() {
                           </span>
                         </td>
                         <td className="px-4 py-3 text-center"><StatusDot active={e.is_active} /></td>
+                        <td className="px-4 py-3 text-center">
+                          <button
+                            onClick={() => downloadEventExcel(e.id)}
+                            disabled={downloadingEvent === e.id}
+                            title="Download full event report (Excel)"
+                            className="inline-flex items-center justify-center w-8 h-8 rounded-liquid hover:bg-green-50 text-gray-400 hover:text-green-600 transition-colors"
+                          >
+                            {downloadingEvent === e.id
+                              ? <span className="w-4 h-4 border-2 border-green-400 border-t-transparent rounded-full animate-spin" />
+                              : <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+                            }
+                          </button>
+                        </td>
                       </tr>
                     ))}
                     {filteredEvents.length === 0 && (
-                      <tr><td colSpan={11} className="px-4 py-8 text-center text-gray-400">No events found</td></tr>
+                      <tr><td colSpan={12} className="px-4 py-8 text-center text-gray-400">No events found</td></tr>
                     )}
                   </tbody>
                 </table>

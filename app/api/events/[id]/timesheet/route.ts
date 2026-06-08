@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
 import { safeDecrypt } from "@/lib/encryption";
 import {
   formatIsoToHHMM,
@@ -20,6 +20,15 @@ const supabaseAnon = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
+
+// Kiosk check-ins append "| clientActionId:<id>" to notes; we preserve this
+// "transaction id" across manager/exec edits so every line keeps a stable id.
+const CLIENT_ACTION_ID_MARKER = "clientActionId:";
+
+function extractClientActionId(notes: string | null | undefined): string {
+  const m = (notes || "").match(/clientActionId:\s*([^\s|]+)/i);
+  return m ? m[1] : "";
+}
 
 function timeToSeconds(t: unknown): number | null {
   if (typeof t !== "string") return null;
@@ -678,13 +687,13 @@ export async function PUT(
     const [eventBoundResult, nullWindowResult] = await Promise.all([
       supabaseAdmin
         .from("time_entries")
-        .select("id, action, timestamp")
+        .select("id, action, timestamp, notes, event_id")
         .eq("user_id", targetUserId)
         .eq("event_id", eventId)
         .order("timestamp", { ascending: true }),
       supabaseAdmin
         .from("time_entries")
-        .select("id, action, timestamp")
+        .select("id, action, timestamp, notes, event_id")
         .eq("user_id", targetUserId)
         .is("event_id", null)
         .gte("timestamp", dayStart)
@@ -703,10 +712,10 @@ export async function PUT(
     ].filter((row, index, arr) => arr.findIndex((candidate) => candidate.id === row.id) === index);
 
     // Group both existing and new entries by action type
-    const existingByAction: Record<string, Array<{ id: string; action: string; timestamp: string }>> = {};
+    const existingByAction: Record<string, Array<{ id: string; action: string; timestamp: string; notes: string | null; event_id: string | null }>> = {};
     for (const e of existingRaw || []) {
       if (!existingByAction[e.action]) existingByAction[e.action] = [];
-      existingByAction[e.action].push(e);
+      existingByAction[e.action].push(e as any);
     }
 
     const newByAction: Record<string, Array<{ action: string; timestamp: string | null }>> = {};
@@ -715,7 +724,14 @@ export async function PUT(
       newByAction[e.action].push(e);
     }
 
-    const toUpdate: Array<{ id: string; timestamp: string }> = [];
+    // Build the "Manual edit" note for an actually-changed line, preserving the
+    // line's transaction id so edited rows still carry one.
+    const buildEditNote = (clientActionId: string) => {
+      const base = `Manual edit by ${requesterRole} | Reason: ${editNote} | Signature: ${editSignature}`;
+      return clientActionId ? `${base} | ${CLIENT_ACTION_ID_MARKER}${clientActionId}` : base;
+    };
+
+    const toUpdate: Array<{ id: string; timestamp: string; notes: string | null; event_id: string }> = [];
     const toInsert: Array<{ user_id: string; action: string; timestamp: string; division: string; event_id: string; notes: string }> = [];
     const toDelete: string[] = [];
 
@@ -726,9 +742,40 @@ export async function PUT(
       const maxLen = Math.max(existingList.length, newList.length);
       for (let i = 0; i < maxLen; i++) {
         if (i < existingList.length && i < newList.length) {
-          toUpdate.push({ id: existingList[i].id, timestamp: newList[i].timestamp! });
+          const existing = existingList[i];
+          const newTimestamp = newList[i].timestamp!;
+          // The edit form only has minute precision, but kiosk entries are stored
+          // with seconds. Compare at minute granularity so an untouched line isn't
+          // flagged as "edited" just because its seconds were dropped on round-trip.
+          const toMinute = (iso: string) => Math.floor(new Date(iso).getTime() / 60000);
+          const timeChanged = toMinute(existing.timestamp) !== toMinute(newTimestamp);
+          const needsEventTag = existing.event_id !== eventId;
+
+          if (timeChanged) {
+            // Genuine manager/exec edit of this specific line: stamp it, keeping
+            // the original transaction id (or minting one if it never had it).
+            const clientActionId = extractClientActionId(existing.notes) || randomUUID();
+            toUpdate.push({
+              id: existing.id,
+              timestamp: newTimestamp,
+              event_id: eventId,
+              notes: buildEditNote(clientActionId),
+            });
+          } else if (needsEventTag) {
+            // Time is unchanged — only claim a previously-untagged kiosk entry for
+            // this event. Preserve its original note/transaction id; do NOT mark it
+            // as edited.
+            toUpdate.push({
+              id: existing.id,
+              timestamp: existing.timestamp,
+              event_id: eventId,
+              notes: existing.notes,
+            });
+          }
+          // else: fully unchanged — leave the row exactly as it is.
         } else if (i < newList.length) {
-          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: `Manual edit by ${requesterRole} | Reason: ${editNote} | Signature: ${editSignature}` });
+          // Brand-new line added by the editor: gets the edit note and a fresh id.
+          toInsert.push({ user_id: targetUserId, action, timestamp: newList[i].timestamp!, division, event_id: eventId, notes: buildEditNote(randomUUID()) });
         } else {
           toDelete.push(existingList[i].id);
         }
@@ -754,7 +801,7 @@ export async function PUT(
     for (const upd of toUpdate) {
       const { error: updateError } = await supabaseAdmin
         .from("time_entries")
-        .update({ timestamp: upd.timestamp, event_id: eventId, notes: `Manual edit by ${requesterRole} | Reason: ${editNote} | Signature: ${editSignature}` })
+        .update({ timestamp: upd.timestamp, event_id: upd.event_id, notes: upd.notes })
         .eq("id", upd.id);
       if (updateError) {
         return NextResponse.json({ error: updateError.message }, { status: 500 });
