@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import '../../dashboard/dashboard-styles.css';
@@ -205,7 +205,7 @@ const PACKET_STATE_LABELS: Record<string, string> = {
   WI: 'Wisconsin',
 };
 
-export default function AdminPdfFormsPage() {
+function AdminPdfFormsPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [forms, setForms] = useState<CustomForm[]>([]);
@@ -2727,5 +2727,13 @@ export default function AdminPdfFormsPage() {
       </div>
     )}
     </>
+  );
+}
+
+export default function AdminPdfFormsPage() {
+  return (
+    <Suspense fallback={null}>
+      <AdminPdfFormsPageInner />
+    </Suspense>
   );
 }
