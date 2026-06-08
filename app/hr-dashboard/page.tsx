@@ -4,7 +4,6 @@ import Link from "next/link";
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
-import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { isSanDiegoRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -116,41 +115,16 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
-// Fallback hourly rate used for sick-leave pay when no state rate is configured.
-const DEFAULT_SICK_PAY_RATE = 17.28;
-
-type SickPayRow = {
-  user_id: string;
-  employee_name: string;
-  employee_email: string;
-  employee_state: string | null;
-  used_hours: number;
-  base_rate: number;
-  effective_rate: number;
-  amount: number;
-  request_count: number;
-};
-
-function currentMonthRange(): { start: string; end: string } {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-  return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
-  };
-}
-
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
-  const initialView = (searchParams?.get("view") as "overview" | "employees" | "sickleave" | "sickpayroll" | "payments" | "forms" | "paystub" | null) || "overview";
+  const initialView = (searchParams?.get("view") as "overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub" | null) || "overview";
   const initialFormState = searchParams?.get("state") || "all";
 
   const [isAuthorized, setIsAuthorized] = useState(false);
   const [authChecking, setAuthChecking] = useState(true);
-  const [hrView, setHrView] = useState<"overview" | "employees" | "sickleave" | "sickpayroll" | "payments" | "forms" | "paystub">(initialView);
+  const [hrView, setHrView] = useState<"overview" | "employees" | "sickleave" | "payments" | "forms" | "paystub">(initialView);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [employeeSearch, setEmployeeSearch] = useState<string>("");
@@ -179,6 +153,69 @@ function HRDashboardContent() {
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
   const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
+  // Sick leave pay sheet (queued sick-leave payroll) state
+  type SickLeavePaysheet = {
+    id: string;
+    user_id: string;
+    hours: number;
+    rate: number;
+    amount: number;
+    payment_date: string;
+    status: "queued" | "paid";
+    notes: string | null;
+    employee_name: string;
+    employee_email: string;
+  };
+  const [sickPaysheets, setSickPaysheets] = useState<SickLeavePaysheet[]>([]);
+  // Toggle for the sick-leave panels (Payment Cycles + Sick Leave Pay Sheet) in the payroll tab
+  const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
+  const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
+  const [sickPaysheetError, setSickPaysheetError] = useState<string>("");
+  const [sickPaysheetSuccess, setSickPaysheetSuccess] = useState<string>("");
+  const [creatingSickPaysheet, setCreatingSickPaysheet] = useState(false);
+  const [updatingSickPaysheetId, setUpdatingSickPaysheetId] = useState<string | null>(null);
+  const [sickPayBaseRatesByState, setSickPayBaseRatesByState] = useState<Record<string, number>>({});
+  const [sickPaysheetForm, setSickPaysheetForm] = useState({
+    userId: "",
+    paymentDate: "",
+    hours: "",
+    rate: "",
+    notes: "",
+  });
+  // Payment cycles (recurring pay periods that auto-fill sick-leave paysheets)
+  type PaymentCycle = {
+    id: string;
+    label: string;
+    start_date: string;
+    end_date: string;
+    pay_date: string;
+    frequency: string;
+    status: "open" | "processed";
+    paysheet_count?: number;
+  };
+  type CyclePreviewRow = {
+    user_id: string;
+    name: string;
+    email: string;
+    state: string;
+    sick_hours: number;
+    worked_hours: number;
+    rate: number;
+    amount: number;
+    already_has_paysheet: boolean;
+  };
+  const [paymentCycles, setPaymentCycles] = useState<PaymentCycle[]>([]);
+  const [cycleConfig, setCycleConfig] = useState<{ frequency: string; anchor_date: string; pay_offset_days: number } | null>(null);
+  const [loadingCycles, setLoadingCycles] = useState(false);
+  const [cycleError, setCycleError] = useState("");
+  const [cycleSuccess, setCycleSuccess] = useState("");
+  const [savingCadence, setSavingCadence] = useState(false);
+  const [cadenceForm, setCadenceForm] = useState({ frequency: "biweekly", anchorDate: "", payOffsetDays: "0" });
+  const [retrieveCycle, setRetrieveCycle] = useState<PaymentCycle | null>(null);
+  const [retrieveRows, setRetrieveRows] = useState<CyclePreviewRow[]>([]);
+  const [retrieveSelected, setRetrieveSelected] = useState<Set<string>>(new Set());
+  const [retrieving, setRetrieving] = useState(false);
+  const [processingCycle, setProcessingCycle] = useState(false);
   // Create salaried user modal
   const [showCreateSalariedModal, setShowCreateSalariedModal] = useState(false);
   const [createSalariedForm, setCreateSalariedForm] = useState({
@@ -429,13 +466,6 @@ function HRDashboardContent() {
     denied: 0,
     total_hours: 0,
   });
-
-  // Sick-leave payroll tab state
-  const [sickPayPeriodStart, setSickPayPeriodStart] = useState<string>(() => currentMonthRange().start);
-  const [sickPayPeriodEnd, setSickPayPeriodEnd] = useState<string>(() => currentMonthRange().end);
-  const [sickPaySearch, setSickPaySearch] = useState("");
-  const [sickPayBaseRates, setSickPayBaseRates] = useState<Record<string, number>>({});
-  const [sickPayRateOverrides, setSickPayRateOverrides] = useState<Record<string, string>>({});
 
   const handleLogout = async () => {
     try {
@@ -826,142 +856,6 @@ function HRDashboardContent() {
       }
 
 
-      // Pre-build linked commission distribution so shared events are treated as one pool
-      const linkedCommissionInputs: LinkedCommissionEventInput[] = [];
-      for (const ei of filtered) {
-        if (isSanDiegoRegion(ei)) continue;
-        const epd = paymentsByEventId[ei.id];
-        const eps = epd?.eventPayment || {};
-        const eTips = Number(ei.tips || 0);
-        const tSales = Math.max(Number(ei.ticket_sales || 0) - eTips, 0);
-        const tax = tSales * (Number(ei.tax_rate_percent || 0) / 100);
-        const persAGRaw = Number(eps?.net_sales);
-        const hasPersAG = eps?.net_sales !== null && eps?.net_sales !== undefined && eps?.net_sales !== "" && Number.isFinite(persAGRaw);
-        const adjGross = hasPersAG ? Math.max(persAGRaw, 0) : Math.max(tSales - tax - Number(ei.fees || 0) + Number(ei.other_income || 0), 0);
-        const poolPct = Number(ei.commission_pool ?? eps?.commission_pool_percent ?? 0) || 0;
-        const eCommDollarsRaw = adjGross * poolPct;
-        const eCommDollars = Number.isFinite(eCommDollarsRaw) ? eCommDollarsRaw : 0;
-        const poolDollars = eCommDollars > 0 ? eCommDollars : (Number(eps?.commission_pool_dollars || 0) || Number(eps?.total_commissions || 0) || 0);
-        linkedCommissionInputs.push({
-          eventId: ei.id,
-          linkedCommissionEventId: (ei as any).linked_commission_event_id || null,
-          eventDate: ei.event_date || null,
-          commissionPoolDollars: poolDollars,
-          workers: (epd?.vendorPayments || []).flatMap((p: any) => {
-            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
-            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
-            const div = normalizeDivision(p?.users?.division);
-            if (!uid || (div !== '' && !isVendorDivision(div)) || p.commission_deleted === true || hrs <= 0) return [];
-            return [{ userId: uid, division: p?.users?.division, hours: hrs, commissionDeleted: p.commission_deleted === true }];
-          }),
-        });
-      }
-      const linkedCommissionDistribution = buildLinkedCommissionDistribution({ events: linkedCommissionInputs });
-
-      // Pre-build linked tips distribution using the same event groups
-      const totalTipsByEventId: Record<string, number> = {};
-      for (const ei of filtered) {
-        const epd = paymentsByEventId[ei.id];
-        const eps = epd?.eventPayment || {};
-        const eTips = Number(ei.tips || 0);
-        const persRaw = Number(eps?.total_tips);
-        const hasPers = eps?.total_tips !== null && eps?.total_tips !== undefined && eps?.total_tips !== "" && Number.isFinite(persRaw);
-        totalTipsByEventId[ei.id] = hasPers ? Math.max(persRaw, 0) : Math.max(eTips, 0);
-      }
-
-      const linkedTipsSharesByEventId: Record<string, Record<string, number>> = {};
-      const linkedGroupTipsByEventId: Record<string, number> = {};
-      // combined hours per (eventId, userId) — used for rest break tier and OT trigger
-      const linkedCombinedHoursByEventId: Record<string, Record<string, number>> = {};
-      const linkedRestBreakShareByEventId: Record<string, Record<string, number>> = {};
-
-      for (const groupKey of Object.keys(linkedCommissionDistribution.groupsByKey)) {
-        const group = linkedCommissionDistribution.groupsByKey[groupKey];
-        const groupEventIds = group.eventIds;
-        const groupTotalTips = groupEventIds.reduce((sum, eid) => sum + (totalTipsByEventId[eid] || 0), 0);
-
-        const groupDate = groupEventIds
-          .map(eid => ((filtered as any[]).find((e: any) => e.id === eid)?.event_date || '').toString().split('T')[0])
-          .filter(Boolean).sort()[0] || '';
-
-        // ── Tips: exclude trailers + tips_deleted ──────────────────────────
-        const tipsWorkerTotal: Record<string, number> = {};
-        const tipsWorkerEvent: Record<string, Record<string, number>> = {};
-        for (const eid of groupEventIds) {
-          for (const p of paymentsByEventId[eid]?.vendorPayments || []) {
-            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
-            if (!uid || isTrailersDivision(p?.users?.division) || p.tips_deleted === true) continue;
-            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
-            if (hrs <= 0) continue;
-            tipsWorkerTotal[uid] = (tipsWorkerTotal[uid] || 0) + hrs;
-            if (!tipsWorkerEvent[uid]) tipsWorkerEvent[uid] = {};
-            tipsWorkerEvent[uid][eid] = (tipsWorkerEvent[uid][eid] || 0) + hrs;
-          }
-        }
-
-        const groupTipsShares = distributePoolByHoursRule({
-          totalAmount: groupTotalTips,
-          members: Object.entries(tipsWorkerTotal).map(([id, hours]) => ({ id, hours })),
-          allShortShiftMode: shortShiftModeForDate(groupDate),
-        }).amountsById;
-
-        for (const eid of groupEventIds) {
-          linkedTipsSharesByEventId[eid] = {};
-          linkedGroupTipsByEventId[eid] = groupTotalTips;
-        }
-        for (const [uid, totalShare] of Object.entries(groupTipsShares)) {
-          const totalH = tipsWorkerTotal[uid] || 0;
-          if (totalH <= 0) continue;
-          for (const eid of groupEventIds) {
-            const eHours = tipsWorkerEvent[uid]?.[eid] || 0;
-            if (eHours <= 0) continue;
-            linkedTipsSharesByEventId[eid][uid] =
-              Math.round(((linkedTipsSharesByEventId[eid][uid] || 0) + Number(totalShare) * eHours / totalH) * 100) / 100;
-          }
-        }
-
-        // ── Combined hours for ALL workers (rest break + OT) ──────────────
-        // Include every worker; skip only SD events (no rest break there)
-        const allWorkerTotal: Record<string, number> = {};
-        const allWorkerEvent: Record<string, Record<string, number>> = {};
-        for (const eid of groupEventIds) {
-          const eiData = (filtered as any[]).find((e: any) => e.id === eid);
-          if (eiData && isSanDiegoRegion(eiData)) continue;
-          for (const p of paymentsByEventId[eid]?.vendorPayments || []) {
-            const uid = (p.user_id || p.userId || p?.users?.id || '').toString();
-            if (!uid) continue;
-            const hrs = roundHoursToTwoDecimals(getEffectiveHours(p));
-            if (hrs <= 0) continue;
-            allWorkerTotal[uid] = (allWorkerTotal[uid] || 0) + hrs;
-            if (!allWorkerEvent[uid]) allWorkerEvent[uid] = {};
-            allWorkerEvent[uid][eid] = (allWorkerEvent[uid][eid] || 0) + hrs;
-          }
-        }
-
-        // Store combined hours per event+user and compute rest break share
-        for (const eid of groupEventIds) {
-          linkedCombinedHoursByEventId[eid] = {};
-          linkedRestBreakShareByEventId[eid] = {};
-        }
-        for (const [uid, totalH] of Object.entries(allWorkerTotal)) {
-          // Record combined hours for each event this worker appears in
-          for (const eid of groupEventIds) {
-            if ((allWorkerEvent[uid]?.[eid] || 0) > 0) {
-              linkedCombinedHoursByEventId[eid][uid] = totalH;
-            }
-          }
-          // Rest break based on combined hours, split proportionally back to events
-          const combinedRB = getRestBreakAmount(totalH, '', false);
-          if (combinedRB <= 0) continue;
-          for (const eid of groupEventIds) {
-            const eHours = allWorkerEvent[uid]?.[eid] || 0;
-            if (eHours <= 0) continue;
-            linkedRestBreakShareByEventId[eid][uid] =
-              Math.round(((linkedRestBreakShareByEventId[eid][uid] || 0) + combinedRB * eHours / totalH) * 100) / 100;
-          }
-        }
-      }
-
       for (const eventInfo of filtered) {
         const eventId = eventInfo.id;
         const eventPaymentData = paymentsByEventId[eventId];
@@ -1158,14 +1052,11 @@ function HRDashboardContent() {
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
-        // For linked (shared-commission) events use the combined group pool so the display matches event-dashboard
-        const singleEventPoolDollars = isEventSD
+        const commissionPoolDollars = isEventSD
           ? 0
           : eventCommissionDollars > 0
           ? eventCommissionDollars
           : (Number(eventPaymentSummary?.commission_pool_dollars || 0) || Number(eventPaymentSummary?.total_commissions || 0) || 0);
-        const linkedGroupPool = !isEventSD ? Number(linkedCommissionDistribution.groupPoolByEventId[eventId] || 0) : 0;
-        const commissionPoolDollars = linkedGroupPool > 0 ? linkedGroupPool : singleEventPoolDollars;
         const isAZorNY = eventState === "AZ" || eventState === "NY";
 
         // Vendor count for commission allocation
@@ -1179,12 +1070,30 @@ function HRDashboardContent() {
           ? commissionPoolDollars / vendorCountForCommission
           : 0;
 
-        // Use linked group totals so shared events are treated as one combined pool for both commission and tips
-        const totalTips = linkedGroupTipsByEventId[eventId] ?? eventTotalTips;
-        const commissionSharesByUser: Record<string, number> =
-          linkedCommissionDistribution.commissionShareByEventId[eventId] ?? {};
-        const tipsSharesByUser: Record<string, number> =
-          linkedTipsSharesByEventId[eventId] ?? {};
+        // Tips: try event_payments summary first, then fall back to events table
+        const totalTips = eventTotalTips;
+        const commissionSharesByUser = distributePoolByHoursRule({
+          totalAmount: commissionPoolDollars,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
+            const _divComm = normalizeDivision(payment?.users?.division);
+            const _isExplicitNonVendor = _divComm !== '' && !isVendorDivision(_divComm);
+            if (!paymentUserId || _isExplicitNonVendor || payment.commission_deleted === true || payrollHours <= 0) return [];
+            return [{ id: paymentUserId, hours: payrollHours }];
+          }),
+          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
+        }).amountsById;
+        const tipsSharesByUser = distributePoolByHoursRule({
+          totalAmount: totalTips,
+          members: vendorPayments.flatMap((payment: any) => {
+            const paymentUserId = (payment.user_id || payment.userId || payment?.users?.id || '').toString();
+            const payrollHours = roundHoursToTwoDecimals(getEffectiveHours(payment));
+            if (!paymentUserId || payment.tips_deleted === true || isTrailersDivision(payment?.users?.division) || payrollHours <= 0) return [];
+            return [{ id: paymentUserId, hours: payrollHours }];
+          }),
+          allShortShiftMode: shortShiftModeForDate(eventInfo.event_date),
+        }).amountsById;
 
         console.log('[HR PAYMENTS] Commission/Tips for event:', eventId, {
           commissionPoolDollars, perVendorCommissionShare, totalTips, memberCount, vendorCountForCommission,
@@ -1217,9 +1126,7 @@ function HRDashboardContent() {
             const commissionShare = (isEventSD || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
             const priorWeeklyHours = (isAZorNY || isEventSD) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
-            // For linked events use combined hours to correctly evaluate the 40-hour OT threshold
-            const combinedEventHours = linkedCombinedHoursByEventId[eventId]?.[paymentUserId] ?? actualHours;
-            const isWeeklyOT = isAZorNY && (priorWeeklyHours + combinedEventHours) > 40;
+            const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
             const extAmtRegular = Math.round(roundedPayrollHours * baseRate * 100) / 100;
             const extAmtOnRegRateNonAzNy = Math.round(roundedPayrollHours * baseRate * 1.5 * 100) / 100;
 
@@ -1318,11 +1225,7 @@ function HRDashboardContent() {
               ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
-            // Use combined hours so linked events are treated as one shift for the rest-break tier
-            const restBreak = isEventSD
-              ? 0
-              : (linkedRestBreakShareByEventId[eventId]?.[paymentUserId]
-                  ?? getRestBreakAmount(actualHours, eventState, false));
+            const restBreak = getRestBreakAmount(actualHours, eventState, isEventSD);
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
@@ -1394,7 +1297,7 @@ function HRDashboardContent() {
           commissionDollars: eventCommissionDollars,
           commissionPoolDollars: safeCommissionPoolDollars,
           adjustedGrossAmount,
-          totalTips: linkedGroupTipsByEventId[eventId] ?? eventTotalTips,
+          totalTips: eventTotalTips,
           totalRestBreak: eventTotalRestBreak,
           totalOther: eventTotalOther,
           eventTotal,
@@ -1630,9 +1533,6 @@ function HRDashboardContent() {
           hours: roundHoursToTwoDecimals(Number(payment?.actualHours || 0)),
           commissionDeleted: payment?.commissionDeleted === true,
           commissionOverride: payment?.commissionOverride ?? null,
-          // Pass pre-computed share so computePayPeriodCommission uses combined-hours
-          // distribution (8-hour rule, allShortShift) instead of re-distributing per event
-          commissionShare: payment?.commissionShare ?? null,
         })),
       })),
     });
@@ -2796,36 +2696,6 @@ function HRDashboardContent() {
     }
   }, [hrView, appliedSickLeavePeriod, loadSickLeaves]);
 
-  const loadSickPayBaseRates = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const res = await fetch("/api/rates", {
-        method: "GET",
-        headers: {
-          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
-        },
-      });
-      if (!res.ok) return;
-      const data = await res.json().catch(() => ({}));
-      const map: Record<string, number> = {};
-      for (const row of data?.rates || []) {
-        const stateCode = normalizeState(row?.state_code);
-        const baseRate = Number(row?.base_rate || 0);
-        if (stateCode && baseRate > 0) map[stateCode] = baseRate;
-      }
-      setSickPayBaseRates(map);
-    } catch (e) {
-      console.warn("[HR SICK PAY] Failed to load /api/rates for base rates.", e);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (hrView === "sickpayroll") {
-      loadSickLeaves();
-      loadSickPayBaseRates();
-    }
-  }, [hrView, loadSickLeaves, loadSickPayBaseRates]);
-
   useEffect(() => {
     if (hrView === "payments") {
       loadApprovalSubmissions();
@@ -3039,129 +2909,330 @@ function HRDashboardContent() {
     appliedSickLeavePeriod.start || appliedSickLeavePeriod.end
   );
 
+  // ---- Sick leave pay sheet (queued sick-leave payroll) ----
   const getSickPayBaseRate = useCallback(
-    (state?: string | null) => {
-      const configured = Number(sickPayBaseRates[normalizeState(state)] || 0);
-      return configured > 0 ? configured : DEFAULT_SICK_PAY_RATE;
+    (employee?: Employee | null) => {
+      if (!employee) return 0;
+      if (normalizeState(employee.state) === "CA" && /san\s*diego/i.test(employee.city || "")) {
+        return SAN_DIEGO_BASE_RATE;
+      }
+      const configured = Number(sickPayBaseRatesByState[normalizeState(employee.state)] || 0);
+      return configured > 0 ? configured : 17.28;
     },
-    [sickPayBaseRates]
+    [sickPayBaseRatesByState]
   );
 
-  const formatSickPayMoney = (amount: number) =>
-    `$${Number(amount || 0).toLocaleString("en-US", {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    })}`;
-
-  // Pay only sick-leave hours that were USED (approved) within the selected period.
-  const sickPayRows = useMemo<SickPayRow[]>(() => {
-    const start = sickPayPeriodStart;
-    const end = sickPayPeriodEnd;
-    const byUser = new Map<
-      string,
-      { row: SickLeaveRecord; used_hours: number; request_count: number }
-    >();
-
-    for (const record of sickLeaves) {
-      if (record.status !== "approved") continue;
-      const day = String(record.start_date || "").slice(0, 10);
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
-      if (start && day < start) continue;
-      if (end && day > end) continue;
-
-      const existing = byUser.get(record.user_id);
-      const hours = Number(record.duration_hours || 0);
-      if (existing) {
-        existing.used_hours += hours;
-        existing.request_count += 1;
-      } else {
-        byUser.set(record.user_id, { row: record, used_hours: hours, request_count: 1 });
-      }
-    }
-
-    const rows: SickPayRow[] = [];
-    for (const [userId, entry] of byUser.entries()) {
-      const used_hours = Number(entry.used_hours.toFixed(2));
-      if (used_hours <= 0) continue;
-      const base_rate = getSickPayBaseRate(entry.row.employee_state);
-      const overrideRaw = sickPayRateOverrides[userId];
-      const overrideNum = overrideRaw !== undefined && overrideRaw !== "" ? Number(overrideRaw) : NaN;
-      const effective_rate =
-        Number.isFinite(overrideNum) && overrideNum >= 0 ? overrideNum : base_rate;
-      rows.push({
-        user_id: userId,
-        employee_name: entry.row.employee_name || "Unknown",
-        employee_email: entry.row.employee_email || "",
-        employee_state: entry.row.employee_state ?? null,
-        used_hours,
-        base_rate,
-        effective_rate,
-        amount: Number((used_hours * effective_rate).toFixed(2)),
-        request_count: entry.request_count,
+  const loadSickPayBaseRates = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/rates", {
+        method: "GET",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       });
+      if (!res.ok) return;
+      const json = await res.json();
+      const map: Record<string, number> = {};
+      for (const row of json?.rates || []) {
+        const st = normalizeState(row?.state_code);
+        const baseRate = Number(row?.base_rate || 0);
+        if (st && baseRate > 0) map[st] = baseRate;
+      }
+      setSickPayBaseRatesByState(map);
+    } catch (e) {
+      console.warn("[SICK PAYSHEET] Failed to load base rates", e);
     }
-
-    return rows.sort((a, b) =>
-      a.employee_name.localeCompare(b.employee_name, undefined, { sensitivity: "base" })
-    );
-  }, [sickLeaves, sickPayPeriodStart, sickPayPeriodEnd, getSickPayBaseRate, sickPayRateOverrides]);
-
-  const filteredSickPayRows = useMemo(() => {
-    const q = sickPaySearch.trim().toLowerCase();
-    if (!q) return sickPayRows;
-    return sickPayRows.filter((row) =>
-      `${row.employee_name} ${row.employee_email} ${row.employee_state || ""}`
-        .toLowerCase()
-        .includes(q)
-    );
-  }, [sickPayRows, sickPaySearch]);
-
-  const sickPayTotals = useMemo(() => {
-    return filteredSickPayRows.reduce(
-      (acc, row) => {
-        acc.employees += 1;
-        acc.total_hours += row.used_hours;
-        acc.total_amount += row.amount;
-        return acc;
-      },
-      { employees: 0, total_hours: 0, total_amount: 0 }
-    );
-  }, [filteredSickPayRows]);
-
-  const handleSickPayRateChange = useCallback((userId: string, value: string) => {
-    setSickPayRateOverrides((prev) => ({ ...prev, [userId]: value }));
   }, []);
 
-  const handleResetSickPayRates = useCallback(() => {
-    setSickPayRateOverrides({});
+  const loadSickPaysheets = useCallback(async () => {
+    setLoadingSickPaysheets(true);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/sick-leave-payments?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load sick leave pay sheets");
+      setSickPaysheets(Array.isArray(json.paysheets) ? json.paysheets : []);
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to load sick leave pay sheets");
+    } finally {
+      setLoadingSickPaysheets(false);
+    }
   }, []);
 
-  const exportSickPayroll = useCallback(() => {
-    if (filteredSickPayRows.length === 0) return;
-    const periodLabel = `${sickPayPeriodStart || "start"}_to_${sickPayPeriodEnd || "end"}`;
-    const sheetData = filteredSickPayRows.map((row) => ({
-      Employee: row.employee_name,
-      Email: row.employee_email,
-      State: row.employee_state || "",
-      "Used Hours": row.used_hours,
-      "Rate ($/hr)": row.effective_rate,
-      "Sick Pay ($)": row.amount,
-      Requests: row.request_count,
+  const sickPaysheetSelectedEmployee = useMemo(
+    () => employees.find((e) => e.id === sickPaysheetForm.userId) || null,
+    [employees, sickPaysheetForm.userId]
+  );
+
+  const sickPaysheetComputedAmount = useMemo(() => {
+    const hours = Number(sickPaysheetForm.hours) || 0;
+    const rate = Number(sickPaysheetForm.rate) || 0;
+    return Number((hours * rate).toFixed(2));
+  }, [sickPaysheetForm.hours, sickPaysheetForm.rate]);
+
+  const handleSickPaysheetEmployeeChange = (userId: string) => {
+    const employee = employees.find((e) => e.id === userId) || null;
+    const rate = getSickPayBaseRate(employee);
+    setSickPaysheetForm((prev) => ({
+      ...prev,
+      userId,
+      rate: rate > 0 ? rate.toFixed(2) : prev.rate,
     }));
-    sheetData.push({
-      Employee: "TOTAL",
-      Email: "",
-      State: "",
-      "Used Hours": Number(sickPayTotals.total_hours.toFixed(2)),
-      "Rate ($/hr)": "" as any,
-      "Sick Pay ($)": Number(sickPayTotals.total_amount.toFixed(2)),
-      Requests: "" as any,
+  };
+
+  const handleCreateSickPaysheet = async () => {
+    setSickPaysheetError("");
+    setSickPaysheetSuccess("");
+    const hours = Number(sickPaysheetForm.hours);
+    const rate = Number(sickPaysheetForm.rate);
+    if (!sickPaysheetForm.userId) {
+      setSickPaysheetError("Select an employee.");
+      return;
+    }
+    if (!sickPaysheetForm.paymentDate) {
+      setSickPaysheetError("Select a payment date.");
+      return;
+    }
+    if (!Number.isFinite(hours) || hours <= 0) {
+      setSickPaysheetError("Enter sick leave hours greater than 0.");
+      return;
+    }
+    if (!Number.isFinite(rate) || rate < 0) {
+      setSickPaysheetError("Enter a valid hourly rate.");
+      return;
+    }
+    setCreatingSickPaysheet(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leave-payments", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          user_id: sickPaysheetForm.userId,
+          payment_date: sickPaysheetForm.paymentDate,
+          hours,
+          rate,
+          amount: sickPaysheetComputedAmount,
+          notes: sickPaysheetForm.notes,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to queue sick leave pay sheet");
+      setSickPaysheetSuccess("Sick leave pay sheet queued for payroll.");
+      setSickPaysheetForm((prev) => ({ ...prev, hours: "", notes: "" }));
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to queue sick leave pay sheet");
+    } finally {
+      setCreatingSickPaysheet(false);
+    }
+  };
+
+  const handleUpdateSickPaysheet = async (id: string, updates: { status?: "queued" | "paid"; payment_date?: string }) => {
+    setUpdatingSickPaysheetId(id);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/sick-leave-payments", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ id, ...updates }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to update sick leave pay sheet");
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to update sick leave pay sheet");
+    } finally {
+      setUpdatingSickPaysheetId(null);
+    }
+  };
+
+  const handleDeleteSickPaysheet = async (id: string) => {
+    setUpdatingSickPaysheetId(id);
+    setSickPaysheetError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/sick-leave-payments?id=${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to remove sick leave pay sheet");
+      await loadSickPaysheets();
+    } catch (e: any) {
+      setSickPaysheetError(e?.message || "Failed to remove sick leave pay sheet");
+    } finally {
+      setUpdatingSickPaysheetId(null);
+    }
+  };
+
+  // ---- Payment cycles ----
+  const loadPaymentCycles = useCallback(async () => {
+    setLoadingCycles(true);
+    setCycleError("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to load payment cycles");
+      setPaymentCycles(Array.isArray(json.cycles) ? json.cycles : []);
+      setCycleConfig(json.config || null);
+      if (json.config) {
+        setCadenceForm({
+          frequency: json.config.frequency || "biweekly",
+          anchorDate: json.config.anchor_date || "",
+          payOffsetDays: String(json.config.pay_offset_days ?? 0),
+        });
+      }
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to load payment cycles");
+    } finally {
+      setLoadingCycles(false);
+    }
+  }, []);
+
+  const handleSaveCadence = async () => {
+    setCycleError("");
+    setCycleSuccess("");
+    if (!cadenceForm.anchorDate) {
+      setCycleError("Pick an anchor date (the first period's start).");
+      return;
+    }
+    setSavingCadence(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch("/api/hr/payment-cycles", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({
+          frequency: cadenceForm.frequency,
+          anchorDate: cadenceForm.anchorDate,
+          payOffsetDays: Number(cadenceForm.payOffsetDays) || 0,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to save cadence");
+      setCycleSuccess("Payment cadence saved and cycles generated.");
+      await loadPaymentCycles();
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to save cadence");
+    } finally {
+      setSavingCadence(false);
+    }
+  };
+
+  const handleRetrieveCycle = async (cycle: PaymentCycle) => {
+    setCycleError("");
+    setCycleSuccess("");
+    setRetrieveCycle(cycle);
+    setRetrieveRows([]);
+    setRetrieveSelected(new Set());
+    setRetrieving(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles/${cycle.id}/retrieve?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to retrieve cycle time");
+      const rows: CyclePreviewRow[] = Array.isArray(json.rows) ? json.rows : [];
+      setRetrieveRows(rows);
+      // Default-select everyone who doesn't already have a paysheet for this cycle.
+      setRetrieveSelected(new Set(rows.filter((r) => !r.already_has_paysheet).map((r) => r.user_id)));
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to retrieve cycle time");
+      setRetrieveCycle(null);
+    } finally {
+      setRetrieving(false);
+    }
+  };
+
+  const toggleRetrieveUser = (userId: string) => {
+    setRetrieveSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
+      return next;
     });
-    const worksheet = XLSX.utils.json_to_sheet(sheetData);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sick Pay");
-    XLSX.writeFile(workbook, `sick-leave-payroll_${periodLabel}.xlsx`);
-  }, [filteredSickPayRows, sickPayPeriodStart, sickPayPeriodEnd, sickPayTotals]);
+  };
+
+  const handleProcessCycle = async () => {
+    if (!retrieveCycle) return;
+    const userIds = [...retrieveSelected];
+    if (userIds.length === 0) {
+      setCycleError("Select at least one employee to create paysheets for.");
+      return;
+    }
+    setCycleError("");
+    setProcessingCycle(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles/${retrieveCycle.id}/process`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify({ userIds }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to create paysheets");
+      setCycleSuccess(json.message || "Paysheets created.");
+      setRetrieveCycle(null);
+      setRetrieveRows([]);
+      setRetrieveSelected(new Set());
+      await Promise.all([loadPaymentCycles(), loadSickPaysheets()]);
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to create paysheets");
+    } finally {
+      setProcessingCycle(false);
+    }
+  };
+
+  const handleDeleteCycle = async (cycle: PaymentCycle) => {
+    setCycleError("");
+    setCycleSuccess("");
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/payment-cycles?id=${encodeURIComponent(cycle.id)}`, {
+        method: "DELETE",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to remove cycle");
+      await loadPaymentCycles();
+    } catch (e: any) {
+      setCycleError(e?.message || "Failed to remove cycle");
+    }
+  };
+
+  useEffect(() => {
+    if (hrView === "payments") {
+      loadSickPayBaseRates();
+      loadSickPaysheets();
+      loadPaymentCycles();
+    }
+  }, [hrView, loadSickPayBaseRates, loadSickPaysheets, loadPaymentCycles]);
 
   const hrStats = {
     totalEmployees: employees.length,
@@ -3510,15 +3581,6 @@ function HRDashboardContent() {
               {hrView === "sickleave" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
             </button>
             <button
-              onClick={() => setHrView("sickpayroll")}
-              className={`pb-4 px-2 font-semibold transition-colors relative ${
-                hrView === "sickpayroll" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
-              }`}
-            >
-              Sick Pay
-              {hrView === "sickpayroll" && <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600" />}
-            </button>
-            <button
               onClick={() => setHrView("payments")}
               className={`pb-4 px-2 font-semibold transition-colors relative ${
                 hrView === "payments" ? "text-blue-600" : "text-gray-500 hover:text-gray-700"
@@ -3708,8 +3770,426 @@ function HRDashboardContent() {
                 <Link href="/payroll-approvals">
                   <button className="apple-button apple-button-secondary">View Approvals</button>
                 </Link>
+                <button
+                  onClick={() => setShowSickLeavePanels((prev) => !prev)}
+                  className={`apple-button ${showSickLeavePanels ? 'apple-button-primary' : 'apple-button-secondary'}`}
+                  aria-expanded={showSickLeavePanels}
+                >
+                  {showSickLeavePanels ? 'Hide Sick Leave' : 'Sick Leave'}
+                </button>
               </div>
             </div>
+
+            {showSickLeavePanels && (
+            <>
+            {/* Payment Cycles */}
+            <div className="apple-card mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Payment Cycles</h2>
+                  <p className="text-sm text-gray-500">Set a recurring pay cadence, then retrieve each employee&apos;s sick-leave &amp; worked hours for a cycle to auto-fill paysheets.</p>
+                </div>
+                <button
+                  onClick={loadPaymentCycles}
+                  disabled={loadingCycles}
+                  className="apple-button apple-button-secondary"
+                >
+                  {loadingCycles ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+
+              {/* Cadence config */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                  <label className="apple-label" htmlFor="cycle-frequency">Frequency</label>
+                  <select
+                    id="cycle-frequency"
+                    value={cadenceForm.frequency}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, frequency: e.target.value }))}
+                    className="apple-select w-full"
+                  >
+                    <option value="weekly">Weekly</option>
+                    <option value="biweekly">Bi-weekly</option>
+                    <option value="semimonthly">Semi-monthly (1–15 / 16–end)</option>
+                    <option value="monthly">Monthly</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="cycle-anchor">Anchor Date (first period start)</label>
+                  <input
+                    id="cycle-anchor"
+                    type="date"
+                    value={cadenceForm.anchorDate}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, anchorDate: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="cycle-offset">Pay Offset (days after period end)</label>
+                  <input
+                    id="cycle-offset"
+                    type="number"
+                    min="0"
+                    step="1"
+                    value={cadenceForm.payOffsetDays}
+                    onChange={(e) => setCadenceForm((prev) => ({ ...prev, payOffsetDays: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleSaveCadence}
+                    disabled={savingCadence}
+                    className={`apple-button w-full ${savingCadence ? "apple-button-disabled" : "apple-button-primary"}`}
+                  >
+                    {savingCadence ? "Saving…" : cycleConfig ? "Update & Regenerate" : "Save Cadence"}
+                  </button>
+                </div>
+              </div>
+
+              {cycleError && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{cycleError}</div>
+              )}
+              {cycleSuccess && (
+                <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{cycleSuccess}</div>
+              )}
+
+              {/* Cycle list */}
+              <div className="mt-6 overflow-x-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Generated Cycles</h3>
+                  <span className="text-xs text-gray-500">{paymentCycles.length} total</span>
+                </div>
+                {paymentCycles.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-gray-400">No cycles yet. Save a cadence above to generate them.</div>
+                ) : (
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Cycle</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Pay Date</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Paysheets</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {paymentCycles.map((cycle) => (
+                        <tr key={cycle.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 text-sm text-gray-900">
+                            <div className="font-medium">{cycle.label}</div>
+                            <div className="text-xs text-gray-400">
+                              {formatSickLeaveDate(cycle.start_date)} – {formatSickLeaveDate(cycle.end_date)}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700">{formatSickLeaveDate(cycle.pay_date)}</td>
+                          <td className="px-3 py-2 text-sm">
+                            <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${cycle.status === "processed" ? "bg-green-100 text-green-700 border-green-200" : "bg-gray-100 text-gray-600 border-gray-200"}`}>
+                              {cycle.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">{cycle.paysheet_count ?? 0}</td>
+                          <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
+                            <button
+                              onClick={() => handleRetrieveCycle(cycle)}
+                              disabled={retrieving}
+                              className="text-purple-600 hover:text-purple-800 font-medium mr-3 disabled:opacity-50"
+                            >
+                              Retrieve &amp; auto-fill
+                            </button>
+                            <button
+                              onClick={() => handleDeleteCycle(cycle)}
+                              disabled={(cycle.paysheet_count ?? 0) > 0}
+                              title={(cycle.paysheet_count ?? 0) > 0 ? "Remove its paysheets first" : "Delete cycle"}
+                              className="text-red-600 hover:text-red-800 font-medium disabled:opacity-30 disabled:cursor-not-allowed"
+                            >
+                              Delete
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            {/* Retrieve & auto-fill preview modal */}
+            {retrieveCycle && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+                  <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+                    <div>
+                      <h2 className="text-lg font-bold text-gray-900">Retrieve time for cycle</h2>
+                      <p className="text-sm text-gray-500 mt-0.5">{retrieveCycle.label} · pays {formatSickLeaveDate(retrieveCycle.pay_date)}</p>
+                    </div>
+                    <button
+                      onClick={() => { setRetrieveCycle(null); setRetrieveRows([]); setRetrieveSelected(new Set()); }}
+                      className="text-gray-400 hover:text-gray-600 p-1 rounded-lg hover:bg-gray-100"
+                      aria-label="Close"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto px-6 py-4">
+                    {retrieving ? (
+                      <div className="text-center py-10 text-sm text-gray-400">Retrieving sick-leave &amp; worked hours…</div>
+                    ) : retrieveRows.length === 0 ? (
+                      <div className="text-center py-10 text-sm text-gray-400">No employees used sick leave in this cycle window.</div>
+                    ) : (
+                      <table className="min-w-full divide-y divide-gray-200">
+                        <thead className="bg-gray-50">
+                          <tr>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider w-8"></th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Sick Hrs</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Worked Hrs</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
+                            <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Amount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100">
+                          {retrieveRows.map((row) => (
+                            <tr key={row.user_id} className={row.already_has_paysheet ? "bg-gray-50" : "hover:bg-gray-50"}>
+                              <td className="px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={retrieveSelected.has(row.user_id)}
+                                  disabled={row.already_has_paysheet}
+                                  onChange={() => toggleRetrieveUser(row.user_id)}
+                                />
+                              </td>
+                              <td className="px-3 py-2 text-sm text-gray-900">
+                                <div className="font-medium">{row.name}{row.state ? ` (${row.state})` : ""}</div>
+                                {row.already_has_paysheet && <div className="text-xs text-amber-600">Already has a paysheet for this cycle</div>}
+                              </td>
+                              <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">{formatSickLeaveHours(row.sick_hours)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-gray-500">{formatSickLeaveHours(row.worked_hours)}</td>
+                              <td className="px-3 py-2 text-sm text-right text-gray-700">${formatPayrollMoney(row.rate)}</td>
+                              <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">${formatPayrollMoney(row.amount)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+
+                  <div className="px-6 py-4 border-t border-gray-200 flex items-center gap-3">
+                    <button
+                      onClick={() => { setRetrieveCycle(null); setRetrieveRows([]); setRetrieveSelected(new Set()); }}
+                      className="flex-1 apple-button apple-button-secondary"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={handleProcessCycle}
+                      disabled={processingCycle || retrieving || retrieveSelected.size === 0}
+                      className={`flex-1 apple-button ${processingCycle || retrieveSelected.size === 0 ? "apple-button-disabled" : "apple-button-primary"}`}
+                    >
+                      {processingCycle ? "Creating…" : `Create ${retrieveSelected.size} Paysheet${retrieveSelected.size !== 1 ? "s" : ""}`}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Sick Leave Pay Sheet */}
+            <div className="apple-card mb-6">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-xl font-semibold">Sick Leave Pay Sheet</h2>
+                  <p className="text-sm text-gray-500">Create a sick-leave payroll sheet and queue it with a payment date.</p>
+                </div>
+                <button
+                  onClick={loadSickPaysheets}
+                  disabled={loadingSickPaysheets}
+                  className="apple-button apple-button-secondary"
+                >
+                  {loadingSickPaysheets ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-4">
+                <div className="lg:col-span-2">
+                  <label className="apple-label" htmlFor="sick-pay-employee">Employee</label>
+                  <select
+                    id="sick-pay-employee"
+                    value={sickPaysheetForm.userId}
+                    onChange={(e) => handleSickPaysheetEmployeeChange(e.target.value)}
+                    className="apple-select w-full"
+                  >
+                    <option value="">Select employee…</option>
+                    {[...employees]
+                      .sort((a, b) =>
+                        `${a.last_name} ${a.first_name}`.localeCompare(
+                          `${b.last_name} ${b.first_name}`,
+                          undefined,
+                          { sensitivity: "base" }
+                        )
+                      )
+                      .map((emp) => (
+                        <option key={emp.id} value={emp.id}>
+                          {emp.last_name}, {emp.first_name}
+                          {emp.state ? ` (${emp.state})` : ""}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-date">Payment Date</label>
+                  <input
+                    id="sick-pay-date"
+                    type="date"
+                    value={sickPaysheetForm.paymentDate}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, paymentDate: e.target.value }))}
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-hours">Hours</label>
+                  <input
+                    id="sick-pay-hours"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sickPaysheetForm.hours}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, hours: e.target.value }))}
+                    placeholder="0.00"
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-rate">Rate ($/hr)</label>
+                  <input
+                    id="sick-pay-rate"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sickPaysheetForm.rate}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, rate: e.target.value }))}
+                    placeholder="0.00"
+                    className="apple-select w-full"
+                  />
+                  {sickPaysheetSelectedEmployee && (
+                    <p className="mt-1 text-xs text-gray-400">
+                      Default for {sickPaysheetSelectedEmployee.state || "—"}: ${getSickPayBaseRate(sickPaysheetSelectedEmployee).toFixed(2)}/hr
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="apple-label">Amount</label>
+                  <div className="apple-select w-full bg-gray-50 font-semibold text-gray-900 flex items-center">
+                    ${formatPayrollMoney(sickPaysheetComputedAmount)}
+                  </div>
+                  <p className="mt-1 text-xs text-gray-400">Hours × Rate</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div className="md:col-span-2">
+                  <label className="apple-label" htmlFor="sick-pay-notes">Notes (optional)</label>
+                  <input
+                    id="sick-pay-notes"
+                    type="text"
+                    value={sickPaysheetForm.notes}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, notes: e.target.value }))}
+                    placeholder="e.g. Sick leave for week of …"
+                    className="apple-select w-full"
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    onClick={handleCreateSickPaysheet}
+                    disabled={creatingSickPaysheet}
+                    className={`apple-button w-full ${creatingSickPaysheet ? "apple-button-disabled" : "apple-button-primary"}`}
+                  >
+                    {creatingSickPaysheet ? "Queuing…" : "Create & Queue Pay Sheet"}
+                  </button>
+                </div>
+              </div>
+
+              {sickPaysheetError && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{sickPaysheetError}</div>
+              )}
+              {sickPaysheetSuccess && (
+                <div className="mt-3 rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-700">{sickPaysheetSuccess}</div>
+              )}
+
+              {/* Queue */}
+              <div className="mt-6 overflow-x-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-sm font-semibold text-gray-700 uppercase keeping-wider">Queued Sick Leave Pay Sheets</h3>
+                  <span className="text-xs text-gray-500">{sickPaysheets.length} total</span>
+                </div>
+                {sickPaysheets.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-gray-400">No sick leave pay sheets queued yet.</div>
+                ) : (
+                  <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Payment Date</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Amount</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
+                        <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {sickPaysheets.map((ps) => (
+                        <tr key={ps.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-2 text-sm text-gray-900">
+                            <div className="font-medium">{ps.employee_name}</div>
+                            {ps.notes && <div className="text-xs text-gray-400">{ps.notes}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700">{formatSickLeaveDate(ps.payment_date)}</td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">{formatSickLeaveHours(ps.hours)}</td>
+                          <td className="px-3 py-2 text-sm text-right text-gray-700">${formatPayrollMoney(ps.rate)}</td>
+                          <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">${formatPayrollMoney(ps.amount)}</td>
+                          <td className="px-3 py-2 text-sm">
+                            <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                              {ps.status}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-sm text-right whitespace-nowrap">
+                            {ps.status === "queued" ? (
+                              <button
+                                onClick={() => handleUpdateSickPaysheet(ps.id, { status: "paid" })}
+                                disabled={updatingSickPaysheetId === ps.id}
+                                className="text-green-600 hover:text-green-800 font-medium mr-3 disabled:opacity-50"
+                              >
+                                Mark Paid
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleUpdateSickPaysheet(ps.id, { status: "queued" })}
+                                disabled={updatingSickPaysheetId === ps.id}
+                                className="text-blue-600 hover:text-blue-800 font-medium mr-3 disabled:opacity-50"
+                              >
+                                Re-queue
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleDeleteSickPaysheet(ps.id)}
+                              disabled={updatingSickPaysheetId === ps.id}
+                              className="text-red-600 hover:text-red-800 font-medium disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+            </>
+            )}
 
             {/* Send to Approval Modal */}
             {showApprovalModal && (
@@ -5449,189 +5929,6 @@ function HRDashboardContent() {
                       </tr>
                     )}
                   </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {hrView === "sickpayroll" && (
-          <div className="space-y-6">
-            <div>
-              <h2 className="text-2xl font-semibold text-gray-900 tracking-tight">Sick Leave Payroll</h2>
-              <p className="text-sm text-gray-500 mt-1">
-                Pays approved sick-leave hours used within the selected period. Rates default to each
-                employee&apos;s state base rate and can be overridden per employee.
-              </p>
-            </div>
-
-            {/* Summary cards */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-                <p className="text-sm text-gray-500">Employees</p>
-                <p className="text-3xl font-semibold text-sky-700">{sickPayTotals.employees}</p>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-                <p className="text-sm text-gray-500">Total Hours Paid</p>
-                <p className="text-3xl font-semibold text-purple-700">
-                  {formatSickLeaveHours(sickPayTotals.total_hours)}
-                </p>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-                <p className="text-sm text-gray-500">Total Sick Pay</p>
-                <p className="text-3xl font-semibold text-green-700">
-                  {formatSickPayMoney(sickPayTotals.total_amount)}
-                </p>
-              </div>
-            </div>
-
-            {/* Controls */}
-            <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm">
-              <div className="flex flex-wrap items-end gap-4">
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Pay Period Start</label>
-                  <input
-                    type="date"
-                    value={sickPayPeriodStart}
-                    onChange={(e) => setSickPayPeriodStart(e.target.value)}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Pay Period End</label>
-                  <input
-                    type="date"
-                    value={sickPayPeriodEnd}
-                    onChange={(e) => setSickPayPeriodEnd(e.target.value)}
-                    className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex-1 min-w-[200px]">
-                  <label className="block text-xs font-medium text-gray-500 mb-1">Search</label>
-                  <input
-                    type="text"
-                    placeholder="Search by name, email, or state"
-                    value={sickPaySearch}
-                    onChange={(e) => setSickPaySearch(e.target.value)}
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  />
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => loadSickLeaves()}
-                    disabled={loadingSickLeaves}
-                    className="px-4 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {loadingSickLeaves ? "Loading..." : "Refresh"}
-                  </button>
-                  <button
-                    onClick={handleResetSickPayRates}
-                    className="px-4 py-2 text-sm rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200"
-                  >
-                    Reset Rates
-                  </button>
-                  <button
-                    onClick={exportSickPayroll}
-                    disabled={filteredSickPayRows.length === 0}
-                    className="px-4 py-2 text-sm rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50"
-                  >
-                    Export
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {sickLeavesError && (
-              <div className="apple-error-banner">{sickLeavesError}</div>
-            )}
-
-            {/* Payroll table */}
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-sm overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Employee</th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">State</th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Used Hours</th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Rate ($/hr)</th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Sick Pay</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {loadingSickLeaves && (
-                      <tr>
-                        <td colSpan={5} className="px-4 py-8 text-center text-sm text-gray-500">
-                          Loading sick leave payroll...
-                        </td>
-                      </tr>
-                    )}
-                    {!loadingSickLeaves &&
-                      filteredSickPayRows.map((row) => {
-                        const isOverridden =
-                          sickPayRateOverrides[row.user_id] !== undefined &&
-                          sickPayRateOverrides[row.user_id] !== "" &&
-                          Number(sickPayRateOverrides[row.user_id]) !== row.base_rate;
-                        return (
-                          <tr key={row.user_id} className="hover:bg-gray-50">
-                            <td className="px-4 py-3">
-                              <div className="text-sm font-medium text-gray-900">{row.employee_name}</div>
-                              <div className="text-xs text-gray-500">{row.employee_email}</div>
-                            </td>
-                            <td className="px-4 py-3 text-sm text-gray-700">{row.employee_state || "-"}</td>
-                            <td className="px-4 py-3 text-right text-sm text-gray-700">
-                              {formatSickLeaveHours(row.used_hours)}
-                            </td>
-                            <td className="px-4 py-3 text-right">
-                              <div className="flex items-center justify-end gap-2">
-                                <span className="text-gray-400 text-sm">$</span>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={
-                                    sickPayRateOverrides[row.user_id] !== undefined
-                                      ? sickPayRateOverrides[row.user_id]
-                                      : String(row.base_rate)
-                                  }
-                                  onChange={(e) => handleSickPayRateChange(row.user_id, e.target.value)}
-                                  className={`w-24 border rounded-lg px-2 py-1 text-sm text-right ${
-                                    isOverridden ? "border-blue-400 bg-blue-50" : "border-gray-300"
-                                  }`}
-                                  title={`State base rate: ${formatSickPayMoney(row.base_rate)}`}
-                                />
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">
-                              {formatSickPayMoney(row.amount)}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    {!loadingSickLeaves && filteredSickPayRows.length === 0 && (
-                      <tr>
-                        <td colSpan={5} className="px-4 py-12 text-center text-sm text-gray-500">
-                          No approved sick-leave hours used in this pay period.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                  {!loadingSickLeaves && filteredSickPayRows.length > 0 && (
-                    <tfoot className="bg-gray-50 border-t border-gray-200">
-                      <tr>
-                        <td className="px-4 py-3 text-sm font-semibold text-gray-900" colSpan={2}>
-                          Total ({sickPayTotals.employees} employees)
-                        </td>
-                        <td className="px-4 py-3 text-right text-sm font-semibold text-gray-900">
-                          {formatSickLeaveHours(sickPayTotals.total_hours)}
-                        </td>
-                        <td className="px-4 py-3" />
-                        <td className="px-4 py-3 text-right text-sm font-semibold text-green-700">
-                          {formatSickPayMoney(sickPayTotals.total_amount)}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  )}
                 </table>
               </div>
             </div>
