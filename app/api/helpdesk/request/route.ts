@@ -103,7 +103,7 @@ export async function POST(req: NextRequest) {
 </html>`.trim();
 
     const result = await sendEmail({
-      to: ['portal@1pds.net', 'sebastiancastao379@gmail.com'],
+      to: ['portal@1pds.net', 'mardel@1pds.net', 'sebastiancastao379@gmail.com'],
       subject,
       html,
     });

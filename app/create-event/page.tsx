@@ -2,6 +2,7 @@
 import React, { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
+import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { supabase } from "@/lib/supabase";
 
 type Venue = {
@@ -25,6 +26,7 @@ function CreateEventPageInner() {
     city: "",
     state: "",
     event_date: "",
+    end_date: "",
     start_time: "",
     end_time: "",
     ends_next_day: false,
@@ -39,6 +41,7 @@ function CreateEventPageInner() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
+  const maxSpecialEndDate = form.event_type === "special" ? getMaxNonEventEndDate(form.event_date) : null;
 
   // User and session check: block if not authenticated, with detailed logs
   useEffect(() => {
@@ -118,10 +121,24 @@ function CreateEventPageInner() {
       setSubmitting(false);
       return;
     }
+    // Non Event Time Sheets may span several days: validate the optional end date
+    const isSpecial = form.event_type === "special";
+    if (isSpecial && form.end_date && form.end_date < form.event_date) {
+      setMessage("End Date must be on or after the Event Date");
+      setSubmitting(false);
+      return;
+    }
+    if (isSpecial && form.end_date && maxSpecialEndDate && form.end_date > maxSpecialEndDate) {
+      setMessage(`Non Event Time Sheets cannot span more than ${MAX_NON_EVENT_TIMESHEET_DAYS} days.`);
+      setSubmitting(false);
+      return;
+    }
     try {
       // Convert percentage values (50) to decimals (0.5) for backend
       const payload = {
         ...form,
+        // end_date only applies to multi-day Non Event Time Sheets
+        end_date: isSpecial && form.end_date ? form.end_date : null,
         artist_share_percent: form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined,
         venue_share_percent: form.venue_share_percent !== "" ? Number(form.venue_share_percent) / 100 : undefined,
         pds_share_percent: form.pds_share_percent !== "" ? Number(form.pds_share_percent) / 100 : undefined,
@@ -148,6 +165,7 @@ function CreateEventPageInner() {
           city: "",
           state: "",
           event_date: "",
+          end_date: "",
           start_time: "",
           end_time: "",
           ends_next_day: false,
@@ -281,9 +299,11 @@ function CreateEventPageInner() {
             {/* Date & Time Section */}
             <div className="pt-4 border-t border-slate-100">
               <h3 className="text-lg font-semibold text-slate-800 mb-4">Schedule</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`grid grid-cols-1 gap-4 ${form.event_type === "special" ? "md:grid-cols-4" : "md:grid-cols-3"}`}>
                 <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Event Date <span className="text-red-500">*</span></label>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">
+                    {form.event_type === "special" ? "Start Date" : "Event Date"} <span className="text-red-500">*</span>
+                  </label>
                   <input
                     name="event_date"
                     value={form.event_date}
@@ -293,6 +313,21 @@ function CreateEventPageInner() {
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
                   />
                 </div>
+                {form.event_type === "special" && (
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">End Date</label>
+                    <input
+                      name="end_date"
+                      value={form.end_date}
+                      onChange={handleChange}
+                      type="date"
+                      min={form.event_date || undefined}
+                      max={maxSpecialEndDate || undefined}
+                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                    />
+                    <p className="text-xs text-slate-500 mt-1">Leave blank for a single day. Max span: {MAX_NON_EVENT_TIMESHEET_DAYS} days inclusive.</p>
+                  </div>
+                )}
                 <div>
                   <label className="text-sm font-semibold text-slate-700 block mb-2">Start Time <span className="text-red-500">*</span></label>
                   <input

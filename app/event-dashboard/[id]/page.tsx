@@ -281,6 +281,15 @@ export default function EventDashboardPage() {
     userRole === "manager" ||
     userRole === "supervisor" ||
     userRole === "supervisor3";
+  const isNonEventTimesheet = event?.event_type === "special";
+  const normalizedEventVenue = event?.venue?.toLowerCase() || "";
+  const isRestrictedAddConfirmVenue = ["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some(
+    (venueName) => normalizedEventVenue.includes(venueName)
+  );
+  const canUseImmediateTeamAdd =
+    canManageTeam &&
+    (isNonEventTimesheet || userRole === "exec") &&
+    (isNonEventTimesheet || !isRestrictedAddConfirmVenue);
   const markPayrollDataDirty = () => {
     if (typeof window === "undefined") return;
     try {
@@ -884,6 +893,23 @@ export default function EventDashboardPage() {
     is_active: true,
     event_type: "normal",
   });
+  const currentEventType = form.event_type === "special" ? "special" : event?.event_type === "special" ? "special" : "normal";
+  const hideSalesAndMerchandiseForEvent = currentEventType === "special";
+  const dashboardTabs: Array<[TabType, string, string]> = [
+    ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
+    ...(!hideSalesAndMerchandiseForEvent
+      ? ([
+          ["sales", "Sales", "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"],
+          ["merchandise", "Merchandise", "M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"],
+        ] as Array<[TabType, string, string]>)
+      : []),
+    ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
+    ["locations", "Locations", "M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z"],
+    ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
+    ...(userRole === "exec"
+      ? ([["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"]] as Array<[TabType, string, string]>)
+      : []),
+  ];
 
   // Auth / bootstrap
   useEffect(() => {
@@ -1018,6 +1044,13 @@ export default function EventDashboardPage() {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, eventId, editingTimesheetUserId]);
+
+  useEffect(() => {
+    if (!hideSalesAndMerchandiseForEvent) return;
+    if (activeTab === "sales" || activeTab === "merchandise") {
+      setActiveTab("edit");
+    }
+  }, [activeTab, hideSalesAndMerchandiseForEvent]);
 
   // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
@@ -4662,15 +4695,7 @@ export default function EventDashboardPage() {
           {/* Tabs */}
           <div className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-slate-50">
             <nav className="flex overflow-x-auto">
-              {[
-                ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
-                ["sales", "Sales", "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"],
-                ["merchandise", "Merchandise", "M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"],
-                ["team", "Team", "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"],
-                ["locations", "Locations", "M17.657 16.657L13.414 20.9a2 2 0 01-2.828 0l-4.243-4.243a8 8 0 1111.314 0zM15 11a3 3 0 11-6 0 3 3 0 016 0z"],
-                ["timesheet", "TimeSheet", "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"],
-                ...(userRole === "exec" ? [["hr", "Payment", "M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z"]] : []),
-              ].map(([key, label, icon]) => (<React.Fragment key={key}>
+              {dashboardTabs.map(([key, label, icon]) => (<React.Fragment key={key}>
                 {false && (selectedLinkedCommissionEventId || loadingLinkedCommissionEventContext) && (
                   <div className="mt-6 rounded-xl border border-sky-200 bg-sky-50 p-4">
                     <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
@@ -4892,6 +4917,7 @@ export default function EventDashboardPage() {
                 </div>
               </div>
 
+              {!hideSalesAndMerchandiseForEvent && (
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-6 flex items-center gap-2">
                   <svg className="w-5 h-5 text-blue-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4960,6 +4986,7 @@ export default function EventDashboardPage() {
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
@@ -5031,7 +5058,7 @@ export default function EventDashboardPage() {
           )}
 
           {/* SALES TAB */}
-          {activeTab === "sales" && (
+          {activeTab === "sales" && !hideSalesAndMerchandiseForEvent && (
             <div className="space-y-8">
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
@@ -5369,7 +5396,7 @@ export default function EventDashboardPage() {
           )}
 
           {/* MERCH TAB */}
-          {activeTab === "merchandise" && (
+          {activeTab === "merchandise" && !hideSalesAndMerchandiseForEvent && (
             <div className="space-y-8">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
@@ -5881,7 +5908,7 @@ export default function EventDashboardPage() {
               <div className="flex justify-between items-center mb-4">
                 <h2 className="text-2xl font-bold">Event Team</h2>
                 <div className="flex items-center gap-2">
-                  {canManageTeam && userRole === "exec" && !["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some((v) => event?.venue?.toLowerCase().includes(v)) && (
+                  {canUseImmediateTeamAdd && (
                     <button
                       onClick={openAddVendorModal}
                       disabled={loadingAddVendors || addingVendorToTeam}
@@ -5932,7 +5959,7 @@ export default function EventDashboardPage() {
                 <div className="bg-gray-50 rounded-lg p-8 text-center">
                   <p className="text-gray-600 text-lg font-medium">No team members assigned yet</p>
                   <p className="text-gray-500 text-sm mt-2">
-                    {canManageTeam
+                    {canUseImmediateTeamAdd
                       ? "Use Add Vendor + Confirm to add members instantly."
                       : "No team members assigned to this event yet."}
                   </p>

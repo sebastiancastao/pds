@@ -36,6 +36,9 @@ const MAX_RATE_LIMIT_RETRY_BASE_DELAY_MS = 20000;
 type Audience = "manual" | "role" | "region" | "all";
 type BodyFormat = "html" | "text";
 
+// Always BCC'd on every email sent from /admin-email-team
+const ALWAYS_BCC = ["jenvillar@1pds.net"];
+
 function parseEmailList(value: string): string[] {
   return Array.from(
     new Set(
@@ -233,7 +236,7 @@ export async function POST(req: NextRequest) {
         : `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(body)}</pre>`;
 
     const venueBcc = venue ? await getVenueBccEmails(venue, supabaseAdmin) : [];
-    let mergedBcc = [...new Set([...bcc, ...venueBcc])];
+    let mergedBcc = [...new Set([...bcc, ...venueBcc, ...ALWAYS_BCC])];
 
     if (bccMode) {
       mergedBcc = [...new Set([...to, ...mergedBcc])];

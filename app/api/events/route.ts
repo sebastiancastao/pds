@@ -5,6 +5,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { sendNonEventTimesheetCreatedNotification } from "@/lib/email";
 import { getEventAssociationMap } from "@/lib/event-associations";
+import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -48,13 +49,15 @@ export async function POST(req: NextRequest) {
     const event_date = body.event_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
+    const event_type = body.event_type === "special" ? "special" : "normal";
+    // end_date only applies to multi-day Non Event Time Sheets; ignore it for normal events
+    const end_date = event_type === "special" && body.end_date ? body.end_date : null;
     const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
     const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
     const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
     const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
     const ends_next_day = body.ends_next_day === undefined ? false : Boolean(body.ends_next_day);
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
-    const event_type = body.event_type === "special" ? "special" : "normal";
 
     // Debug output for all incoming data
     console.log('EVENT CREATE PAYLOAD:', {
@@ -81,6 +84,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" }, { status: 400 });
     }
 
+    // A multi-day Non Event Time Sheet's end date cannot precede its start date
+    if (end_date && end_date < event_date) {
+      console.error('Event creation: end_date before event_date');
+      return NextResponse.json({ error: "end_date must be on or after event_date" }, { status: 400 });
+    }
+    const maxEndDate = end_date ? getMaxNonEventEndDate(event_date) : null;
+    if (end_date && maxEndDate && end_date > maxEndDate) {
+      console.error('Event creation: end_date exceeds one-week limit');
+      return NextResponse.json(
+        { error: `Non Event Time Sheets cannot span more than ${MAX_NON_EVENT_TIMESHEET_DAYS} days.` },
+        { status: 400 }
+      );
+    }
+
     const event = {
       created_by,
       event_name,
@@ -89,6 +106,7 @@ export async function POST(req: NextRequest) {
       city,
       state,
       event_date,
+      end_date,
       start_time,
       end_time,
       ends_next_day,
@@ -117,6 +135,7 @@ export async function POST(req: NextRequest) {
           city,
           state,
           eventDate: event_date,
+          endDate: end_date,
           startTime: start_time,
           endTime: end_time,
           endsNextDay: ends_next_day,

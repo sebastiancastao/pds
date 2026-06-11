@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { deleteEventAssociations } from "@/lib/event-associations";
+import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -340,6 +341,9 @@ export async function PUT(
     const event_date = body.event_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
+    const event_type = body.event_type === "special" ? "special" : "normal";
+    // end_date only applies to multi-day Non Event Time Sheets; cleared for normal events
+    const end_date = event_type === "special" && body.end_date ? body.end_date : null;
 
     // Money / numbers
     const ticket_sales =
@@ -373,7 +377,6 @@ export async function PUT(
 
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
     const ends_next_day = Boolean(body.ends_next_day);
-    const event_type = body.event_type === "special" ? "special" : "normal";
 
     // Existing: tips
     const tips = body.tips === undefined || body.tips === "" ? null : Number(body.tips);
@@ -432,6 +435,20 @@ export async function PUT(
       );
     }
 
+    // A multi-day Non Event Time Sheet's end date cannot precede its start date
+    if (end_date && end_date < event_date) {
+      console.error("Event update: end_date before event_date");
+      return NextResponse.json({ error: "end_date must be on or after event_date" }, { status: 400 });
+    }
+    const maxEndDate = end_date ? getMaxNonEventEndDate(event_date) : null;
+    if (end_date && maxEndDate && end_date > maxEndDate) {
+      console.error("Event update: end_date exceeds one-week limit");
+      return NextResponse.json(
+        { error: `Non Event Time Sheets cannot span more than ${MAX_NON_EVENT_TIMESHEET_DAYS} days.` },
+        { status: 400 }
+      );
+    }
+
     // Build payload, include tips/ticket_count/tax_rate_percent when provided
     const updatePayload: Record<string, any> = {
       event_name,
@@ -440,6 +457,7 @@ export async function PUT(
       city,
       state,
       event_date,
+      end_date,
       start_time,
       end_time,
       ends_next_day,

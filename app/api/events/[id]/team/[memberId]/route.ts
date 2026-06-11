@@ -215,7 +215,7 @@ export async function DELETE(
 
     const { data: teamMember, error: teamMemberError } = await supabaseAdmin
       .from("event_teams")
-      .select("id, vendor_id, status")
+      .select("id, vendor_id, status, created_at")
       .eq("id", memberId)
       .eq("event_id", eventId)
       .maybeSingle();
@@ -358,6 +358,9 @@ export async function DELETE(
       vendor_id: teamMember.vendor_id,
       previous_status: teamMember.status || null,
       uninvited_by_user_id: user.id,
+      // Snapshot the original invite time so reports can show when this member
+      // was invited even after the event_teams row is deleted.
+      invited_at: (teamMember as any).created_at || null,
     };
 
     const { error: uninviteHistoryError } = await supabaseAdmin

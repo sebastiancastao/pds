@@ -2416,6 +2416,7 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
   city?: string | null;
   state?: string | null;
   eventDate?: string | null;
+  endDate?: string | null;
   startTime?: string | null;
   endTime?: string | null;
   endsNextDay?: boolean;
@@ -2430,6 +2431,7 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     city,
     state,
     eventDate,
+    endDate,
     startTime,
     endTime,
     endsNextDay,
@@ -2488,11 +2490,16 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     return parsed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   };
 
-  const formattedDate = formatDate(eventDate);
+  const hasDateRange = !!endDate && String(endDate).slice(0, 10) !== String(eventDate || '').slice(0, 10);
+  const formattedDate = hasDateRange
+    ? `${formatDate(eventDate)} - ${formatDate(endDate)}`
+    : formatDate(eventDate);
   const formattedStartTime = formatTime(startTime);
   const formattedEndTime = formatTime(endTime);
+  // For a multi-day Non Event the start/end times describe the daily window
+  const timeRangeSuffix = hasDateRange ? ' (daily)' : (endsNextDay ? ' (ends next day)' : '');
   const scheduleText = [formattedDate, formattedStartTime && formattedEndTime
-    ? `${formattedStartTime} - ${formattedEndTime}${endsNextDay ? ' (ends next day)' : ''}`
+    ? `${formattedStartTime} - ${formattedEndTime}${timeRangeSuffix}`
     : formattedStartTime || formattedEndTime || '',
   ].filter(Boolean).join(' at ');
   const locationText = [venue, [city, state].filter(Boolean).join(', ')].filter(Boolean).join(' - ');

@@ -5,11 +5,13 @@ import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { createHash } from "crypto";
 import { safeDecrypt } from "@/lib/encryption";
 import {
+  addDaysToDateString,
   formatIsoToHHMM,
   getLocalDateRange,
   getTimezoneForState,
   toZonedIso,
 } from "@/lib/timezones";
+import { getInclusiveDateSpanDays, normalizeEventEndDate } from "@/lib/non-event-timesheets";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,8 +40,10 @@ type EventRow = {
   id: string;
   event_name: string | null;
   event_date: string | null;
+  end_date: string | null;
   start_time: string | null;
   end_time: string | null;
+  ends_next_day: boolean | null;
   venue: string | null;
   city: string | null;
   state: string | null;
@@ -47,11 +51,17 @@ type EventRow = {
 };
 
 type TimesheetSpanPayload = {
+  firstInDate?: string;
   firstIn?: string;
+  lastOutDate?: string;
   lastOut?: string;
+  firstMealStartDate?: string;
   firstMealStart?: string;
+  lastMealEndDate?: string;
   lastMealEnd?: string;
+  secondMealStartDate?: string;
   secondMealStart?: string;
+  secondMealEndDate?: string;
   secondMealEnd?: string;
 };
 
@@ -66,6 +76,21 @@ type TimeEntryRow = {
 type TimelineRow = {
   action: string;
   timestamp: string;
+};
+
+type EventWindow = {
+  eventDate: string;
+  endDate: string;
+  maxEntryDate: string;
+  isMultiDay: boolean;
+  hasOvernightBuffer: boolean;
+  queryDaySpan: number;
+};
+
+type WorkDateWindow = {
+  workDate: string;
+  maxEntryDate: string;
+  queryDaySpan: number;
 };
 
 type TimesheetEditRequestSummary = {
@@ -84,8 +109,76 @@ function normalizeEventDate(dateValue?: string | null) {
   return String(dateValue).split("T")[0];
 }
 
+function formatIsoToLocalDate(isoValue: string | null | undefined, timeZone: string) {
+  if (!isoValue) return null;
+  const date = new Date(isoValue);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) return null;
+  return `${year}-${month}-${day}`;
+}
+
+function buildEventWindow(event: EventRow): EventWindow | null {
+  const eventDate = normalizeEventDate(event.event_date);
+  if (!eventDate) return null;
+
+  const endDate = normalizeEventEndDate(eventDate, normalizeEventDate(event.end_date));
+  const hasOvernightBuffer =
+    Boolean(event.ends_next_day) ||
+    (Boolean(event.start_time) && Boolean(event.end_time) && String(event.end_time) <= String(event.start_time));
+  const maxEntryDate = hasOvernightBuffer ? addDaysToDateString(endDate, 1) || endDate : endDate;
+
+  return {
+    eventDate,
+    endDate,
+    maxEntryDate,
+    isMultiDay: endDate > eventDate,
+    hasOvernightBuffer,
+    queryDaySpan: getInclusiveDateSpanDays(eventDate, endDate) + (hasOvernightBuffer ? 1 : 0),
+  };
+}
+
+function resolveWorkDateWindow(
+  eventWindow: EventWindow,
+  requestedWorkDate?: string | null
+): { selection?: WorkDateWindow; error?: string } {
+  const normalizedWorkDate = normalizeEventDate(requestedWorkDate) || eventWindow.eventDate;
+  if (normalizedWorkDate < eventWindow.eventDate || normalizedWorkDate > eventWindow.endDate) {
+    return {
+      error: `Work date must be between ${eventWindow.eventDate} and ${eventWindow.endDate}.`,
+    };
+  }
+
+  const allowNextDay =
+    !eventWindow.isMultiDay ||
+    normalizedWorkDate < eventWindow.endDate ||
+    eventWindow.hasOvernightBuffer;
+  const maxEntryDate = allowNextDay
+    ? addDaysToDateString(normalizedWorkDate, 1) || normalizedWorkDate
+    : normalizedWorkDate;
+
+  return {
+    selection: {
+      workDate: normalizedWorkDate,
+      maxEntryDate,
+      queryDaySpan: allowNextDay ? 2 : 1,
+    },
+  };
+}
+
 function buildTimeline(
-  eventDate: string,
+  workDate: string,
+  maxEntryDate: string,
   eventTimezone: string,
   spans: TimesheetSpanPayload
 ): { timeline: TimelineRow[]; error?: string } {
@@ -101,44 +194,81 @@ function buildTimeline(
     return { timeline: [], error: "Meal 2 requires both a start and end time." };
   }
 
-  const timeline: TimelineRow[] = [
-    { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) || "" },
+  const timelineInputs = [
+    {
+      action: "clock_in",
+      label: "Clock In",
+      time: String(spans.firstIn || "").trim(),
+    },
     ...(meal1Start && meal1End
       ? [
-          { action: "meal_start", timestamp: toZonedIso(eventDate, meal1Start, eventTimezone) || "" },
-          { action: "meal_end", timestamp: toZonedIso(eventDate, meal1End, eventTimezone) || "" },
+          {
+            action: "meal_start",
+            label: "Meal 1 Start",
+            time: meal1Start,
+          },
+          {
+            action: "meal_end",
+            label: "Meal 1 End",
+            time: meal1End,
+          },
         ]
       : []),
     ...(meal2Start && meal2End
       ? [
-          { action: "meal_start", timestamp: toZonedIso(eventDate, meal2Start, eventTimezone) || "" },
-          { action: "meal_end", timestamp: toZonedIso(eventDate, meal2End, eventTimezone) || "" },
+          {
+            action: "meal_start",
+            label: "Meal 2 Start",
+            time: meal2Start,
+          },
+          {
+            action: "meal_end",
+            label: "Meal 2 End",
+            time: meal2End,
+          },
         ]
       : []),
-    { action: "clock_out", timestamp: toZonedIso(eventDate, spans.lastOut, eventTimezone) || "" },
-  ].filter((row) => !!row.timestamp);
+    {
+      action: "clock_out",
+      label: "Clock Out",
+      time: String(spans.lastOut || "").trim(),
+    },
+  ];
+
+  const timeline: TimelineRow[] = [];
+  let previousMs: number | null = null;
+  for (const item of timelineInputs) {
+    if (!item.time) continue;
+
+    const timestamp = toZonedIso(workDate, item.time, eventTimezone) || "";
+    if (!timestamp) {
+      return { timeline: [], error: `${item.label} is invalid.` };
+    }
+
+    let absoluteMs = new Date(timestamp).getTime();
+    if (!Number.isFinite(absoluteMs)) {
+      return { timeline: [], error: `${item.label} is invalid.` };
+    }
+
+    while (previousMs !== null && absoluteMs <= previousMs) {
+      absoluteMs += 24 * 60 * 60 * 1000;
+    }
+
+    const resolvedTimestamp = new Date(absoluteMs).toISOString();
+    const resolvedDate = formatIsoToLocalDate(resolvedTimestamp, eventTimezone) || workDate;
+    if (resolvedDate < workDate || resolvedDate > maxEntryDate) {
+      return {
+        timeline: [],
+        error: `${item.label} must fall between ${workDate} and ${maxEntryDate}.`,
+      };
+    }
+
+    timeline.push({ action: item.action, timestamp: resolvedTimestamp });
+    previousMs = absoluteMs;
+  }
 
   if (timeline.length < 2) {
     return { timeline: [], error: "Clock in and clock out times are required." };
-  }
-
-  for (let i = 1; i < timeline.length; i++) {
-    const prevMs = new Date(timeline[i - 1].timestamp).getTime();
-    const currMs = new Date(timeline[i].timestamp).getTime();
-    if (!Number.isFinite(prevMs) || !Number.isFinite(currMs)) {
-      return { timeline: [], error: "One or more time values are invalid." };
-    }
-    if (currMs <= prevMs) {
-      timeline[i].timestamp = new Date(currMs + 24 * 60 * 60 * 1000).toISOString();
-    }
-  }
-
-  for (let i = 1; i < timeline.length; i++) {
-    const prevMs = new Date(timeline[i - 1].timestamp).getTime();
-    const currMs = new Date(timeline[i].timestamp).getTime();
-    if (!(currMs > prevMs)) {
-      return { timeline: [], error: "Times must be strictly increasing." };
-    }
   }
 
   return { timeline };
@@ -196,11 +326,17 @@ function buildSnapshot(
 
   return {
     firstIn: clockIns[0]?.timestamp ?? null,
+    firstInDate: formatIsoToLocalDate(clockIns[0]?.timestamp ?? null, eventTimezone),
     lastOut: clockOuts[clockOuts.length - 1]?.timestamp ?? null,
+    lastOutDate: formatIsoToLocalDate(clockOuts[clockOuts.length - 1]?.timestamp ?? null, eventTimezone),
     firstMealStart: mealStarts[0]?.timestamp ?? null,
+    firstMealStartDate: formatIsoToLocalDate(mealStarts[0]?.timestamp ?? null, eventTimezone),
     lastMealEnd: mealEnds[0]?.timestamp ?? null,
+    lastMealEndDate: formatIsoToLocalDate(mealEnds[0]?.timestamp ?? null, eventTimezone),
     secondMealStart: mealStarts[1]?.timestamp ?? null,
+    secondMealStartDate: formatIsoToLocalDate(mealStarts[1]?.timestamp ?? null, eventTimezone),
     secondMealEnd: mealEnds[1]?.timestamp ?? null,
+    secondMealEndDate: formatIsoToLocalDate(mealEnds[1]?.timestamp ?? null, eventTimezone),
     firstInDisplay: formatIsoToHHMM(clockIns[0]?.timestamp ?? null, eventTimezone),
     lastOutDisplay: formatIsoToHHMM(clockOuts[clockOuts.length - 1]?.timestamp ?? null, eventTimezone),
     firstMealStartDisplay: formatIsoToHHMM(mealStarts[0]?.timestamp ?? null, eventTimezone),
@@ -266,7 +402,7 @@ async function loadRequester(userId: string) {
 async function loadEvent(eventId: string): Promise<EventRow> {
   const { data, error } = await supabaseAdmin
     .from("events")
-    .select("id, event_name, event_date, start_time, end_time, venue, city, state, event_type")
+    .select("id, event_name, event_date, end_date, start_time, end_time, ends_next_day, venue, city, state, event_type")
     .eq("id", eventId)
     .maybeSingle();
 
@@ -280,8 +416,14 @@ async function loadEvent(eventId: string): Promise<EventRow> {
   return data as EventRow;
 }
 
-async function loadCurrentEntries(userId: string, eventId: string, eventDate: string, eventTimezone: string) {
-  const range = getLocalDateRange(eventDate, eventTimezone, 2);
+async function loadCurrentEntries(
+  userId: string,
+  eventId: string,
+  workDate: string,
+  eventTimezone: string,
+  queryDaySpan: number
+) {
+  const range = getLocalDateRange(workDate, eventTimezone, queryDaySpan);
   if (!range) {
     throw new Error("Invalid event date or timezone.");
   }
@@ -299,7 +441,46 @@ async function loadCurrentEntries(userId: string, eventId: string, eventDate: st
     throw new Error(error.message);
   }
 
-  return { entries: (data || []) as TimeEntryRow[], range };
+  const sortedEntries = ((data || []) as TimeEntryRow[]).sort(
+    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+  );
+
+  const groupedEntries: TimeEntryRow[][] = [];
+  let currentGroup: TimeEntryRow[] = [];
+
+  for (const entry of sortedEntries) {
+    if (entry.action === "clock_in") {
+      if (currentGroup.length > 0) {
+        groupedEntries.push(currentGroup);
+      }
+      currentGroup = [entry];
+      continue;
+    }
+
+    if (currentGroup.length === 0) {
+      continue;
+    }
+
+    currentGroup.push(entry);
+
+    if (entry.action === "clock_out") {
+      groupedEntries.push(currentGroup);
+      currentGroup = [];
+    }
+  }
+
+  if (currentGroup.length > 0) {
+    groupedEntries.push(currentGroup);
+  }
+
+  const matchingEntries =
+    groupedEntries.find((group) => {
+      const firstClockIn = group.find((entry) => entry.action === "clock_in");
+      if (!firstClockIn?.timestamp) return false;
+      return formatIsoToLocalDate(firstClockIn.timestamp, eventTimezone) === workDate;
+    }) || [];
+
+  return { entries: matchingEntries, range };
 }
 
 async function loadAttestationState(userId: string, entries: TimeEntryRow[]) {
@@ -426,12 +607,20 @@ export async function GET(
     // Support ?userId=xxx to load a specific team member's timesheet
     const url = new URL(req.url);
     const targetUserId = url.searchParams.get("userId") || user.id;
+    const requestedWorkDate = url.searchParams.get("workDate");
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     const event = await loadEvent(eventId);
-    const eventDate = normalizeEventDate(event.event_date);
-    if (!eventDate) {
+    const eventWindow = buildEventWindow(event);
+    if (!eventWindow) {
       return jsonError("Event date is missing.", 400);
+    }
+    const { selection: workDateWindow, error: workDateError } = resolveWorkDateWindow(
+      eventWindow,
+      requestedWorkDate
+    );
+    if (!workDateWindow) {
+      return jsonError(workDateError || "Work date is invalid.", 400);
     }
 
     const eventTimezone = getTimezoneForState(event.state);
@@ -469,7 +658,13 @@ export async function GET(
       }
     }
 
-    const { entries } = await loadCurrentEntries(targetUserId, eventId, eventDate, eventTimezone);
+    const { entries } = await loadCurrentEntries(
+      targetUserId,
+      eventId,
+      workDateWindow.workDate,
+      eventTimezone,
+      workDateWindow.queryDaySpan
+    );
     const attestationState = await loadAttestationState(targetUserId, entries);
     const editRequest = await loadLatestEditRequest(targetUserId, eventId);
     const timesheet = buildSnapshot(
@@ -484,9 +679,11 @@ export async function GET(
       event: {
         id: event.id,
         name: event.event_name,
-        date: eventDate,
+        date: eventWindow.eventDate,
+        endDate: eventWindow.endDate,
         startTime: event.start_time,
         endTime: event.end_time,
+        endsNextDay: eventWindow.hasOvernightBuffer,
         venue: event.venue,
         city: event.city,
         state: event.state,
@@ -503,6 +700,7 @@ export async function GET(
         name: requester.name,
         role: requester.role,
       },
+      workDate: workDateWindow.workDate,
       timesheet,
       teamMembers,
       editRequest,
@@ -535,6 +733,7 @@ export async function PUT(
     const body = await req.json().catch(() => null);
     const spans: TimesheetSpanPayload = body?.spans || {};
     const signature = String(body?.signature || "").trim();
+    const requestedWorkDate = String(body?.workDate || "").trim();
     const attestationAccepted =
       typeof body?.attestationAccepted === "boolean" ? body.attestationAccepted : undefined;
     const rejectionReason = String(body?.rejectionReason || "").trim();
@@ -557,13 +756,25 @@ export async function PUT(
     }
 
     const event = await loadEvent(eventId);
-    const eventDate = normalizeEventDate(event.event_date);
-    if (!eventDate) {
+    const eventWindow = buildEventWindow(event);
+    if (!eventWindow) {
       return jsonError("Event date is missing.", 400);
+    }
+    const { selection: workDateWindow, error: workDateError } = resolveWorkDateWindow(
+      eventWindow,
+      requestedWorkDate
+    );
+    if (!workDateWindow) {
+      return jsonError(workDateError || "Work date is invalid.", 400);
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(eventDate, eventTimezone, spans);
+    const { timeline, error: timelineError } = buildTimeline(
+      workDateWindow.workDate,
+      workDateWindow.maxEntryDate,
+      eventTimezone,
+      spans
+    );
     if (timelineError) {
       return jsonError(timelineError, 400);
     }
@@ -571,8 +782,9 @@ export async function PUT(
     const { entries: existingEntries, range } = await loadCurrentEntries(
       targetUserId,
       eventId,
-      eventDate,
-      eventTimezone
+      workDateWindow.workDate,
+      eventTimezone,
+      workDateWindow.queryDaySpan
     );
 
     const existingByAction: Record<string, TimeEntryRow[]> = {};
@@ -823,9 +1035,7 @@ export async function PUT(
   }
 }
 
-// PATCH: Draft-save time entries without requiring attestation or signature.
-// Saves clock_in/clock_out/meal times to time_entries so the event dashboard
-// reflects values immediately as the manager types them in the form.
+// PATCH: Save draft time entries without requiring attestation or signature.
 export async function PATCH(
   req: NextRequest,
   { params }: { params: { id: string } }
@@ -848,6 +1058,7 @@ export async function PATCH(
 
     const body = await req.json().catch(() => null);
     const spans: TimesheetSpanPayload = body?.spans || {};
+    const requestedWorkDate = String(body?.workDate || "").trim();
     const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
@@ -857,13 +1068,25 @@ export async function PATCH(
     }
 
     const event = await loadEvent(eventId);
-    const eventDate = normalizeEventDate(event.event_date);
-    if (!eventDate) {
+    const eventWindow = buildEventWindow(event);
+    if (!eventWindow) {
       return jsonError("Event date is missing.", 400);
+    }
+    const { selection: workDateWindow, error: workDateError } = resolveWorkDateWindow(
+      eventWindow,
+      requestedWorkDate
+    );
+    if (!workDateWindow) {
+      return NextResponse.json({ ok: false, skipped: true, reason: workDateError || "Work date is invalid." });
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(eventDate, eventTimezone, spans);
+    const { timeline, error: timelineError } = buildTimeline(
+      workDateWindow.workDate,
+      workDateWindow.maxEntryDate,
+      eventTimezone,
+      spans
+    );
     if (timelineError) {
       return NextResponse.json({ ok: false, skipped: true, reason: timelineError });
     }
@@ -871,8 +1094,9 @@ export async function PATCH(
     const { entries: existingEntries, range } = await loadCurrentEntries(
       targetUserId,
       eventId,
-      eventDate,
-      eventTimezone
+      workDateWindow.workDate,
+      eventTimezone,
+      workDateWindow.queryDaySpan
     );
 
     const baseNote = targetUserId !== user.id

@@ -46,6 +46,19 @@ function timeToSeconds(t: unknown): number | null {
   return hh * 3600 + mm * 60 + ss;
 }
 
+// Whole-day difference between two YYYY-MM-DD strings (end - start). Returns 0 if unparseable.
+function daysBetween(startYmd: string, endYmd: string): number {
+  const parse = (s: string): number | null => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((s || '').slice(0, 10));
+    if (!m) return null;
+    return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  };
+  const a = parse(startYmd);
+  const b = parse(endYmd);
+  if (a === null || b === null) return 0;
+  return Math.round((b - a) / 86400000);
+}
+
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
   let { data: { user } } = await supabase.auth.getUser();
@@ -78,7 +91,7 @@ export async function GET(
     const [eventResult, teamResult] = await Promise.all([
       supabaseAdmin
         .from('events')
-        .select('id, event_date, start_time, end_time, ends_next_day, created_by, state')
+        .select('id, event_date, end_date, start_time, end_time, ends_next_day, created_by, state')
         .eq('id', eventId)
         .maybeSingle(),
       supabaseAdmin
@@ -122,9 +135,17 @@ export async function GET(
       Boolean((event as any).ends_next_day) ||
       (startSec !== null && endSec !== null && endSec <= startSec);
     const eventTimezone = getTimezoneForState((event as any).state);
-    // Always scan a 2-day local window so manual overnight edits remain visible
-    // while stale rows from older days for the same event_id are excluded.
-    const queryRange = getLocalDateRange(date, eventTimezone, 2);
+    // Multi-day Non Event Time Sheets carry an end_date; scan every day in the range.
+    // Single-day events scan a 2-day local window so manual overnight edits remain
+    // visible while stale rows from older days for the same event_id are excluded.
+    let endDate = (event as any).end_date;
+    if (endDate && typeof endDate === 'string') {
+      endDate = endDate.split('T')[0];
+    }
+    const dayDiff = endDate ? daysBetween(date, endDate) : 0;
+    // (inclusive day count) + 1 buffer day to capture a final-day shift that ends past midnight
+    const daySpan = dayDiff > 0 ? dayDiff + 2 : 2;
+    const queryRange = getLocalDateRange(date, eventTimezone, daySpan);
     if (!queryRange) {
       return NextResponse.json({ error: 'Invalid event date/timezone' }, { status: 400 });
     }

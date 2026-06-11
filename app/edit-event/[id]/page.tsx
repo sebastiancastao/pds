@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter, useParams } from "next/navigation";
+import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 import { supabase } from "@/lib/supabase";
 
 type EventItem = {
@@ -13,6 +14,7 @@ type EventItem = {
   city: string | null;
   state: string | null;
   event_date: string;
+  end_date: string | null;
   start_time: string;
   end_time: string;
   ticket_sales: number | null;
@@ -49,6 +51,7 @@ export default function EditEventPage() {
     city: "",
     state: "",
     event_date: "",
+    end_date: "",
     start_time: "",
     end_time: "",
     ticket_sales: null,
@@ -67,6 +70,7 @@ export default function EditEventPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
+  const maxSpecialEndDate = form.event_type === "special" ? getMaxNonEventEndDate(form.event_date || "") : null;
 
   // User and session check
   useEffect(() => {
@@ -128,6 +132,7 @@ export default function EditEventPage() {
           city: event.city || "",
           state: event.state || "",
           event_date: event.event_date || "",
+          end_date: event.end_date || "",
           start_time: event.start_time || "",
           end_time: event.end_time || "",
           ticket_sales: event.ticket_sales || null,
@@ -190,6 +195,17 @@ export default function EditEventPage() {
     // Validation: required fields
     if (!form.event_name || !form.venue || !form.city || !form.state || !form.event_date || !form.start_time || !form.end_time) {
       setMessage("Please fill all required fields: Event Name, Venue, City, State, Event Date, Start Time, End Time");
+      setSubmitting(false);
+      return;
+    }
+    // Non Event Time Sheets may span several days: validate the optional end date
+    if (form.event_type === "special" && form.end_date && form.end_date < form.event_date) {
+      setMessage("End Date must be on or after the Event Date");
+      setSubmitting(false);
+      return;
+    }
+    if (form.event_type === "special" && form.end_date && maxSpecialEndDate && form.end_date > maxSpecialEndDate) {
+      setMessage(`Non Event Time Sheets cannot span more than ${MAX_NON_EVENT_TIMESHEET_DAYS} days.`);
       setSubmitting(false);
       return;
     }
@@ -329,16 +345,33 @@ export default function EditEventPage() {
               />
             </div>
             <div>
-              <label className="font-semibold block mb-1">Event Date *</label>
-              <input 
-                name="event_date" 
-                value={form.event_date} 
-                onChange={handleChange} 
-                required 
-                type="date" 
-                className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" 
+              <label className="font-semibold block mb-1">
+                {form.event_type === "special" ? "Start Date *" : "Event Date *"}
+              </label>
+              <input
+                name="event_date"
+                value={form.event_date}
+                onChange={handleChange}
+                required
+                type="date"
+                className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               />
             </div>
+            {form.event_type === "special" && (
+              <div>
+                <label className="font-semibold block mb-1">End Date</label>
+                <input
+                  name="end_date"
+                  value={form.end_date || ""}
+                  onChange={handleChange}
+                  type="date"
+                  min={form.event_date || undefined}
+                  max={maxSpecialEndDate || undefined}
+                  className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
+                />
+                <p className="text-xs text-gray-500 mt-1">Leave blank for a single day. Max span: {MAX_NON_EVENT_TIMESHEET_DAYS} days inclusive.</p>
+              </div>
+            )}
           </div>
 
           {/* Time Information */}
@@ -484,6 +517,5 @@ export default function EditEventPage() {
     </div>
   );
 }
-
 
 

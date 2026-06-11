@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import type { MutableRefObject } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { addDaysToDateString } from "@/lib/timezones";
 import { supabase } from "@/lib/supabase";
 
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
@@ -26,11 +27,17 @@ type TimeForm = {
 
 type TimesheetSnapshot = {
   firstIn: string | null;
+  firstInDate: string | null;
   lastOut: string | null;
+  lastOutDate: string | null;
   firstMealStart: string | null;
+  firstMealStartDate: string | null;
   lastMealEnd: string | null;
+  lastMealEndDate: string | null;
   secondMealStart: string | null;
+  secondMealStartDate: string | null;
   secondMealEnd: string | null;
+  secondMealEndDate: string | null;
   firstInDisplay: string;
   lastOutDisplay: string;
   firstMealStartDisplay: string;
@@ -63,8 +70,10 @@ type LoadedPayload = {
     id: string;
     name: string | null;
     date: string;
+    endDate: string;
     startTime: string | null;
     endTime: string | null;
+    endsNextDay: boolean;
     venue: string | null;
     city: string | null;
     state: string | null;
@@ -81,6 +90,7 @@ type LoadedPayload = {
     name: string;
     role: string;
   };
+  workDate: string;
   timesheet: TimesheetSnapshot;
   teamMembers?: TeamMemberOption[];
   editRequest?: TimesheetEditRequestSummary | null;
@@ -136,6 +146,17 @@ function formatEventDate(value?: string | null) {
   });
 }
 
+function formatCompactDate(value?: string | null) {
+  if (!value) return "Date TBD";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function formatClockValue(value?: string | null) {
   const raw = String(value || "").trim();
   const normalized = raw.length >= 5 ? raw.slice(0, 5) : raw;
@@ -157,7 +178,76 @@ function subtractMinutes(timeHHMM: string, mins: number): string {
   return `${hh}:${mm}`;
 }
 
-function computePreview(form: TimeForm, strict: boolean): PreviewResult {
+function resolveEventEndDate(event?: LoadedPayload["event"] | null) {
+  if (!event?.date) return "";
+  return event.endDate && event.endDate >= event.date ? event.endDate : event.date;
+}
+
+function isMultiDayEvent(event?: LoadedPayload["event"] | null) {
+  const endDate = resolveEventEndDate(event);
+  return Boolean(event?.date && endDate && endDate > event.date);
+}
+
+function formatEventDateRange(startDate?: string | null, endDate?: string | null) {
+  if (!startDate) return "Date TBD";
+  const normalizedEndDate = endDate && endDate >= startDate ? endDate : startDate;
+  if (normalizedEndDate === startDate) return formatEventDate(startDate);
+  return `${formatEventDate(startDate)} to ${formatEventDate(normalizedEndDate)}`;
+}
+
+function formatDateTimeValue(dateValue: string | null | undefined, timeValue: string | null | undefined, showDate: boolean) {
+  const timeLabel = formatClockValue(timeValue);
+  if (!showDate) return timeLabel;
+  return `${formatCompactDate(dateValue)} | ${timeLabel}`;
+}
+
+function buildWorkDateOptions(event?: LoadedPayload["event"] | null) {
+  if (!event?.date) return [];
+  const endDate = resolveEventEndDate(event);
+  const dates = [event.date];
+  let currentDate = event.date;
+
+  while (currentDate < endDate) {
+    const nextDate = addDaysToDateString(currentDate, 1);
+    if (!nextDate) break;
+    dates.push(nextDate);
+    currentDate = nextDate;
+  }
+
+  return dates;
+}
+
+function isValidWorkDate(event?: LoadedPayload["event"] | null, workDate?: string | null) {
+  if (!event?.date || !workDate) return false;
+  const endDate = resolveEventEndDate(event);
+  return workDate >= event.date && workDate <= endDate;
+}
+
+function canWorkDateSpillToNextDay(event?: LoadedPayload["event"] | null, workDate?: string | null) {
+  if (!event?.date) return true;
+  if (!isMultiDayEvent(event)) return true;
+  if (!workDate) return false;
+  const endDate = resolveEventEndDate(event);
+  return workDate < endDate || event.endsNextDay;
+}
+
+function buildFormFromLoaded(loaded: LoadedPayload): TimeForm {
+  return {
+    firstIn: loaded.timesheet.firstInDisplay || "",
+    firstMealStart: loaded.timesheet.firstMealStartDisplay || "",
+    lastMealEnd: loaded.timesheet.lastMealEndDisplay || "",
+    secondMealStart: loaded.timesheet.secondMealStartDisplay || "",
+    secondMealEnd: loaded.timesheet.secondMealEndDisplay || "",
+    lastOut: loaded.timesheet.lastOutDisplay || "",
+  };
+}
+
+function computePreview(
+  form: TimeForm,
+  strict: boolean,
+  event?: LoadedPayload["event"] | null,
+  workDate?: string | null
+): PreviewResult {
   const meal1HasAnyValue = Boolean(form.firstMealStart || form.lastMealEnd);
   const meal2HasAnyValue = Boolean(form.secondMealStart || form.secondMealEnd);
 
@@ -183,6 +273,17 @@ function computePreview(form: TimeForm, strict: boolean): PreviewResult {
     };
   }
 
+  if (isMultiDayEvent(event) && !isValidWorkDate(event, workDate)) {
+    return {
+      isComplete: false,
+      error: strict ? "Select which event day you are entering time for." : null,
+      mealMs: 0,
+      totalMs: 0,
+      totalMsWithAdminResponse: 0,
+      overnight: false,
+    };
+  }
+
   if (!form.firstIn || !form.lastOut) {
     return {
       isComplete: false,
@@ -195,20 +296,38 @@ function computePreview(form: TimeForm, strict: boolean): PreviewResult {
   }
 
   const orderedValues = [
-    { label: "Clock In", value: form.firstIn },
+    {
+      label: "Clock In",
+      value: form.firstIn,
+    },
     ...(form.firstMealStart && form.lastMealEnd
       ? [
-          { label: "Meal 1 Start", value: form.firstMealStart },
-          { label: "Meal 1 End", value: form.lastMealEnd },
+          {
+            label: "Meal 1 Start",
+            value: form.firstMealStart,
+          },
+          {
+            label: "Meal 1 End",
+            value: form.lastMealEnd,
+          },
         ]
       : []),
     ...(form.secondMealStart && form.secondMealEnd
       ? [
-          { label: "Meal 2 Start", value: form.secondMealStart },
-          { label: "Meal 2 End", value: form.secondMealEnd },
+          {
+            label: "Meal 2 Start",
+            value: form.secondMealStart,
+          },
+          {
+            label: "Meal 2 End",
+            value: form.secondMealEnd,
+          },
         ]
       : []),
-    { label: "Clock Out", value: form.lastOut },
+    {
+      label: "Clock Out",
+      value: form.lastOut,
+    },
   ];
 
   let previousAbsoluteMinutes: number | null = null;
@@ -236,6 +355,17 @@ function computePreview(form: TimeForm, strict: boolean): PreviewResult {
 
     resolvedMinutes.push(absoluteMinutes);
     previousAbsoluteMinutes = absoluteMinutes;
+  }
+
+  if (overnight && !canWorkDateSpillToNextDay(event, workDate)) {
+    return {
+      isComplete: false,
+      error: "This selected event day cannot extend past midnight.",
+      mealMs: 0,
+      totalMs: 0,
+      totalMsWithAdminResponse: 0,
+      overnight: true,
+    };
   }
 
   const totalWindowMinutes = resolvedMinutes[resolvedMinutes.length - 1] - resolvedMinutes[0];
@@ -307,6 +437,7 @@ export default function TimeSheetsPage() {
 
   const [teamMembers, setTeamMembers] = useState<TeamMemberOption[]>([]);
   const [selectedMemberId, setSelectedMemberId] = useState<string>("");
+  const [selectedWorkDate, setSelectedWorkDate] = useState("");
   const [memberLoading, setMemberLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [editRequestModalOpen, setEditRequestModalOpen] = useState(false);
@@ -318,9 +449,40 @@ export default function TimeSheetsPage() {
   const rejectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const isDrawingSignatureRef = useRef(false);
   const isDrawingRejectionRef = useRef(false);
-  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const preview = useMemo(() => computePreview(form, false), [form]);
+  const preview = useMemo(
+    () => computePreview(form, false, payload?.event || null, selectedWorkDate),
+    [form, payload, selectedWorkDate]
+  );
+
+  const applyLoadedPayload = useCallback((loaded: LoadedPayload) => {
+    setPayload(loaded);
+    setSelectedWorkDate(loaded.workDate || loaded.event.date || "");
+    setForm(buildFormFromLoaded(loaded));
+    setSaveStatus("idle");
+
+    if (
+      loaded.timesheet.attestationStatus !== "not_submitted" &&
+      loaded.editRequest?.status !== "approved"
+    ) {
+      setSubmittedTimesheet(loaded.timesheet);
+      setMode("complete");
+    } else {
+      setSubmittedTimesheet(null);
+      setMode("form");
+    }
+  }, []);
+
+  const buildTimesheetUrl = useCallback(
+    (memberId?: string, workDate?: string) => {
+      const searchParams = new URLSearchParams();
+      if (memberId) searchParams.set("userId", memberId);
+      if (workDate) searchParams.set("workDate", workDate);
+      const query = searchParams.toString();
+      return `/api/events/${eventId}/self-timesheet${query ? `?${query}` : ""}`;
+    },
+    [eventId]
+  );
 
   const loadPage = useCallback(async () => {
     if (!eventId) {
@@ -342,7 +504,7 @@ export default function TimeSheetsPage() {
         return;
       }
 
-      const res = await fetch(`/api/events/${eventId}/self-timesheet`, {
+      const res = await fetch(buildTimesheetUrl(), {
         cache: "no-store",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -369,15 +531,12 @@ export default function TimeSheetsPage() {
 
       let loaded = initialLoaded;
       if (selectedFromQuery) {
-        const memberRes = await fetch(
-          `/api/events/${eventId}/self-timesheet?userId=${encodeURIComponent(selectedFromQuery)}`,
-          {
-            cache: "no-store",
-            headers: {
-              Authorization: `Bearer ${session.access_token}`,
-            },
-          }
-        );
+        const memberRes = await fetch(buildTimesheetUrl(selectedFromQuery, initialLoaded.workDate), {
+          cache: "no-store",
+          headers: {
+            Authorization: `Bearer ${session.access_token}`,
+          },
+        });
 
         const memberData = await memberRes.json().catch(() => ({}));
         if (!memberRes.ok) {
@@ -391,34 +550,15 @@ export default function TimeSheetsPage() {
       }
 
       setSelectedMemberId(selectedFromQuery);
-      setPayload(loaded);
-      setForm({
-        firstIn: loaded.timesheet.firstInDisplay || "",
-        firstMealStart: loaded.timesheet.firstMealStartDisplay || "",
-        lastMealEnd: loaded.timesheet.lastMealEndDisplay || "",
-        secondMealStart: loaded.timesheet.secondMealStartDisplay || "",
-        secondMealEnd: loaded.timesheet.secondMealEndDisplay || "",
-        lastOut: loaded.timesheet.lastOutDisplay || "",
-      });
-
-      if (
-        loaded.timesheet.attestationStatus !== "not_submitted" &&
-        loaded.editRequest?.status !== "approved"
-      ) {
-        setSubmittedTimesheet(loaded.timesheet);
-        setMode("complete");
-      } else {
-        setSubmittedTimesheet(null);
-        setMode("form");
-      }
+      applyLoadedPayload(loaded);
     } catch (err: any) {
       setError(err?.message || "Failed to load time sheet.");
     } finally {
       setLoading(false);
     }
-  }, [eventId]);
+  }, [applyLoadedPayload, buildTimesheetUrl, eventId]);
 
-  const loadMemberTimesheet = useCallback(async (memberId: string) => {
+  const loadMemberTimesheet = useCallback(async (memberId: string, workDateOverride?: string) => {
     if (!eventId) return;
     setMemberLoading(true);
     setError("");
@@ -426,9 +566,10 @@ export default function TimeSheetsPage() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { window.location.href = "/login"; return; }
 
-      const url = memberId
-        ? `/api/events/${eventId}/self-timesheet?userId=${memberId}`
-        : `/api/events/${eventId}/self-timesheet`;
+      const url = buildTimesheetUrl(
+        memberId,
+        workDateOverride || selectedWorkDate || payload?.workDate || payload?.event.date
+      );
 
       const res = await fetch(url, {
         cache: "no-store",
@@ -437,44 +578,28 @@ export default function TimeSheetsPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "Failed to load member time sheet.");
 
-      const loaded = data as LoadedPayload;
-      setPayload(loaded);
-      setForm({
-        firstIn: loaded.timesheet.firstInDisplay || "",
-        firstMealStart: loaded.timesheet.firstMealStartDisplay || "",
-        lastMealEnd: loaded.timesheet.lastMealEndDisplay || "",
-        secondMealStart: loaded.timesheet.secondMealStartDisplay || "",
-        secondMealEnd: loaded.timesheet.secondMealEndDisplay || "",
-        lastOut: loaded.timesheet.lastOutDisplay || "",
-      });
-
-      if (
-        loaded.timesheet.attestationStatus !== "not_submitted" &&
-        loaded.editRequest?.status !== "approved"
-      ) {
-        setSubmittedTimesheet(loaded.timesheet);
-        setMode("complete");
-      } else {
-        setSubmittedTimesheet(null);
-        setMode("form");
-      }
+      applyLoadedPayload(data as LoadedPayload);
     } catch (err: any) {
       setError(err?.message || "Failed to load member time sheet.");
     } finally {
       setMemberLoading(false);
     }
-  }, [eventId]);
+  }, [applyLoadedPayload, buildTimesheetUrl, eventId, payload?.event.date, payload?.workDate, selectedWorkDate]);
 
   useEffect(() => {
     void loadPage();
   }, [loadPage]);
 
-  const draftSave = useCallback(async (currentForm: TimeForm, memberId: string) => {
+  const draftSave = useCallback(async (currentForm: TimeForm, memberId: string, workDate: string) => {
     if (!eventId || !currentForm.firstIn || !currentForm.lastOut) return;
     setSaveStatus("saving");
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!session) {
+        setSaveStatus("idle");
+        window.location.href = "/login";
+        return;
+      }
       const res = await fetch(`/api/events/${eventId}/self-timesheet`, {
         method: "PATCH",
         headers: {
@@ -482,14 +607,8 @@ export default function TimeSheetsPage() {
           Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
-          spans: {
-            firstIn: currentForm.firstIn,
-            lastOut: currentForm.lastOut,
-            firstMealStart: currentForm.firstMealStart,
-            lastMealEnd: currentForm.lastMealEnd,
-            secondMealStart: currentForm.secondMealStart,
-            secondMealEnd: currentForm.secondMealEnd,
-          },
+          spans: currentForm,
+          workDate,
           ...(memberId ? { targetUserId: memberId } : {}),
         }),
       });
@@ -509,12 +628,10 @@ export default function TimeSheetsPage() {
     }
   }, [eventId]);
 
-  const scheduleAutoSave = useCallback((currentForm: TimeForm, memberId: string) => {
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
-    autoSaveTimerRef.current = setTimeout(() => {
-      void draftSave(currentForm, memberId);
-    }, 800);
-  }, [draftSave]);
+  const updateFormField = useCallback((field: keyof TimeForm, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    setSaveStatus("idle");
+  }, []);
 
   const clearCanvas = useCallback(
     (
@@ -580,7 +697,7 @@ export default function TimeSheetsPage() {
   }, []);
 
   const goToAttestation = () => {
-    const strictPreview = computePreview(form, true);
+    const strictPreview = computePreview(form, true, payload?.event || null, selectedWorkDate);
     if (strictPreview.error) {
       setError(strictPreview.error);
       return;
@@ -596,7 +713,7 @@ export default function TimeSheetsPage() {
   const submitTimesheet = async (attestationAccepted: boolean) => {
     if (!payload) return;
 
-    const strictPreview = computePreview(form, true);
+    const strictPreview = computePreview(form, true, payload.event, selectedWorkDate);
     if (strictPreview.error) {
       setError(strictPreview.error);
       return;
@@ -654,6 +771,7 @@ export default function TimeSheetsPage() {
         },
         body: JSON.stringify({
           spans: form,
+          workDate: selectedWorkDate,
           signature,
           attestationAccepted,
           rejectionReason: resolvedRejectionReason,
@@ -745,6 +863,22 @@ export default function TimeSheetsPage() {
 
   const timesheetForSummary = submittedTimesheet || payload?.timesheet || null;
   const topRightLink = payload ? `/event-dashboard/${payload.event.id}` : "/dashboard";
+  const eventEndDate = resolveEventEndDate(payload?.event || null);
+  const isMultiDaySheet = isMultiDayEvent(payload?.event || null);
+  const workDateOptions = useMemo(() => buildWorkDateOptions(payload?.event || null), [payload]);
+  const activeWorkDateLabel = selectedWorkDate ? formatEventDate(selectedWorkDate) : "Select a day";
+  const workPeriodLabel = isMultiDaySheet ? "work period" : "workday";
+
+  const handleSave = async () => {
+    const strictPreview = computePreview(form, true, payload?.event || null, selectedWorkDate);
+    if (strictPreview.error) {
+      setError(strictPreview.error);
+      return;
+    }
+
+    setError("");
+    await draftSave(form, selectedMemberId, selectedWorkDate || payload?.workDate || payload?.event.date || "");
+  };
 
   if (loading) {
     return (
@@ -774,10 +908,10 @@ export default function TimeSheetsPage() {
                 {payload?.event.name || "Special Event Time Sheet"}
               </h1>
               <div className="space-y-1 text-sm text-slate-200">
-                <p>{payload ? formatEventDate(payload.event.date) : "Event date unavailable"}</p>
+                <p>{payload ? formatEventDateRange(payload.event.date, payload.event.endDate) : "Event date unavailable"}</p>
                 <p>
                   {payload
-                    ? `${formatClockValue(payload.event.startTime)} - ${formatClockValue(payload.event.endTime)}`
+                    ? `${isMultiDaySheet ? "Scheduled window" : "Schedule"}: ${formatClockValue(payload.event.startTime)} - ${formatClockValue(payload.event.endTime)}${payload.event.endsNextDay ? " (may end next day)" : ""}`
                     : "Schedule unavailable"}
                 </p>
                 {payload && (
@@ -815,7 +949,7 @@ export default function TimeSheetsPage() {
                   onClick={() => {
                     if (selectedMemberId !== m.id) {
                       setSelectedMemberId(m.id);
-                      void loadMemberTimesheet(m.id);
+                      void loadMemberTimesheet(m.id, selectedWorkDate);
                     }
                   }}
                   className={`rounded-xl px-4 py-2 text-sm font-medium border transition ${
@@ -834,6 +968,40 @@ export default function TimeSheetsPage() {
           </div>
         )}
 
+        {payload && isMultiDaySheet && (
+          <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <label className="block text-sm font-semibold text-slate-700">Event Day</label>
+                <p className="mt-1 text-sm text-slate-600">
+                  Select which day of this event you are entering time for.
+                </p>
+              </div>
+              <div className="w-full sm:max-w-sm">
+                <select
+                  value={selectedWorkDate}
+                  onChange={(event) => {
+                    const nextWorkDate = event.target.value;
+                    if (nextWorkDate === selectedWorkDate) return;
+                    setSelectedWorkDate(nextWorkDate);
+                    setSaveStatus("idle");
+                    setError("");
+                    void loadMemberTimesheet(selectedMemberId, nextWorkDate);
+                  }}
+                  disabled={memberLoading}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100"
+                >
+                  {workDateOptions.map((date) => (
+                    <option key={date} value={date}>
+                      {formatEventDate(date)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+
         {error && (
           <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
             {error}
@@ -847,7 +1015,7 @@ export default function TimeSheetsPage() {
                 <div>
                   <h2 className="text-2xl font-bold text-slate-900">Attestation Recorded</h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    This time sheet has already been submitted for this event.
+                    This time sheet has already been submitted for this {isMultiDaySheet ? "event day" : "event"}.
                   </p>
                 </div>
                 <div
@@ -867,13 +1035,13 @@ export default function TimeSheetsPage() {
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clock In</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
-                    {formatClockValue(timesheetForSummary.firstInDisplay)}
+                    {formatDateTimeValue(timesheetForSummary.firstInDate, timesheetForSummary.firstInDisplay, isMultiDaySheet)}
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
                   <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Clock Out</div>
                   <div className="mt-1 text-lg font-semibold text-slate-900">
-                    {formatClockValue(timesheetForSummary.lastOutDisplay)}
+                    {formatDateTimeValue(timesheetForSummary.lastOutDate, timesheetForSummary.lastOutDisplay, isMultiDaySheet)}
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
@@ -922,9 +1090,15 @@ export default function TimeSheetsPage() {
                     <dt className="text-slate-500">Event</dt>
                     <dd className="text-right font-medium text-slate-900">{payload.event.name || "Unnamed Event"}</dd>
                   </div>
+                  {isMultiDaySheet && (
+                    <div className="flex items-start justify-between gap-4">
+                      <dt className="text-slate-500">Selected Day</dt>
+                      <dd className="text-right font-medium text-slate-900">{activeWorkDateLabel}</dd>
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-4">
-                    <dt className="text-slate-500">Date</dt>
-                    <dd className="text-right font-medium text-slate-900">{formatEventDate(payload.event.date)}</dd>
+                    <dt className="text-slate-500">{isMultiDaySheet ? "Date Range" : "Date"}</dt>
+                    <dd className="text-right font-medium text-slate-900">{formatEventDateRange(payload.event.date, payload.event.endDate)}</dd>
                   </div>
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Venue</dt>
@@ -1044,8 +1218,13 @@ export default function TimeSheetsPage() {
                           : "Enter Your Time"}
                       </h2>
                       <p className="mt-1 text-sm text-slate-600">
-                        Enter the workday exactly as worked. Meal fields are mandatory, and each meal requires a start and end time.
+                        Enter the {workPeriodLabel} exactly as worked. Meal fields are mandatory, and each meal requires a start and end time.
                       </p>
+                      {isMultiDaySheet && (
+                        <p className="mt-2 text-xs text-slate-500">
+                          This event spans multiple days. The current timesheet is for {activeWorkDateLabel}.
+                        </p>
+                      )}
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
                       Step 1 of 2
@@ -1064,11 +1243,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.firstIn}
-                        onChange={(event) => {
-                          const next = { ...form, firstIn: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("firstIn", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1077,11 +1252,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.lastOut}
-                        onChange={(event) => {
-                          const next = { ...form, lastOut: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("lastOut", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1090,11 +1261,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.firstMealStart}
-                        onChange={(event) => {
-                          const next = { ...form, firstMealStart: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("firstMealStart", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1103,11 +1270,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.lastMealEnd}
-                        onChange={(event) => {
-                          const next = { ...form, lastMealEnd: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("lastMealEnd", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1116,11 +1279,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.secondMealStart}
-                        onChange={(event) => {
-                          const next = { ...form, secondMealStart: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("secondMealStart", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1129,11 +1288,7 @@ export default function TimeSheetsPage() {
                       <input
                         type="time"
                         value={form.secondMealEnd}
-                        onChange={(event) => {
-                          const next = { ...form, secondMealEnd: event.target.value };
-                          setForm(next);
-                          scheduleAutoSave(next, selectedMemberId);
-                        }}
+                        onChange={(event) => updateFormField("secondMealEnd", event.target.value)}
                         className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                       />
                     </label>
@@ -1146,8 +1301,8 @@ export default function TimeSheetsPage() {
                       "text-rose-500"
                     }`}>
                       {saveStatus === "saving" && <span className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />}
-                      {saveStatus === "saving" && "Saving…"}
-                      {saveStatus === "saved" && "✓ Saved"}
+                      {saveStatus === "saving" && "Saving..."}
+                      {saveStatus === "saved" && "Saved"}
                       {saveStatus === "error" && "Failed to save"}
                     </div>
                   )}
@@ -1158,14 +1313,27 @@ export default function TimeSheetsPage() {
                         ? preview.error
                         : preview.isComplete
                           ? `Estimated total with admin response time: ${formatDuration(preview.totalMsWithAdminResponse)}`
-                          : "Enter your clock in and clock out time to continue."}
+                          : isMultiDaySheet
+                            ? "Select the event day, then enter your clock in and clock out time to continue."
+                            : "Enter your clock in and clock out time to continue."}
                     </div>
-                    <button
-                      onClick={goToAttestation}
-                      className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-                    >
-                      Continue to Attestation
-                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => void handleSave()}
+                        disabled={saveStatus === "saving" || !form.firstIn || !form.lastOut}
+                        className="inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {saveStatus === "saving" ? "Saving..." : "Save"}
+                      </button>
+                      <button
+                        onClick={goToAttestation}
+                        disabled={saveStatus === "saving"}
+                        className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        Continue to Attestation
+                      </button>
+                    </div>
                   </div>
                 </>
               )}
@@ -1189,12 +1357,12 @@ export default function TimeSheetsPage() {
                       I, <span className="font-semibold">{payload.user.name}</span>, hereby attest that:
                     </p>
                     <ul className="list-disc space-y-2 pl-5 text-slate-600">
-                      <li>All of my hours recorded for the workday are complete and accurate.</li>
+                      <li>All of my hours recorded for the {workPeriodLabel} are complete and accurate.</li>
                       <li>
-                        I was provided with all meal periods and was authorized and permitted to take all rest and recovery periods to which I was entitled in compliance with the Company&apos;s policies during the workday, except any that I previously reported to my supervisor/Operations Director and/or Human Resources.
+                        I was provided with all meal periods and was authorized and permitted to take all rest and recovery periods to which I was entitled in compliance with the Company&apos;s policies during the {workPeriodLabel}, except any that I previously reported to my supervisor/Operations Director and/or Human Resources.
                       </li>
                       <li>
-                        I have not violated any Company policy during the workday, including, but not limited to, the Company&apos;s policy against working off-the-clock.
+                        I have not violated any Company policy during the {workPeriodLabel}, including, but not limited to, the Company&apos;s policy against working off-the-clock.
                       </li>
                       <li>
                         I understand that I may raise any concerns about my ability to take meal periods or rest breaks, or any instruction or pressure to work &quot;off-the-clock,&quot; or incorrectly reporting my time worked at any time without fear of retaliation.
@@ -1463,7 +1631,9 @@ export default function TimeSheetsPage() {
 
                 {preview.overnight && (
                   <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    Overnight shift detected. Later times are being carried into the next day automatically.
+                    {isMultiDaySheet
+                      ? "Overnight shift detected. Later times are being carried into the next day for the selected event day."
+                      : "Overnight shift detected. Later times are being carried into the next day automatically."}
                   </div>
                 )}
               </div>
@@ -1471,14 +1641,20 @@ export default function TimeSheetsPage() {
               <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
                 <h3 className="text-lg font-semibold text-slate-900">Event Details</h3>
                 <dl className="mt-4 space-y-3 text-sm text-slate-700">
+                  {isMultiDaySheet && (
+                    <div className="flex items-start justify-between gap-4">
+                      <dt className="text-slate-500">Selected Day</dt>
+                      <dd className="text-right font-medium text-slate-900">{activeWorkDateLabel}</dd>
+                    </div>
+                  )}
                   <div className="flex items-start justify-between gap-4">
-                    <dt className="text-slate-500">Date</dt>
-                    <dd className="text-right font-medium text-slate-900">{formatEventDate(payload.event.date)}</dd>
+                    <dt className="text-slate-500">{isMultiDaySheet ? "Date Range" : "Date"}</dt>
+                    <dd className="text-right font-medium text-slate-900">{formatEventDateRange(payload.event.date, payload.event.endDate)}</dd>
                   </div>
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Scheduled</dt>
                     <dd className="text-right font-medium text-slate-900">
-                      {`${formatClockValue(payload.event.startTime)} - ${formatClockValue(payload.event.endTime)}`}
+                      {`${formatClockValue(payload.event.startTime)} - ${formatClockValue(payload.event.endTime)}${payload.event.endsNextDay ? " (may end next day)" : ""}`}
                     </dd>
                   </div>
                   <div className="flex items-start justify-between gap-4">

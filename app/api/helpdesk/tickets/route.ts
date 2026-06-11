@@ -77,7 +77,7 @@ export async function POST(req: NextRequest) {
     };
 
     await sendEmail({
-      to: ['portal@1pds.net', 'sebastiancastao379@gmail.com'],
+      to: ['portal@1pds.net', 'mardel@1pds.net', 'sebastiancastao379@gmail.com'],
       subject: `[Help Desk ${ticket.ticket_number}] ${urgencyLabel[urgency] ?? urgency} — ${senderName}`,
       html: `
 <!DOCTYPE html><html><head><meta charset="UTF-8"></head>

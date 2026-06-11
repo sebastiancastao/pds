@@ -158,6 +158,11 @@ export async function GET(req: NextRequest) {
         previous_status: r.previous_status || r.metadata?.previous_status || "",
         actor_id: r.uninvited_by || r.metadata?.uninvited_by_user_id || "",
         at: r.uninvited_at || "",
+        // Prefer the snapshotted invite time; fall back to an email-invitation
+        // record when present (the deleted event_teams.created_at is otherwise lost).
+        invited_at: r.metadata?.invited_at
+          || inviteByVendor.get(r.vendor_id || r.metadata?.vendor_id)?.created_at
+          || "",
       }));
     } else {
       // Legacy fallback: audit_logs
@@ -173,6 +178,9 @@ export async function GET(req: NextRequest) {
         previous_status: r.metadata?.previous_status || "",
         actor_id: r.user_id || r.metadata?.uninvited_by_user_id || "",
         at: r.created_at || "",
+        invited_at: r.metadata?.invited_at
+          || inviteByVendor.get(r.metadata?.vendor_id)?.created_at
+          || "",
       }));
     }
 
@@ -304,16 +312,17 @@ export async function GET(req: NextRequest) {
 
     // Sheet 3: Uninvite History (removed team members)
     if (uninvites.length > 0) {
-      const uninviteHeaders = ["Member Name", "Email", "Previous Status", "Uninvited By", "Uninvited At"];
+      const uninviteHeaders = ["Member Name", "Email", "Invited At", "Previous Status", "Uninvited By", "Uninvited At"];
       const uninviteBody = uninvites.map((u: any) => [
         displayName(u.vendor_id),
         emailById.get(u.vendor_id) || "",
+        fmtDate(u.invited_at, tz),
         u.previous_status || "",
         displayName(u.actor_id),
         fmtDate(u.at, tz),
       ]);
       const uninviteSheet = XLSX.utils.aoa_to_sheet([uninviteHeaders, ...uninviteBody]);
-      uninviteSheet["!cols"] = [{ wch: 24 }, { wch: 28 }, { wch: 18 }, { wch: 24 }, { wch: 22 }];
+      uninviteSheet["!cols"] = [{ wch: 24 }, { wch: 28 }, { wch: 22 }, { wch: 18 }, { wch: 24 }, { wch: 22 }];
       XLSX.utils.book_append_sheet(wb, uninviteSheet, "Uninvite History");
     }
 

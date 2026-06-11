@@ -115,6 +115,47 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
+/**
+ * Reconcile a set of per-vendor commission shares so they sum exactly to the
+ * event commission pool, using a 3rd decimal (millesimal) only on the vendors
+ * that require it. Works in integer thousandths to avoid floating-point drift.
+ *
+ * Returns one reconciled amount per input value (same order); the returned
+ * values sum exactly to round(targetAmount, 2). We only smooth ordinary
+ * 2-decimal rounding noise: if the raw shares are structurally far from the pool
+ * (gap larger than rounding drift), the inputs are returned rounded to 2
+ * decimals unchanged so we never fabricate a different total.
+ */
+function reconcileCommissionToPool(values: number[], targetAmount: number): number[] {
+  const n = values.length;
+  if (n === 0) return [];
+  const safeValues = values.map((v) => (Number.isFinite(v) ? v : 0));
+  const target = Number.isFinite(targetAmount) ? targetAmount : 0;
+
+  const rawSum = safeValues.reduce((s, v) => s + v, 0);
+  const driftTolerance = n * 0.01 + 0.005;
+  if (Math.abs(rawSum - target) > driftTolerance) {
+    return safeValues.map((v) => Math.round(v * 100) / 100);
+  }
+
+  const targetThousandths = Math.round(target * 1000);
+  const floors = safeValues.map((v) => Math.floor(v * 1000 + 1e-6));
+  const residual = targetThousandths - floors.reduce((s, f) => s + f, 0);
+
+  // Largest-remainder: hand out (or claw back) single thousandths to the
+  // vendors with the largest/smallest fractional parts.
+  const order = safeValues.map((v, i) => ({ i, frac: v * 1000 - floors[i] }));
+  const result = floors.slice();
+  if (residual > 0) {
+    order.sort((a, b) => b.frac - a.frac);
+    for (let k = 0; k < residual; k++) result[order[k % n].i] += 1;
+  } else if (residual < 0) {
+    order.sort((a, b) => a.frac - b.frac);
+    for (let k = 0; k < -residual; k++) result[order[k % n].i] -= 1;
+  }
+  return result.map((thousandths) => thousandths / 1000);
+}
+
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -1924,6 +1965,32 @@ function HRDashboardContent() {
       return;
     }
 
+    // Per-payment commission reconciled to the event commission pool. We round
+    // each vendor's share to 2 decimals, but where that leaves a residual we let
+    // specific vendors carry a 3rd decimal so the per-event commission sum equals
+    // the pool ($ = adjusted gross × commission %, shown as "Total Commission").
+    const reconciledCommissionByPayment = new Map<any, number>();
+    paymentsByVenue.forEach((venue: any) => {
+      (venue.events || []).forEach((event: any) => {
+        const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+        const eventPayments = Array.isArray(event.payments) ? event.payments : [];
+        if (isEventSD) {
+          eventPayments.forEach((payment: any) => reconciledCommissionByPayment.set(payment, 0));
+          return;
+        }
+        const rawShares = eventPayments.map(
+          (payment: any) => getDisplayedPaymentBreakdown(event, payment).commissionPay
+        );
+        const poolTarget = Number(
+          Number(event?.commissionPoolDollars ?? event?.commissionDollars ?? 0).toFixed(2)
+        );
+        const reconciled = reconcileCommissionToPool(rawShares, poolTarget);
+        eventPayments.forEach((payment: any, idx: number) =>
+          reconciledCommissionByPayment.set(payment, reconciled[idx])
+        );
+      });
+    });
+
     // Event-level summary rows (matches payroll header metrics in UI)
     const summaryRows: any[] = [];
     const allVendorDetailRows: any[] = [];
@@ -1996,7 +2063,11 @@ function HRDashboardContent() {
         'Rate in Effect': formatPayrollMoney(loadedRate),
         'Hours': hoursHHMM,
         'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
+        'Commission Pay': isEventSD
+          ? 0
+          : reconciledCommissionByPayment.has(payment)
+            ? reconciledCommissionByPayment.get(payment)!
+            : Number(displayedCommissionPay.toFixed(2)),
         'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
         'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
@@ -2241,7 +2312,11 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, payment);
           const loadedRate = breakdown.rateInEffect;
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
-          const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(2));
+          const commPay = isEventSD
+            ? 0
+            : reconciledCommissionByPayment.has(payment)
+              ? reconciledCommissionByPayment.get(payment)!
+              : Number(breakdown.commissionPay.toFixed(2));
           const varIncentive = isEventSD ? 0 : Number(breakdown.variableIncentive.toFixed(2));
           const tipsRaw = getDisplayedTips(event, payment);
           const tips = Number(roundUpThousandsToNextHundred(tipsRaw).toFixed(2));
