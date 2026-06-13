@@ -3716,6 +3716,7 @@ export default function WorkerProfilePage() {
                 </svg>
                 <p className="text-sm text-amber-800">
                   <span className="font-semibold">Under construction.</span> This section is a work in progress.
+                  
                 </p>
               </div>
               <div className="divide-y divide-gray-50">
