@@ -67,6 +67,7 @@ export default function EditEventPage() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [isAuthed, setIsAuthed] = useState(false);
+  const isNonEvent = form.event_type === "special";
 
   // User and session check
   useEffect(() => {
@@ -378,7 +379,8 @@ export default function EditEventPage() {
             </div>
           </div>
 
-          {/* Financial Information */}
+          {/* Financial Information (hidden for Non Event Time Sheets) */}
+          {!isNonEvent && (
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div>
               <label className="font-semibold block mb-1">Artist Share %</label>
@@ -428,10 +430,11 @@ export default function EditEventPage() {
                 type="number" 
                 step="0.01" 
                 min="0"
-                className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" 
+                className="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500"
               />
             </div>
           </div>
+          )}
 
           {/* Staff Information */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

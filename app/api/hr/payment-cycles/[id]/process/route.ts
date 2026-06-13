@@ -63,7 +63,7 @@ export async function POST(
     // Approved sick-leave usage overlapping the window.
     const { data: leaves, error: leavesError } = await supabaseAdmin
       .from("sick_leaves")
-      .select("user_id, duration_hours")
+      .select("user_id, duration_hours, event_id")
       .eq("status", "approved")
       .lte("start_date", endDate)
       .gte("end_date", startDate);
@@ -76,11 +76,23 @@ export async function POST(
     }
 
     const sickHoursByUser = new Map<string, number>();
+    // Distinct events linked to the user's leaves in the window; attribute the paysheet
+    // to that event only when it is unambiguous (exactly one linked event).
+    const eventsByUser = new Map<string, Set<string>>();
     for (const row of (leaves || []) as any[]) {
       const uid = String(row.user_id || "");
       if (!uid) continue;
       sickHoursByUser.set(uid, (sickHoursByUser.get(uid) || 0) + Number(row.duration_hours || 0));
+      if (row.event_id) {
+        const set = eventsByUser.get(uid) ?? new Set<string>();
+        set.add(String(row.event_id));
+        eventsByUser.set(uid, set);
+      }
     }
+    const eventForUser = (uid: string): string | null => {
+      const set = eventsByUser.get(uid);
+      return set && set.size === 1 ? [...set][0] : null;
+    };
 
     // Target users: requested subset (intersected with those who have usage) or all.
     let targetIds = [...sickHoursByUser.keys()];
@@ -144,6 +156,7 @@ export async function POST(
       const rate = round2(rateFor(profile.state, profile.city));
       return {
         user_id: uid,
+        event_id: eventForUser(uid),
         hours,
         rate,
         amount: round2(hours * rate),

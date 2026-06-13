@@ -76,7 +76,7 @@ export async function GET(
     // ---- Sick-leave hours used within the window (approved leaves that overlap) ----
     const { data: leaves, error: leavesError } = await supabaseAdmin
       .from("sick_leaves")
-      .select("user_id, duration_hours, start_date, end_date, status")
+      .select("user_id, duration_hours, start_date, end_date, status, event_id, event:events(event_name, event_date)")
       .eq("status", "approved")
       .lte("start_date", endDate)
       .gte("end_date", startDate);
@@ -89,11 +89,33 @@ export async function GET(
     }
 
     const sickHoursByUser = new Map<string, number>();
+    // Distinct events the user's leaves are linked to within the window.
+    const eventsByUser = new Map<string, Map<string, { name: string | null; date: string | null }>>();
     for (const row of (leaves || []) as any[]) {
       const uid = String(row.user_id || "");
       if (!uid) continue;
       sickHoursByUser.set(uid, (sickHoursByUser.get(uid) || 0) + Number(row.duration_hours || 0));
+      const eid = row.event_id ? String(row.event_id) : "";
+      if (eid) {
+        const linkedEvent = Array.isArray(row.event) ? row.event[0] : row.event;
+        const evMap = eventsByUser.get(uid) ?? new Map();
+        if (!evMap.has(eid)) {
+          evMap.set(eid, {
+            name: linkedEvent?.event_name ?? null,
+            date: linkedEvent?.event_date ?? null,
+          });
+        }
+        eventsByUser.set(uid, evMap);
+      }
     }
+    // Resolve a single attributable event per user (null when none or ambiguous).
+    const resolveEventForUser = (uid: string): { event_id: string | null; event_name: string | null; event_date: string | null } => {
+      const evMap = eventsByUser.get(uid);
+      if (!evMap || evMap.size === 0) return { event_id: null, event_name: null, event_date: null };
+      if (evMap.size > 1) return { event_id: null, event_name: "Multiple events", event_date: null };
+      const [[eid, meta]] = [...evMap.entries()];
+      return { event_id: eid, event_name: meta.name, event_date: meta.date };
+    };
 
     const userIds = [...sickHoursByUser.keys()];
     if (userIds.length === 0) {
@@ -165,6 +187,7 @@ export async function GET(
         const state = profile?.state || "";
         const city = profile?.city || "";
         const rate = round2(rateFor(state, city));
+        const linkedEvent = resolveEventForUser(uid);
         return {
           user_id: uid,
           name: profile?.name || "Unknown",
@@ -174,6 +197,9 @@ export async function GET(
           worked_hours: round2(workedByUser.get(uid) || 0),
           rate,
           amount: round2(sickHours * rate),
+          event_id: linkedEvent.event_id,
+          event_name: linkedEvent.event_name,
+          event_date: linkedEvent.event_date,
           already_has_paysheet: alreadyHasPaysheet.has(uid),
         };
       })

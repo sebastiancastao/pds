@@ -126,6 +126,9 @@ export async function POST(req: NextRequest) {
     const bccRaw = String(form.get("bcc") || "");
     const venue = String(form.get("venue") || "").trim();
     const confirm = String(form.get("confirm") || "").toLowerCase() === "true";
+    const eventId = String(form.get("eventId") || "").trim();
+    const eventName = String(form.get("eventName") || "").trim();
+    const eventDate = String(form.get("eventDate") || "").trim();
 
     if (!["manual", "role", "region", "all"].includes(audience)) {
       return NextResponse.json({ error: "Invalid audience" }, { status: 400 });
@@ -217,10 +220,23 @@ export async function POST(req: NextRequest) {
       } as Attachment);
     }
 
-    const html =
+    const bodyHtml =
       bodyFormat === "html"
         ? body
         : `<pre style="white-space:pre-wrap;font-family:inherit;">${escapeHtml(body)}</pre>`;
+
+    // When the send is tied to a specific event, prepend a header that links the
+    // event name to its dashboard so recipients can jump straight to the event.
+    let html = bodyHtml;
+    if (eventId && eventName) {
+      const appUrl = (process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app").replace(/\/+$/, "");
+      const eventUrl = `${appUrl}/event-dashboard/${encodeURIComponent(eventId)}`;
+      const dateLine = eventDate
+        ? `<div style="margin-top:4px;color:#6b7280;font-size:13px;">${escapeHtml(eventDate)}</div>`
+        : "";
+      const eventHeader = `<div style="margin-bottom:16px;padding:12px 16px;background:#f3f4f6;border-radius:6px;font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#374151;">Event: <a href="${eventUrl}" style="color:#2563eb;text-decoration:underline;font-weight:600;">${escapeHtml(eventName)}</a>${dateLine}</div>`;
+      html = eventHeader + bodyHtml;
+    }
 
     const venueBcc = venue ? await getVenueBccEmails(venue, supabaseAdmin) : [];
     const mergedBcc = [...new Set([...bcc, ...venueBcc])];

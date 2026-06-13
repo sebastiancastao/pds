@@ -20,6 +20,20 @@ function dedupeEmails(values: string[]): string[] {
   );
 }
 
+function formatEventDate(startDate?: string | null, endDate?: string | null): string {
+  const fmt = (value?: string | null): string => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    const d = new Date(`${raw}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  };
+  const start = fmt(startDate);
+  const end = fmt(endDate);
+  if (start && end && end !== start) return `${start} – ${end}`;
+  return start || end;
+}
+
 function TeamEmailPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -29,6 +43,7 @@ function TeamEmailPageContent() {
   const [accessState, setAccessState] = useState<AccessState>('checking');
   const [currentRole, setCurrentRole] = useState('');
   const [eventName, setEventName] = useState('');
+  const [eventDate, setEventDate] = useState('');
   const [teamEmails, setTeamEmails] = useState<string[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
 
@@ -115,6 +130,7 @@ function TeamEmailPageContent() {
         }
         const eventData = await eventRes.json();
         setEventName(String(eventData?.event?.event_name || 'Event'));
+        setEventDate(formatEventDate(eventData?.event?.event_date, eventData?.event?.end_date));
 
         if (!teamRes.ok) {
           const teamData = await teamRes.json().catch(() => ({}));
@@ -174,6 +190,9 @@ function TeamEmailPageContent() {
       if (eventId) {
         form.set('to', 'service@pdsportal.site');
         form.set('bcc', mergedBcc.join(', '));
+        form.set('eventId', eventId);
+        form.set('eventName', eventName || 'Event');
+        if (eventDate) form.set('eventDate', eventDate);
       } else {
         form.set('to', teamEmails.join(', '));
         if (bcc.trim()) form.set('bcc', bcc);
@@ -232,6 +251,7 @@ function TeamEmailPageContent() {
           </p>
           <p className="text-sm text-gray-500 mb-6">
             Event: <span className="font-medium text-gray-700">{eventName || eventId || 'Unknown'}</span>
+            {eventDate ? <span className="text-gray-500"> — {eventDate}</span> : null}
           </p>
 
           {accessState === 'checking' && (

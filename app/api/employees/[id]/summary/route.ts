@@ -560,7 +560,7 @@ export async function GET(
 
     const { data: sickLeaveRows, error: sickLeaveErr } = await supabaseAdmin
       .from("sick_leaves")
-      .select("id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at, updated_at")
+      .select("id, event_id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at, updated_at, event:events(event_name, event_date)")
       .eq("user_id", userId)
       .order("start_date", { ascending: false });
 
@@ -633,8 +633,12 @@ export async function GET(
         continue;
       }
 
+      const linkedEvent = Array.isArray(row.event) ? row.event[0] : row.event;
       sickLeaveEntries.push({
         id: row.id,
+        event_id: row.event_id ?? null,
+        event_name: linkedEvent?.event_name ?? null,
+        event_date: linkedEvent?.event_date ?? null,
         start_date: row.start_date,
         end_date: row.end_date,
         duration_hours: Number(row.duration_hours ?? 0),

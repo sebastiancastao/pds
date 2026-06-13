@@ -65,6 +65,9 @@ type SickLeaveStatus = "pending" | "approved" | "denied";
 
 type SickLeaveEntry = {
   id: string;
+  event_id: string | null;
+  event_name: string | null;
+  event_date: string | null;
   start_date: string | null;
   end_date: string | null;
   duration_hours: number;
@@ -201,6 +204,7 @@ type EventInvitation = {
   event_id: string;
   event_name: string | null;
   event_date: string | null;
+  end_date: string | null;
   start_time: string | null;
   venue: string | null;
   city: string | null;
@@ -375,6 +379,7 @@ export default function WorkerProfilePage() {
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<{ id: string; venue_name: string; city: string | null; state: string | null } | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
+  const [sickRequestEventId, setSickRequestEventId] = useState<string>("");
   const [sickRequestDate, setSickRequestDate] = useState<string>(
     () => new Date().toISOString().slice(0, 10)
   );
@@ -993,6 +998,37 @@ export default function WorkerProfilePage() {
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
   const sickLeavePaysheets = sickLeaveSummary?.paysheets ?? [];
 
+  // Events the employee can attach a sick leave request to (deduped invitations,
+  // most recent event first)
+  const sickRequestEventOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: {
+      event_id: string;
+      event_date: string | null;
+      end_date: string | null;
+      label: string;
+    }[] = [];
+    for (const inv of eventInvitations) {
+      if (!inv.event_id || seen.has(inv.event_id)) continue;
+      seen.add(inv.event_id);
+      const datePart = inv.event_date ? ` (${formatEventDate(inv.event_date)})` : "";
+      options.push({
+        event_id: inv.event_id,
+        event_date: inv.event_date,
+        end_date: inv.end_date,
+        label: `${inv.event_name || "Unnamed event"}${datePart}`,
+      });
+    }
+    return options.sort((a, b) => (b.event_date || "").localeCompare(a.event_date || ""));
+  }, [eventInvitations]);
+
+  const selectedSickRequestEvent = sickRequestEventOptions.find(
+    (option) => option.event_id === sickRequestEventId
+  );
+  const sickRequestMinDate = selectedSickRequestEvent?.event_date ?? undefined;
+  const sickRequestMaxDate =
+    selectedSickRequestEvent?.end_date ?? selectedSickRequestEvent?.event_date ?? undefined;
+
   // Build a map of YYYY-MM-DD → set of marker types for the calendar
   // and a map of YYYY-MM-DD → confirmed event details
   const { calDots, calEventDetails, calRegionEventDetails } = useMemo(() => {
@@ -1056,6 +1092,9 @@ export default function WorkerProfilePage() {
 
     return {
       id: String(record.id),
+      event_id: record.event_id ? String(record.event_id) : null,
+      event_name: record.event_name ? String(record.event_name) : null,
+      event_date: record.event_date ? String(record.event_date) : null,
       start_date: record.start_date ? String(record.start_date) : null,
       end_date: record.end_date ? String(record.end_date) : null,
       duration_hours: Number(duration.toFixed(2)),
@@ -1213,6 +1252,23 @@ export default function WorkerProfilePage() {
       return;
     }
 
+    if (!sickRequestEventId) {
+      setSickRequestError("Please select the event this sick leave applies to.");
+      return;
+    }
+
+    if (
+      (sickRequestMinDate && sickRequestDate < sickRequestMinDate) ||
+      (sickRequestMaxDate && sickRequestDate > sickRequestMaxDate)
+    ) {
+      setSickRequestError(
+        sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+          ? `The date must fall within the selected event (${formatEventDate(sickRequestMinDate)} — ${formatEventDate(sickRequestMaxDate)}).`
+          : `The date must match the selected event (${formatEventDate(sickRequestMinDate)}).`
+      );
+      return;
+    }
+
     setSubmittingSickRequest(true);
     try {
       const {
@@ -1230,6 +1286,7 @@ export default function WorkerProfilePage() {
         body: JSON.stringify({
           hours: parsedHours,
           date: sickRequestDate,
+          event_id: sickRequestEventId,
         }),
       });
 
@@ -1243,6 +1300,7 @@ export default function WorkerProfilePage() {
             "Request saved, but notification email failed. Please contact HR if needed."
           );
           setSickRequestHours("");
+          setSickRequestEventId("");
           return;
         }
         throw new Error(data?.error || "Failed to submit sick leave request");
@@ -1254,6 +1312,7 @@ export default function WorkerProfilePage() {
 
       setSickRequestSuccess("Sick leave request sent successfully.");
       setSickRequestHours("");
+      setSickRequestEventId("");
     } catch (error: any) {
       setSickRequestError(error?.message || "Failed to submit sick leave request");
     } finally {
@@ -2826,7 +2885,43 @@ export default function WorkerProfilePage() {
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
                   <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>
 
-                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                    <div>
+                      <label
+                        htmlFor="sick-request-event"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Event
+                      </label>
+                      <select
+                        id="sick-request-event"
+                        required
+                        value={sickRequestEventId}
+                        onChange={(event) => {
+                          const nextEventId = event.target.value;
+                          setSickRequestEventId(nextEventId);
+                          const option = sickRequestEventOptions.find(
+                            (opt) => opt.event_id === nextEventId
+                          );
+                          if (option?.event_date) {
+                            setSickRequestDate(option.event_date.slice(0, 10));
+                          }
+                        }}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          {sickRequestEventOptions.length === 0
+                            ? "No events assigned"
+                            : "Select an event"}
+                        </option>
+                        {sickRequestEventOptions.map((option) => (
+                          <option key={option.event_id} value={option.event_id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div>
                       <label
                         htmlFor="sick-request-hours"
@@ -2860,10 +2955,20 @@ export default function WorkerProfilePage() {
                         id="sick-request-date"
                         type="date"
                         required
+                        min={sickRequestMinDate}
+                        max={sickRequestMaxDate}
                         value={sickRequestDate}
                         onChange={(event) => setSickRequestDate(event.target.value)}
                         className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
                       />
+                      {sickRequestMinDate && (
+                        <p className="mt-1 text-[11px] text-blue-700">
+                          Event runs {formatEventDate(sickRequestMinDate)}
+                          {sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+                            ? ` — ${formatEventDate(sickRequestMaxDate)}`
+                            : ""}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-end">
@@ -2902,8 +3007,13 @@ export default function WorkerProfilePage() {
                       return (
                         <div key={entry.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
                           <div className="flex items-center gap-4 text-gray-700">
-                            <span className="font-medium text-gray-900">{formatDate(entry.start_date)} — {formatDate(entry.end_date)}</span>
+                            <span className="font-medium text-gray-900">{formatEventDate(entry.start_date)} — {formatEventDate(entry.end_date)}</span>
                             <span className="text-gray-500">{formatHours(entry.duration_hours)} hrs</span>
+                            {entry.event_name && (
+                              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                {entry.event_name}
+                              </span>
+                            )}
                             {entry.reason && <span className="text-gray-400 text-xs">{entry.reason}</span>}
                           </div>
                           <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${statusClasses}`}>
@@ -3598,6 +3708,15 @@ export default function WorkerProfilePage() {
                 {!paystubHistoryLoading && !paystubHistoryError && (
                   <span className="ml-auto text-xs text-gray-400">{paystubHistory.length} record{paystubHistory.length !== 1 ? "s" : ""}</span>
                 )}
+              </div>
+              {/* Under construction disclaimer */}
+              <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-start gap-2">
+                <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+                </svg>
+                <p className="text-sm text-amber-800">
+                  <span className="font-semibold">Under construction.</span> This section is a work in progress.
+                </p>
               </div>
               <div className="divide-y divide-gray-50">
                 {paystubHistoryLoading ? (

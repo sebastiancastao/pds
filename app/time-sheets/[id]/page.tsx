@@ -63,6 +63,7 @@ type LoadedPayload = {
     id: string;
     name: string | null;
     date: string;
+    endDate?: string | null;
     startTime: string | null;
     endTime: string | null;
     endsNextDay?: boolean;
@@ -72,6 +73,7 @@ type LoadedPayload = {
     type: string;
     timezone: string;
   };
+  selectedDate?: string;
   user: {
     id: string;
     name: string;
@@ -135,6 +137,21 @@ function formatEventDate(value?: string | null) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function buildDateList(start: string, end: string) {
+  const dates: string[] = [];
+  let current = start;
+  // Bounded loop: event date ranges are capped at a week
+  for (let i = 0; i < 31 && current && current <= end; i++) {
+    dates.push(current);
+    const date = new Date(`${current}T00:00:00`);
+    date.setDate(date.getDate() + 1);
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    current = `${date.getFullYear()}-${month}-${day}`;
+  }
+  return dates;
 }
 
 function formatClockValue(value?: string | null) {
@@ -350,6 +367,7 @@ export default function TimeSheetsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [payload, setPayload] = useState<LoadedPayload | null>(null);
+  const [selectedDate, setSelectedDate] = useState("");
   const [form, setForm] = useState<TimeForm>(EMPTY_FORM);
   const [mode, setMode] = useState<"form" | "attestation" | "reject" | "complete">("form");
   const [submittedTimesheet, setSubmittedTimesheet] = useState<TimesheetSnapshot | null>(null);
@@ -366,16 +384,32 @@ export default function TimeSheetsPage() {
   const isDrawingRejectionRef = useRef(false);
   const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const isMultiDay = Boolean(
+    payload?.event.date && payload?.event.endDate && payload.event.endDate > payload.event.date
+  );
+  const dayOptions = useMemo(
+    () =>
+      payload?.event.date && payload?.event.endDate && payload.event.endDate > payload.event.date
+        ? buildDateList(payload.event.date, payload.event.endDate)
+        : [],
+    [payload?.event.date, payload?.event.endDate]
+  );
+  // Attestation is signed on the last day of a multi-day event; earlier days are draft-saved only
+  const isLastDay = !isMultiDay || !payload?.event.endDate || selectedDate === payload.event.endDate;
+  // Multi-day events keep each day isolated, so times cannot wrap past midnight
   const allowOvernight = useMemo(
-    () => eventAllowsOvernight(payload?.event.startTime, payload?.event.endTime, payload?.event.endsNextDay),
-    [payload?.event.endTime, payload?.event.endsNextDay, payload?.event.startTime]
+    () =>
+      isMultiDay
+        ? false
+        : eventAllowsOvernight(payload?.event.startTime, payload?.event.endTime, payload?.event.endsNextDay),
+    [isMultiDay, payload?.event.endTime, payload?.event.endsNextDay, payload?.event.startTime]
   );
   const preview = useMemo(
     () => computePreview(form, false, allowOvernight, payload?.event.startTime, payload?.event.endTime),
     [allowOvernight, form, payload?.event.startTime, payload?.event.endTime]
   );
 
-  const loadPage = useCallback(async () => {
+  const loadPage = useCallback(async (dateOverride?: string) => {
     if (!eventId) {
       setError("Event ID is missing.");
       setLoading(false);
@@ -395,8 +429,11 @@ export default function TimeSheetsPage() {
         return;
       }
 
-      const query = requestedUserId ? `?userId=${encodeURIComponent(requestedUserId)}` : "";
-      const res = await fetch(`/api/events/${eventId}/self-timesheet${query}`, {
+      const queryParams = new URLSearchParams();
+      if (requestedUserId) queryParams.set("userId", requestedUserId);
+      if (dateOverride) queryParams.set("date", dateOverride);
+      const queryString = queryParams.toString();
+      const res = await fetch(`/api/events/${eventId}/self-timesheet${queryString ? `?${queryString}` : ""}`, {
         cache: "no-store",
         headers: {
           Authorization: `Bearer ${session.access_token}`,
@@ -410,6 +447,7 @@ export default function TimeSheetsPage() {
 
       const loaded = data as LoadedPayload;
       setPayload(loaded);
+      setSelectedDate(loaded.selectedDate || loaded.event.date || "");
       setForm({
         firstIn: loaded.timesheet.firstInDisplay || "",
         firstMealStart: loaded.timesheet.firstMealStartDisplay || "",
@@ -440,6 +478,23 @@ export default function TimeSheetsPage() {
     void loadPage();
   }, [loadPage]);
 
+  const handleDayChange = (value: string) => {
+    if (!value || value === selectedDate) return;
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    setError("");
+    void loadPage(value);
+  };
+
+  const handleManualSave = () => {
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    if (!form.firstIn || !form.lastOut) {
+      setError("Enter clock in and clock out times before saving.");
+      return;
+    }
+    setError("");
+    void draftSave(form);
+  };
+
   const draftSave = useCallback(async (currentForm: TimeForm) => {
     if (!eventId || !currentForm.firstIn || !currentForm.lastOut) return;
     setSaveStatus("saving");
@@ -461,6 +516,7 @@ export default function TimeSheetsPage() {
             secondMealStart: currentForm.secondMealStart,
             secondMealEnd: currentForm.secondMealEnd,
           },
+          date: selectedDate || undefined,
           targetUserId: requestedUserId || undefined,
         }),
       });
@@ -478,7 +534,7 @@ export default function TimeSheetsPage() {
       setSaveStatus("error");
       setTimeout(() => setSaveStatus("idle"), 3000);
     }
-  }, [eventId, requestedUserId]);
+  }, [eventId, requestedUserId, selectedDate]);
 
   const scheduleAutoSave = useCallback((currentForm: TimeForm) => {
     if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
@@ -628,6 +684,7 @@ export default function TimeSheetsPage() {
           signature,
           attestationAccepted,
           rejectionReason: resolvedRejectionReason,
+          date: selectedDate || undefined,
           targetUserId: requestedUserId || undefined,
         }),
       });
@@ -665,7 +722,12 @@ export default function TimeSheetsPage() {
       const y = parts.find((p) => p.type === "year")?.value ?? "";
       const m = parts.find((p) => p.type === "month")?.value ?? "";
       const d = parts.find((p) => p.type === "day")?.value ?? "";
-      return `${y}-${m}-${d}` === payload.event.date;
+      const today = `${y}-${m}-${d}`;
+      const lastDay =
+        payload.event.endDate && payload.event.endDate > payload.event.date
+          ? payload.event.endDate
+          : payload.event.date;
+      return today >= payload.event.date && today <= lastDay;
     } catch {
       return true;
     }
@@ -714,7 +776,13 @@ export default function TimeSheetsPage() {
                 {payload?.event.name || "Special Event Time Sheet"}
               </h1>
               <div className="space-y-1 text-sm text-slate-200">
-                <p>{payload ? formatEventDate(payload.event.date) : "Event date unavailable"}</p>
+                <p>
+                  {payload
+                    ? isMultiDay
+                      ? `${formatEventDate(payload.event.date)} - ${formatEventDate(payload.event.endDate)}`
+                      : formatEventDate(payload.event.date)
+                    : "Event date unavailable"}
+                </p>
                 <p>
                   {payload
                     ? `${formatClockValue(payload.event.startTime)} - ${formatClockValue(payload.event.endTime)}`
@@ -748,6 +816,32 @@ export default function TimeSheetsPage() {
           </div>
         )}
 
+        {isMultiDay && payload && (
+          <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-semibold text-slate-900">Day you are entering time for</div>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  This event runs from {formatEventDate(payload.event.date)} to {formatEventDate(payload.event.endDate)}.
+                  Each day has its own time sheet.
+                </p>
+              </div>
+              <select
+                value={selectedDate}
+                onChange={(event) => handleDayChange(event.target.value)}
+                disabled={loading || submitting}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {dayOptions.map((day) => (
+                  <option key={day} value={day}>
+                    {formatEventDate(day)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+
         {mode === "complete" && payload && timesheetForSummary && (
           <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
             <div className="rounded-3xl border border-slate-200 bg-white p-7 shadow-sm">
@@ -755,7 +849,9 @@ export default function TimeSheetsPage() {
                 <div>
                   <h2 className="text-2xl font-bold text-slate-900">Attestation Recorded</h2>
                   <p className="mt-1 text-sm text-slate-600">
-                    This time sheet has already been submitted for this event.
+                    {isMultiDay
+                      ? `This time sheet has already been submitted for ${formatEventDate(selectedDate)}. Select another day above to enter more time.`
+                      : "This time sheet has already been submitted for this event."}
                   </p>
                 </div>
                 <div
@@ -832,7 +928,7 @@ export default function TimeSheetsPage() {
                   </div>
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Date</dt>
-                    <dd className="text-right font-medium text-slate-900">{formatEventDate(payload.event.date)}</dd>
+                    <dd className="text-right font-medium text-slate-900">{formatEventDate(selectedDate || payload.event.date)}</dd>
                   </div>
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Venue</dt>
@@ -935,8 +1031,19 @@ export default function TimeSheetsPage() {
                       <div>
                         <h2 className="text-xl font-bold text-slate-900">Time Sheet Unavailable</h2>
                         <p className="mt-2 text-sm text-slate-600">
-                          This time sheet can only be filled out on the event date:{" "}
-                          <span className="font-semibold">{formatEventDate(payload.event.date)}</span>.
+                          {isMultiDay ? (
+                            <>
+                              This time sheet can only be filled out during the event:{" "}
+                              <span className="font-semibold">
+                                {formatEventDate(payload.event.date)} - {formatEventDate(payload.event.endDate)}
+                              </span>.
+                            </>
+                          ) : (
+                            <>
+                              This time sheet can only be filled out on the event date:{" "}
+                              <span className="font-semibold">{formatEventDate(payload.event.date)}</span>.
+                            </>
+                          )}
                         </p>
                       </div>
                     </div>
@@ -953,12 +1060,12 @@ export default function TimeSheetsPage() {
                         Enter the workday exactly as worked. Meal fields are mandatory, and each meal requires a start and end time.
                       </p>
                       <p className="mt-2 text-sm text-slate-500">
-                        This page only records time for {formatEventDate(payload.event.date)}
+                        This page only records time for {formatEventDate(selectedDate || payload.event.date)}
                         {allowOvernight ? " and the event's overnight continuation." : "."}
                       </p>
                     </div>
                     <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-slate-600">
-                      Step 1 of 2
+                      {isLastDay ? "Step 1 of 2" : "Daily Time Entry"}
                     </div>
                   </div>
 
@@ -1077,15 +1184,30 @@ export default function TimeSheetsPage() {
                       {preview.error
                         ? preview.error
                         : preview.isComplete
-                          ? `Estimated total with admin response time: ${formatDuration(preview.totalMsWithAdminResponse)}`
-                          : "Enter your clock in and clock out time to continue."}
+                          ? `Estimated total with admin response time: ${formatDuration(preview.totalMsWithAdminResponse)}${
+                              isLastDay ? "" : " — save this day; the attestation is signed on the last day of the event."
+                            }`
+                          : isLastDay
+                            ? "Enter your clock in and clock out time to continue."
+                            : "Enter your clock in and clock out time, then save this day."}
                     </div>
-                    <button
-                      onClick={goToAttestation}
-                      className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-                    >
-                      Continue to Attestation
-                    </button>
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        onClick={handleManualSave}
+                        disabled={saveStatus === "saving" || submitting}
+                        className="inline-flex items-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {saveStatus === "saving" ? "Saving..." : isMultiDay ? "Save Day" : "Save"}
+                      </button>
+                      {isLastDay && (
+                        <button
+                          onClick={goToAttestation}
+                          className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
+                        >
+                          Continue to Attestation
+                        </button>
+                      )}
+                    </div>
                   </div>
                   </>
                   )}
@@ -1390,7 +1512,7 @@ export default function TimeSheetsPage() {
                 <dl className="mt-4 space-y-3 text-sm text-slate-700">
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Date</dt>
-                    <dd className="text-right font-medium text-slate-900">{formatEventDate(payload.event.date)}</dd>
+                    <dd className="text-right font-medium text-slate-900">{formatEventDate(selectedDate || payload.event.date)}</dd>
                   </div>
                   <div className="flex items-start justify-between gap-4">
                     <dt className="text-slate-500">Scheduled</dt>

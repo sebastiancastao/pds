@@ -40,6 +40,7 @@ type EventRow = {
   id: string;
   event_name: string | null;
   event_date: string | null;
+  end_date: string | null;
   start_time: string | null;
   end_time: string | null;
   ends_next_day: boolean | null;
@@ -115,6 +116,52 @@ function eventAllowsOvernight(event: Pick<EventRow, "start_time" | "end_time" | 
   const startSeconds = timeToSeconds(event.start_time);
   const endSeconds = timeToSeconds(event.end_time);
   return startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds;
+}
+
+function getTodayInTimezone(timeZone: string): string {
+  try {
+    // en-CA locale formats as YYYY-MM-DD
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+// Multi-day events (end_date after event_date) record one timesheet per day.
+// Resolves which day entries belong to, validating any requested date against the event range.
+function resolveEntryDate(
+  event: Pick<EventRow, "end_date">,
+  eventDate: string,
+  eventTimezone: string,
+  requestedDate?: string | null
+): { entryDate: string; endDate: string; isMultiDay: boolean; error?: string } {
+  const endDate = normalizeEventDate(event.end_date) || eventDate;
+  const isMultiDay = endDate > eventDate;
+
+  const requested = String(requestedDate || "").trim();
+  if (requested) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(requested)) {
+      return { entryDate: eventDate, endDate, isMultiDay, error: "Invalid date. Use the YYYY-MM-DD format." };
+    }
+    if (requested < eventDate || requested > endDate) {
+      return { entryDate: eventDate, endDate, isMultiDay, error: "The selected day is outside the event date range." };
+    }
+    return { entryDate: requested, endDate, isMultiDay };
+  }
+
+  if (isMultiDay) {
+    const today = getTodayInTimezone(eventTimezone);
+    if (today >= eventDate && today <= endDate) {
+      return { entryDate: today, endDate, isMultiDay };
+    }
+  }
+
+  return { entryDate: eventDate, endDate, isMultiDay };
 }
 
 function getNextDayDate(dateStr: string): string {
@@ -340,7 +387,7 @@ async function loadRequester(userId: string) {
 async function loadEvent(eventId: string): Promise<EventRow> {
   const { data, error } = await supabaseAdmin
     .from("events")
-    .select("id, event_name, event_date, start_time, end_time, ends_next_day, venue, city, state, event_type")
+    .select("id, event_name, event_date, end_date, start_time, end_time, ends_next_day, venue, city, state, event_type")
     .eq("id", eventId)
     .maybeSingle();
 
@@ -382,8 +429,8 @@ async function hasEventTimesheetAccess(userId: string, eventId: string) {
   return Boolean(teamResult.data?.id || entryResult.data?.id);
 }
 
-async function loadCurrentEntries(userId: string, eventId: string, eventDate: string, eventTimezone: string) {
-  const range = getLocalDateRange(eventDate, eventTimezone, 2);
+async function loadCurrentEntries(userId: string, eventId: string, eventDate: string, eventTimezone: string, daySpan = 2) {
+  const range = getLocalDateRange(eventDate, eventTimezone, daySpan);
   if (!range) {
     throw new Error("Invalid event date or timezone.");
   }
@@ -546,7 +593,18 @@ export async function GET(
     const eventTimezone = getTimezoneForState(event.state);
     const allowOvernight = eventAllowsOvernight(event);
 
-    const { entries } = await loadCurrentEntries(targetUserId, eventId, eventDate, eventTimezone);
+    const requestedDate = new URL(req.url).searchParams.get("date")?.trim() || "";
+    const { entryDate, endDate, isMultiDay, error: dateError } = resolveEntryDate(
+      event,
+      eventDate,
+      eventTimezone,
+      requestedDate
+    );
+    if (dateError) {
+      return jsonError(dateError, 400);
+    }
+
+    const { entries } = await loadCurrentEntries(targetUserId, eventId, entryDate, eventTimezone, isMultiDay ? 1 : 2);
     const attestationState = await loadAttestationState(targetUserId, entries);
     const editRequest = await loadLatestEditRequest(targetUserId, eventId);
     const timesheet = buildSnapshot(
@@ -562,6 +620,7 @@ export async function GET(
         id: event.id,
         name: event.event_name,
         date: eventDate,
+        endDate,
         startTime: event.start_time,
         endTime: event.end_time,
         endsNextDay: allowOvernight,
@@ -571,6 +630,7 @@ export async function GET(
         type: event.event_type || "normal",
         timezone: eventTimezone,
       },
+      selectedDate: entryDate,
       user: {
         id: targetUserId,
         name: targetRequester.name,
@@ -648,17 +708,32 @@ export async function PUT(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(
+    const { entryDate, isMultiDay, error: dateError } = resolveEntryDate(
+      event,
       eventDate,
       eventTimezone,
+      body?.date
+    );
+    if (dateError) {
+      return jsonError(dateError, 400);
+    }
+
+    // Multi-day events keep each day isolated, so times cannot wrap past midnight
+    const { timeline, error: timelineError } = buildTimeline(
+      entryDate,
+      eventTimezone,
       spans,
-      eventAllowsOvernight(event)
+      isMultiDay ? false : eventAllowsOvernight(event)
     );
     if (timelineError) {
       return jsonError(timelineError, 400);
     }
 
-    const windowError = validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone);
+    // The event start time only constrains the first day of a multi-day event
+    const windowError =
+      entryDate === eventDate
+        ? validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone)
+        : null;
     if (windowError) {
       return jsonError(windowError, 400);
     }
@@ -666,8 +741,9 @@ export async function PUT(
     const { entries: existingEntries, range } = await loadCurrentEntries(
       targetUserId,
       eventId,
-      eventDate,
-      eventTimezone
+      entryDate,
+      eventTimezone,
+      isMultiDay ? 1 : 2
     );
 
     const existingByAction: Record<string, TimeEntryRow[]> = {};
@@ -968,17 +1044,30 @@ export async function PATCH(
     }
 
     const eventTimezone = getTimezoneForState(event.state);
-    const { timeline, error: timelineError } = buildTimeline(
+    const { entryDate, isMultiDay, error: dateError } = resolveEntryDate(
+      event,
       eventDate,
       eventTimezone,
+      body?.date
+    );
+    if (dateError) {
+      return NextResponse.json({ ok: false, skipped: true, reason: dateError });
+    }
+
+    const { timeline, error: timelineError } = buildTimeline(
+      entryDate,
+      eventTimezone,
       spans,
-      eventAllowsOvernight(event)
+      isMultiDay ? false : eventAllowsOvernight(event)
     );
     if (timelineError) {
       return NextResponse.json({ ok: false, skipped: true, reason: timelineError });
     }
 
-    const draftWindowError = validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone);
+    const draftWindowError =
+      entryDate === eventDate
+        ? validateTimelineWithinEventWindow(timeline, event, eventDate, eventTimezone)
+        : null;
     if (draftWindowError) {
       return NextResponse.json({ ok: false, skipped: true, reason: draftWindowError });
     }
@@ -986,8 +1075,9 @@ export async function PATCH(
     const { entries: existingEntries, range } = await loadCurrentEntries(
       targetUserId,
       eventId,
-      eventDate,
-      eventTimezone
+      entryDate,
+      eventTimezone,
+      isMultiDay ? 1 : 2
     );
 
     const baseNote = targetUserId !== user.id ? `Draft save by ${requester.name}` : "Draft save";

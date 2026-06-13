@@ -369,6 +369,21 @@ export default function EventDashboardPage() {
   const [teamLoaded, setTeamLoaded] = useState(false);
   const [locationsLoaded, setLocationsLoaded] = useState(false);
   const [timesheetLoaded, setTimesheetLoaded] = useState(false);
+  // Multi-day events return totals already net of meals, summed across every day
+  const [timesheetMultiDay, setTimesheetMultiDay] = useState(false);
+  const [timesheetDays, setTimesheetDays] = useState<
+    Record<
+      string,
+      Array<{
+        date: string;
+        firstInDisplay: string;
+        lastOutDisplay: string;
+        meals: Array<{ startDisplay: string; endDisplay: string }>;
+        totalMs: number;
+      }>
+    >
+  >({});
+  const [expandedTimesheetUsers, setExpandedTimesheetUsers] = useState<Record<string, boolean>>({});
   const [adjustmentsLoaded, setAdjustmentsLoaded] = useState(false);
   const [tipsOverridesLoaded, setTipsOverridesLoaded] = useState(false);
   const [commissionsOverridesLoaded, setCommissionsOverridesLoaded] = useState(false);
@@ -2668,9 +2683,22 @@ export default function EventDashboardPage() {
   const GATE_PHONE_OFFSET_MS = GATE_PHONE_OFFSET_MINUTES * 60 * 1000;
   const applyGateOffset = true;
 
+  const formatTimesheetDayLabel = (dateStr: string): string => {
+    const date = new Date(`${dateStr}T00:00:00`);
+    if (Number.isNaN(date.getTime())) return dateStr;
+    return date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+  };
+
   const getDisplayedWorkedMs = (uid: string): number => {
     const span = timesheetSpans[uid];
     const apiTotalMs = Math.max(Number(timesheetTotals[uid] || 0), 0);
+
+    // Multi-day events: the API total already sums every day net of meals.
+    // Span math (firstIn→lastOut) would wrongly include overnight gaps.
+    if (timesheetMultiDay) {
+      if (apiTotalMs <= 0) return 0;
+      return applyGateOffset ? apiTotalMs + GATE_PHONE_OFFSET_MS : apiTotalMs;
+    }
 
     const firstInMs = span?.firstIn ? new Date(span.firstIn).getTime() : NaN;
     const lastOutMs = span?.lastOut ? new Date(span.lastOut).getTime() : NaN;
@@ -3062,6 +3090,8 @@ export default function EventDashboardPage() {
         const data = await res.json();
         setTimesheetTotals(data.totals || {});
         setTimesheetSpans(data.spans || {});
+        setTimesheetMultiDay(Boolean(data.multiDay));
+        setTimesheetDays(data.days || {});
         setTimesheetLoaded(true);
       } else {
         const errorText = await res.text();
@@ -6618,12 +6648,16 @@ export default function EventDashboardPage() {
               <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Admin response time / entry processing time </th>
             )}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">In</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 Start</th>
-            <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 End</th>
-            {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 Start</th>}
-            {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 End</th>}
+            {!timesheetMultiDay && (
+              <>
+                <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 Start</th>
+                <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M1 End</th>
+                <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 Start</th>
+                <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">M2 End</th>
+                {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 Start</th>}
+                {showThirdMeal && <th className="px-1 py-2 text-left font-semibold text-amber-600 uppercase tracking-wide" title="Third meal — unusual">M3 End</th>}
+              </>
+            )}
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Out</th>
             <th className="px-1 py-2 text-left font-semibold text-gray-600 uppercase tracking-wide">Hrs</th>
             <th className="px-2 py-2 text-right font-semibold text-gray-600 uppercase tracking-wide">Actions</th>
@@ -6632,7 +6666,7 @@ export default function EventDashboardPage() {
         <tbody className="divide-y">
           {sortedTeamMembers.length === 0 ? (
             <tr>
-              <td colSpan={9 + (showThirdMeal ? 2 : 0) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
+              <td colSpan={(timesheetMultiDay ? 5 : 9 + (showThirdMeal ? 2 : 0)) + (applyGateOffset ? 1 : 0)} className="px-4 py-8 text-center text-gray-500 text-sm">
                 No time entries yet
               </td>
             </tr>
@@ -6698,15 +6732,36 @@ export default function EventDashboardPage() {
                 ? subtractMinutesFromHHMM(isEditing ? draft.firstIn : firstClockIn, GATE_PHONE_OFFSET_MINUTES)
                 : (isEditing ? draft.firstIn : firstClockIn);
               const hours = formatHoursFromMs(getDisplayedWorkedMs(uid));
+              const dayRows = timesheetDays[uid] || [];
+              const isExpanded = Boolean(expandedTimesheetUsers[uid]);
 
               const inputCls = (editable: boolean) =>
                 `border rounded px-1 py-0.5 text-xs w-[68px] ${editable ? "bg-white" : "bg-gray-100 cursor-not-allowed"}`;
 
               return (
-                <tr key={m.id} className="hover:bg-gray-50">
+                <React.Fragment key={m.id}>
+                <tr className="hover:bg-gray-50">
                   {/* Staff */}
                   <td className="px-3 py-1.5 whitespace-nowrap">
                     <div className="flex items-center gap-1.5">
+                      {timesheetMultiDay && (
+                        <button
+                          onClick={() =>
+                            setExpandedTimesheetUsers((prev) => ({ ...prev, [uid]: !prev[uid] }))
+                          }
+                          className="flex-shrink-0 rounded p-0.5 text-gray-500 transition-colors hover:bg-gray-200 hover:text-gray-800"
+                          title={isExpanded ? "Hide daily breakdown" : "Show daily breakdown"}
+                        >
+                          <svg
+                            className={`h-4 w-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                      )}
                       <span
                         className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
                           span.lastOut ? "bg-red-500"
@@ -6783,50 +6838,55 @@ export default function EventDashboardPage() {
                       readOnly={!isEditing} className={inputCls(isEditing)} />
                   </td>
 
-                  {/* M1 Start */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={isEditing ? draft.firstMealStart : firstMealStart}
-                      onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
-                  </td>
+                  {/* Meal columns hidden for multi-day events; per-day meals show in the breakdown */}
+                  {!timesheetMultiDay && (
+                    <>
+                      {/* M1 Start */}
+                      <td className="px-1 py-1.5">
+                        <input type="time" value={isEditing ? draft.firstMealStart : firstMealStart}
+                          onChange={(e) => updateTimesheetDraft(uid, "firstMealStart", e.target.value)}
+                          placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      </td>
 
-                  {/* M1 End */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={isEditing ? draft.lastMealEnd : lastMealEnd}
-                      onChange={(e) => updateTimesheetDraft(uid, "lastMealEnd", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
-                  </td>
+                      {/* M1 End */}
+                      <td className="px-1 py-1.5">
+                        <input type="time" value={isEditing ? draft.lastMealEnd : lastMealEnd}
+                          onChange={(e) => updateTimesheetDraft(uid, "lastMealEnd", e.target.value)}
+                          placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      </td>
 
-                  {/* M2 Start */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={isEditing ? draft.secondMealStart : secondMealStart}
-                      onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
-                  </td>
+                      {/* M2 Start */}
+                      <td className="px-1 py-1.5">
+                        <input type="time" value={isEditing ? draft.secondMealStart : secondMealStart}
+                          onChange={(e) => updateTimesheetDraft(uid, "secondMealStart", e.target.value)}
+                          placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      </td>
 
-                  {/* M2 End */}
-                  <td className="px-1 py-1.5">
-                    <input type="time" value={isEditing ? draft.secondMealEnd : secondMealEnd}
-                      onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
-                      placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
-                  </td>
+                      {/* M2 End */}
+                      <td className="px-1 py-1.5">
+                        <input type="time" value={isEditing ? draft.secondMealEnd : secondMealEnd}
+                          onChange={(e) => updateTimesheetDraft(uid, "secondMealEnd", e.target.value)}
+                          placeholder="--:--" readOnly={!isEditing} className={inputCls(isEditing)} />
+                      </td>
 
-                  {/* M3 Start — unusual third meal, only shown when relevant */}
-                  {showThirdMeal && (
-                    <td className="px-1 py-1.5">
-                      <input type="time" value={isEditing ? draft.thirdMealStart : thirdMealStart}
-                        onChange={(e) => updateTimesheetDraft(uid, "thirdMealStart", e.target.value)}
-                        placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
-                    </td>
-                  )}
+                      {/* M3 Start — unusual third meal, only shown when relevant */}
+                      {showThirdMeal && (
+                        <td className="px-1 py-1.5">
+                          <input type="time" value={isEditing ? draft.thirdMealStart : thirdMealStart}
+                            onChange={(e) => updateTimesheetDraft(uid, "thirdMealStart", e.target.value)}
+                            placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
+                        </td>
+                      )}
 
-                  {/* M3 End — unusual third meal */}
-                  {showThirdMeal && (
-                    <td className="px-1 py-1.5">
-                      <input type="time" value={isEditing ? draft.thirdMealEnd : thirdMealEnd}
-                        onChange={(e) => updateTimesheetDraft(uid, "thirdMealEnd", e.target.value)}
-                        placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
-                    </td>
+                      {/* M3 End — unusual third meal */}
+                      {showThirdMeal && (
+                        <td className="px-1 py-1.5">
+                          <input type="time" value={isEditing ? draft.thirdMealEnd : thirdMealEnd}
+                            onChange={(e) => updateTimesheetDraft(uid, "thirdMealEnd", e.target.value)}
+                            placeholder="--:--" readOnly={!isEditing} className={`${inputCls(isEditing)} border-amber-300`} />
+                        </td>
+                      )}
+                    </>
                   )}
 
                   {/* Clock Out */}
@@ -6861,12 +6921,14 @@ export default function EventDashboardPage() {
                         </>
                       ) : (
                         <>
-                          <button
-                            onClick={() => startTimesheetEdit(uid, span)}
-                            className="text-blue-600 hover:text-blue-700 font-medium text-xs"
-                          >
-                            Edit
-                          </button>
+                          {!timesheetMultiDay && (
+                            <button
+                              onClick={() => startTimesheetEdit(uid, span)}
+                              className="text-blue-600 hover:text-blue-700 font-medium text-xs"
+                            >
+                              Edit
+                            </button>
+                          )}
                           {uid === currentUserId && (
                             <Link
                               href={`/time-sheets/${eventId}`}
@@ -6926,6 +6988,61 @@ export default function EventDashboardPage() {
                     )}
                   </td>
                 </tr>
+
+                {/* Per-day breakdown for multi-day events */}
+                {timesheetMultiDay && isExpanded && (
+                  <tr className="bg-slate-50">
+                    <td colSpan={5 + (applyGateOffset ? 1 : 0)} className="px-4 py-3">
+                      {dayRows.length === 0 ? (
+                        <div className="text-xs text-gray-500">No time entries recorded yet for this event.</div>
+                      ) : (
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-gray-600 uppercase tracking-wide">
+                              <th className="px-2 py-1.5 text-left font-semibold">Day</th>
+                              {applyGateOffset && (
+                                <th className="px-2 py-1.5 text-left font-semibold">Admin response time</th>
+                              )}
+                              <th className="px-2 py-1.5 text-left font-semibold">In</th>
+                              <th className="px-2 py-1.5 text-left font-semibold">Meals</th>
+                              <th className="px-2 py-1.5 text-left font-semibold">Out</th>
+                              <th className="px-2 py-1.5 text-left font-semibold">Hrs</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-200">
+                            {dayRows.map((day) => (
+                              <tr key={day.date}>
+                                <td className="px-2 py-1.5 font-medium whitespace-nowrap">
+                                  {formatTimesheetDayLabel(day.date)}
+                                </td>
+                                {applyGateOffset && (
+                                  <td className="px-2 py-1.5 whitespace-nowrap">
+                                    {day.firstInDisplay
+                                      ? subtractMinutesFromHHMM(day.firstInDisplay, GATE_PHONE_OFFSET_MINUTES)
+                                      : "--:--"}
+                                  </td>
+                                )}
+                                <td className="px-2 py-1.5 whitespace-nowrap">{day.firstInDisplay || "--:--"}</td>
+                                <td className="px-2 py-1.5">
+                                  {day.meals.length === 0
+                                    ? "—"
+                                    : day.meals
+                                        .map((meal) => `${meal.startDisplay || "--:--"} - ${meal.endDisplay || "--:--"}`)
+                                        .join(" · ")}
+                                </td>
+                                <td className="px-2 py-1.5 whitespace-nowrap">{day.lastOutDisplay || "--:--"}</td>
+                                <td className="px-2 py-1.5 font-medium whitespace-nowrap">
+                                  {formatHoursFromMs(day.totalMs)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
               );
             })
           )}

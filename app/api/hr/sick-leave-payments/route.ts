@@ -100,6 +100,9 @@ function parseIsoDate(value: unknown): string | null {
   return raw;
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function round2(n: number): number {
   return Number(n.toFixed(2));
 }
@@ -124,7 +127,7 @@ export async function GET(req: NextRequest) {
     let query = supabaseAdmin
       .from("sick_leave_paysheets")
       .select(
-        "id, user_id, hours, rate, amount, payment_date, status, notes, created_by, created_at, updated_at"
+        "id, user_id, event_id, hours, rate, amount, payment_date, status, notes, created_by, created_at, updated_at, event:events(event_name, event_date)"
       )
       .order("payment_date", { ascending: false })
       .order("created_at", { ascending: false });
@@ -167,20 +170,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const paysheets = records.map((row: any) => ({
-      id: row.id,
-      user_id: row.user_id,
-      hours: Number(row.hours || 0),
-      rate: Number(row.rate || 0),
-      amount: Number(row.amount || 0),
-      payment_date: row.payment_date,
-      status: row.status,
-      notes: row.notes ?? null,
-      created_at: row.created_at ?? null,
-      updated_at: row.updated_at ?? null,
-      employee_name: nameById.get(row.user_id)?.name || "Unknown",
-      employee_email: nameById.get(row.user_id)?.email || "",
-    }));
+    const paysheets = records.map((row: any) => {
+      const linkedEvent = Array.isArray(row.event) ? row.event[0] : row.event;
+      return {
+        id: row.id,
+        user_id: row.user_id,
+        event_id: row.event_id ?? null,
+        event_name: linkedEvent?.event_name ?? null,
+        event_date: linkedEvent?.event_date ?? null,
+        hours: Number(row.hours || 0),
+        rate: Number(row.rate || 0),
+        amount: Number(row.amount || 0),
+        payment_date: row.payment_date,
+        status: row.status,
+        notes: row.notes ?? null,
+        created_at: row.created_at ?? null,
+        updated_at: row.updated_at ?? null,
+        employee_name: nameById.get(row.user_id)?.name || "Unknown",
+        employee_email: nameById.get(row.user_id)?.email || "",
+      };
+    });
 
     const stats = paysheets.reduce(
       (acc, row) => {
@@ -227,9 +236,14 @@ export async function POST(req: NextRequest) {
         ? round2(Number(body.amount))
         : round2(hours * rate);
     const notes = String(body?.notes || "").trim() || null;
+    const rawEventId = String(body?.event_id || "").trim();
+    const eventId = rawEventId ? rawEventId : null;
 
     if (!targetUserId) {
       return NextResponse.json({ error: "user_id is required" }, { status: 400 });
+    }
+    if (eventId && !UUID_PATTERN.test(eventId)) {
+      return NextResponse.json({ error: "event_id must be a valid UUID" }, { status: 400 });
     }
     if (!paymentDate) {
       return NextResponse.json(
@@ -254,6 +268,7 @@ export async function POST(req: NextRequest) {
       .from("sick_leave_paysheets")
       .insert({
         user_id: targetUserId,
+        event_id: eventId,
         hours,
         rate,
         amount,
@@ -263,7 +278,7 @@ export async function POST(req: NextRequest) {
         created_by: userId,
       })
       .select(
-        "id, user_id, hours, rate, amount, payment_date, status, notes, created_at, updated_at"
+        "id, user_id, event_id, hours, rate, amount, payment_date, status, notes, created_at, updated_at"
       )
       .single();
 
@@ -325,10 +340,21 @@ export async function PATCH(req: NextRequest) {
       }
       updates.payment_date = paymentDate;
     }
+    // Use "event_id" in body so an explicit null clears the link.
+    if ("event_id" in body) {
+      const rawEventId = String(body.event_id || "").trim();
+      if (rawEventId && !UUID_PATTERN.test(rawEventId)) {
+        return NextResponse.json(
+          { error: "event_id must be a valid UUID" },
+          { status: 400 }
+        );
+      }
+      updates.event_id = rawEventId ? rawEventId : null;
+    }
 
     if (Object.keys(updates).length === 0) {
       return NextResponse.json(
-        { error: "Nothing to update. Provide status and/or payment_date." },
+        { error: "Nothing to update. Provide status, payment_date, and/or event_id." },
         { status: 400 }
       );
     }
@@ -338,7 +364,7 @@ export async function PATCH(req: NextRequest) {
       .update(updates)
       .eq("id", id)
       .select(
-        "id, user_id, hours, rate, amount, payment_date, status, notes, updated_at"
+        "id, user_id, event_id, hours, rate, amount, payment_date, status, notes, updated_at"
       )
       .single();
 

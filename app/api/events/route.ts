@@ -46,13 +46,17 @@ export async function POST(req: NextRequest) {
     const city = body.city?.trim() || null;
     const state = body.state?.trim()?.toUpperCase() || null;
     const event_date = body.event_date || null;
+    const end_date = body.end_date || null;
     const start_time = body.start_time || null;
     const end_time = body.end_time || null;
     const artist_share_percent = body.artist_share_percent === undefined || body.artist_share_percent === "" ? 0 : Number(body.artist_share_percent);
     const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
     const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
     const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
-    const ends_next_day = body.ends_next_day === undefined ? false : Boolean(body.ends_next_day);
+    // Derive ends_next_day from the dates when an end date is provided (YYYY-MM-DD strings compare lexicographically)
+    const ends_next_day = end_date && event_date
+      ? end_date > event_date
+      : (body.ends_next_day === undefined ? false : Boolean(body.ends_next_day));
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
     const event_type = body.event_type === "special" ? "special" : "normal";
 
@@ -65,6 +69,7 @@ export async function POST(req: NextRequest) {
       city,
       state,
       event_date,
+      end_date,
       start_time,
       end_time,
       ends_next_day,
@@ -81,6 +86,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Missing one or more required fields: event_name, venue, event_date, start_time, end_time" }, { status: 400 });
     }
 
+    if (end_date && event_date && end_date < event_date) {
+      console.error('Event creation: end_date is before event_date');
+      return NextResponse.json({ error: "End date cannot be before the start date" }, { status: 400 });
+    }
+
+    const MS_PER_DAY = 24 * 60 * 60 * 1000;
+    if (end_date && event_date && (Date.parse(end_date) - Date.parse(event_date)) > 7 * MS_PER_DAY) {
+      console.error('Event creation: end_date is more than a week after event_date');
+      return NextResponse.json({ error: "End date cannot be more than a week after the start date" }, { status: 400 });
+    }
+
     const event = {
       created_by,
       event_name,
@@ -89,6 +105,7 @@ export async function POST(req: NextRequest) {
       city,
       state,
       event_date,
+      end_date,
       start_time,
       end_time,
       ends_next_day,

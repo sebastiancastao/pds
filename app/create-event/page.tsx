@@ -13,6 +13,17 @@ type Venue = {
   longitude: number;
 };
 
+// Non events can span a date range of at most one week
+const MAX_RANGE_DAYS = 7;
+
+const addDays = (dateStr: string, days: number) => {
+  const date = new Date(`${dateStr}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+};
+
 function CreateEventPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -25,6 +36,7 @@ function CreateEventPageInner() {
     city: "",
     state: "",
     event_date: "",
+    end_date: "",
     start_time: "",
     end_time: "",
     ends_next_day: false,
@@ -97,10 +109,23 @@ function CreateEventPageInner() {
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value, type, checked } = e.target;
-    setForm(prev => ({
-      ...prev,
-      [name]: type === "checkbox" ? checked : value
-    }));
+    setForm(prev => {
+      if (name === "event_date") {
+        // Keep end date in sync: default it to the start date if empty or earlier,
+        // and clamp it to at most a week after the start date
+        const next = { ...prev, event_date: value };
+        if (!prev.end_date || prev.end_date < value) {
+          next.end_date = value;
+        } else if (value && prev.end_date > addDays(value, MAX_RANGE_DAYS)) {
+          next.end_date = addDays(value, MAX_RANGE_DAYS);
+        }
+        return next;
+      }
+      return {
+        ...prev,
+        [name]: type === "checkbox" ? checked : value
+      };
+    });
   };
 
   const handleVenueChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -132,10 +157,28 @@ function CreateEventPageInner() {
       setSubmitting(false);
       return;
     }
+    // Non events span a date range; regular events use a single date + ends-next-day flag
+    if (isNonEvent && !form.end_date) {
+      setMessage("Please fill all required fields: End Date");
+      setSubmitting(false);
+      return;
+    }
+    if (isNonEvent && form.end_date < form.event_date) {
+      setMessage("End Date cannot be before Start Date");
+      setSubmitting(false);
+      return;
+    }
+    if (isNonEvent && form.end_date > addDays(form.event_date, MAX_RANGE_DAYS)) {
+      setMessage("End Date cannot be more than a week after Start Date");
+      setSubmitting(false);
+      return;
+    }
     try {
       // Convert percentage values (50) to decimals (0.5) for backend
       const payload = {
         ...form,
+        end_date: isNonEvent ? form.end_date : undefined,
+        ends_next_day: isNonEvent ? form.end_date > form.event_date : form.ends_next_day,
         artist_share_percent: isNonEvent
           ? undefined
           : (form.artist_share_percent !== "" ? Number(form.artist_share_percent) / 100 : undefined),
@@ -170,6 +213,7 @@ function CreateEventPageInner() {
           city: "",
           state: "",
           event_date: "",
+          end_date: "",
           start_time: "",
           end_time: "",
           ends_next_day: false,
@@ -303,9 +347,9 @@ function CreateEventPageInner() {
             {/* Date & Time Section */}
             <div className="pt-4 border-t border-slate-100">
               <h3 className="text-lg font-semibold text-slate-800 mb-4">Schedule</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className={`grid grid-cols-1 ${isNonEvent ? "md:grid-cols-2" : "md:grid-cols-3"} gap-4`}>
                 <div>
-                  <label className="text-sm font-semibold text-slate-700 block mb-2">Event Date <span className="text-red-500">*</span></label>
+                  <label className="text-sm font-semibold text-slate-700 block mb-2">{isNonEvent ? "Start Date" : "Event Date"} <span className="text-red-500">*</span></label>
                   <input
                     name="event_date"
                     value={form.event_date}
@@ -315,6 +359,21 @@ function CreateEventPageInner() {
                     className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
                   />
                 </div>
+                {isNonEvent && (
+                  <div>
+                    <label className="text-sm font-semibold text-slate-700 block mb-2">End Date <span className="text-red-500">*</span></label>
+                    <input
+                      name="end_date"
+                      value={form.end_date}
+                      onChange={handleChange}
+                      required
+                      type="date"
+                      min={form.event_date || undefined}
+                      max={form.event_date ? addDays(form.event_date, MAX_RANGE_DAYS) : undefined}
+                      className="w-full px-4 py-3 border-2 border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 outline-none hover:border-slate-300"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="text-sm font-semibold text-slate-700 block mb-2">Start Time <span className="text-red-500">*</span></label>
                   <input
@@ -339,19 +398,21 @@ function CreateEventPageInner() {
                 </div>
               </div>
 
-              <div className="mt-4 flex items-center gap-3 bg-amber-50 p-4 rounded-xl border border-amber-100">
-                <input
-                  id="ends_next_day"
-                  type="checkbox"
-                  name="ends_next_day"
-                  checked={form.ends_next_day}
-                  onChange={handleChange}
-                  className="h-5 w-5 text-amber-600 focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 border-slate-300 rounded transition-all cursor-pointer"
-                />
-                <label htmlFor="ends_next_day" className="text-sm font-semibold text-slate-700 cursor-pointer select-none">
-                  Event ends on the next day
-                </label>
-              </div>
+              {!isNonEvent && (
+                <div className="mt-4 flex items-center gap-3 bg-amber-50 p-4 rounded-xl border border-amber-100">
+                  <input
+                    id="ends_next_day"
+                    type="checkbox"
+                    name="ends_next_day"
+                    checked={form.ends_next_day}
+                    onChange={handleChange}
+                    className="h-5 w-5 text-amber-600 focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 border-slate-300 rounded transition-all cursor-pointer"
+                  />
+                  <label htmlFor="ends_next_day" className="text-sm font-semibold text-slate-700 cursor-pointer select-none">
+                    Event ends on the next day
+                  </label>
+                </div>
+              )}
             </div>
 
             {!isNonEvent && (
