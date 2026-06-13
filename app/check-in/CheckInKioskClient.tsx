@@ -41,8 +41,6 @@ const VALIDATION_REQUEST_TIMEOUT_MS = 10_000;
 const ACTION_REQUEST_TIMEOUT_MS = 12_000;
 const SYNC_REQUEST_TIMEOUT_MS = 15_000;
 const HEARTBEAT_REQUEST_TIMEOUT_MS = 5_000;
-const AUTO_LOGOUT_IDLE_MS = 7 * 60 * 60 * 1000;
-const AUTO_LOGOUT_CHECK_INTERVAL_MS = 60_000;
 
 type QueuedAction = {
   id: string;
@@ -213,10 +211,6 @@ export default function CheckInKioskPage() {
   // Inactivity reset (back to code entry after 30s of no interaction)
   const inactivityRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const INACTIVITY_TIMEOUT = 10_000;
-
-  // Idle auto-logout (sign out after 7 hours with no interaction)
-  const lastActivityRef = useRef<number>(Date.now());
-  const isAutoLoggingOutRef = useRef(false);
 
   const [activeEvent, setActiveEvent] = useState<{ id: string; name: string | null; startIso: string; endIso: string; state: string | null } | null>(
     null
@@ -623,51 +617,6 @@ export default function CheckInKioskPage() {
       window.removeEventListener("keydown", handleActivity);
     };
   }, [resetInactivityTimer]);
-
-  // ─── Idle auto-logout ──────────────────────────────────────────
-  useEffect(() => {
-    if (!isAuthed) return;
-
-    const markActivity = () => {
-      lastActivityRef.current = Date.now();
-    };
-    markActivity();
-
-    const logoutIfIdle = async () => {
-      if (isAutoLoggingOutRef.current) return;
-      if (Date.now() - lastActivityRef.current < AUTO_LOGOUT_IDLE_MS) return;
-      isAutoLoggingOutRef.current = true;
-      try {
-        await supabase.auth.signOut();
-      } catch (error) {
-        console.error("Auto-logout sign out failed:", error);
-      }
-      sessionStorage.clear();
-      localStorage.removeItem("mfa_verified");
-      accessTokenRef.current = null;
-      // Full navigation (not router.push) so the kiosk's history/back-blocking
-      // can't keep an authed page reachable after logout.
-      window.location.replace("/login");
-    };
-
-    // Timestamp comparison instead of one long setTimeout so the logout still
-    // fires correctly after tab throttling or device sleep.
-    const handleVisibility = () => {
-      if (document.visibilityState === "visible") void logoutIfIdle();
-    };
-
-    window.addEventListener("pointerdown", markActivity);
-    window.addEventListener("keydown", markActivity);
-    document.addEventListener("visibilitychange", handleVisibility);
-    const interval = setInterval(() => void logoutIfIdle(), AUTO_LOGOUT_CHECK_INTERVAL_MS);
-
-    return () => {
-      window.removeEventListener("pointerdown", markActivity);
-      window.removeEventListener("keydown", markActivity);
-      document.removeEventListener("visibilitychange", handleVisibility);
-      clearInterval(interval);
-    };
-  }, [isAuthed]);
 
   // ─── Canvas (signature) ────────────────────────────────────────
   useEffect(() => {
