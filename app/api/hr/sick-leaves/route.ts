@@ -242,7 +242,7 @@ export async function GET(req: NextRequest) {
     let query = supabaseAdmin
       .from("sick_leaves")
       .select(
-        "id, user_id, start_date, end_date, duration_hours, status, reason, approved_by, approved_at, created_at, updated_at"
+        "id, user_id, event_id, start_date, end_date, duration_hours, status, reason, approved_by, approved_at, created_at, updated_at, event:events(event_name, event_date)"
       )
       .order("start_date", { ascending: false })
       .order("created_at", { ascending: false });
@@ -328,9 +328,13 @@ export async function GET(req: NextRequest) {
 
     const records = visibleSickLeaves.map((row: any) => {
       const profile = profileMap.get(row.user_id);
+      const linkedEvent = Array.isArray(row.event) ? row.event[0] : row.event;
       return {
         id: row.id,
         user_id: row.user_id,
+        event_id: row.event_id ?? null,
+        event_name: linkedEvent?.event_name ?? null,
+        event_date: linkedEvent?.event_date ?? null,
         start_date: row.start_date,
         end_date: row.end_date,
         duration_hours: Number(row.duration_hours || 0),

@@ -65,6 +65,9 @@ type SickLeaveStatus = "pending" | "approved" | "denied";
 
 type SickLeaveEntry = {
   id: string;
+  event_id: string | null;
+  event_name: string | null;
+  event_date: string | null;
   start_date: string | null;
   end_date: string | null;
   duration_hours: number;
@@ -72,6 +75,17 @@ type SickLeaveEntry = {
   reason: string | null;
   approved_at: string | null;
   approved_by: string | null;
+  created_at: string | null;
+};
+
+type SickLeavePaysheet = {
+  id: string;
+  hours: number;
+  rate: number;
+  amount: number;
+  payment_date: string | null;
+  status: string;
+  notes: string | null;
   created_at: string | null;
 };
 
@@ -86,6 +100,7 @@ type SickLeaveSummary = {
   carry_over_days?: number;
   balance_hours: number;
   balance_days: number;
+  paysheets?: SickLeavePaysheet[];
 };
 
 type SummaryPayload = {
@@ -189,6 +204,7 @@ type EventInvitation = {
   event_id: string;
   event_name: string | null;
   event_date: string | null;
+  end_date: string | null;
   start_time: string | null;
   venue: string | null;
   city: string | null;
@@ -205,6 +221,23 @@ type SubmittedAvailabilityDay = {
   available: boolean;
   notes?: string | null;
   submitted_at?: string | null;
+};
+
+type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
+
+type HelpdeskTicketStatus = "open" | "in_progress" | "resolved" | "closed";
+
+type HelpdeskTicket = {
+  id: string;
+  ticketNumber: string;
+  ticketDate: string;
+  urgency: HelpdeskTicketUrgency;
+  status: HelpdeskTicketStatus | undefined;
+  description: string;
+  createdAt: string;
+  createdBy: string;
+  createdByEmail: string;
+  createdByName: string;
 };
 
 function hoursBetween(clock_in: string | null, clock_out: string | null) {
@@ -289,6 +322,40 @@ function formatDateTime(d?: string | null, state?: string | null) {
   });
 }
 
+function getTodayInputValue() {
+  const today = new Date();
+  today.setMinutes(today.getMinutes() - today.getTimezoneOffset());
+  return today.toISOString().slice(0, 10);
+}
+
+function getHelpdeskUrgencyClasses(urgency: HelpdeskTicketUrgency) {
+  switch (urgency) {
+    case "critical":
+      return "bg-red-50 text-red-700 border-red-200";
+    case "high":
+      return "bg-orange-50 text-orange-700 border-orange-200";
+    case "medium":
+      return "bg-amber-50 text-amber-700 border-amber-200";
+    default:
+      return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  }
+}
+
+function getHelpdeskStatusClasses(status: HelpdeskTicketStatus | undefined) {
+  switch (status) {
+    case "in_progress": return "bg-amber-50 text-amber-700 border-amber-200";
+    case "resolved":    return "bg-emerald-50 text-emerald-700 border-emerald-200";
+    case "closed":      return "bg-gray-100 text-gray-600 border-gray-200";
+    default:            return "bg-blue-50 text-blue-700 border-blue-200";
+  }
+}
+
+function formatHelpdeskStatus(status: HelpdeskTicketStatus | undefined) {
+  if (!status || status === "open") return "Open";
+  if (status === "in_progress") return "In Progress";
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 export default function WorkerProfilePage() {
   const params = useParams<{ id: string }>();
   const employeeId = params?.id;
@@ -312,6 +379,7 @@ export default function WorkerProfilePage() {
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<{ id: string; venue_name: string; city: string | null; state: string | null } | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
   const [sickRequestHours, setSickRequestHours] = useState<string>("");
+  const [sickRequestEventId, setSickRequestEventId] = useState<string>("");
   const [sickRequestDate, setSickRequestDate] = useState<string>(
     () => new Date().toISOString().slice(0, 10)
   );
@@ -327,13 +395,6 @@ export default function WorkerProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
-  const [timesheetEditRequestTarget, setTimesheetEditRequestTarget] = useState<{
-    eventId: string;
-    eventName: string;
-  } | null>(null);
-  const [timesheetEditRequestReason, setTimesheetEditRequestReason] = useState("");
-  const [timesheetEditRequestError, setTimesheetEditRequestError] = useState("");
-  const [submittingTimesheetEditRequest, setSubmittingTimesheetEditRequest] = useState(false);
 
   const renderTimeSheetAction = (
     eventId: string | null | undefined,
@@ -376,34 +437,13 @@ export default function WorkerProfilePage() {
               Edit Requested
             </span>
           ) : editRequestStatus === "rejected" ? (
-            <>
-              <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
-                Edit Request Rejected
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  setTimesheetEditRequestTarget({ eventId, eventName });
-                  setTimesheetEditRequestReason("");
-                  setTimesheetEditRequestError("");
-                }}
-                className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Request Again
-              </button>
-            </>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+              Edit Request Rejected
+            </span>
           ) : (
-            <button
-              type="button"
-              onClick={() => {
-                setTimesheetEditRequestTarget({ eventId, eventName });
-                setTimesheetEditRequestReason("");
-                setTimesheetEditRequestError("");
-              }}
-              className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-            >
-              Request Edit
-            </button>
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-slate-50 text-slate-600">
+              Locked
+            </span>
           )}
         </div>
       );
@@ -416,73 +456,6 @@ export default function WorkerProfilePage() {
     );
   };
 
-  const submitTimesheetEditRequest = async () => {
-    if (!timesheetEditRequestTarget || !employeeId) return;
-
-    const trimmedReason = timesheetEditRequestReason.trim();
-    if (!trimmedReason) {
-      setTimesheetEditRequestError("Please explain why this timesheet needs to be edited.");
-      return;
-    }
-
-    setSubmittingTimesheetEditRequest(true);
-    setTimesheetEditRequestError("");
-
-    try {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-
-      if (!session) {
-        window.location.href = "/login";
-        return;
-      }
-
-      const res = await fetch("/api/timesheet-edit-requests", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        body: JSON.stringify({
-          eventId: timesheetEditRequestTarget.eventId,
-          targetUserId: employeeId,
-          requestReason: trimmedReason,
-        }),
-      });
-
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(data?.error || "Failed to submit timesheet edit request.");
-      }
-
-      setSummary((prev) =>
-        prev
-          ? {
-              ...prev,
-              per_event: prev.per_event.map((row) =>
-                row.event_id === timesheetEditRequestTarget.eventId
-                  ? {
-                      ...row,
-                      timesheet_edit_request_status: data?.request?.status || "submitted",
-                      timesheet_edit_request_created_at:
-                        data?.request?.createdAt || new Date().toISOString(),
-                    }
-                  : row
-              ),
-            }
-          : prev
-      );
-      setTimesheetEditRequestTarget(null);
-      setTimesheetEditRequestReason("");
-    } catch (error: any) {
-      setTimesheetEditRequestError(
-        error?.message || "Failed to submit timesheet edit request."
-      );
-    } finally {
-      setSubmittingTimesheetEditRequest(false);
-    }
-  };
   const [invitationsLoading, setInvitationsLoading] = useState(false);
   const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
@@ -503,12 +476,23 @@ export default function WorkerProfilePage() {
     document_name: string;
     document_type: string;
     reason: string | null;
-    status: "pending" | "approved" | "rejected";
+    status: "pending" | "sent" | "approved" | "rejected";
     review_notes: string | null;
     reviewed_at: string | null;
     created_at: string;
   }[]>([]);
   const [dataEditRequestsLoading, setDataEditRequestsLoading] = useState(false);
+  const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
+  const [helpdeskTicketsLoading, setHelpdeskTicketsLoading] = useState(false);
+  const [helpdeskTicketError, setHelpdeskTicketError] = useState("");
+  const [helpdeskTicketSuccess, setHelpdeskTicketSuccess] = useState("");
+  const [submittingHelpdeskTicket, setSubmittingHelpdeskTicket] = useState(false);
+  const [isHelpdeskModalOpen, setIsHelpdeskModalOpen] = useState(false);
+  const [helpdeskForm, setHelpdeskForm] = useState({
+    ticketDate: getTodayInputValue(),
+    urgency: "medium" as HelpdeskTicketUrgency,
+    description: "",
+  });
 
   useEffect(() => {
     if (!employeeId) return;
@@ -903,6 +887,55 @@ export default function WorkerProfilePage() {
     load();
   }, [employeeId, refreshTick]);
 
+  useEffect(() => {
+    if (!employeeId) return;
+
+    const loadHelpdeskTickets = async () => {
+      setHelpdeskTicketsLoading(true);
+      setHelpdeskTicketError("");
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const res = await fetch('/api/hr/helpdesk-tickets', {
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+          cache: 'no-store',
+        });
+
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body?.error || 'Failed to load helpdesk tickets.');
+        }
+
+        setHelpdeskTickets(body.tickets ?? []);
+      } catch (error: any) {
+        console.error('Error loading helpdesk tickets:', error);
+        setHelpdeskTicketError(error?.message || 'Failed to load helpdesk tickets.');
+      } finally {
+        setHelpdeskTicketsLoading(false);
+      }
+    };
+
+    loadHelpdeskTickets();
+  }, [employeeId, refreshTick]);
+
+  useEffect(() => {
+    if (!isHelpdeskModalOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsHelpdeskModalOpen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isHelpdeskModalOpen]);
+
   // Fetch regions list
   useEffect(() => {
     const loadRegions = async () => {
@@ -963,6 +996,38 @@ export default function WorkerProfilePage() {
 
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+  const sickLeavePaysheets = sickLeaveSummary?.paysheets ?? [];
+
+  // Events the employee can attach a sick leave request to (deduped invitations,
+  // most recent event first)
+  const sickRequestEventOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const options: {
+      event_id: string;
+      event_date: string | null;
+      end_date: string | null;
+      label: string;
+    }[] = [];
+    for (const inv of eventInvitations) {
+      if (!inv.event_id || seen.has(inv.event_id)) continue;
+      seen.add(inv.event_id);
+      const datePart = inv.event_date ? ` (${formatEventDate(inv.event_date)})` : "";
+      options.push({
+        event_id: inv.event_id,
+        event_date: inv.event_date,
+        end_date: inv.end_date,
+        label: `${inv.event_name || "Unnamed event"}${datePart}`,
+      });
+    }
+    return options.sort((a, b) => (b.event_date || "").localeCompare(a.event_date || ""));
+  }, [eventInvitations]);
+
+  const selectedSickRequestEvent = sickRequestEventOptions.find(
+    (option) => option.event_id === sickRequestEventId
+  );
+  const sickRequestMinDate = selectedSickRequestEvent?.event_date ?? undefined;
+  const sickRequestMaxDate =
+    selectedSickRequestEvent?.end_date ?? selectedSickRequestEvent?.event_date ?? undefined;
 
   // Build a map of YYYY-MM-DD → set of marker types for the calendar
   // and a map of YYYY-MM-DD → confirmed event details
@@ -1027,6 +1092,9 @@ export default function WorkerProfilePage() {
 
     return {
       id: String(record.id),
+      event_id: record.event_id ? String(record.event_id) : null,
+      event_name: record.event_name ? String(record.event_name) : null,
+      event_date: record.event_date ? String(record.event_date) : null,
       start_date: record.start_date ? String(record.start_date) : null,
       end_date: record.end_date ? String(record.end_date) : null,
       duration_hours: Number(duration.toFixed(2)),
@@ -1100,7 +1168,7 @@ export default function WorkerProfilePage() {
         throw new Error(data?.error || "Failed to submit request.");
       }
 
-      setDataEditRequestSuccess("Your data update request has been submitted. HR will be notified shortly.");
+      setDataEditRequestSuccess("Your data edition request has been submitted. HR will be notified shortly.");
       if (data?.request) {
         setDataEditRequests((prev) => [
           { ...data.request, document_name: dataEditRequestDoc, document_type: 'onboarding', reason: dataEditRequestReason.trim() || null, status: 'pending', review_notes: null, reviewed_at: null },
@@ -1113,6 +1181,58 @@ export default function WorkerProfilePage() {
       setDataEditRequestError(error?.message || "Failed to submit request.");
     } finally {
       setSubmittingDataEditRequest(false);
+    }
+  };
+
+  const submitHelpdeskTicket = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setHelpdeskTicketError("");
+    setHelpdeskTicketSuccess("");
+
+    if (!helpdeskForm.ticketDate) {
+      setHelpdeskTicketError("Please choose a ticket date.");
+      return;
+    }
+
+    if (!helpdeskForm.description.trim()) {
+      setHelpdeskTicketError("Please describe what the user needs.");
+      return;
+    }
+
+    setSubmittingHelpdeskTicket(true);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+
+      const res = await fetch("/api/hr/helpdesk-tickets", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
+        body: JSON.stringify(helpdeskForm),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to create helpdesk ticket.");
+      }
+
+      if (data?.ticket) {
+        setHelpdeskTickets((prev) => [data.ticket, ...prev].slice(0, 25));
+      }
+      setHelpdeskTicketSuccess(
+        data?.ticket?.ticketNumber
+          ? `Ticket ${data.ticket.ticketNumber} submitted successfully.`
+          : "Helpdesk ticket submitted successfully."
+      );
+      setHelpdeskForm((current) => ({
+        ...current,
+        description: "",
+      }));
+    } catch (error: any) {
+      setHelpdeskTicketError(error?.message || "Failed to create helpdesk ticket.");
+    } finally {
+      setSubmittingHelpdeskTicket(false);
     }
   };
 
@@ -1129,6 +1249,23 @@ export default function WorkerProfilePage() {
 
     if (!sickRequestDate) {
       setSickRequestError("Please choose a date.");
+      return;
+    }
+
+    if (!sickRequestEventId) {
+      setSickRequestError("Please select the event this sick leave applies to.");
+      return;
+    }
+
+    if (
+      (sickRequestMinDate && sickRequestDate < sickRequestMinDate) ||
+      (sickRequestMaxDate && sickRequestDate > sickRequestMaxDate)
+    ) {
+      setSickRequestError(
+        sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+          ? `The date must fall within the selected event (${formatEventDate(sickRequestMinDate)} — ${formatEventDate(sickRequestMaxDate)}).`
+          : `The date must match the selected event (${formatEventDate(sickRequestMinDate)}).`
+      );
       return;
     }
 
@@ -1149,6 +1286,7 @@ export default function WorkerProfilePage() {
         body: JSON.stringify({
           hours: parsedHours,
           date: sickRequestDate,
+          event_id: sickRequestEventId,
         }),
       });
 
@@ -1162,6 +1300,7 @@ export default function WorkerProfilePage() {
             "Request saved, but notification email failed. Please contact HR if needed."
           );
           setSickRequestHours("");
+          setSickRequestEventId("");
           return;
         }
         throw new Error(data?.error || "Failed to submit sick leave request");
@@ -1173,6 +1312,7 @@ export default function WorkerProfilePage() {
 
       setSickRequestSuccess("Sick leave request sent successfully.");
       setSickRequestHours("");
+      setSickRequestEventId("");
     } catch (error: any) {
       setSickRequestError(error?.message || "Failed to submit sick leave request");
     } finally {
@@ -2018,6 +2158,16 @@ export default function WorkerProfilePage() {
               Cumulative hours, shifts, and event history
             </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsHelpdeskModalOpen(true)}
+            className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700"
+          >
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h8M8 14h5m-7 6h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            </svg>
+            Helpdesk
+          </button>
         </div>
 
         {/* Loading & Error */}
@@ -2182,6 +2332,177 @@ export default function WorkerProfilePage() {
                 </div>
               </div>
             </section>
+
+            {isHelpdeskModalOpen && (
+              <div
+                className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4 backdrop-blur-sm"
+                onClick={() => setIsHelpdeskModalOpen(false)}
+              >
+                <section
+                  id="helpdesk-section"
+                  className="max-h-[85vh] w-full max-w-4xl overflow-y-auto rounded-2xl border border-gray-200 bg-white p-6 shadow-2xl"
+                  onClick={(e) => e.stopPropagation()}
+                >
+              <div className="mb-3 flex items-center justify-between">
+                <div>
+                  <h2 className="text-2xl font-semibold text-gray-900 keeping-tight">Helpdesk</h2>
+                  <p className="mt-1 text-sm text-gray-500">
+                    Create a support ticket with urgency, date, and a clear description.
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  {!helpdeskTicketsLoading && (
+                    <span className="text-xs text-gray-400">
+                      {helpdeskTickets.length} ticket{helpdeskTickets.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsHelpdeskModalOpen(false)}
+                    className="rounded-xl border border-gray-200 p-2 text-gray-500 transition hover:bg-gray-50 hover:text-gray-700"
+                  >
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              </div>
+
+              <div className="apple-card p-6">
+                <form onSubmit={submitHelpdeskTicket} className="space-y-4">
+                  <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Date <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="date"
+                        value={helpdeskForm.ticketDate}
+                        onChange={(e) =>
+                          setHelpdeskForm((current) => ({
+                            ...current,
+                            ticketDate: e.target.value,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                        Urgency <span className="text-red-500">*</span>
+                      </label>
+                      <select
+                        value={helpdeskForm.urgency}
+                        onChange={(e) =>
+                          setHelpdeskForm((current) => ({
+                            ...current,
+                            urgency: e.target.value as HelpdeskTicketUrgency,
+                          }))
+                        }
+                        className="w-full rounded-xl border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                      >
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                        <option value="critical">Critical</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
+                    Ticket numbers are generated automatically when your request is submitted.
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 block text-sm font-medium text-gray-700">
+                      Description <span className="text-red-500">*</span>
+                    </label>
+                    <textarea
+                      value={helpdeskForm.description}
+                      onChange={(e) =>
+                        setHelpdeskForm((current) => ({
+                          ...current,
+                          description: e.target.value,
+                        }))
+                      }
+                      rows={4}
+                      placeholder="Describe what the user needs help with..."
+                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200 resize-none"
+                    />
+                  </div>
+
+                  {helpdeskTicketError && (
+                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                      {helpdeskTicketError}
+                    </div>
+                  )}
+
+                  {helpdeskTicketSuccess && (
+                    <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">
+                      {helpdeskTicketSuccess}
+                    </div>
+                  )}
+
+                  <div className="flex justify-end">
+                    <button
+                      type="submit"
+                      disabled={submittingHelpdeskTicket}
+                      className="inline-flex items-center gap-2 rounded-xl bg-blue-600 px-5 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      {submittingHelpdeskTicket ? "Submitting..." : "Create Ticket"}
+                    </button>
+                  </div>
+                </form>
+
+                <div className="mt-6 border-t border-gray-100 pt-6">
+                  <h3 className="mb-3 text-sm font-semibold text-gray-700">Recent Tickets</h3>
+                  {helpdeskTicketsLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-gray-400">
+                      <div className="apple-spinner w-4 h-4" />
+                      Loading...
+                    </div>
+                  ) : helpdeskTickets.length === 0 ? (
+                    <p className="text-sm text-gray-400">No helpdesk tickets submitted yet.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {helpdeskTickets.map((ticket) => (
+                        <div
+                          key={ticket.id}
+                          className="flex flex-col gap-3 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3 sm:flex-row sm:items-center"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <p className="text-sm font-semibold text-gray-900">{ticket.ticketNumber}</p>
+                                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium capitalize ${getHelpdeskUrgencyClasses(ticket.urgency)}`}>
+                                  {ticket.urgency}
+                                </span>
+                                <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${getHelpdeskStatusClasses(ticket.status)}`}>
+                                  {formatHelpdeskStatus(ticket.status)}
+                                </span>
+                              </div>
+                              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
+                                <span>{formatEventDate(ticket.ticketDate)}</span>
+                                <span>•</span>
+                                <span>{formatDateTime(ticket.createdAt)}</span>
+                              </div>
+                              <p className="mt-2 text-sm text-gray-600">{ticket.description}</p>
+                            </div>
+                          <div className="text-xs text-gray-400 sm:text-right">
+                            <div>{ticket.createdByName || ticket.createdByEmail}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+                </section>
+              </div>
+            )}
 
             <KnowYourRightsNoticeSection state={employee?.state ?? undefined} />
 
@@ -2564,7 +2885,43 @@ export default function WorkerProfilePage() {
                 <div className="rounded-xl border border-blue-200 bg-blue-50 p-3">
                   <p className="text-sm font-semibold text-blue-900 mb-2">Request Sick Leave</p>
 
-                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  <form onSubmit={submitSickLeaveRequest} className="grid grid-cols-1 gap-3 md:grid-cols-4">
+                    <div>
+                      <label
+                        htmlFor="sick-request-event"
+                        className="mb-1 block text-xs font-semibold uppercase keeping-wide text-blue-900"
+                      >
+                        Event
+                      </label>
+                      <select
+                        id="sick-request-event"
+                        required
+                        value={sickRequestEventId}
+                        onChange={(event) => {
+                          const nextEventId = event.target.value;
+                          setSickRequestEventId(nextEventId);
+                          const option = sickRequestEventOptions.find(
+                            (opt) => opt.event_id === nextEventId
+                          );
+                          if (option?.event_date) {
+                            setSickRequestDate(option.event_date.slice(0, 10));
+                          }
+                        }}
+                        className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
+                      >
+                        <option value="" disabled>
+                          {sickRequestEventOptions.length === 0
+                            ? "No events assigned"
+                            : "Select an event"}
+                        </option>
+                        {sickRequestEventOptions.map((option) => (
+                          <option key={option.event_id} value={option.event_id}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div>
                       <label
                         htmlFor="sick-request-hours"
@@ -2598,10 +2955,20 @@ export default function WorkerProfilePage() {
                         id="sick-request-date"
                         type="date"
                         required
+                        min={sickRequestMinDate}
+                        max={sickRequestMaxDate}
                         value={sickRequestDate}
                         onChange={(event) => setSickRequestDate(event.target.value)}
                         className="w-full rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-blue-400 focus:outline-none"
                       />
+                      {sickRequestMinDate && (
+                        <p className="mt-1 text-[11px] text-blue-700">
+                          Event runs {formatEventDate(sickRequestMinDate)}
+                          {sickRequestMaxDate && sickRequestMaxDate !== sickRequestMinDate
+                            ? ` — ${formatEventDate(sickRequestMaxDate)}`
+                            : ""}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-end">
@@ -2640,8 +3007,13 @@ export default function WorkerProfilePage() {
                       return (
                         <div key={entry.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
                           <div className="flex items-center gap-4 text-gray-700">
-                            <span className="font-medium text-gray-900">{formatDate(entry.start_date)} — {formatDate(entry.end_date)}</span>
+                            <span className="font-medium text-gray-900">{formatEventDate(entry.start_date)} — {formatEventDate(entry.end_date)}</span>
                             <span className="text-gray-500">{formatHours(entry.duration_hours)} hrs</span>
+                            {entry.event_name && (
+                              <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700">
+                                {entry.event_name}
+                              </span>
+                            )}
                             {entry.reason && <span className="text-gray-400 text-xs">{entry.reason}</span>}
                           </div>
                           <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${statusClasses}`}>
@@ -2652,6 +3024,32 @@ export default function WorkerProfilePage() {
                     })}
                   </div>
                 )}
+
+                {/* Sick Leave Pay Sheets */}
+                <div className="border-t border-gray-100 pt-4">
+                  <p className="text-sm font-semibold text-gray-900 mb-2">Sick Leave Pay Sheets</p>
+                  {sickLeavePaysheets.length === 0 ? (
+                    <div className="text-center py-3 text-sm text-gray-400">
+                      No sick leave pay sheets yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {sickLeavePaysheets.map((ps) => (
+                        <div key={ps.id} className="flex items-center justify-between rounded-lg border border-gray-100 bg-white px-3 py-2 text-sm">
+                          <div className="flex items-center gap-4 text-gray-700">
+                            <span className="font-medium text-gray-900">Payment date: {formatDate(ps.payment_date)}</span>
+                            <span className="text-gray-500">{formatHours(ps.hours)} hrs</span>
+                            <span className="text-gray-500">${ps.amount.toFixed(2)}</span>
+                            {ps.notes && <span className="text-gray-400 text-xs">{ps.notes}</span>}
+                          </div>
+                          <span className={`px-2 py-0.5 text-xs font-semibold capitalize border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}>
+                            {ps.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -3160,12 +3558,12 @@ export default function WorkerProfilePage() {
               </div>
             </section>
 
-            {/* Data Update Request */}
+            {/* Data Edition Request */}
             <section className="mb-8">
-              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">Request Data Update</h2>
+              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">request data update</h2>
               <div className="apple-card p-6">
                 <p className="text-sm text-gray-500 mb-5">
-                  Select a submitted document below to request permission to edit your data. An HR administrator will be notified and will review your request.
+                  Select the form below to request update.
                 </p>
 
                 <div className="space-y-4">
@@ -3185,7 +3583,7 @@ export default function WorkerProfilePage() {
                       <option value="">Select a document…</option>
                       {pdfForms.length > 0 && (
                         <optgroup label="Onboarding Forms">
-                          {pdfForms.map((form) => (
+                          {Array.from(new Map(pdfForms.map((f) => [f.display_name, f])).values()).map((form) => (
                             <option key={form.form_name} value={form.display_name}>
                               {form.display_name}
                             </option>
@@ -3196,15 +3594,17 @@ export default function WorkerProfilePage() {
                         pdfForms.some((p) => matchesCustomFormSubmission(p, form))
                       ).length > 0 && (
                         <optgroup label="Custom Forms">
-                          {customFormsList
-                            .filter((form) =>
-                              pdfForms.some((p) => matchesCustomFormSubmission(p, form))
-                            )
-                            .map((form) => (
-                              <option key={form.id} value={form.title}>
-                                {form.title}
-                              </option>
-                            ))}
+                          {Array.from(
+                            new Map(
+                              customFormsList
+                                .filter((form) => pdfForms.some((p) => matchesCustomFormSubmission(p, form)))
+                                .map((form) => [form.title, form])
+                            ).values()
+                          ).map((form) => (
+                            <option key={form.id} value={form.title}>
+                              {form.title}
+                            </option>
+                          ))}
                         </optgroup>
                       )}
                     </select>
@@ -3281,9 +3681,11 @@ export default function WorkerProfilePage() {
                                   ? 'bg-green-50 text-green-700 border-green-200'
                                   : req.status === 'rejected'
                                   ? 'bg-red-50 text-red-700 border-red-200'
+                                  : req.status === 'sent'
+                                  ? 'bg-blue-50 text-blue-700 border-blue-200'
                                   : 'bg-amber-50 text-amber-700 border-amber-200'
                               }`}>
-                                {req.status === 'approved' ? 'Approved' : req.status === 'rejected' ? 'Rejected' : 'Pending'}
+                                {req.status === 'approved' ? 'Approved' : req.status === 'rejected' ? 'Rejected' : req.status === 'sent' ? 'Form Sent' : 'Pending'}
                               </span>
                               <span className="text-xs text-gray-400">{formatDate(req.created_at)}</span>
                             </div>
@@ -3306,6 +3708,16 @@ export default function WorkerProfilePage() {
                 {!paystubHistoryLoading && !paystubHistoryError && (
                   <span className="ml-auto text-xs text-gray-400">{paystubHistory.length} record{paystubHistory.length !== 1 ? "s" : ""}</span>
                 )}
+              </div>
+              {/* Under construction disclaimer */}
+              <div className="px-6 py-3 bg-amber-50 border-b border-amber-200 flex items-start gap-2">
+                <svg className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5.07 19h13.86c1.54 0 2.5-1.67 1.73-3L13.73 4a2 2 0 00-3.46 0L3.34 16c-.77 1.33.19 3 1.73 3z" />
+                </svg>
+                <p className="text-sm text-amber-800">
+                  <span className="font-semibold">Under construction.</span> This section is a work in progress.
+                  
+                </p>
               </div>
               <div className="divide-y divide-gray-50">
                 {paystubHistoryLoading ? (
@@ -3439,78 +3851,6 @@ export default function WorkerProfilePage() {
               </section>
             );
           })()}
-
-          {timesheetEditRequestTarget && (
-            <div
-              className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm"
-              onClick={() => {
-                if (submittingTimesheetEditRequest) return;
-                setTimesheetEditRequestTarget(null);
-                setTimesheetEditRequestReason("");
-                setTimesheetEditRequestError("");
-              }}
-            >
-              <div
-                className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white shadow-2xl"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="border-b border-gray-200 px-6 py-4">
-                  <h3 className="text-lg font-semibold text-gray-900">Request Timesheet Edit</h3>
-                  <p className="mt-1 text-sm text-gray-500">
-                    Submit a correction request for <span className="font-medium text-gray-700">{timesheetEditRequestTarget.eventName}</span>.
-                  </p>
-                </div>
-
-                <div className="space-y-4 px-6 py-5">
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                    The attested timesheet will stay locked until a manager or exec reviews this request in the event dashboard.
-                  </div>
-
-                  <div>
-                    <label className="mb-2 block text-sm font-medium text-gray-700">
-                      Reason for edit <span className="text-red-500">*</span>
-                    </label>
-                    <textarea
-                      value={timesheetEditRequestReason}
-                      onChange={(e) => setTimesheetEditRequestReason(e.target.value)}
-                      rows={5}
-                      placeholder="Describe what needs to be corrected in this timesheet..."
-                      className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm text-gray-900 outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                    />
-                  </div>
-
-                  {timesheetEditRequestError && (
-                    <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-                      {timesheetEditRequestError}
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex items-center justify-end gap-3 border-t border-gray-200 px-6 py-4">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTimesheetEditRequestTarget(null);
-                      setTimesheetEditRequestReason("");
-                      setTimesheetEditRequestError("");
-                    }}
-                    disabled={submittingTimesheetEditRequest}
-                    className="rounded-xl border border-gray-300 px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void submitTimesheetEditRequest()}
-                    disabled={submittingTimesheetEditRequest}
-                    className="rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {submittingTimesheetEditRequest ? "Sending..." : "Send Request"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           </>
         )}

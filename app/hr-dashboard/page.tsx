@@ -54,6 +54,9 @@ type SickLeaveStatus = "pending" | "approved" | "denied";
 type SickLeaveRecord = {
   id: string;
   user_id: string;
+  event_id: string | null;
+  event_name: string | null;
+  event_date: string | null;
   start_date: string | null;
   end_date: string | null;
   duration_hours: number;
@@ -115,47 +118,6 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
-/**
- * Reconcile a set of per-vendor commission shares so they sum exactly to the
- * event commission pool, using a 3rd decimal (millesimal) only on the vendors
- * that require it. Works in integer thousandths to avoid floating-point drift.
- *
- * Returns one reconciled amount per input value (same order); the returned
- * values sum exactly to round(targetAmount, 2). We only smooth ordinary
- * 2-decimal rounding noise: if the raw shares are structurally far from the pool
- * (gap larger than rounding drift), the inputs are returned rounded to 2
- * decimals unchanged so we never fabricate a different total.
- */
-function reconcileCommissionToPool(values: number[], targetAmount: number): number[] {
-  const n = values.length;
-  if (n === 0) return [];
-  const safeValues = values.map((v) => (Number.isFinite(v) ? v : 0));
-  const target = Number.isFinite(targetAmount) ? targetAmount : 0;
-
-  const rawSum = safeValues.reduce((s, v) => s + v, 0);
-  const driftTolerance = n * 0.01 + 0.005;
-  if (Math.abs(rawSum - target) > driftTolerance) {
-    return safeValues.map((v) => Math.round(v * 100) / 100);
-  }
-
-  const targetThousandths = Math.round(target * 1000);
-  const floors = safeValues.map((v) => Math.floor(v * 1000 + 1e-6));
-  const residual = targetThousandths - floors.reduce((s, f) => s + f, 0);
-
-  // Largest-remainder: hand out (or claw back) single thousandths to the
-  // vendors with the largest/smallest fractional parts.
-  const order = safeValues.map((v, i) => ({ i, frac: v * 1000 - floors[i] }));
-  const result = floors.slice();
-  if (residual > 0) {
-    order.sort((a, b) => b.frac - a.frac);
-    for (let k = 0; k < residual; k++) result[order[k % n].i] += 1;
-  } else if (residual < 0) {
-    order.sort((a, b) => a.frac - b.frac);
-    for (let k = 0; k < -residual; k++) result[order[k % n].i] -= 1;
-  }
-  return result.map((thousandths) => thousandths / 1000);
-}
-
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -193,11 +155,17 @@ function HRDashboardContent() {
   const [approvalSubmissions, setApprovalSubmissions] = useState<Array<{ id: string; file_name: string; status: string; submitted_at: string }>>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [mileageByEvent, setMileageByEvent] = useState<Record<string, Record<string, { miles: number | null; mileagePay: number; differentialMiles?: number }>>>({});
+  // Sick-leave hours that apply to each event, keyed by event id then user id.
+  // Merged from approved sick-leave requests + sick-leave pay sheets (see /api/hr/sick-leave-by-event).
+  const [sickHoursByEvent, setSickHoursByEvent] = useState<Record<string, Record<string, number>>>({});
   const [mileageApprovals, setMileageApprovals] = useState<Record<string, Record<string, { mileage: boolean; travel: boolean }>>>({});
   // Sick leave pay sheet (queued sick-leave payroll) state
   type SickLeavePaysheet = {
     id: string;
     user_id: string;
+    event_id: string | null;
+    event_name: string | null;
+    event_date: string | null;
     hours: number;
     rate: number;
     amount: number;
@@ -208,6 +176,11 @@ function HRDashboardContent() {
     employee_email: string;
   };
   const [sickPaysheets, setSickPaysheets] = useState<SickLeavePaysheet[]>([]);
+  // Event options for linking a sick-leave pay sheet to a specific event.
+  const [paysheetEventOptions, setPaysheetEventOptions] = useState<Array<{ id: string; name: string; date: string | null }>>([]);
+  // Approved sick-leave requests (from /employees) that are linked to an event, used to
+  // auto-retrieve the event for a pay sheet when an employee is selected.
+  const [paysheetSickRequests, setPaysheetSickRequests] = useState<Array<{ user_id: string; event_id: string; event_name: string | null; event_date: string | null; duration_hours: number; start_date: string | null }>>([]);
   // Toggle for the sick-leave panels (Payment Cycles + Sick Leave Pay Sheet) in the payroll tab
   const [showSickLeavePanels, setShowSickLeavePanels] = useState(false);
   const [loadingSickPaysheets, setLoadingSickPaysheets] = useState(false);
@@ -218,6 +191,7 @@ function HRDashboardContent() {
   const [sickPayBaseRatesByState, setSickPayBaseRatesByState] = useState<Record<string, number>>({});
   const [sickPaysheetForm, setSickPaysheetForm] = useState({
     userId: "",
+    eventId: "",
     paymentDate: "",
     hours: "",
     rate: "",
@@ -243,6 +217,9 @@ function HRDashboardContent() {
     worked_hours: number;
     rate: number;
     amount: number;
+    event_id: string | null;
+    event_name: string | null;
+    event_date: string | null;
     already_has_paysheet: boolean;
   };
   const [paymentCycles, setPaymentCycles] = useState<PaymentCycle[]>([]);
@@ -357,6 +334,26 @@ function HRDashboardContent() {
   };
   const formatHoursDecimal = (decimalHours: number): string => {
     return roundHoursToTwoDecimals(decimalHours).toFixed(2);
+  };
+  // Renders an hours cell that combines worked + sick-leave hours into one total, with a
+  // breakdown sub-label when sick hours are present. Worked hours still drive the regular
+  // pay logic; sick hours are paid separately at the event rate-in-effect.
+  const renderCombinedHours = (
+    workedHours: number,
+    sickHours: number,
+    align: "left" | "right" = "left"
+  ) => {
+    const worked = Number(workedHours || 0);
+    const sick = Number(sickHours || 0);
+    if (!(sick > 0)) return <>{formatHoursDecimal(worked)}</>;
+    return (
+      <div className={`flex flex-col ${align === "right" ? "items-end" : "items-start"}`}>
+        <span>{formatHoursDecimal(worked + sick)}</span>
+        <span className="text-[10px] text-teal-600">
+          {formatHoursDecimal(worked)} worked + {formatHoursDecimal(sick)} sick
+        </span>
+      </div>
+    );
   };
   const roundUpThousandsToNextHundred = (amount: number): number => {
     if (!Number.isFinite(amount)) return 0;
@@ -772,6 +769,7 @@ function HRDashboardContent() {
     setPaymentsError("");
     setPaymentsByVenue([]);
     setMileageByEvent({});
+    setSickHoursByEvent({});
     setPayrollGroupBy('vendor');
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -1405,6 +1403,19 @@ function HRDashboardContent() {
         } catch (e) {
           console.warn('[HR PAYMENTS] Failed to fetch mileage data:', e);
         }
+
+        // Fetch sick-leave hours (approved requests + pay sheets) that apply to these events
+        try {
+          const authHeaders = { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) };
+          const idsParam = encodeURIComponent(allEventIdsForMileage.join(','));
+          const sickRes = await fetch(`/api/hr/sick-leave-by-event?event_ids=${idsParam}`, { headers: authHeaders });
+          if (sickRes.ok) {
+            const sickJson = await sickRes.json();
+            setSickHoursByEvent(sickJson.sickByEvent || {});
+          }
+        } catch (e) {
+          console.warn('[HR PAYMENTS] Failed to fetch sick-leave-by-event data:', e);
+        }
       }
 
       // Seed editable adjustments map from loaded data
@@ -1772,10 +1783,21 @@ function HRDashboardContent() {
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
       return sum + computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect);
     }, 0);
-    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalReimbursement + totalOther + totalMileagePay + totalTravelPay;
+    const totalSickHours = payments.reduce((sum: number, payment: any) => {
+      return sum + Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
+    }, 0);
+    const totalSickPay = payments.reduce((sum: number, payment: any) => {
+      const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
+      if (sickHours <= 0) return sum;
+      const breakdown = getDisplayedPaymentBreakdown(event, payment);
+      return sum + sickHours * breakdown.rateInEffect;
+    }, 0);
+    const totalGross = totalCommissionPaid + totalTips + totalRestBreak + totalReimbursement + totalOther + totalMileagePay + totalTravelPay + totalSickPay;
 
     return {
       eventHours,
+      totalSickHours,
+      totalSickPay,
       totalRegularHours,
       totalRegularPay,
       totalOvertimeHours,
@@ -1793,7 +1815,7 @@ function HRDashboardContent() {
       totalTravelPay,
       totalGross,
     };
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes, reimbursementAmounts, adjustments]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
 
   const getDisplayedVendorTotals = useCallback((vendor: {
     userId?: string;
@@ -1816,6 +1838,8 @@ function HRDashboardContent() {
         : (approval.mileage ? Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0) : 0);
       const travelPay = travelOverrideV !== undefined ? travelOverrideV
         : (approval.travel && diffMiles !== null ? computeTravelPay(diffMiles, event?.state, breakdown.rateInEffect) : 0);
+      const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
+      const sickPay = sickHours > 0 ? sickHours * breakdown.rateInEffect : 0;
 
       totals.totalHours += Number(payment?.actualHours || 0);
       totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
@@ -1837,7 +1861,9 @@ function HRDashboardContent() {
       totals.totalTravelPay += travelPay;
       totals.totalReimbursement += rowReimbursement;
       totals.totalOther += rowOther;
-      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + rowReimbursement + rowOther + mileagePay + travelPay;
+      totals.totalSickHours += sickHours;
+      totals.totalSickPay += sickPay;
+      totals.totalGross += breakdown.commissionPaidTotal + tips + restBreak + rowReimbursement + rowOther + mileagePay + travelPay + sickPay;
 
       return totals;
     }, {
@@ -1857,6 +1883,8 @@ function HRDashboardContent() {
       totalTravelPay: 0,
       totalReimbursement: 0,
       totalOther: 0,
+      totalSickHours: 0,
+      totalSickPay: 0,
       totalGross: 0,
     });
     const periodUserTotals = vendor.userId ? payPeriodCommission.byUser?.[vendor.userId] : undefined;
@@ -1864,7 +1892,7 @@ function HRDashboardContent() {
       result.totalVariableIncentive = periodUserTotals.totalVariableIncentive;
     }
     return result;
-  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments]);
+  }, [getDisplayedPaymentBreakdown, mileageByEvent, mileageApprovals, mileagePayOverrides, travelPayOverrides, payPeriodCommission, adjustmentTypes, reimbursementAmounts, adjustments, sickHoursByEvent]);
 
   const saveAllAdjustments = useCallback(async () => {
     const entries: Array<{ eventId: string; userId: string; amount: number }> = [];
@@ -1965,32 +1993,6 @@ function HRDashboardContent() {
       return;
     }
 
-    // Per-payment commission reconciled to the event commission pool. We round
-    // each vendor's share to 2 decimals, but where that leaves a residual we let
-    // specific vendors carry a 3rd decimal so the per-event commission sum equals
-    // the pool ($ = adjusted gross × commission %, shown as "Total Commission").
-    const reconciledCommissionByPayment = new Map<any, number>();
-    paymentsByVenue.forEach((venue: any) => {
-      (venue.events || []).forEach((event: any) => {
-        const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-        const eventPayments = Array.isArray(event.payments) ? event.payments : [];
-        if (isEventSD) {
-          eventPayments.forEach((payment: any) => reconciledCommissionByPayment.set(payment, 0));
-          return;
-        }
-        const rawShares = eventPayments.map(
-          (payment: any) => getDisplayedPaymentBreakdown(event, payment).commissionPay
-        );
-        const poolTarget = Number(
-          Number(event?.commissionPoolDollars ?? event?.commissionDollars ?? 0).toFixed(2)
-        );
-        const reconciled = reconcileCommissionToPool(rawShares, poolTarget);
-        eventPayments.forEach((payment: any, idx: number) =>
-          reconciledCommissionByPayment.set(payment, reconciled[idx])
-        );
-      });
-    });
-
     // Event-level summary rows (matches payroll header metrics in UI)
     const summaryRows: any[] = [];
     const allVendorDetailRows: any[] = [];
@@ -2063,11 +2065,7 @@ function HRDashboardContent() {
         'Rate in Effect': formatPayrollMoney(loadedRate),
         'Hours': hoursHHMM,
         'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isEventSD
-          ? 0
-          : reconciledCommissionByPayment.has(payment)
-            ? reconciledCommissionByPayment.get(payment)!
-            : Number(displayedCommissionPay.toFixed(2)),
+        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
         'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
         'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
@@ -2312,11 +2310,7 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, payment);
           const loadedRate = breakdown.rateInEffect;
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
-          const commPay = isEventSD
-            ? 0
-            : reconciledCommissionByPayment.has(payment)
-              ? reconciledCommissionByPayment.get(payment)!
-              : Number(breakdown.commissionPay.toFixed(2));
+          const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(2));
           const varIncentive = isEventSD ? 0 : Number(breakdown.variableIncentive.toFixed(2));
           const tipsRaw = getDisplayedTips(event, payment);
           const tips = Number(roundUpThousandsToNextHundred(tipsRaw).toFixed(2));
@@ -2970,7 +2964,11 @@ function HRDashboardContent() {
 
   const formatSickLeaveDate = (value?: string | null) => {
     if (!value) return "-";
-    const d = new Date(value);
+    // Parse date-only values as local time to avoid a UTC-to-local day shift
+    const dateOnly = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const d = dateOnly
+      ? new Date(parseInt(dateOnly[1]), parseInt(dateOnly[2]) - 1, parseInt(dateOnly[3]))
+      : new Date(value);
     if (Number.isNaN(d.getTime())) return value;
     return d.toLocaleDateString();
   };
@@ -3038,9 +3036,79 @@ function HRDashboardContent() {
     }
   }, []);
 
+  const loadPaysheetEventOptions = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/all-events?ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      if (!res.ok) return;
+      const json = await res.json().catch(() => ({}));
+      const events = Array.isArray(json.events) ? json.events : [];
+      const options = events
+        .map((e: any) => ({ id: String(e.id), name: String(e.event_name || "Untitled event"), date: e.event_date ?? null }))
+        .filter((e: any) => e.id)
+        .sort((a: any, b: any) => String(b.date || "").localeCompare(String(a.date || "")));
+      setPaysheetEventOptions(options);
+    } catch (e) {
+      console.warn("[HR PAYMENTS] Failed to load event options for sick-leave pay sheet:", e);
+    }
+  }, []);
+
+  const loadPaysheetSickRequests = useCallback(async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(`/api/hr/sick-leaves?status=approved&ts=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: { ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      });
+      if (!res.ok) return;
+      const json = await res.json().catch(() => ({}));
+      const records = Array.isArray(json.records) ? json.records : [];
+      const linked = records
+        .filter((r: any) => r?.event_id && r?.user_id)
+        .map((r: any) => ({
+          user_id: String(r.user_id),
+          event_id: String(r.event_id),
+          event_name: r.event_name ?? null,
+          event_date: r.event_date ?? null,
+          duration_hours: Number(r.duration_hours || 0),
+          start_date: r.start_date ?? null,
+        }));
+      setPaysheetSickRequests(linked);
+    } catch (e) {
+      console.warn("[HR PAYMENTS] Failed to load linked sick-leave requests for pay sheet:", e);
+    }
+  }, []);
+
+  // Most relevant event-linked approved request per employee (most recent first — the
+  // /api/hr/sick-leaves list is already ordered by start_date desc, created_at desc).
+  const sickRequestEventByUser = useMemo(() => {
+    const map = new Map<string, { event_id: string; event_name: string | null; event_date: string | null; duration_hours: number }>();
+    for (const r of paysheetSickRequests) {
+      if (!map.has(r.user_id)) {
+        map.set(r.user_id, {
+          event_id: r.event_id,
+          event_name: r.event_name,
+          event_date: r.event_date,
+          duration_hours: r.duration_hours,
+        });
+      }
+    }
+    return map;
+  }, [paysheetSickRequests]);
+
   const sickPaysheetSelectedEmployee = useMemo(
     () => employees.find((e) => e.id === sickPaysheetForm.userId) || null,
     [employees, sickPaysheetForm.userId]
+  );
+
+  const sickPaysheetLinkedRequest = useMemo(
+    () => (sickPaysheetForm.userId ? sickRequestEventByUser.get(sickPaysheetForm.userId) ?? null : null),
+    [sickRequestEventByUser, sickPaysheetForm.userId]
   );
 
   const sickPaysheetComputedAmount = useMemo(() => {
@@ -3052,10 +3120,17 @@ function HRDashboardContent() {
   const handleSickPaysheetEmployeeChange = (userId: string) => {
     const employee = employees.find((e) => e.id === userId) || null;
     const rate = getSickPayBaseRate(employee);
+    // Auto-retrieve the event (and hours) from the employee's linked sick-leave request.
+    const linkedRequest = userId ? sickRequestEventByUser.get(userId) ?? null : null;
     setSickPaysheetForm((prev) => ({
       ...prev,
       userId,
       rate: rate > 0 ? rate.toFixed(2) : prev.rate,
+      eventId: linkedRequest?.event_id ?? "",
+      hours:
+        linkedRequest && Number(linkedRequest.duration_hours) > 0
+          ? String(linkedRequest.duration_hours)
+          : prev.hours,
     }));
   };
 
@@ -3091,6 +3166,7 @@ function HRDashboardContent() {
         },
         body: JSON.stringify({
           user_id: sickPaysheetForm.userId,
+          event_id: sickPaysheetForm.eventId || null,
           payment_date: sickPaysheetForm.paymentDate,
           hours,
           rate,
@@ -3110,7 +3186,7 @@ function HRDashboardContent() {
     }
   };
 
-  const handleUpdateSickPaysheet = async (id: string, updates: { status?: "queued" | "paid"; payment_date?: string }) => {
+  const handleUpdateSickPaysheet = async (id: string, updates: { status?: "queued" | "paid"; payment_date?: string; event_id?: string | null }) => {
     setUpdatingSickPaysheetId(id);
     setSickPaysheetError("");
     try {
@@ -3306,8 +3382,10 @@ function HRDashboardContent() {
       loadSickPayBaseRates();
       loadSickPaysheets();
       loadPaymentCycles();
+      loadPaysheetEventOptions();
+      loadPaysheetSickRequests();
     }
-  }, [hrView, loadSickPayBaseRates, loadSickPaysheets, loadPaymentCycles]);
+  }, [hrView, loadSickPayBaseRates, loadSickPaysheets, loadPaymentCycles, loadPaysheetEventOptions, loadPaysheetSickRequests]);
 
   const hrStats = {
     totalEmployees: employees.length,
@@ -3535,6 +3613,7 @@ function HRDashboardContent() {
         record.employee_email,
         record.employee_city,
         record.employee_state,
+        record.event_name,
         record.reason,
         record.status,
         record.start_date,
@@ -4020,6 +4099,7 @@ function HRDashboardContent() {
                           <tr>
                             <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider w-8"></th>
                             <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                            <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                             <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Sick Hrs</th>
                             <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Worked Hrs</th>
                             <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
@@ -4040,6 +4120,16 @@ function HRDashboardContent() {
                               <td className="px-3 py-2 text-sm text-gray-900">
                                 <div className="font-medium">{row.name}{row.state ? ` (${row.state})` : ""}</div>
                                 {row.already_has_paysheet && <div className="text-xs text-amber-600">Already has a paysheet for this cycle</div>}
+                              </td>
+                              <td className="px-3 py-2 text-sm text-gray-700">
+                                {row.event_name ? (
+                                  <div>
+                                    <div>{row.event_name}</div>
+                                    {row.event_date && <div className="text-xs text-gray-400">{row.event_date}</div>}
+                                  </div>
+                                ) : (
+                                  <span className="text-gray-400">—</span>
+                                )}
                               </td>
                               <td className="px-3 py-2 text-sm text-right font-semibold text-gray-900">{formatSickLeaveHours(row.sick_hours)}</td>
                               <td className="px-3 py-2 text-sm text-right text-gray-500">{formatSickLeaveHours(row.worked_hours)}</td>
@@ -4163,7 +4253,31 @@ function HRDashboardContent() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-4">
+                <div>
+                  <label className="apple-label" htmlFor="sick-pay-event">Event (optional)</label>
+                  <select
+                    id="sick-pay-event"
+                    value={sickPaysheetForm.eventId}
+                    onChange={(e) => setSickPaysheetForm((prev) => ({ ...prev, eventId: e.target.value }))}
+                    className="apple-select w-full"
+                  >
+                    <option value="">No event</option>
+                    {paysheetEventOptions.map((ev) => (
+                      <option key={ev.id} value={ev.id}>
+                        {ev.name}{ev.date ? ` — ${ev.date}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                  {sickPaysheetLinkedRequest ? (
+                    <p className="mt-1 text-xs text-teal-600">
+                      Retrieved from sick-leave request: {sickPaysheetLinkedRequest.event_name || "Linked event"}
+                      {sickPaysheetLinkedRequest.event_date ? ` — ${sickPaysheetLinkedRequest.event_date}` : ""}
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-gray-400">Auto-filled from the employee&apos;s sick-leave request; shows on the event in payroll views.</p>
+                  )}
+                </div>
                 <div className="md:col-span-2">
                   <label className="apple-label" htmlFor="sick-pay-notes">Notes (optional)</label>
                   <input
@@ -4206,6 +4320,7 @@ function HRDashboardContent() {
                     <thead className="bg-gray-50">
                       <tr>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                        <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                         <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Payment Date</th>
                         <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
                         <th className="px-3 py-2 text-right text-xs font-medium text-gray-500 uppercase keeping-wider">Rate</th>
@@ -4220,6 +4335,27 @@ function HRDashboardContent() {
                           <td className="px-3 py-2 text-sm text-gray-900">
                             <div className="font-medium">{ps.employee_name}</div>
                             {ps.notes && <div className="text-xs text-gray-400">{ps.notes}</div>}
+                          </td>
+                          <td className="px-3 py-2 text-sm text-gray-700">
+                            <select
+                              value={ps.event_id ?? ""}
+                              onChange={(e) => handleUpdateSickPaysheet(ps.id, { event_id: e.target.value || null })}
+                              disabled={updatingSickPaysheetId === ps.id}
+                              className="apple-select w-full max-w-[16rem] text-xs"
+                              title={ps.event_name || "No event linked"}
+                            >
+                              <option value="">No event</option>
+                              {ps.event_id && !paysheetEventOptions.some((ev) => ev.id === ps.event_id) && (
+                                <option value={ps.event_id}>
+                                  {ps.event_name || "Linked event"}{ps.event_date ? ` — ${ps.event_date}` : ""}
+                                </option>
+                              )}
+                              {paysheetEventOptions.map((ev) => (
+                                <option key={ev.id} value={ev.id}>
+                                  {ev.name}{ev.date ? ` — ${ev.date}` : ""}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="px-3 py-2 text-sm text-gray-700">{formatSickLeaveDate(ps.payment_date)}</td>
                           <td className="px-3 py-2 text-sm text-right text-gray-700">{formatSickLeaveHours(ps.hours)}</td>
@@ -4347,7 +4483,7 @@ function HRDashboardContent() {
                         </div>
                         <div className="text-right">
                           <div className="text-2xl font-bold text-gray-900">${formatVendorMoney(vendorDisplayedTotal)}</div>
-                          <div className="text-sm text-gray-500">{formatHoursDecimal(vendorTotals.totalHours)} hrs</div>
+                          <div className="text-sm text-gray-500">{formatHoursDecimal(vendorTotals.totalHours + vendorTotals.totalSickHours)} hrs</div>
                         </div>
                       </div>
                       <div className="overflow-x-auto">
@@ -4379,6 +4515,7 @@ function HRDashboardContent() {
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                              <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
                               <th className="px-4 py-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                             </tr>
                           </thead>
@@ -4399,7 +4536,9 @@ function HRDashboardContent() {
                                 ((adjustmentTypes[event.id] ?? {})[payment.userId] ?? payment.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
                               );
                               const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
-                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay;
+                              const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
+                              const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
+                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay + sickPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               return (
                                 <tr key={`${event.id}-${idx}`} className="hover:bg-gray-50">
@@ -4408,7 +4547,7 @@ function HRDashboardContent() {
                                   </td>
                                   <td className="px-4 py-2 text-sm text-gray-700">{venue}<span className="text-gray-400 ml-1">{city ? `· ${city}` : ''}{state ? `, ${state}` : ''}</span></td>
                                   <td className="px-4 py-2 text-sm text-gray-500">{event.date || '—'}</td>
-                                  <td className="px-4 py-2 text-sm text-right">{formatHoursDecimal(Number(payment.actualHours || 0))}</td>
+                                  <td className="px-4 py-2 text-sm text-right">{renderCombinedHours(Number(payment.actualHours || 0), sickHours, "right")}</td>
                                   {showVendorHourlyColumns && (
                                     <>
                                       <td className="px-4 py-2 text-sm text-right text-gray-900">
@@ -4545,6 +4684,14 @@ function HRDashboardContent() {
                                       <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add other" onClick={() => setEditingCell({ eventId: event.id, userId: payment.userId, column: 'other' })}>+</button>
                                     ); })()}
                                   </td>
+                                  <td className="px-4 py-2 text-sm text-right text-teal-600">
+                                    {sickHours > 0 ? (
+                                      <div className="flex flex-col items-end">
+                                        <span>${formatVendorMoney(sickPay)}</span>
+                                        <span className="text-[10px] text-gray-400">{formatHoursDecimal(sickHours)}h × ${formatVendorMoney(loadedRate)}</span>
+                                      </div>
+                                    ) : '—'}
+                                  </td>
                                   <td className="px-4 py-2 text-sm text-right font-semibold">${formatVendorMoney(rowTotal)}</td>
                                 </tr>
                               );
@@ -4571,11 +4718,12 @@ function HRDashboardContent() {
                                 <td className="px-4 py-2 text-right"></td>
                                 <td className="px-4 py-2 text-right"></td>
                                 <td className="px-4 py-2 text-right"></td>
+                                <td className="px-4 py-2 text-right"></td>
                               </tr>
                             )}
                             <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                               <td className="px-4 py-2 uppercase tracking-wide" colSpan={3}>Total</td>
-                              <td className="px-4 py-2 text-right">{formatHoursDecimal(vendorTotals.totalHours)}</td>
+                              <td className="px-4 py-2 text-right">{renderCombinedHours(vendorTotals.totalHours, vendorTotals.totalSickHours, "right")}</td>
                               {showVendorHourlyColumns && (
                                 <>
                                   <td className="px-4 py-2 text-right text-gray-900">
@@ -4609,6 +4757,7 @@ function HRDashboardContent() {
                               <td className="px-4 py-2 text-right text-indigo-600">${formatVendorMoney(vendorTotals.totalTravelPay)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalReimbursement)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorTotals.totalOther)}</td>
+                              <td className="px-4 py-2 text-right text-teal-600">${formatVendorMoney(vendorTotals.totalSickPay)}</td>
                               <td className="px-4 py-2 text-right">${formatVendorMoney(vendorDisplayedTotal)}</td>
                             </tr>
                           </tbody>
@@ -4632,7 +4781,7 @@ function HRDashboardContent() {
                       </div>
                       <div className="text-right">
                         <div className="text-2xl font-bold text-gray-900">${formatPayrollMoney(venueDisplayedTotal)}</div>
-                        <div className="text-sm text-gray-500">{formatHoursDecimal(v.totalHours)} hrs</div>
+                        <div className="text-sm text-gray-500">{formatHoursDecimal(v.totalHours + (v.events || []).reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalSickHours, 0))} hrs</div>
                       </div>
                     </div>
                     <div className="overflow-x-auto">
@@ -4672,7 +4821,10 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Hours</div>
-                                  <div>{formatHoursDecimal(eventTotals.eventHours || 0)}</div>
+                                  <div>{formatHoursDecimal((eventTotals.eventHours || 0) + (eventTotals.totalSickHours || 0))}</div>
+                                  {Number(eventTotals.totalSickHours || 0) > 0 && (
+                                    <div className="text-[10px] text-teal-600">{formatHoursDecimal(eventTotals.eventHours || 0)} worked + {formatHoursDecimal(eventTotals.totalSickHours || 0)} sick</div>
+                                  )}
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Adjusted Gross Amount</div>
@@ -4767,6 +4919,7 @@ function HRDashboardContent() {
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Travel Pay</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Reimbursement</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Other</th>
+                                                <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Sick Leave</th>
                                                 <th className="p-2 text-right text-xs font-medium text-gray-500 uppercase">Total Gross Pay</th>
                                               </tr>
                                             );
@@ -4816,6 +4969,8 @@ function HRDashboardContent() {
                                                 const travelPay = travelOverrideS2 !== undefined ? travelOverrideS2 : (approval.travel ? _travelPay : 0);
                                                 const reimbursementForRow = reimbursementAmounts[ev.id]?.[p.userId] !== undefined ? Number(reimbursementAmounts[ev.id]?.[p.userId] || 0) : Number(p.reimbursementAmount || 0);
                                                 const otherForRow = adjustments[ev.id]?.[p.userId] !== undefined ? Number(adjustments[ev.id]?.[p.userId] || 0) : Number(p.otherAmount || 0);
+                                                const sickHours = Number((sickHoursByEvent[ev.id] || {})[p.userId] || 0);
+                                                const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
                                                 const totalGrossPay =
                                                   breakdown.commissionPaidTotal +
                                                   tips +
@@ -4823,7 +4978,8 @@ function HRDashboardContent() {
                                                   reimbursementForRow +
                                                   otherForRow +
                                                   mileagePay +
-                                                  travelPay;
+                                                  travelPay +
+                                                  sickPay;
                                                 const currentAdjustmentType = normalizeOtherAdjustmentType(
                                                   ((adjustmentTypes[ev.id] ?? {})[p.userId] ?? p.adjustmentType ?? DEFAULT_OTHER_ADJUSTMENT_TYPE)
                                                 );
@@ -4834,7 +4990,7 @@ function HRDashboardContent() {
                                                     <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
                                                     {isEventSD ? (
                                                       <>
-                                                        <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
+                                                        <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
                                                         <td className="p-2 text-sm text-gray-900">{`${formatHoursDecimal(breakdown.regularHours)}h / $${formatPayrollMoney(breakdown.regularPay)}`}</td>
                                                         <td className="p-2 text-sm text-orange-600">{`${formatHoursDecimal(breakdown.overtimeHours)}h / $${formatPayrollMoney(breakdown.overtimePay)}`}</td>
                                                         <td className="p-2 text-sm text-rose-600">{`${formatHoursDecimal(breakdown.doubletimeHours)}h / $${formatPayrollMoney(breakdown.doubletimePay)}`}</td>
@@ -4842,7 +4998,7 @@ function HRDashboardContent() {
                                                     ) : (
                                                       <>
                                                         <td className="p-2 text-sm">${formatPayrollMoney(loadedRate)}/hr</td>
-                                                        <td className="p-2 text-sm">{formatHoursDecimal(hours)}</td>
+                                                        <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
                                                         {showOT && (
                                                           <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                         )}
@@ -4947,6 +5103,14 @@ function HRDashboardContent() {
                                                         <button type="button" className="text-gray-300 hover:text-gray-500 text-xs px-1" title="Add other" onClick={() => setEditingCell({ eventId: ev.id, userId: p.userId, column: 'other' })}>+</button>
                                                       ); })()}
                                                     </td>
+                                                    <td className="p-2 text-sm text-right text-teal-600">
+                                                      {sickHours > 0 ? (
+                                                        <div className="flex flex-col items-end">
+                                                          <span>${formatPayrollMoney(sickPay)}</span>
+                                                          <span className="text-[10px] text-gray-400">{formatHoursDecimal(sickHours)}h × ${formatPayrollMoney(loadedRate)}</span>
+                                                        </div>
+                                                      ) : '—'}
+                                                    </td>
                                                     <td className="p-2 text-sm font-semibold text-right">${formatExactMoney(totalGrossPay)}</td>
                                                   </>
                                                 );
@@ -4965,7 +5129,7 @@ function HRDashboardContent() {
                                                 <td className="p-2"></td>
                                                 {isEventSD ? (
                                                   <>
-                                                    <td className="p-2">{formatHoursDecimal(eventTotals.eventHours)}</td>
+                                                    <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
                                                     <td className="p-2 text-gray-900">{`${formatHoursDecimal(eventTotals.totalRegularHours)}h / $${formatPayrollMoney(eventTotals.totalRegularPay)}`}</td>
                                                     <td className="p-2 text-orange-600">{`${formatHoursDecimal(eventTotals.totalOvertimeHours)}h / $${formatPayrollMoney(eventTotals.totalOvertimePay)}`}</td>
                                                     <td className="p-2 text-rose-600">{`${formatHoursDecimal(eventTotals.totalDoubletimeHours)}h / $${formatPayrollMoney(eventTotals.totalDoubletimePay)}`}</td>
@@ -4973,7 +5137,7 @@ function HRDashboardContent() {
                                                 ) : (
                                                   <>
                                                     <td className="p-2"></td>
-                                                    <td className="p-2">{formatHoursDecimal(eventTotals.eventHours)}</td>
+                                                    <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
                                                     {showOT && <td className="p-2"></td>}
                                                     <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPaid)}</td>
                                                   </>
@@ -4984,6 +5148,7 @@ function HRDashboardContent() {
                                                 <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalReimbursement)}</td>
                                                 <td className="p-2 text-right">${formatPayrollMoney(eventTotals.totalOther)}</td>
+                                                <td className="p-2 text-right text-teal-600">${formatPayrollMoney(eventTotals.totalSickPay)}</td>
                                                 <td className="p-2 text-right">${formatExactMoney(eventTotals.totalGross)}</td>
                                               </tr>
                                             );
@@ -5001,7 +5166,7 @@ function HRDashboardContent() {
                           <tr key="venue-totals" style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                             <td className="px-4 py-2 text-gray-900 uppercase tracking-wide">Total</td>
                             <td className="px-4 py-2"></td>
-                            <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).eventHours, 0).toFixed(2)}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => { const t = getDisplayedEventTotals(ev); return s + t.eventHours + t.totalSickHours; }, 0).toFixed(2)}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.adjustedGrossAmount || 0), 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.commissionDollars || 0), 0))}</td>
                             <td className="px-4 py-2"></td>
@@ -5879,7 +6044,7 @@ function HRDashboardContent() {
                               disabled={addingUsedHoursUserId === record.user_id}
                               className="px-2 py-1 text-xs rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200 disabled:opacity-50"
                             >
-                              {addingUsedHoursUserId === record.user_id ? "Adding..." : "Add Requested Hours"}
+                              {addingUsedHoursUserId === record.user_id ? "Updating..." : "Use Requested Hours"}
                             </button>
                             <button
                               onClick={() =>
@@ -5924,6 +6089,7 @@ function HRDashboardContent() {
                   <thead className="bg-gray-50">
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Employee</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Event</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Dates</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Hours</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">Status</th>
@@ -5935,7 +6101,7 @@ function HRDashboardContent() {
                   <tbody className="bg-white divide-y divide-gray-200">
                     {loadingSickLeaves && (
                       <tr>
-                        <td colSpan={7} className="px-4 py-8 text-center text-sm text-gray-500">
+                        <td colSpan={8} className="px-4 py-8 text-center text-sm text-gray-500">
                           Loading sick leave records...
                         </td>
                       </tr>
@@ -5948,6 +6114,18 @@ function HRDashboardContent() {
                           <td className="px-4 py-3 align-top">
                             <p className="text-sm font-semibold text-gray-900">{record.employee_name}</p>
                             <p className="text-xs text-gray-500">{record.employee_email}</p>
+                          </td>
+                          <td className="px-4 py-3 align-top">
+                            {record.event_name ? (
+                              <>
+                                <p className="text-sm text-gray-900">{record.event_name}</p>
+                                {record.event_date && (
+                                  <p className="text-xs text-gray-500">{formatSickLeaveDate(record.event_date)}</p>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-sm text-gray-400">-</span>
+                            )}
                           </td>
                           <td className="px-4 py-3 align-top">
                             <p className="text-sm text-gray-900">
@@ -5998,7 +6176,7 @@ function HRDashboardContent() {
                     })}
                     {!loadingSickLeaves && filteredSickLeaveRecords.length === 0 && (
                       <tr>
-                        <td colSpan={7} className="px-4 py-12 text-center text-sm text-gray-500">
+                        <td colSpan={8} className="px-4 py-12 text-center text-sm text-gray-500">
                           No sick leave requests found for the current filters.
                         </td>
                       </tr>

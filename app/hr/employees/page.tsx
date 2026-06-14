@@ -56,6 +56,45 @@ type LatestFormEdit = {
 
 type UserRoleRow = Pick<User, "role">;
 
+type HelpdeskTicketUrgency = "low" | "medium" | "high" | "critical";
+type HelpdeskTicketStatus  = "open" | "in_progress" | "resolved" | "closed";
+
+type HelpdeskTicket = {
+  id: string;
+  ticketNumber: string;
+  ticketDate: string;
+  urgency: HelpdeskTicketUrgency;
+  status: HelpdeskTicketStatus | undefined;
+  description: string;
+  createdAt: string;
+  createdByName: string;
+  createdByEmail: string;
+};
+
+function getUrgencyStyles(urgency: HelpdeskTicketUrgency) {
+  switch (urgency) {
+    case "critical": return { backgroundColor: "#fee2e2", color: "#b91c1c" };
+    case "high":     return { backgroundColor: "#ffedd5", color: "#c2410c" };
+    case "medium":   return { backgroundColor: "#fef3c7", color: "#92400e" };
+    default:         return { backgroundColor: "#dcfce7", color: "#15803d" };
+  }
+}
+
+function getStatusStyles(status: HelpdeskTicketStatus | undefined | null) {
+  switch (status) {
+    case "open":        return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+    case "in_progress": return { backgroundColor: "#fef3c7", color: "#92400e" };
+    case "resolved":    return { backgroundColor: "#dcfce7", color: "#15803d" };
+    case "closed":      return { backgroundColor: "#f3f4f6", color: "#6b7280" };
+    default:            return { backgroundColor: "#dbeafe", color: "#1d4ed8" };
+  }
+}
+
+function formatStatus(status: HelpdeskTicketStatus | undefined | null) {
+  if (!status) return "Open";
+  return status === "in_progress" ? "In Progress" : status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 function formatDateTime(value?: string | null) {
   if (!value) return "-";
   const date = new Date(value);
@@ -74,6 +113,21 @@ function formatActionLabel(action?: string | null) {
   return action.charAt(0).toUpperCase() + action.slice(1);
 }
 
+function formatDate(value?: string | null) {
+  if (!value) return "-";
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return value;
+
+  const date = new Date(year, month - 1, day);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function HREmployeesPage() {
   const router = useRouter();
   const [isAuthorized, setIsAuthorized] = useState(false);
@@ -89,7 +143,8 @@ export default function HREmployeesPage() {
   const [resettingOnboarding, setResettingOnboarding] = useState<string | null>(null);
   const [latestFormEditsByUser, setLatestFormEditsByUser] = useState<Record<string, LatestFormEdit>>({});
   const [recentFormEdits, setRecentFormEdits] = useState<LatestFormEdit[]>([]);
-
+  const [helpdeskTickets, setHelpdeskTickets] = useState<HelpdeskTicket[]>([]);
+  const [ticketsError, setTicketsError] = useState("");
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -150,34 +205,33 @@ export default function HREmployeesPage() {
     setLoading(true);
     setError("");
     setAuditError("");
+    setTicketsError("");
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.access_token) {
         throw new Error('No session found');
       }
 
-      const [usersResponse, editsResponse] = await Promise.all([
+      const [usersResponse, editsResponse, ticketsResponse] = await Promise.all([
         fetch('/api/users/all', {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         }),
         fetch('/api/hr/employees/form-edits', {
           method: 'GET',
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }),
+        fetch('/api/hr/helpdesk-tickets?scope=all', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${session.access_token}` },
         }),
       ]);
 
       const usersData = await usersResponse.json();
       let editsData: any = null;
-      try {
-        editsData = await editsResponse.json();
-      } catch {
-        editsData = null;
-      }
+      let ticketsData: any = null;
+      try { editsData = await editsResponse.json(); } catch { editsData = null; }
+      try { ticketsData = await ticketsResponse.json(); } catch { ticketsData = null; }
 
       if (!usersResponse.ok) {
         throw new Error(usersData.error || 'Failed to load users');
@@ -193,10 +247,18 @@ export default function HREmployeesPage() {
         setRecentFormEdits([]);
         setAuditError(editsData?.error || 'Failed to load HR form edit history');
       }
+
+      if (ticketsResponse.ok) {
+        setHelpdeskTickets(ticketsData?.tickets || []);
+      } else {
+        setHelpdeskTickets([]);
+        setTicketsError(ticketsData?.error || 'Failed to load helpdesk tickets');
+      }
     } catch (err: any) {
       console.error('[HR-EMPLOYEES] Error loading users:', err);
       setLatestFormEditsByUser({});
       setRecentFormEdits([]);
+      setHelpdeskTickets([]);
       setError(err.message || 'Failed to load users');
     } finally {
       setLoading(false);
@@ -425,6 +487,19 @@ export default function HREmployeesPage() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
         <h1 style={{ fontSize: '2rem', fontWeight: 'bold' }}>Employees</h1>
         <div style={{ display: 'flex', gap: '1rem' }}>
+          <Link
+            href="/hr/helpdesk"
+            style={{
+              padding: '0.5rem 1rem',
+              backgroundColor: '#2563eb',
+              color: 'white',
+              borderRadius: '0.375rem',
+              textDecoration: 'none',
+              fontWeight: '500'
+            }}
+          >
+            Helpdesk
+          </Link>
           <button
             onClick={exportToExcel}
             disabled={loading || filteredUsers.length === 0}
@@ -469,6 +544,128 @@ export default function HREmployeesPage() {
             Logout
           </button>
         </div>
+      </div>
+
+      {/* Recent Helpdesk Tickets */}
+      <div style={{
+        backgroundColor: '#ffffff',
+        border: '1px solid #e5e7eb',
+        borderRadius: '0.75rem',
+        marginBottom: '2rem',
+        overflow: 'hidden',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
+      }}>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          padding: '1rem 1.25rem',
+          borderBottom: '1px solid #e5e7eb',
+          backgroundColor: '#f9fafb',
+        }}>
+          <div>
+            <span style={{ fontWeight: '600', fontSize: '0.95rem', color: '#111827' }}>
+              Recent Helpdesk Tickets
+            </span>
+            {helpdeskTickets.length > 0 && (
+              <span style={{ marginLeft: '0.5rem', fontSize: '0.8rem', color: '#6b7280' }}>
+                ({helpdeskTickets.length})
+              </span>
+            )}
+          </div>
+          <Link
+            href="/hr/helpdesk"
+            style={{ fontSize: '0.85rem', color: '#2563eb', textDecoration: 'none', fontWeight: '500' }}
+          >
+            Manage all tickets →
+          </Link>
+        </div>
+
+        {ticketsError && (
+          <div style={{ padding: '0.75rem 1.25rem', backgroundColor: '#fee2e2', color: '#b91c1c', fontSize: '0.875rem' }}>
+            {ticketsError}
+          </div>
+        )}
+
+        {!ticketsError && helpdeskTickets.length === 0 ? (
+          <div style={{ padding: '1.5rem 1.25rem', color: '#6b7280', fontSize: '0.875rem' }}>
+            No helpdesk tickets yet.
+          </div>
+        ) : (
+          <div>
+            {helpdeskTickets.slice(0, 8).map((ticket, i) => {
+              const urgencyStyle = getUrgencyStyles(ticket.urgency);
+              const statusStyle  = getStatusStyles(ticket.status);
+              const statusLabel  = formatStatus(ticket.status);
+              return (
+                <div key={ticket.id} style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '1rem',
+                  padding: '0.875rem 1.25rem',
+                  borderBottom: i < Math.min(helpdeskTickets.length, 8) - 1 ? '1px solid #f3f4f6' : 'none',
+                  backgroundColor: i % 2 === 0 ? '#ffffff' : '#fafafa',
+                }}>
+                  {/* Left: ticket number + description */}
+                  <div style={{ flex: '1 1 0', minWidth: 0 }}>
+                    <div style={{ fontWeight: '600', fontSize: '0.875rem', color: '#111827', marginBottom: '0.25rem' }}>
+                      {ticket.ticketNumber}
+                    </div>
+                    <div style={{ fontSize: '0.8rem', color: '#4b5563', lineHeight: 1.4 }}>
+                      {ticket.description.length > 100
+                        ? ticket.description.slice(0, 100) + '…'
+                        : ticket.description}
+                    </div>
+                  </div>
+
+                  {/* Center: badges + date */}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '0.35rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      {/* Urgency chip */}
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: '9999px',
+                        fontSize: '0.72rem',
+                        fontWeight: '700',
+                        textTransform: 'capitalize',
+                        backgroundColor: urgencyStyle.backgroundColor,
+                        color: urgencyStyle.color,
+                      }}>
+                        {ticket.urgency}
+                      </span>
+                      {/* Status chip */}
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: '9999px',
+                        fontSize: '0.72rem',
+                        fontWeight: '700',
+                        backgroundColor: statusStyle.backgroundColor,
+                        color: statusStyle.color,
+                      }}>
+                        {statusLabel}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '0.75rem', color: '#6b7280' }}>
+                      {formatDate(ticket.ticketDate)}
+                    </div>
+                  </div>
+
+                  {/* Right: submitter */}
+                  <div style={{ flexShrink: 0, textAlign: 'right', minWidth: '120px' }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: '500', color: '#111827' }}>
+                      {ticket.createdByName}
+                    </div>
+                    <div style={{ fontSize: '0.72rem', color: '#9ca3af' }}>
+                      {ticket.createdByEmail}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Search Bar */}

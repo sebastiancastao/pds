@@ -72,6 +72,17 @@ type SickLeaveEntry = {
   created_at: string | null;
 };
 
+type SickLeavePaysheet = {
+  id: string;
+  hours: number;
+  rate: number;
+  amount: number;
+  payment_date: string | null;
+  status: string;
+  notes: string | null;
+  created_at: string | null;
+};
+
 type SickLeaveSummary = {
   total_hours: number;
   total_days: number;
@@ -83,6 +94,7 @@ type SickLeaveSummary = {
   carry_over_days?: number;
   balance_hours: number;
   balance_days: number;
+  paysheets?: SickLeavePaysheet[];
 };
 
 type SummaryPayload = {
@@ -363,6 +375,31 @@ export default function EmployeeProfilePage() {
   const [customFormDocs, setCustomFormDocs] = useState<Record<string, { slot: string; label: string; filename: string; url: string | null }[]>>({});
   const [employeeHomeVenue, setEmployeeHomeVenue] = useState<AssignedVenue | null>(null);
   const [uploadedEmails, setUploadedEmails] = useState<{ url: string; name: string; createdAt: string }[]>([]);
+
+  const [helpdeskTickets, setHelpdeskTickets] = useState<{
+    id: string;
+    ticketNumber: string;
+    ticketDate: string;
+    urgency: string;
+    status: string;
+    description: string;
+    createdAt: string;
+  }[]>([]);
+  const [helpdeskLoading, setHelpdeskLoading] = useState(false);
+  const [helpdeskError, setHelpdeskError] = useState<string | null>(null);
+
+  const [dataEditionRequests, setDataEditionRequests] = useState<{
+    id: string;
+    document_name: string;
+    document_type: string;
+    reason: string | null;
+    status: string;
+    review_notes: string | null;
+    reviewed_at: string | null;
+    created_at: string;
+  }[]>([]);
+  const [dataEditionLoading, setDataEditionLoading] = useState(false);
+  const [dataEditionError, setDataEditionError] = useState<string | null>(null);
 
   const [paystubHistory, setPaystubHistory] = useState<{
     id: string;
@@ -773,6 +810,32 @@ export default function EmployeeProfilePage() {
 
   useEffect(() => {
     if (!employeeId) return;
+    setDataEditionLoading(true);
+    setDataEditionError(null);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/data-edition-requests?userId=${employeeId}`, {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        cache: "no-store",
+      })
+        .then((r) => r.json())
+        .then((body) => {
+          if (body.error) {
+            setDataEditionError(body.error);
+            setDataEditionRequests([]);
+          } else {
+            setDataEditionRequests(body.requests ?? []);
+          }
+          setDataEditionLoading(false);
+        })
+        .catch((e) => {
+          setDataEditionError(e.message ?? "Failed to load data edition requests");
+          setDataEditionLoading(false);
+        });
+    });
+  }, [employeeId, refreshTick]);
+
+  useEffect(() => {
+    if (!employeeId) return;
     setPaystubHistoryLoading(true);
     setPaystubHistoryError(null);
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -796,6 +859,32 @@ export default function EmployeeProfilePage() {
         });
     });
   }, [employeeId, refreshTick]);
+
+  useEffect(() => {
+    if (!employeeId) return;
+    setHelpdeskLoading(true);
+    setHelpdeskError(null);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      fetch(`/api/hr/helpdesk-tickets?userId=${employeeId}`, {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+        cache: "no-store",
+      })
+        .then((r) => r.json())
+        .then((body) => {
+          if (body.error) {
+            setHelpdeskError(body.error);
+            setHelpdeskTickets([]);
+          } else {
+            setHelpdeskTickets(body.tickets ?? []);
+          }
+          setHelpdeskLoading(false);
+        })
+        .catch((e) => {
+          setHelpdeskError(e.message ?? "Failed to load helpdesk tickets");
+          setHelpdeskLoading(false);
+        });
+    });
+  }, [employeeId]);
 
   const computed = useMemo(() => {
     if (!entries) return { totalHoursLocal: 0 };
@@ -828,6 +917,7 @@ export default function EmployeeProfilePage() {
 
   const sickLeaveSummary = summary?.sick_leave;
   const sickLeaveEntries = sickLeaveSummary?.entries ?? [];
+  const sickLeavePaysheets = sickLeaveSummary?.paysheets ?? [];
 
   // Build calendar dot map
   const { calDots, calEventDetails, calRegionEventDetails } = useMemo(() => {
@@ -2329,6 +2419,45 @@ export default function EmployeeProfilePage() {
                     })}
                   </div>
                 )}
+
+                {/* Sick Leave Pay Sheets */}
+                <div className="border-t border-gray-100 pt-6">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Sick Leave Pay Sheets</h3>
+                  {sickLeavePaysheets.length === 0 ? (
+                    <div className="text-center py-6 text-sm text-gray-500">
+                      No sick leave pay sheets have been created for this employee yet.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {sickLeavePaysheets.map((ps) => (
+                        <div
+                          key={ps.id}
+                          className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"
+                        >
+                          <div className="flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-xs text-gray-500">Payment Date</p>
+                              <p className="text-sm font-semibold text-gray-900">
+                                {formatDate(ps.payment_date)}
+                              </p>
+                            </div>
+                            <span
+                              className={`px-3 py-1 text-xs font-semibold capitalize keeping-wide border rounded-full ${ps.status === "paid" ? "bg-green-100 text-green-700 border-green-200" : "bg-blue-100 text-blue-700 border-blue-200"}`}
+                            >
+                              {ps.status}
+                            </span>
+                          </div>
+                          <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600">
+                            <span>Hours: {formatHours(ps.hours)}</span>
+                            <span>Rate: ${ps.rate.toFixed(2)}/hr</span>
+                            <span>Amount: ${ps.amount.toFixed(2)}</span>
+                            {ps.notes && <span>Notes: {ps.notes}</span>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -3033,6 +3162,133 @@ export default function EmployeeProfilePage() {
               </div>
             </section>
           )}
+
+          {/* Helpdesk Tickets */}
+          <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+              <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+              </svg>
+              <h2 className="text-base font-semibold text-gray-900">Helpdesk Tickets</h2>
+              {!helpdeskLoading && !helpdeskError && (
+                <span className="ml-auto text-xs text-gray-400">{helpdeskTickets.length} ticket{helpdeskTickets.length !== 1 ? "s" : ""}</span>
+              )}
+            </div>
+            <div className="divide-y divide-gray-50">
+              {helpdeskLoading ? (
+                <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+              ) : helpdeskError ? (
+                <div className="px-6 py-4 text-sm text-red-600">Could not load tickets: {helpdeskError}</div>
+              ) : helpdeskTickets.length === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-gray-400">No helpdesk tickets for this employee.</div>
+              ) : (
+                helpdeskTickets.map((ticket) => {
+                  const urgencyColors: Record<string, { bg: string; text: string }> = {
+                    critical: { bg: "bg-red-100",    text: "text-red-700"    },
+                    high:     { bg: "bg-orange-100", text: "text-orange-700" },
+                    medium:   { bg: "bg-yellow-100", text: "text-yellow-700" },
+                    low:      { bg: "bg-green-100",  text: "text-green-700"  },
+                  };
+                  const statusColors: Record<string, { bg: string; text: string }> = {
+                    open:        { bg: "bg-blue-100",  text: "text-blue-700"  },
+                    in_progress: { bg: "bg-yellow-100", text: "text-yellow-700" },
+                    resolved:    { bg: "bg-green-100", text: "text-green-700" },
+                    closed:      { bg: "bg-gray-100",  text: "text-gray-600"  },
+                  };
+                  const uc = urgencyColors[ticket.urgency] ?? { bg: "bg-gray-100", text: "text-gray-600" };
+                  const sc = statusColors[ticket.status]   ?? { bg: "bg-blue-100", text: "text-blue-700" };
+                  const statusLabel = ticket.status === "in_progress"
+                    ? "In Progress"
+                    : (ticket.status ?? "open").charAt(0).toUpperCase() + (ticket.status ?? "open").slice(1);
+                  return (
+                    <div key={ticket.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-start gap-3">
+                      {/* Left: number + description */}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900">{ticket.ticketNumber}</p>
+                        <p className="text-xs text-gray-500 mt-0.5 leading-relaxed">
+                          {ticket.description.length > 120
+                            ? ticket.description.slice(0, 120) + "…"
+                            : ticket.description}
+                        </p>
+                      </div>
+                      {/* Right: chips + date */}
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        <div className="flex items-center gap-1.5">
+                          {/* Urgency chip */}
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold capitalize border ${uc.bg} ${uc.text} border-transparent`}>
+                            {ticket.urgency}
+                          </span>
+                          {/* Status chip */}
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${sc.bg} ${sc.text} border-transparent`}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400">
+                          {ticket.ticketDate
+                            ? new Date(ticket.ticketDate + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+                            : "—"}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          {/* request data update */}
+          <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-100 flex items-center gap-2">
+              <svg className="w-5 h-5 text-violet-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              <h2 className="text-base font-semibold text-gray-900">request data update</h2>
+              {!dataEditionLoading && !dataEditionError && (
+                <span className="ml-auto text-xs text-gray-400">{dataEditionRequests.length} request{dataEditionRequests.length !== 1 ? "s" : ""}</span>
+              )}
+            </div>
+            <div className="divide-y divide-gray-50">
+              {dataEditionLoading ? (
+                <div className="px-6 py-4 text-sm text-gray-400">Loading...</div>
+              ) : dataEditionError ? (
+                <div className="px-6 py-4 text-sm text-red-600">Could not load requests: {dataEditionError}</div>
+              ) : dataEditionRequests.length === 0 ? (
+                <div className="px-6 py-8 text-center text-sm text-gray-400">No data edition requests for this employee.</div>
+              ) : (
+                dataEditionRequests.map((req) => {
+                  const statusStyles: Record<string, { bg: string; text: string; border: string }> = {
+                    pending:  { bg: "bg-yellow-50",  text: "text-yellow-700",  border: "border-yellow-200" },
+                    sent:     { bg: "bg-blue-50",    text: "text-blue-700",    border: "border-blue-200"   },
+                    approved: { bg: "bg-green-50",   text: "text-green-700",   border: "border-green-200"  },
+                    rejected: { bg: "bg-red-50",     text: "text-red-700",     border: "border-red-200"    },
+                  };
+                  const sc = statusStyles[req.status] ?? { bg: "bg-gray-50", text: "text-gray-700", border: "border-gray-200" };
+                  const statusLabel = req.status === "sent" ? "Form Sent" : req.status.charAt(0).toUpperCase() + req.status.slice(1);
+                  return (
+                    <div key={req.id} className="px-6 py-4 flex flex-col sm:flex-row sm:items-start gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-semibold text-gray-900">{req.document_name}</p>
+                        <p className="text-xs text-gray-500 mt-0.5 capitalize">{req.document_type} form</p>
+                        {req.reason && (
+                          <p className="text-xs text-gray-500 mt-1 leading-relaxed">
+                            Reason: {req.reason.length > 100 ? req.reason.slice(0, 100) + "…" : req.reason}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end gap-1.5 shrink-0">
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${sc.bg} ${sc.text} ${sc.border}`}>
+                          {statusLabel}
+                        </span>
+                        <p className="text-xs text-gray-400">
+                          {new Date(req.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
 
           {/* Paystub Distribution History */}
           <section className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
