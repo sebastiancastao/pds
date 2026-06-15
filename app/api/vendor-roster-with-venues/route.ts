@@ -84,6 +84,30 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch vendors' }, { status: 500 });
     }
 
+    // Primary phone source: the employee onboarding info (matched by user_id),
+    // which has the widest phone coverage for vendors.
+    const { data: eiPhones } = await supabaseAdmin
+      .from('employee_information')
+      .select('user_id, phone');
+
+    const eiPhoneByUserId = new Map<string, string>(
+      (eiPhones ?? [])
+        .filter((r: any) => r.user_id && r.phone)
+        .map((r: any) => [String(r.user_id), String(r.phone)])
+    );
+
+    // Fallback phone source: the dedicated vendor roster (matched by email) so the
+    // export still shows a phone when neither the profile nor onboarding info has one.
+    const { data: rosterPhones } = await supabaseAdmin
+      .from('vendor_roster')
+      .select('email, cell_phone');
+
+    const rosterPhoneByEmail = new Map<string, string>(
+      (rosterPhones ?? [])
+        .filter((r: any) => r.email && r.cell_phone)
+        .map((r: any) => [String(r.email).toLowerCase().trim(), String(r.cell_phone)])
+    );
+
     // Fetch all venues (include full_address for geocoding fallback)
     const { data: venuesRaw, error: venuesError } = await supabaseAdmin
       .from('venue_reference')
@@ -154,7 +178,14 @@ export async function GET(req: NextRequest) {
       const profile = Array.isArray(v.profiles) ? v.profiles[0] : v.profiles;
       const firstName = profile?.first_name ? safeDecrypt(profile.first_name) : '';
       const lastName = profile?.last_name ? safeDecrypt(profile.last_name) : '';
-      const phone = profile?.phone ? safeDecrypt(profile.phone) : '';
+      const profilePhone = profile?.phone ? safeDecrypt(profile.phone) : '';
+      const eiPhone = eiPhoneByUserId.get(String(v.id));
+      const eiPhoneDecrypted = eiPhone ? safeDecrypt(eiPhone) : '';
+      const phone =
+        eiPhoneDecrypted ||
+        profilePhone ||
+        rosterPhoneByEmail.get(String(v.email).toLowerCase().trim()) ||
+        '';
       const address = profile?.address ? safeDecrypt(profile.address) : '';
       const zipCode = profile?.zip_code ? safeDecrypt(profile.zip_code) : '';
 
