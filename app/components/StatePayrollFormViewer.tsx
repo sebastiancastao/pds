@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
 import { I9_ENTRY_POINTS, normalizeI9EntryPoint } from '@/lib/i9-proxy-audit';
+import { stampHomeVenueAssignmentLayout } from '@/app/lib/home-venue-pdf-layout';
 
 const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
   ssr: false,
@@ -2382,61 +2383,22 @@ export default function StatePayrollFormViewer({
 
     if (selectedForm === 'home-venue-assignment' && pdfBytesRef.current) {
       try {
-        const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+        const { PDFDocument } = await import('pdf-lib');
         const pdfDoc = await PDFDocument.load(pdfBytesRef.current);
-        const pages = pdfDoc.getPages();
-        const firstPage = pages[0];
-        const lastPage = pdfDoc.getPages().at(-1)!;
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         try { pdfDoc.getForm().flatten(); } catch {}
 
         const trimmedPrintName = homeVenuePrintName.trim();
-        if (trimmedPrintName) {
-          lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-          lastPage.drawText(trimmedPrintName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-          lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
-
-          const openingLineX = 80;
-          const openingLineY = 523;
-          const openingLineWidth = 120;
-          const preferredOpeningSize = 10.5;
-          const measuredOpeningWidth = font.widthOfTextAtSize(trimmedPrintName, preferredOpeningSize);
-          const openingSize =
-            measuredOpeningWidth > openingLineWidth
-              ? Math.max(8, preferredOpeningSize * (openingLineWidth / measuredOpeningWidth))
-              : preferredOpeningSize;
-
-          firstPage.drawRectangle({
-            x: openingLineX - 2,
-            y: openingLineY - 4,
-            width: openingLineWidth + 4,
-            height: 16,
-            color: rgb(1, 1, 1),
-            borderWidth: 0,
-          });
-          firstPage.drawText(trimmedPrintName, {
-            x: openingLineX,
-            y: openingLineY + 2,
-            size: openingSize,
-            font,
-            color: rgb(0, 0, 0),
-          });
-        }
-
         const venueName = venueOptions.find(v => v.id === selectedVenueId)?.venue_name || currentVenue?.venue_name || '';
-        if (venueName) {
-          lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-          lastPage.drawText(venueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-          lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
-        }
-
+        let formattedDate = '';
         if (homeVenueDate) {
           const [yr, mo, dy] = homeVenueDate.split('-').map(Number);
-          const formatted = new Date(yr, mo - 1, dy).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-          lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-          lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
-          lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+          formattedDate = new Date(yr, mo - 1, dy).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
         }
+        await stampHomeVenueAssignmentLayout(pdfDoc, {
+          employeeName: trimmedPrintName,
+          venueName,
+          dateText: formattedDate,
+        });
 
         const stamped = new Uint8Array(await pdfDoc.save());
         pdfBytesRef.current = stamped;

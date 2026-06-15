@@ -737,6 +737,119 @@ function buildFailure(
   return { placement: null, failureTier, failureReason };
 }
 
+// Gap (in PDF points) left between the printed caption and the bottom of the
+// signature, so the signature sits on the blank line above the caption text
+// rather than overlapping it.
+const ABOVE_CAPTION_GAP = 2;
+
+/**
+ * Find an employee-signature anchor on every page that prints an "Employee
+ * Signature" caption. Unlike resolveExistingEmployeeSignaturePlacement (which
+ * returns a single best placement for the whole document), this returns one
+ * placement per page, which is what multi-page acknowledgement documents like
+ * the employee handbook need. It anchors purely off the caption text (employer/
+ * witness/representative captions are rejected by the shared scoring), so it
+ * does not depend on detecting a drawn underline.
+ */
+export async function findEmployeeSignatureLabelPlacements(
+  pdfBytes: Uint8Array
+): Promise<ExistingSignaturePlacement[]> {
+  const placements: ExistingSignaturePlacement[] = [];
+
+  let pageWindowsByIndex: Array<Array<{ text: string; rect: PdfRect }>> = [];
+  try {
+    pageWindowsByIndex = await extractPageTextWindows(pdfBytes);
+  } catch {
+    return placements;
+  }
+
+  // A "signature line" in these documents is a run of underscore characters
+  // printed just ABOVE its caption (e.g. "______" sitting above "Employee
+  // Signature"). Detecting that underscore row lets us drop the signature
+  // exactly onto the line instead of guessing an offset from the caption.
+  const isUnderscoreLine = (text: string) => {
+    const compact = text.replace(/\s+/g, '');
+    return compact.length >= 6 && /^_+$/.test(compact);
+  };
+
+  // An employee "sign here" caption in these documents takes two forms:
+  //   - "Employee Signature"     (arbitration acknowledgement pages)
+  //   - "(Sign Employee Name)"   (handbook acknowledgement pages)
+  // Both must be matched, while the parallel "Print Employee Name" line and any
+  // employer/representative/witness lines must be rejected.
+  const isEmployeeSignCaption = (text: string) => {
+    const n = normalizeLabelText(text);
+    if (!/\b(employee|applicant|worker)\b/.test(n)) return false;
+    if (/\bprint\b/.test(n)) return false; // the print-name line, not the sign line
+    if (/\b(employer|representative|witness|company|manager|payroll|supervisor|hr)\b/.test(n)) {
+      return false;
+    }
+    return /\bsignature\b/.test(n) || /\bsign\b/.test(n);
+  };
+
+  pageWindowsByIndex.forEach((windows, pageIndex) => {
+    const underscoreLines = windows.filter((w) => isUnderscoreLine(w.text)).map((w) => w.rect);
+    const usedLineKeys = new Set<string>();
+
+    for (const window of windows) {
+      if (!isEmployeeSignCaption(window.text)) continue;
+
+      const caption = window.rect;
+      const captionCenterX = caption.x + caption.width / 2;
+
+      // The underscore signature line sitting just above this caption.
+      let lineBest: { rect: PdfRect; dy: number } | null = null;
+      for (const line of underscoreLines) {
+        const dy = line.y - caption.y; // the line should be above the caption
+        if (dy <= 0 || dy > 34) continue;
+        const lineRight = line.x + line.width;
+        const overlapsCaption = line.x <= captionCenterX + 30 && lineRight >= caption.x - 10;
+        if (!overlapsCaption) continue;
+        if (!lineBest || dy < lineBest.dy) {
+          lineBest = { rect: line, dy };
+        }
+      }
+
+      let rect: PdfRect;
+      if (lineBest) {
+        const line = lineBest.rect;
+        // Sit the signature ON the underscore line (bottom a hair below it so the
+        // line shows through, ink extending up into the blank space).
+        rect = {
+          x: line.x,
+          y: line.y - 2,
+          width: Math.min(Math.max(120, line.width), 220),
+          height: 26,
+        };
+      } else {
+        // No underscore line found — anchor just above the caption text.
+        const captionHeight = Math.max(8, caption.height);
+        rect = {
+          x: caption.x,
+          y: caption.y + captionHeight + ABOVE_CAPTION_GAP,
+          width: Math.max(150, caption.width * 1.3),
+          height: 22,
+        };
+      }
+
+      // Multiple text windows can describe the same caption; dedupe by the
+      // resolved line position so we don't stamp the same line twice.
+      const key = `${Math.round(rect.x)}:${Math.round(rect.y)}`;
+      if (usedLineKeys.has(key)) continue;
+      usedLineKeys.add(key);
+
+      placements.push({
+        pageIndex,
+        rect,
+        source: 'visual-line',
+        labelText: window.text,
+      });
+    }
+  });
+
+  return placements;
+}
+
 export async function resolveExistingEmployeeSignaturePlacement(
   options: ResolvePlacementOptions
 ): Promise<ExistingSignaturePlacementResult> {

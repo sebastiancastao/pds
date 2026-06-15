@@ -15,6 +15,8 @@ import {
   LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT,
 } from "@/app/lib/temp-agreement-signature-placement";
 import { mergeSavedPdfFieldsOntoTemplate } from "@/app/lib/pdf-template-field-merge";
+import { stampHomeVenueAssignmentLayout } from "@/app/lib/home-venue-pdf-layout";
+import { renderCustomFormInputsOnDetectedLines } from "@/app/lib/custom-form-line-renderer";
 
 type Employee = {
   id: string;
@@ -1336,6 +1338,15 @@ export default function WorkerProfilePage() {
     const footerYShift = isNoticeToEmployee ? -16 : 0;
     const [y, m, d] = date.split('-').map(Number);
     const formatted = new Date(y, m - 1, d).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+    const isHomeVenueAssignment = formName?.toLowerCase().includes('home-venue-assignment');
+    if (isHomeVenueAssignment) {
+      await stampHomeVenueAssignmentLayout(pdfDoc, { dateText: formatted });
+      const saved = await pdfDoc.save();
+      let b = '';
+      for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+      return btoa(b);
+    }
+
     lastPage.drawRectangle({
       x: 325,
       y: isNoticeToEmployee ? 8 : 28,
@@ -1426,8 +1437,7 @@ export default function WorkerProfilePage() {
     }
   };
 
-  // Embed the home venue footer fields and, for the home venue assignment form,
-  // also fill the opening "I, ___" line on page 1.
+  // Embed venue information using the form-specific layout when applicable.
   const withVenueEmbedded = async (
     base64Data: string,
     venueName: string,
@@ -1443,6 +1453,18 @@ export default function WorkerProfilePage() {
     const lastPage = pages.at(-1)!;
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const isNoticeToEmployee = normalizeStandardOnboardingFormName(formName) === 'notice-to-employee';
+    const isHomeVenueAssignment = formName?.toLowerCase().includes('home-venue-assignment');
+    if (isHomeVenueAssignment) {
+      await stampHomeVenueAssignmentLayout(pdfDoc, {
+        employeeName,
+        venueName,
+      });
+      const saved = await pdfDoc.save();
+      let b = '';
+      for (let i = 0; i < saved.length; i++) b += String.fromCharCode(saved[i]);
+      return btoa(b);
+    }
+
     const footerYShift = isNoticeToEmployee ? -16 : 0;
     lastPage.drawRectangle({
       x: 35,
@@ -1601,6 +1623,14 @@ export default function WorkerProfilePage() {
     const byteArray = new Uint8Array(byteNumbers);
     const blob = new Blob([byteArray], { type: 'application/pdf' });
     return window.URL.createObjectURL(blob);
+  };
+
+  const withCustomFormInputsAlignedToLines = async (base64Data: string): Promise<string> => {
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const renderedBytes = await renderCustomFormInputsOnDetectedLines(pdfBytes);
+    let binary = '';
+    for (let i = 0; i < renderedBytes.length; i++) binary += String.fromCharCode(renderedBytes[i]);
+    return btoa(binary);
   };
 
   const openPdfInNewTab = (base64Data: string, existingWindow?: Window | null) => {
@@ -1975,6 +2005,9 @@ export default function WorkerProfilePage() {
           noticeRenderData.signatureType
         );
       }
+      if (matchingCustomForm) {
+        data = await withCustomFormInputsAlignedToLines(data);
+      }
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
       link.href = url;
@@ -2072,6 +2105,9 @@ export default function WorkerProfilePage() {
           noticeRenderData.signatureData,
           noticeRenderData.signatureType
         );
+      }
+      if (matchingCustomForm) {
+        data = await withCustomFormInputsAlignedToLines(data);
       }
       openPdfInNewTab(data, previewWindow);
     } catch (error) {

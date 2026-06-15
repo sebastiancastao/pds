@@ -7,8 +7,13 @@ import { join } from 'path';
 import { safeDecrypt } from '@/lib/encryption';
 import {
   drawSignatureIntoExistingPlacement,
+  findEmployeeSignatureLabelPlacements,
   resolveExistingEmployeeSignaturePlacement,
 } from '@/app/lib/pdf-signature-placement';
+import {
+  HOME_VENUE_SIGNATURE_RECT,
+  stampHomeVenueAssignmentLayout,
+} from '@/app/lib/home-venue-pdf-layout';
 
 // Disable caching and increase body size limit for large PDFs
 export const dynamic = 'force-dynamic';
@@ -24,16 +29,37 @@ const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_FILENAME = 'image001.png';
 // PDF coordinates: larger Y is higher on page. Negative values move content down.
 const SIGNATURE_Y_SHIFT = 80;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
-const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -12;
+// Tuned so the employee signature sits on the "(SIGNATURE of Employee)" line of
+// LC_2810.5 (page 2, employee column): line at x~317-544, y~231. With the base
+// formula this yields x = 322 + X_DELTA and y = 310 + Y_DELTA, so X_DELTA=-2 ->
+// x=320 and Y_DELTA=-80 -> y=230 (just on the line).
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_Y_DELTA = -80;
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_Y_DELTA = 0;
 // Positive values move content right.
-const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = 30;
+const NOTICE_TO_EMPLOYEE_EMPLOYEE_SIGNATURE_X_DELTA = -2;
 const NOTICE_TO_EMPLOYEE_EMPLOYER_SIGNATURE_X_DELTA = 16;
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_LEFT_X_DELTA = -220;
 // Negative values move date text down.
 const NOTICE_TO_EMPLOYEE_SIGNATURE_DATE_Y_DELTA = -10;
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
+
+// The employee handbook is a fixed 77-page template (pds-employee-handbook-2026.pdf
+// / PDS Employee Handbook_2026 Final-1.pdf). Its employee signature lines live at
+// these exact page/coordinate positions (the underscore line just above each
+// "(Sign Employee Name)" and "Employee Signature" caption). These are used as a
+// deterministic fallback for when pdf.js text extraction is unavailable in the
+// server runtime and the text-based line detector returns nothing.
+const HANDBOOK_KNOWN_SIGNATURE_ANCHORS: Array<{
+  pageIndex: number;
+  rect: { x: number; y: number; width: number; height: number };
+}> = [
+  { pageIndex: 68, rect: { x: 288, y: 693, width: 220, height: 26 } }, // (Sign Employee Name)
+  { pageIndex: 70, rect: { x: 288, y: 652, width: 220, height: 26 } }, // (Sign Employee Name)
+  { pageIndex: 73, rect: { x: 252, y: 362, width: 220, height: 26 } }, // Employee Signature
+  { pageIndex: 76, rect: { x: 252, y: 343, width: 220, height: 26 } }, // Employee Signature
+];
+const HANDBOOK_TEMPLATE_PAGE_COUNT = 77;
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
 const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
 
@@ -1470,6 +1496,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
+const MERGED_PDF_CACHE_VERSION = '2026-06-14-home-venue-layout-2';
 
 async function ensureCacheDirectory() {
   try {
@@ -1489,6 +1516,7 @@ async function tryServeCachedPdf(userId: string, sourceTimestamp: string) {
     const metaRaw = await fsPromises.readFile(metaPath, 'utf-8');
     const meta = JSON.parse(metaRaw);
     if (meta.sourceTimestamp !== sourceTimestamp) return null;
+    if (meta.cacheVersion !== MERGED_PDF_CACHE_VERSION) return null;
     console.log('[PDF_FORMS] Cache hit for user:', userId, 'timestamp:', sourceTimestamp);
     return await fsPromises.readFile(cachePath);
   } catch (error) {
@@ -1508,6 +1536,7 @@ async function cacheMergedPdf(userId: string, pdfBytes: Uint8Array, sourceTimest
     await fsPromises.writeFile(
       metaPath,
       JSON.stringify({
+        cacheVersion: MERGED_PDF_CACHE_VERSION,
         sourceTimestamp,
         generatedAt: new Date().toISOString(),
       })
@@ -1812,6 +1841,8 @@ export async function GET(
 
     const normalizedUserState = (targetProfile?.state || '').toString().toLowerCase().trim();
     const isTargetStateWI = normalizedUserState === 'wi' || normalizedUserState === 'wisconsin';
+    const isTargetStateAZ = normalizedUserState === 'az' || normalizedUserState === 'arizona';
+    const isTargetStateCA = normalizedUserState === 'ca' || normalizedUserState === 'california';
 
     const latestFormTimestamp = maxTimestamp(formsToProcess.map((form) => form.updated_at));
     let mealWaiverLatestUpdate: string | null = null;
@@ -2361,27 +2392,17 @@ export async function GET(
           console.log('[PDF_FORMS] Could not flatten form (may not have editable fields):', form.form_name, (flattenError as Error).message);
         }
 
-        // Stamp print name, home venue, and date onto home-venue-assignment PDFs
+        // Rebuild the home-venue assignment data/signature layout.
         const isHomeVenueAssignment = formNameLower.includes('home-venue-assignment');
-        if (isHomeVenueAssignment && (targetUserFullName || targetUserHomeVenueName)) {
+        if (isHomeVenueAssignment) {
           try {
-            const font = await formPdf.embedFont(StandardFonts.Helvetica);
-            const lastPage = formPdf.getPages().at(-1)!;
-            if (targetUserFullName) {
-              lastPage.drawText('Print Name', { x: 40, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-              lastPage.drawText(targetUserFullName, { x: 40, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-              lastPage.drawLine({ start: { x: 40, y: 160 }, end: { x: 210, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
-            }
-            if (targetUserHomeVenueName) {
-              lastPage.drawText('Home Venue', { x: 220, y: 200, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-              lastPage.drawText(targetUserHomeVenueName, { x: 220, y: 175, size: 11, font, color: rgb(0, 0, 0) });
-              lastPage.drawLine({ start: { x: 220, y: 160 }, end: { x: 470, y: 160 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
-            }
             const formUpdatedAt = form.updated_at ? new Date(form.updated_at) : new Date();
             const dateFormatted = formUpdatedAt.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-            lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
-            lastPage.drawText(dateFormatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
-            lastPage.drawLine({ start: { x: 330, y: 38 }, end: { x: 510, y: 38 }, thickness: 0.5, color: rgb(0.6, 0.6, 0.6) });
+            await stampHomeVenueAssignmentLayout(formPdf, {
+              employeeName: targetUserFullName,
+              venueName: targetUserHomeVenueName,
+              dateText: dateFormatted,
+            });
             console.log('[PDF_FORMS] Stamped home venue data onto:', form.form_name);
           } catch (stampError) {
             console.warn('[PDF_FORMS] Failed to stamp home venue data onto:', form.form_name, (stampError as Error).message);
@@ -2519,6 +2540,8 @@ export async function GET(
 
           const signaturePageIndexes = isEmployeeHandbook && handbookPageCount > 0
             ? Array.from({ length: handbookPageCount }, (_, idx) => handbookStartIndex + idx)
+            : isStateTaxForm && isTargetStateCA
+            ? [0] // CA DE-4: the employee signature line is on the first page
             : isStateTaxForm
             ? [stateTaxPageIndex]
             : [defaultPageIndex];
@@ -2553,16 +2576,41 @@ export async function GET(
             const signatureHeight = isI9Form ? 30 : 15;
             const isFW4Form = normalizedFormName === 'fw4';
             const isNoticeToEmployee = normalizedFormName === 'notice-to-employee';
-            const isCaDE4Form = normalizedFormName === 'ca-de4' || normalizedFormName === 'de4';
+            const isCaDE4Form =
+              normalizedFormName === 'ca-de4' ||
+              normalizedFormName === 'de4' ||
+              (normalizedFormName === 'state-tax' && isTargetStateCA);
             const isAttestationForm = normalizedFormName === 'attestation';
+            const isHomeVenueAssignment = normalizedFormName === 'home-venue-assignment';
             const isWIStateTax =
               normalizedFormName === 'wi-state-tax' ||
               (normalizedFormName === 'state-tax' && isTargetStateWI) ||
               formNameLower === 'wi-state-tax';
+            // Arizona state withholding form (Arizona Form A-4): a flat single-page
+            // PDF with no form fields, so its signature line can only be hit with a
+            // fixed coordinate (pd­f.js visual detection is unavailable server-side).
+            const isAZStateTax =
+              normalizedFormName === 'az-state-tax' ||
+              (normalizedFormName === 'state-tax' && isTargetStateAZ) ||
+              formNameLower === 'az-state-tax';
             const isTempEmploymentAgreement = normalizedFormName === 'temp-employment-agreement';
             const hasExplicitSignaturePlacement =
               Boolean(formDisplayNames[normalizedFormName]) ||
-              BACKGROUND_CHECK_FORM_KEYS.has(normalizedFormName);
+              BACKGROUND_CHECK_FORM_KEYS.has(normalizedFormName) ||
+              // The employee handbook is not in formDisplayNames but needs the
+              // multi-page hardcoded loop (signs its last 10 pages). Without this it
+              // fell into the detector-only path, which yields a single placement at
+              // most — so the handbook came back with no signatures.
+              isEmployeeHandbook ||
+              // CA DE-4 normalizes to "de4" (the "ca-" state prefix is stripped),
+              // which is NOT in formDisplayNames, so it otherwise fell into the
+              // detector-only path (which fails server-side) and drew no signature.
+              isCaDE4Form ||
+              // Home-venue assignment is an image-based acknowledgement letter
+              // with no fillable signature field or detectable signature caption.
+              // It needs a fixed closing-block placement rather than the
+              // detector-only path.
+              isHomeVenueAssignment;
 
             let attestationSignaturePlacement:
               | { page: PDFPage; rect: { x: number; y: number; width: number; height: number } }
@@ -2655,6 +2703,131 @@ export async function GET(
                 });
               }
             } else {
+              // Known form: first try to detect the real employee signature line so
+              // the signature lands on the correct line instead of a fixed offset
+              // that may not match this template version. The detector targets the
+              // EMPLOYEE signature field/line and avoids employer/date/witness lines.
+              // Fall back to the legacy hardcoded coordinates when no confident
+              // target is found, for multi-page signature forms (e.g. employee
+              // handbook) that need a signature on every page, and for
+              // notice-to-employee when an employee signature is already present.
+              let drawnViaDetector = false;
+              const supportsDetectorPlacement =
+                signaturePageIndexes.length <= 1 &&
+                !(isNoticeToEmployee && noticeHasEmployeeSignatureAppearance);
+
+              if (supportsDetectorPlacement) {
+                try {
+                  const detectorTemplateBytes = await loadCustomFormTemplateBytes(customForm?.storagePath);
+                  const placementResult = await resolveExistingEmployeeSignaturePlacement({
+                    pdfBytes: new Uint8Array(pdfBytes),
+                    templateBytes: detectorTemplateBytes,
+                  });
+
+                  if (placementResult.placement) {
+                    const placed = await drawSignatureIntoExistingPlacement({
+                      pdfDoc: formPdf,
+                      placement: placementResult.placement,
+                      signatureData: signatureValue,
+                      signatureType: signatureForForm.signature_type || null,
+                    });
+
+                    if (placed) {
+                      drawnViaDetector = true;
+                      console.log('[PDF_FORMS] Placed signature via detected employee signature target', {
+                        formName: form.form_name,
+                        placementSource: placementResult.placement.source,
+                        page: placementResult.placement.pageIndex,
+                      });
+                    } else {
+                      console.warn('[PDF_FORMS] Detector resolved a target but render failed; using hardcoded fallback', {
+                        formName: form.form_name,
+                        placementSource: placementResult.placement.source,
+                      });
+                    }
+                  } else {
+                    console.warn('[PDF_FORMS] No employee signature target detected; using hardcoded fallback', {
+                      formName: form.form_name,
+                      failureTier: placementResult.failureTier,
+                      reason: placementResult.failureReason,
+                    });
+                  }
+                } catch (detectError) {
+                  console.warn('[PDF_FORMS] Signature detection threw for known form; using hardcoded fallback', {
+                    formName: form.form_name,
+                    error: detectError instanceof Error ? detectError.message : detectError,
+                  });
+                }
+              }
+
+              if (!drawnViaDetector) {
+              // For the employee handbook, place the signature on each printed
+              // "Employee Signature" line (it appears on multiple acknowledgement
+              // pages), instead of the generic hardcoded coordinates which do not
+              // line up with the form. Fall back to the hardcoded loop only if no
+              // Employee Signature lines are detected.
+              let handbookAnchorsDrawn = false;
+              if (isEmployeeHandbook) {
+                try {
+                  let anchors: Array<{
+                    pageIndex: number;
+                    rect: { x: number; y: number; width: number; height: number };
+                  }> = await findEmployeeSignatureLabelPlacements(new Uint8Array(pdfBytes));
+                  console.log('[PDF_FORMS] Employee handbook signature detection:', {
+                    formName: form.form_name,
+                    formPdfPages: pages.length,
+                    anchorsFound: anchors.length,
+                    anchors: anchors.map((a) => ({
+                      page: a.pageIndex,
+                      x: Math.round(a.rect.x),
+                      y: Math.round(a.rect.y),
+                    })),
+                  });
+                  if (anchors.length === 0 && pages.length >= HANDBOOK_TEMPLATE_PAGE_COUNT) {
+                    // Text-based detection found nothing — pdf.js text extraction can
+                    // fail in the server runtime. Fall back to the fixed signature-line
+                    // positions of the standard handbook template.
+                    anchors = HANDBOOK_KNOWN_SIGNATURE_ANCHORS.filter((a) => a.pageIndex < pages.length);
+                    console.log('[PDF_FORMS] Employee handbook: text detection empty; using known template positions:', anchors.length);
+                  }
+                  if (anchors.length > 0) {
+                    for (const anchor of anchors) {
+                      const anchorPage = pages[anchor.pageIndex];
+                      if (!anchorPage) continue;
+                      const rect = anchor.rect;
+                      if (isTyped && !isDataUrl) {
+                        anchorPage.drawText(signatureValue, {
+                          x: rect.x,
+                          y: rect.y + 4,
+                          size: 10,
+                        });
+                      } else if (signatureImage) {
+                        const scale = Math.min(
+                          rect.width / signatureImage.width,
+                          rect.height / signatureImage.height,
+                          1
+                        );
+                        const drawWidth = signatureImage.width * scale;
+                        const drawHeight = signatureImage.height * scale;
+                        anchorPage.drawImage(signatureImage, {
+                          x: rect.x,
+                          y: rect.y,
+                          width: drawWidth,
+                          height: drawHeight,
+                        });
+                      }
+                    }
+                    handbookAnchorsDrawn = true;
+                    console.log('[PDF_FORMS] Employee handbook: placed signature on', anchors.length, 'detected Employee Signature line(s)');
+                  } else {
+                    console.warn('[PDF_FORMS] Employee handbook: no Employee Signature lines detected; using hardcoded fallback');
+                  }
+                } catch (handbookSigError) {
+                  console.warn('[PDF_FORMS] Employee handbook signature-line detection failed; using hardcoded fallback', handbookSigError);
+                }
+              }
+
+              if (!handbookAnchorsDrawn) {
               for (const pageIdx of signaturePageIndexes) {
                 if (isNoticeToEmployee && noticeHasEmployeeSignatureAppearance) {
                   console.log('[PDF_FORMS] notice-to-employee: skipping employee signature embed (already present)');
@@ -2665,8 +2838,11 @@ export async function GET(
 
                 const baseX = width - signatureWidth - 50;
                 const baseY = isI9Form ? 100 : 50;
-                const fw4OffsetX = isFW4Form ? -200 : 0;
-                const fw4OffsetY = isFW4Form ? 70 : 0;
+                // Federal W-4 (fw4.pdf): the "Employee's signature" line is at
+                // x~101-447, y~114 on page 1. Base formula gives x = 442 + fw4OffsetX
+                // and y = 130 + fw4OffsetY, so -337 -> x=105 and -18 -> y=112 (on line).
+                const fw4OffsetX = isFW4Form ? -337 : 0;
+                const fw4OffsetY = isFW4Form ? -18 : 0;
                 const caDE4OffsetX = isCaDE4Form ? -300 : 0;
                 const caDE4OffsetY = isCaDE4Form ? 320 : 0;
                 const i9DateFieldY = Math.max(0, height - signatureHeight - 160);
@@ -2677,7 +2853,15 @@ export async function GET(
                 const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
                 const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
                 const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-                const x = isTempEmploymentAgreement
+                const x = isHomeVenueAssignment
+                  ? HOME_VENUE_SIGNATURE_RECT.x
+                  : isAZStateTax
+                  ? 40
+                  : isCaDE4Form
+                  ? 140
+                  : isCaliforniaTempEmploymentAgreement
+                  ? 72
+                  : isTempEmploymentAgreement
                   ? 50
                   : Math.max(
                       0,
@@ -2691,10 +2875,25 @@ export async function GET(
                         height - signatureHeight,
                         baseY + fw4OffsetY + noticeToEmployeeOffsetY + wiStateTaxOffsetY + caDE4OffsetY + stateTaxOffsetY
                       );
-                const y = Math.min(
-                  height - signatureHeight,
-                  rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
-                );
+                // Arizona Form A-4: sit the signature directly on the printed
+                // "SIGNATURE" line (x≈38, line at y≈451), bypassing the global shift.
+                // CA temp agreement (scanned San Diego / LA-Norcal): the "Employee
+                // Signature" line is at x~70-331, y~124 on the last page; place it
+                // there directly instead of adding the global shift to it.
+                const y = isHomeVenueAssignment
+                  ? HOME_VENUE_SIGNATURE_RECT.y
+                  : isAZStateTax
+                  ? 449
+                  // CA DE-4 (de4_State Tax Form.pdf): "Employee's Signature" line is
+                  // on page 1 at x~136-431, y~373; place it on the line directly.
+                  : isCaDE4Form
+                  ? 373
+                  : isCaliforniaTempEmploymentAgreement
+                  ? 125
+                  : Math.min(
+                      height - signatureHeight,
+                      rawY + SIGNATURE_Y_SHIFT + (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+                    );
 
                 if (isTyped && !isDataUrl) {
                   page.drawText(signatureValue, {
@@ -2711,11 +2910,15 @@ export async function GET(
                   });
                 }
 
-                page.drawText('Digitally Signed:', {
-                  x,
-                  y: y + signatureHeight + 5,
-                  size: 8,
-                });
+                if (!isHomeVenueAssignment) {
+                  page.drawText('Digitally Signed:', {
+                    x,
+                    y: y + signatureHeight + 5,
+                    size: 8,
+                  });
+                }
+              }
+              }
               }
             }
           } catch (imgError) {

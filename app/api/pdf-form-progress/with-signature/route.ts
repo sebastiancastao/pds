@@ -7,6 +7,10 @@ import {
   drawSignatureIntoExistingPlacement,
   resolveExistingEmployeeSignaturePlacement,
 } from '@/app/lib/pdf-signature-placement';
+import {
+  HOME_VENUE_SIGNATURE_RECT,
+  stampHomeVenueAssignmentLayout,
+} from '@/app/lib/home-venue-pdf-layout';
 
 export const dynamic = 'force-dynamic';
 
@@ -487,7 +491,7 @@ export async function GET(request: NextRequest) {
 
     const { data: formRows, error: formError } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('form_data')
+      .select('form_data, updated_at')
       .eq('user_id', userId)
       .eq('form_name', formName)
       .order('updated_at', { ascending: false })
@@ -656,7 +660,7 @@ export async function GET(request: NextRequest) {
     const isAttestation = normalizedName === 'attestation';
     const hasSignatureData = Boolean(signatureData?.trim());
 
-    if (!hasSignatureData && !isAttestation) {
+    if (!hasSignatureData && !isAttestation && normalizedName !== 'home-venue-assignment') {
       return NextResponse.json({ formData: base64Data, ...responseExtras });
     }
 
@@ -668,6 +672,7 @@ export async function GET(request: NextRequest) {
     const isFW4Form = normalizedName === 'fw4';
     const isNoticeToEmployee = normalizedName === 'notice-to-employee';
     const isCaDE4Form = normalizedName === 'ca-de4' || normalizedName === 'de4';
+    const isHomeVenueAssignment = normalizedName === 'home-venue-assignment';
     const isWIStateTax =
       normalizedName === 'wi-state-tax' ||
       (normalizedName === 'state-tax' && preferredState === 'wi') ||
@@ -678,7 +683,31 @@ export async function GET(request: NextRequest) {
       (normalizedUserState === 'ca' || normalizedUserState === 'california');
     const hasExplicitSignaturePlacement =
       KNOWN_EXPLICIT_SIGNATURE_FORMS.has(normalizedName) ||
-      BACKGROUND_CHECK_FORM_KEYS.has(normalizedName);
+      BACKGROUND_CHECK_FORM_KEYS.has(normalizedName) ||
+      isHomeVenueAssignment;
+
+    if (isHomeVenueAssignment) {
+      const { data: venueAssignment } = await supabaseAdmin
+        .from('vendor_venue_assignments')
+        .select('venue:venue_reference(venue_name)')
+        .eq('vendor_id', userId)
+        .order('assigned_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const venueName = (venueAssignment?.venue as any)?.venue_name?.toString().trim() || '';
+      const updatedAt = formRows[0]?.updated_at ? new Date(formRows[0].updated_at) : new Date();
+      const dateText = updatedAt.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+
+      await stampHomeVenueAssignmentLayout(pdfDoc, {
+        employeeName: resolvedUserFullName,
+        venueName,
+        dateText,
+      });
+    }
 
     // For I9: draw the state directly on the page and remove the form field,
     // so it renders correctly in every viewer without depending on appearance streams.
@@ -954,7 +983,9 @@ export async function GET(request: NextRequest) {
           const wiStateTaxOffsetY = isWIStateTax ? 480 : 0;
           const stateTaxOffsetX = isStateTaxForm && !isWIStateTax ? -200 : 0;
           const stateTaxOffsetY = isStateTaxForm && !isWIStateTax ? 400 : 0;
-          const x = isTempEmploymentAgreement
+          const x = isHomeVenueAssignment
+            ? HOME_VENUE_SIGNATURE_RECT.x
+            : isTempEmploymentAgreement
             ? 50
             : Math.max(
                 0,
@@ -980,13 +1011,15 @@ export async function GET(request: NextRequest) {
                     caDE4OffsetY +
                     stateTaxOffsetY
                 );
-          const y = Math.min(
-            height - signatureHeight,
-            rawY +
-              SIGNATURE_Y_SHIFT +
-              (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
-              (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
-          );
+          const y = isHomeVenueAssignment
+            ? HOME_VENUE_SIGNATURE_RECT.y
+            : Math.min(
+                height - signatureHeight,
+                rawY +
+                  SIGNATURE_Y_SHIFT +
+                  (isI9 ? I9_SIGNATURE_Y_DELTA : 0) +
+                  (isTempEmploymentAgreement ? TEMP_AGREEMENT_SIGNATURE_Y_DELTA : 0)
+              );
 
           if (isTyped && font) {
             page.drawText(signatureData!, { x, y: y + signatureHeight / 2, size: 10, font });
