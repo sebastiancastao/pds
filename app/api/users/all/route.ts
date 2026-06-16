@@ -122,6 +122,27 @@ export async function GET(request: NextRequest) {
     const profileByUserId = new Map((profilesData || []).map((p: any) => [p.user_id, p]));
     const profileIdByUserId = new Map((profilesData || []).map((p: any) => [p.user_id, p.id]));
 
+    // --- 3b. Employee onboarding info (primary phone source) ---
+    // profiles.phone is set for very few users; the onboarding record captured
+    // during employee information collection has by far the widest phone coverage.
+    const { data: eiData, error: eiError } = await supabaseAdmin
+      .from('employee_information')
+      .select('user_id, phone')
+      .limit(100000);
+
+    if (eiError) {
+      console.error('[USERS-ALL] Error fetching employee_information:', eiError);
+    }
+
+    // employee_information.phone is stored as plaintext in whatever format it was
+    // entered ((555) 123-4567, 5551234567, 555-123-4567, etc.). Keep the raw value
+    // as-is so every populated row is admitted regardless of formatting.
+    const eiPhoneByUserId = new Map<string, string>(
+      (eiData || [])
+        .filter((r: any) => r.user_id && r.phone && String(r.phone).trim() !== '')
+        .map((r: any) => [String(r.user_id), String(r.phone).trim()])
+    );
+
     // --- 4. Download records ---
     const { data: downloadRecords, error: downloadError } = await supabaseAdmin
       .from('background_check_pdf_downloads')
@@ -173,7 +194,12 @@ export async function GET(request: NextRequest) {
         // Profile fields (decrypted PII)
         first_name: profile ? (safeDecrypt(profile.first_name) || '') : '',
         last_name: profile ? (safeDecrypt(profile.last_name) || '') : '',
-        phone: profile ? safeDecrypt(profile.phone) : null,
+        // Primary: raw employee_information phone (any format, passed through
+        // unchanged). Fallback: profiles.phone, which may be encrypted.
+        phone:
+          eiPhoneByUserId.get(authUser.id) ||
+          (profile ? safeDecrypt(profile.phone) : '') ||
+          null,
         address: profile ? safeDecrypt(profile.address) : null,
         city: profile ? safeDecrypt(profile.city) : null,
         state: profile?.state ?? null,

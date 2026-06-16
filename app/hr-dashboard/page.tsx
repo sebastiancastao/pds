@@ -373,6 +373,16 @@ function HRDashboardContent() {
     roundUpThousandsToNextHundred(amount).toFixed(2);
   const formatExactMoney = (amount: number): string =>
     (Number.isFinite(amount) ? amount : 0).toFixed(2);
+  // Commission pay and tips are displayed/exported at 3 decimals so fractional
+  // cents from the pool-distribution math stay visible.
+  const roundToThreeDecimals = (amount: number): number => {
+    if (!Number.isFinite(amount)) return 0;
+    const absAmount = Math.abs(amount);
+    const rounded = Math.round((absAmount + 1e-9) * 1000) / 1000;
+    return amount < 0 ? -rounded : rounded;
+  };
+  const formatMoney3 = (amount: number): string =>
+    roundToThreeDecimals(amount).toFixed(3);
   const usesPeriodRateBreakdown = (stateCode?: string | null): boolean =>
     isPeriodRateState(normalizeState(stateCode));
   const computeTravelPay = (diffMiles: number, stateCode: string | null | undefined, rateInEffect: number): number => {
@@ -2065,9 +2075,9 @@ function HRDashboardContent() {
         'Rate in Effect': formatPayrollMoney(loadedRate),
         'Hours': hoursHHMM,
         'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(2)),
+        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(3)),
         'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
-        'Tips': Number(roundUpThousandsToNextHundred(tips).toFixed(2)),
+        'Tips': Number(roundToThreeDecimals(tips).toFixed(3)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
         'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
         'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
@@ -2113,9 +2123,9 @@ function HRDashboardContent() {
         'Rate in Effect': '',
         'Hours': '',
         'Hours in Decimal': Number(sumNum('Hours in Decimal').toFixed(2)),
-        'Commission Pay': Number(sumNum('Commission Pay').toFixed(2)),
+        'Commission Pay': Number(sumNum('Commission Pay').toFixed(3)),
         'Variable Incentive': Number(sumNum('Variable Incentive').toFixed(2)),
-        'Tips': Number(sumNum('Tips').toFixed(2)),
+        'Tips': Number(sumNum('Tips').toFixed(3)),
         'Rest Break': Number(rowsToSum.reduce((s, r) => s + (typeof r['Rest Break'] === 'number' ? r['Rest Break'] : 0), 0).toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
@@ -2217,10 +2227,10 @@ function HRDashboardContent() {
           'Date': event.date || '',
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
-          'Total Commission': Number(Number(event.commissionDollars || 0).toFixed(2)),
-          'Commission per Vendor': Number(roundUpThousandsToNextHundred(Number(event.commissionPerVendor || 0)).toFixed(2)),
+          'Total Commission': Number(Number(event.commissionDollars || 0).toFixed(3)),
+          'Commission per Vendor': Number(roundToThreeDecimals(Number(event.commissionPerVendor || 0)).toFixed(3)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
-          'Total Tips': Number(Number(event.totalTips || 0).toFixed(2)),
+          'Total Tips': Number(Number(event.totalTips || 0).toFixed(3)),
           'Total Rest Break': Number(Number(totalDisplayedRestBreak).toFixed(2)),
           'Total Other': Number(Number(totalDisplayedOther).toFixed(2)),
           'Total Mileage Pay': Number(Number(totalDisplayedMileagePay).toFixed(2)),
@@ -2281,10 +2291,10 @@ function HRDashboardContent() {
         'Date': '',
         'Hours': Number(paymentsByVenue.reduce((s: number, v: any) => s + v.events.reduce((es: number, ev: any) => es + Number(ev.eventHours || 0), 0), 0).toFixed(2)),
         'Adjusted Gross Amount': Number(sumNum('Adjusted Gross Amount').toFixed(2)),
-        'Total Commission': Number(sumNum('Total Commission').toFixed(2)),
+        'Total Commission': Number(sumNum('Total Commission').toFixed(3)),
         'Commission per Vendor': '',
         'Vendors w/ Hours': '',
-        'Total Tips': Number(sumNum('Total Tips').toFixed(2)),
+        'Total Tips': Number(sumNum('Total Tips').toFixed(3)),
         'Total Rest Break': Number(sumNum('Total Rest Break').toFixed(2)),
         'Total Other': Number(sumNum('Total Other').toFixed(2)),
         'Total Mileage Pay': Number(sumNum('Total Mileage Pay').toFixed(2)),
@@ -2310,10 +2320,10 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, payment);
           const loadedRate = breakdown.rateInEffect;
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
-          const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(2));
+          const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(3));
           const varIncentive = isEventSD ? 0 : Number(breakdown.variableIncentive.toFixed(2));
           const tipsRaw = getDisplayedTips(event, payment);
-          const tips = Number(roundUpThousandsToNextHundred(tipsRaw).toFixed(2));
+          const tips = Number(roundToThreeDecimals(tipsRaw).toFixed(3));
           const restBreak = isEventSD ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
           const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
@@ -2372,9 +2382,9 @@ function HRDashboardContent() {
         'Venue': 'TOTAL', 'City': '', 'State': '', 'Event Name': '', 'Event Date': '',
         'First Name': '', 'Last Name': '', 'Email': '', 'Reg Rate': '', 'Rate in Effect': '', 'Hours': '',
         'Hours in Decimal': Number(bveTotals.hoursDecimal.toFixed(2)),
-        'Commission Pay': Number(bveTotals.commissionPay.toFixed(2)),
+        'Commission Pay': Number(bveTotals.commissionPay.toFixed(3)),
         'Variable Incentive': Number(bveTotals.variableIncentive.toFixed(2)),
-        'Tips': Number(bveTotals.tips.toFixed(2)),
+        'Tips': Number(bveTotals.tips.toFixed(3)),
         'Rest Break': Number(bveTotals.restBreak.toFixed(2)),
         'Mileage Miles': '',
         'Mileage Pay': Number(bveTotals.mileagePay.toFixed(2)),
@@ -2522,7 +2532,7 @@ function HRDashboardContent() {
             'Overtime Pay': overtimePay,
             'Double Time Hours': doubletimeHours,
             'Double Time Pay': doubletimePay,
-            'Tips': Number(roundUpThousandsToNextHundred(pTipsRaw).toFixed(2)),
+            'Tips': Number(roundToThreeDecimals(pTipsRaw).toFixed(3)),
             'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
             'Mileage Pay': Number(roundUpThousandsToNextHundred(mileagePay).toFixed(2)),
             'Travel Differential Miles': !exportApproval.travel ? 0 : (diffMiles !== null ? diffMiles : 'N/A'),
@@ -2552,7 +2562,7 @@ function HRDashboardContent() {
       'Overtime Pay': Number(sumNum('Overtime Pay').toFixed(2)),
       'Double Time Hours': Number(sumNum('Double Time Hours').toFixed(2)),
       'Double Time Pay': Number(sumNum('Double Time Pay').toFixed(2)),
-      'Tips': Number(sumNum('Tips').toFixed(2)),
+      'Tips': Number(sumNum('Tips').toFixed(3)),
       'Mileage Miles': '', 'Mileage Pay': Number(sumNum('Mileage Pay').toFixed(2)),
       'Travel Differential Miles': '', 'Travel Hours': '',
       'Travel Pay': Number(sumNum('Travel Pay').toFixed(2)),
@@ -4840,16 +4850,16 @@ function HRDashboardContent() {
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Commission</div>
-                                  <div>${formatExactMoney(Number(ev.commissionDollars || 0))}</div>
+                                  <div>${formatMoney3(Number(ev.commissionDollars || 0))}</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Commission per Vendor</div>
-                                  <div>${formatPayrollMoney(Number(ev.commissionPerVendor || 0))}</div>
+                                  <div>${formatMoney3(Number(ev.commissionPerVendor || 0))}</div>
                                   <div className="text-[10px] text-gray-400">{Number(ev.vendorsWithHours || 0)} vendors w/ hours</div>
                                 </td>
                                 <td className="px-4 py-2 text-sm text-gray-900 text-right">
                                   <div className="text-[10px] text-gray-400 uppercase keeping-wider">Total Tips</div>
-                                  <div>${formatExactMoney(Number(ev.totalTips || 0))}</div>
+                                  <div>${formatMoney3(Number(ev.totalTips || 0))}</div>
                                   {Number(ev.totalTips || 0) > 0 && (
                                     <button
                                       type="button"
@@ -5010,10 +5020,10 @@ function HRDashboardContent() {
                                                         {showOT && (
                                                           <td className="p-2 text-sm">{otRate > 0 ? `$${formatPayrollMoney(otRate)}/hr` : '\u2014'}</td>
                                                         )}
-                                                        <td className="p-2 text-sm text-blue-600">${formatPayrollMoney(displayedCommissionPay)}</td>
+                                                        <td className="p-2 text-sm text-blue-600">${formatMoney3(displayedCommissionPay)}</td>
                                                       </>
                                                     )}
-                                                    <td className="p-2 text-sm text-orange-600">${formatPayrollMoney(tips)}</td>
+                                                    <td className="p-2 text-sm text-orange-600">${formatMoney3(tips)}</td>
                                                     {!hideRest && (
                                                       <td className="p-2 text-sm text-green-600">${formatPayrollMoney(restBreak)}</td>
                                                     )}
@@ -5147,10 +5157,10 @@ function HRDashboardContent() {
                                                     <td className="p-2"></td>
                                                     <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
                                                     {showOT && <td className="p-2"></td>}
-                                                    <td className="p-2 text-green-600">${formatExactMoney(eventTotals.totalCommissionPaid)}</td>
+                                                    <td className="p-2 text-green-600">${formatMoney3(eventTotals.totalCommissionPaid)}</td>
                                                   </>
                                                 )}
-                                                <td className="p-2 text-orange-600">${formatPayrollMoney(eventTotals.totalTips)}</td>
+                                                <td className="p-2 text-orange-600">${formatMoney3(eventTotals.totalTips)}</td>
                                                 {!hideRest && <td className="p-2 text-green-600">${formatPayrollMoney(eventTotals.totalRestBreak)}</td>}
                                                 <td className="p-2 text-blue-600">${formatPayrollMoney(eventTotals.totalMileagePay)}</td>
                                                 <td className="p-2 text-indigo-600">${formatPayrollMoney(eventTotals.totalTravelPay)}</td>
@@ -5176,9 +5186,9 @@ function HRDashboardContent() {
                             <td className="px-4 py-2"></td>
                             <td className="px-4 py-2 text-gray-900 text-right">{v.events.reduce((s: number, ev: any) => { const t = getDisplayedEventTotals(ev); return s + t.eventHours + t.totalSickHours; }, 0).toFixed(2)}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.adjustedGrossAmount || 0), 0))}</td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + Number(ev.commissionDollars || 0), 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatMoney3(v.events.reduce((s: number, ev: any) => s + Number(ev.commissionDollars || 0), 0))}</td>
                             <td className="px-4 py-2"></td>
-                            <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalTips, 0))}</td>
+                            <td className="px-4 py-2 text-gray-900 text-right">${formatMoney3(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalTips, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalRestBreak, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalReimbursement, 0))}</td>
                             <td className="px-4 py-2 text-gray-900 text-right">${formatExactMoney(v.events.reduce((s: number, ev: any) => s + getDisplayedEventTotals(ev).totalOther, 0))}</td>

@@ -6,7 +6,13 @@
       "PowerShell($out = npx tsc --noEmit -p tsconfig.json 2>&1; $out | Select-String -Pattern \"timesheet\",\"event-export\"; \"---total errors---\"; \\($out | Select-String -Pattern \"error TS\"\\).Count)",
       "PowerShell($out = npx tsc --noEmit -p tsconfig.json 2>&1; $out | Select-String -Pattern \"event-export\"; \"---total errors---\"; \\($out | Select-String -Pattern \"error TS\"\\).Count)",
       "Bash(node scripts/diag-filled.mjs)",
-      "PowerShell(git add -A)"
+      "PowerShell(git add -A)",
+      "PowerShell(git push origin testing)",
+      "PowerShell(npx tsc --noEmit -p tsconfig.json 2>&1 | Select-Object -First 30; \"EXIT=$LASTEXITCODE\")",
+      "Bash(node scripts/explore-nte-pdf.cjs)",
+      "Bash(node scripts/extract-missing-phones.cjs)",
+      "Bash(node scripts/backfill-profile-phones.cjs --dry-run)",
+      "Bash(node scripts/backfill-profile-phones.cjs)"
     ]
   }
 }

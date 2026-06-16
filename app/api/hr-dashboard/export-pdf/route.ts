@@ -414,9 +414,9 @@ async function createPayrollPdf(
           { text: `$${row.loadedRate.toFixed(2)}`, width: psCols[2].width, align: "right" },
           { text: row.hours.toFixed(2), width: psCols[3].width, align: "right" },
           { text: `$${row.extAmtOnRegRate.toFixed(2)}`, width: psCols[4].width, align: "right" },
-          { text: `$${row.commissionAmt.toFixed(2)}`, width: psCols[5].width, align: "right" },
+          { text: `$${row.commissionAmt.toFixed(3)}`, width: psCols[5].width, align: "right" },
           { text: `$${row.totalFinalCommissionAmt.toFixed(2)}`, width: psCols[6].width, align: "right" },
-          { text: `$${row.tips.toFixed(2)}`, width: psCols[7].width, align: "right" },
+          { text: `$${row.tips.toFixed(3)}`, width: psCols[7].width, align: "right" },
         ];
         let colIdx = 8;
         if (!evt.hideRestBreak) {

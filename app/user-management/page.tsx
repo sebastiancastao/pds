@@ -614,6 +614,9 @@ export default function UserManagementPage() {
                   Email
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
+                  Phone
+                </th>
+                <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
                   Role
                 </th>
                 <th style={{ padding: '0.75rem', textAlign: 'left', fontWeight: '600', borderBottom: '1px solid #e5e7eb' }}>
@@ -630,7 +633,7 @@ export default function UserManagementPage() {
             <tbody>
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
+                  <td colSpan={7} style={{ padding: '2rem', textAlign: 'center', color: '#6b7280' }}>
                     {searchTerm ? 'No users found matching your search' : 'No users found'}
                   </td>
                 </tr>
@@ -642,6 +645,9 @@ export default function UserManagementPage() {
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       {user.email}
+                    </td>
+                    <td style={{ padding: '0.75rem' }}>
+                      {user.phone || '—'}
                     </td>
                     <td style={{ padding: '0.75rem' }}>
                       <span style={{
