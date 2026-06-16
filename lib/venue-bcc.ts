@@ -9,6 +9,8 @@ const VENUE_STATIC_BCC: Array<{ match: string; emails: string[] }> = [
   { match: "oakland",    emails: ["sebastiancastao379@gmail.com", "kenny@1pds.net"] },
   { match: "save mart",  emails: ["sebastiancastao379@gmail.com", "kenny@1pds.net"] },
   { match: "cow palace", emails: ["sebastiancastao379@gmail.com", "kenny@1pds.net"] },
+  { match: "kia",        emails: ["kenny@1pds.net"] },
+  { match: "intuit",     emails: ["kenny@1pds.net"] },
 ];
 
 function resolveStaticBcc(venueName: string): string[] {

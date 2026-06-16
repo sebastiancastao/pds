@@ -19,6 +19,8 @@ import {
   LEGACY_TEMP_AGREEMENT_SIGNATURE_RECT,
 } from "@/app/lib/temp-agreement-signature-placement";
 import { mergeSavedPdfFieldsOntoTemplate } from "@/app/lib/pdf-template-field-merge";
+import { renderCustomFormInputsOnDetectedLines } from "@/app/lib/custom-form-line-renderer";
+import { getKnownCustomFlatFormLayout } from "@/app/lib/custom-flat-form-layout";
 
 type Employee = {
   id: string;
@@ -985,6 +987,17 @@ export default function EmployeeProfilePage() {
     return window.URL.createObjectURL(blob);
   };
 
+  // Detects the underlying writing lines in a submitted custom form and reprints
+  // the filled inputs aligned to those lines, so values land on the right rows
+  // regardless of the viewer's field-rendering quirks.
+  const withCustomFormInputsAlignedToLines = async (base64Data: string): Promise<string> => {
+    const pdfBytes = Uint8Array.from(atob(base64Data), c => c.charCodeAt(0));
+    const renderedBytes = await renderCustomFormInputsOnDetectedLines(pdfBytes);
+    let binary = '';
+    for (let i = 0; i < renderedBytes.length; i++) binary += String.fromCharCode(renderedBytes[i]);
+    return btoa(binary);
+  };
+
   const openPdfInNewTab = (base64Data: string, existingWindow?: Window | null) => {
     const url = createPdfBlobUrl(base64Data);
     const popup = existingWindow || window.open('', '_blank');
@@ -1454,9 +1467,11 @@ export default function EmployeeProfilePage() {
   const getFormDataWithSignature = async (form: PDFForm): Promise<string> => {
     if (!employeeId) return form.form_data;
     try {
+      const matchingCustomForm = getMatchingCustomFormForPdf(form);
+      const signatureFormId = matchingCustomForm ? `custom-form-${matchingCustomForm.id}` : null;
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(
-        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}`,
+        `/api/pdf-form-progress/with-signature?userId=${employeeId}&formName=${encodeURIComponent(form.form_name)}${signatureFormId ? `&signatureFormId=${encodeURIComponent(signatureFormId)}` : ''}`,
         { headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {} }
       );
       if (res.ok) {
@@ -1548,6 +1563,11 @@ export default function EmployeeProfilePage() {
         }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const knownCustomFlatFormLayout = getKnownCustomFlatFormLayout(
+        form.form_name,
+        form.display_name,
+        matchingCustomForm?.title,
+      );
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
       const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
@@ -1555,12 +1575,13 @@ export default function EmployeeProfilePage() {
       if (
         shouldEmbedProfileFields &&
         form.form_date &&
+        !knownCustomFlatFormLayout &&
         !isAttestationPdfForm &&
         !isNoticeToEmployee
       ) {
         data = await withDateEmbedded(data, form.form_date, form.form_name);
       }
-      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
@@ -1576,6 +1597,9 @@ export default function EmployeeProfilePage() {
           noticeRenderData.signatureData,
           noticeRenderData.signatureType
         );
+      }
+      if (matchingCustomForm && !knownCustomFlatFormLayout) {
+        data = await withCustomFormInputsAlignedToLines(data);
       }
       const url = createPdfBlobUrl(data);
       const link = document.createElement('a');
@@ -1642,6 +1666,11 @@ export default function EmployeeProfilePage() {
         }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const knownCustomFlatFormLayout = getKnownCustomFlatFormLayout(
+        form.form_name,
+        form.display_name,
+        matchingCustomForm?.title,
+      );
       const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
       const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
       const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
@@ -1649,12 +1678,13 @@ export default function EmployeeProfilePage() {
       if (
         shouldEmbedProfileFields &&
         form.form_date &&
+        !knownCustomFlatFormLayout &&
         !isAttestationPdfForm &&
         !isNoticeToEmployee
       ) {
         data = await withDateEmbedded(data, form.form_date, form.form_name);
       }
-      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
@@ -1670,6 +1700,9 @@ export default function EmployeeProfilePage() {
           noticeRenderData.signatureData,
           noticeRenderData.signatureType
         );
+      }
+      if (matchingCustomForm && !knownCustomFlatFormLayout) {
+        data = await withCustomFormInputsAlignedToLines(data);
       }
       openPdfInNewTab(data, previewWindow);
     } catch (error) {

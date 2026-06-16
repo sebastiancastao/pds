@@ -11,6 +11,16 @@ import {
   HOME_VENUE_SIGNATURE_RECT,
   stampHomeVenueAssignmentLayout,
 } from '@/app/lib/home-venue-pdf-layout';
+import {
+  detectStateTaxCodeFromPdf,
+  drawStateTaxSignature,
+  prepareStateTaxFieldsForExport,
+  resolveStateTaxCode,
+} from '@/app/lib/state-tax-pdf-layout';
+import {
+  getKnownCustomFlatFormLayout,
+  renderKnownCustomFlatForm,
+} from '@/app/lib/custom-flat-form-layout';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,6 +36,8 @@ const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_FALLBACK_PAGE_INDEX = 1;
 const ATTESTATION_NAME_FALLBACK_RECT = { x: 238, y: 333, width: 298, height: 18 };
+const ATTESTATION_SIGNATURE_FALLBACK_RECT = { x: 184, y: 286, width: 352, height: 20 };
+const ATTESTATION_DATE_FALLBACK_RECT = { x: 101, y: 279, width: 192, height: 14 };
 const SIGNATURE_Y_SHIFT = 80;
 const I9_SIGNATURE_Y_DELTA = -75;
 const TEMP_AGREEMENT_SIGNATURE_Y_DELTA = 40;
@@ -143,6 +155,10 @@ function normalizeComparableText(value?: string | null) {
   return (value || '').toLowerCase().trim().replace(/\s+/g, ' ');
 }
 
+function isAttestationDescriptor(...values: Array<string | null | undefined>) {
+  return values.some((value) => /\battestation\b/i.test(value || ''));
+}
+
 const CUSTOM_FORM_YEAR_SUFFIX = /\s+\d{4}$/;
 
 async function resolveCustomFormStoragePath(formIdentifier?: string | null) {
@@ -207,6 +223,29 @@ function buildDisplayName(fullName?: string | null, firstName?: string | null, l
 
 function normalizePdfTextValue(value?: string | null) {
   return safeDecrypt((value || '').trim()).trim();
+}
+
+function formatAttestationDate(value?: string | null) {
+  const trimmed = (value || '').trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return trimmed;
+  return `${match[2]}/${match[3]}/${match[1]}`;
+}
+
+function formatLongDate(value?: string | null) {
+  const trimmed = (value || '').trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const date = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : trimmed
+      ? new Date(trimmed)
+      : new Date();
+  if (Number.isNaN(date.getTime())) return trimmed;
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
 }
 
 function drawTextInRect(
@@ -348,12 +387,15 @@ async function getCustomFormSignatureCandidates(
   if (customFormRecordId) {
     const { data: customForm } = await supabaseAdmin
       .from('custom_pdf_forms')
-      .select('storage_path')
+      .select('title, storage_path')
       .eq('id', customFormRecordId)
       .maybeSingle();
 
     for (const legacyId of getLegacyCustomFormSignatureIds(customForm?.storage_path)) {
       pushUnique(legacyId);
+    }
+    if (isAttestationDescriptor(customForm?.title, customForm?.storage_path)) {
+      pushUnique('attestation');
     }
   }
 
@@ -491,7 +533,7 @@ export async function GET(request: NextRequest) {
 
     const { data: formRows, error: formError } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('form_data, updated_at')
+      .select('form_data, form_date, updated_at')
       .eq('user_id', userId)
       .eq('form_name', formName)
       .order('updated_at', { ascending: false })
@@ -526,6 +568,7 @@ export async function GET(request: NextRequest) {
 
     const preferredState = normalizeStateCode(profileData?.state);
     const normalizedUserState = (employeeInfo?.state || profileData?.state || '').toString().toLowerCase().trim();
+    let stateTaxCode = resolveStateTaxCode(formName, preferredState || normalizedUserState);
     const resolvedUserFullName = buildDisplayName(
       userData?.full_name,
       (profileData as any)?.first_name,
@@ -533,6 +576,31 @@ export async function GET(request: NextRequest) {
     );
     const normalizedName = normalizeFormKey(formName);
     const signatureLookupFormId = signatureFormId || formName;
+    const customFormRecordId =
+      getCustomFormRecordId(signatureLookupFormId) ||
+      getCustomFormRecordId(formName);
+    let customFormDescriptor: { title?: string | null; storage_path?: string | null } | null = null;
+    if (customFormRecordId) {
+      const { data: customForm } = await supabaseAdmin
+        .from('custom_pdf_forms')
+        .select('title, storage_path')
+        .eq('id', customFormRecordId)
+        .maybeSingle();
+      customFormDescriptor = customForm;
+    } else {
+      const comparableTitle = normalizeComparableText(
+        formName.replace(CUSTOM_FORM_YEAR_SUFFIX, ''),
+      );
+      if (comparableTitle) {
+        const { data: customForms } = await supabaseAdmin
+          .from('custom_pdf_forms')
+          .select('title, storage_path');
+        customFormDescriptor =
+          (customForms || []).find(
+            (form) => normalizeComparableText(form.title) === comparableTitle,
+          ) || null;
+      }
+    }
     const formIdsToTry = isCustomFormId(signatureLookupFormId)
       ? await getCustomFormSignatureCandidates(signatureLookupFormId, preferredState)
       : buildFormIdCandidates(signatureLookupFormId, preferredState);
@@ -657,15 +725,72 @@ export async function GET(request: NextRequest) {
       ? { signatureData, signatureType }
       : {};
 
-    const isAttestation = normalizedName === 'attestation';
+    const knownCustomFlatFormLayout = customFormDescriptor
+      ? getKnownCustomFlatFormLayout(
+          customFormDescriptor.title,
+          customFormDescriptor.storage_path,
+          formName,
+        )
+      : null;
+    if (knownCustomFlatFormLayout) {
+      let venueName = '';
+      if (knownCustomFlatFormLayout.startsWith('home-venue')) {
+        const { data: venueAssignment } = await supabaseAdmin
+          .from('vendor_venue_assignments')
+          .select('venue:venue_reference(venue_name)')
+          .eq('vendor_id', userId)
+          .order('assigned_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        venueName = (venueAssignment?.venue as any)?.venue_name?.toString().trim() || '';
+      }
+
+      const savedPdfBytes = Uint8Array.from(Buffer.from(base64Data, 'base64'));
+      const templateBytes = await loadCustomFormTemplateBytes(signatureLookupFormId || formName);
+      const renderedBytes = await renderKnownCustomFlatForm({
+        savedPdfBytes,
+        templateBytes,
+        layout: knownCustomFlatFormLayout,
+        employeeName: resolvedUserFullName,
+        venueName,
+        dateText: formatLongDate(formRows[0]?.form_date || formRows[0]?.updated_at),
+        signatureData,
+        signatureType,
+      });
+
+      return NextResponse.json({
+        formData: Buffer.from(renderedBytes).toString('base64'),
+        ...responseExtras,
+      });
+    }
+
+    const isAttestation =
+      normalizedName === 'attestation' ||
+      isAttestationDescriptor(
+        formName,
+        customFormDescriptor?.title,
+        customFormDescriptor?.storage_path,
+      );
     const hasSignatureData = Boolean(signatureData?.trim());
 
-    if (!hasSignatureData && !isAttestation && normalizedName !== 'home-venue-assignment') {
+    const isPotentialStateTaxForm =
+      Boolean(stateTaxCode) ||
+      normalizedName === 'state-tax' ||
+      normalizedName === 'ca-de4' ||
+      normalizedName === 'de4';
+
+    if (
+      !hasSignatureData &&
+      !isAttestation &&
+      normalizedName !== 'home-venue-assignment' &&
+      !isPotentialStateTaxForm
+    ) {
       return NextResponse.json({ formData: base64Data, ...responseExtras });
     }
 
     const pdfBytes = Buffer.from(base64Data, 'base64');
     const pdfDoc = await PDFDocument.load(pdfBytes);
+    stateTaxCode = stateTaxCode || detectStateTaxCodeFromPdf(pdfDoc);
     const pages = pdfDoc.getPages();
 
     const isI9 = normalizedName === 'i9';
@@ -781,9 +906,6 @@ export async function GET(request: NextRequest) {
 
     if (isAttestation) {
       const fallbackPage = pages[Math.max(pages.length - 1, 0)];
-      const { width, height } = fallbackPage.getSize();
-      const fallbackX = Math.max(0, width - signatureWidth - 50);
-      const fallbackY = Math.min(height - signatureHeight, 50 + SIGNATURE_Y_SHIFT);
       let placedAttestationSignature = false;
       if (hasSignatureData) {
         try {
@@ -839,13 +961,22 @@ export async function GET(request: NextRequest) {
           if (isTyped) {
             const { StandardFonts } = await import('pdf-lib');
             const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-            fallbackPage.drawText(signatureData!, { x: fallbackX, y: fallbackY + signatureHeight / 2, size: 10, font });
+            drawTextInRect(
+              fallbackPage,
+              font,
+              ATTESTATION_SIGNATURE_FALLBACK_RECT,
+              signatureData!,
+            );
           } else if (signatureImage) {
+            const rect = ATTESTATION_SIGNATURE_FALLBACK_RECT;
+            const scale = Math.min(rect.width / signatureImage.width, rect.height / signatureImage.height, 1);
+            const drawWidth = signatureImage.width * scale;
+            const drawHeight = signatureImage.height * scale;
             fallbackPage.drawImage(signatureImage, {
-              x: fallbackX,
-              y: fallbackY,
-              width: signatureWidth,
-              height: signatureHeight,
+              x: rect.x + (rect.width - drawWidth) / 2,
+              y: rect.y + (rect.height - drawHeight) / 2,
+              width: drawWidth,
+              height: drawHeight,
             });
           }
         }
@@ -870,6 +1001,17 @@ export async function GET(request: NextRequest) {
             console.warn('[WITH_SIGNATURE] Could not backfill attestation name field:', e);
           }
         }
+        const savedAttestationDate = formatAttestationDate(formRows[0]?.form_date);
+        if (savedAttestationDate) {
+          try {
+            const attestationDateField = attestPdfForm.getTextField(ATTESTATION_DATE_FIELD);
+            if (!normalizePdfTextValue(attestationDateField.getText())) {
+              attestationDateField.setText(savedAttestationDate);
+            }
+          } catch {
+            // Uploaded custom attestations have no AcroForm date field.
+          }
+        }
         const flattenAttestField = (fieldName: string) => {
           try {
             const tf = attestPdfForm.getTextField(fieldName) as any;
@@ -884,6 +1026,16 @@ export async function GET(request: NextRequest) {
                 const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];
                 if (fallbackPage) {
                   drawTextInRect(fallbackPage, attestFont, ATTESTATION_NAME_FALLBACK_RECT, value);
+                }
+              } else if (fieldName === ATTESTATION_DATE_FIELD && (value || savedAttestationDate)) {
+                const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];
+                if (fallbackPage) {
+                  drawTextInRect(
+                    fallbackPage,
+                    attestFont,
+                    ATTESTATION_DATE_FALLBACK_RECT,
+                    value || savedAttestationDate,
+                  );
                 }
               }
               return;
@@ -908,6 +1060,22 @@ export async function GET(request: NextRequest) {
                 // fall through to warning
               }
             }
+            if (fieldName === ATTESTATION_DATE_FIELD && savedAttestationDate) {
+              try {
+                const fallbackPage = pages[ATTESTATION_FALLBACK_PAGE_INDEX] || pages[Math.max(pages.length - 1, 0)];
+                if (fallbackPage) {
+                  drawTextInRect(
+                    fallbackPage,
+                    attestFont,
+                    ATTESTATION_DATE_FALLBACK_RECT,
+                    savedAttestationDate,
+                  );
+                  return;
+                }
+              } catch {
+                // fall through to warning
+              }
+            }
             console.warn(`[WITH_SIGNATURE] Could not flatten attestation field ${fieldName}:`, e);
           }
         };
@@ -915,6 +1083,23 @@ export async function GET(request: NextRequest) {
         flattenAttestField(ATTESTATION_DATE_FIELD);
       } catch (e) {
         console.warn('[WITH_SIGNATURE] Could not flatten attestation name/date fields:', e);
+      }
+    } else if (stateTaxCode) {
+      if (hasSignatureData) {
+        const placed = await drawStateTaxSignature({
+          pdfDoc,
+          stateCode: stateTaxCode,
+          signatureData,
+          signatureType,
+        });
+        if (!placed) {
+          console.warn('[WITH_SIGNATURE] Failed to place state tax signature', {
+            formName,
+            stateTaxCode,
+          });
+        }
+      } else {
+        await prepareStateTaxFieldsForExport(pdfDoc, stateTaxCode);
       }
     } else {
       const shouldUseExistingPlacementDetection = hasSignatureData && !hasExplicitSignaturePlacement;

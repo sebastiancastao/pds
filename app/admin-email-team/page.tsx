@@ -29,6 +29,7 @@ function TeamEmailPageContent() {
   const [accessState, setAccessState] = useState<AccessState>('checking');
   const [currentRole, setCurrentRole] = useState('');
   const [eventName, setEventName] = useState('');
+  const [eventVenue, setEventVenue] = useState('');
   const [teamEmails, setTeamEmails] = useState<string[]>([]);
   const [loadingTeam, setLoadingTeam] = useState(false);
 
@@ -115,6 +116,7 @@ function TeamEmailPageContent() {
         }
         const eventData = await eventRes.json();
         setEventName(String(eventData?.event?.event_name || 'Event'));
+        setEventVenue(String(eventData?.event?.venue || ''));
 
         if (!teamRes.ok) {
           const teamData = await teamRes.json().catch(() => ({}));
@@ -165,6 +167,7 @@ function TeamEmailPageContent() {
       const { data: { session } } = await supabase.auth.getSession();
       const form = new FormData();
       form.set('audience', 'manual');
+      if (eventVenue) form.set('venue', eventVenue);
 
       const mergedBcc = [
         ...teamEmails,

@@ -17,6 +17,7 @@ import {
 import { mergeSavedPdfFieldsOntoTemplate } from "@/app/lib/pdf-template-field-merge";
 import { stampHomeVenueAssignmentLayout } from "@/app/lib/home-venue-pdf-layout";
 import { renderCustomFormInputsOnDetectedLines } from "@/app/lib/custom-form-line-renderer";
+import { getKnownCustomFlatFormLayout } from "@/app/lib/custom-flat-form-layout";
 
 type Employee = {
   id: string;
@@ -1608,6 +1609,14 @@ export default function WorkerProfilePage() {
       return matchesCustomFormSubmission(form, customForm);
     });
 
+  const isAttestationPdfRecord = (
+    form: Pick<PDFForm, 'form_name' | 'display_name'>,
+    matchingCustomForm?: { title: string } | null
+  ) =>
+    [form.form_name, form.display_name, matchingCustomForm?.title]
+      .filter(Boolean)
+      .some((value) => /attestation/i.test(value!));
+
   const getTempAgreementCustomFormForPdf = (form: Pick<PDFForm, 'form_name' | 'display_name'>) => {
     const matchingCustomForm = getMatchingCustomFormForPdf(form);
     if (!matchingCustomForm) return null;
@@ -1972,23 +1981,29 @@ export default function WorkerProfilePage() {
         }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const knownCustomFlatFormLayout = getKnownCustomFlatFormLayout(
+        form.form_name,
+        form.display_name,
+        matchingCustomForm?.title,
+      );
       const employeeFullName = employee ? `${employee.first_name} ${employee.last_name}` : undefined;
-      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isAttestationPdfForm = isAttestationPdfRecord(form, matchingCustomForm);
       const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
       const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (
         shouldEmbedProfileFields &&
         form.form_date &&
+        !knownCustomFlatFormLayout &&
         !isAttestationPdfForm &&
         !isNoticeToEmployee
       ) {
         data = await withDateEmbedded(data, form.form_date, form.form_name);
       }
-      if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && isAttestationPdfForm && employeeFullName) {
         data = await withAttestationPrintNameEmbedded(data, employeeFullName);
       }
-      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
@@ -2005,7 +2020,7 @@ export default function WorkerProfilePage() {
           noticeRenderData.signatureType
         );
       }
-      if (matchingCustomForm) {
+      if (matchingCustomForm && !knownCustomFlatFormLayout) {
         data = await withCustomFormInputsAlignedToLines(data);
       }
       const url = createPdfBlobUrl(data);
@@ -2073,23 +2088,29 @@ export default function WorkerProfilePage() {
         }
       }
       const shouldEmbedProfileFields = !isTempAgreementForm;
+      const knownCustomFlatFormLayout = getKnownCustomFlatFormLayout(
+        form.form_name,
+        form.display_name,
+        matchingCustomForm?.title,
+      );
       const employeeFullName = employee ? `${employee.first_name} ${employee.last_name}` : undefined;
-      const isAttestationPdfForm = form.form_name.toLowerCase().includes('attestation');
+      const isAttestationPdfForm = isAttestationPdfRecord(form, matchingCustomForm);
       const isNoticeToEmployee = normalizeStandardOnboardingFormName(form.form_name) === 'notice-to-employee';
       const shouldEmbedVenueForForm = Boolean(venueName) && !(isNoticeToEmployee && !matchingCustomForm);
       const shouldEmbedOpeningPrintName = form.form_name.toLowerCase().includes('home-venue-assignment');
       if (
         shouldEmbedProfileFields &&
         form.form_date &&
+        !knownCustomFlatFormLayout &&
         !isAttestationPdfForm &&
         !isNoticeToEmployee
       ) {
         data = await withDateEmbedded(data, form.form_date, form.form_name);
       }
-      if (shouldEmbedProfileFields && isAttestationPdfForm && employeeFullName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && isAttestationPdfForm && employeeFullName) {
         data = await withAttestationPrintNameEmbedded(data, employeeFullName);
       }
-      if (shouldEmbedProfileFields && shouldEmbedVenueForForm && venueName) {
+      if (shouldEmbedProfileFields && !knownCustomFlatFormLayout && shouldEmbedVenueForForm && venueName) {
         data = await withVenueEmbedded(
           data,
           venueName,
@@ -2106,7 +2127,7 @@ export default function WorkerProfilePage() {
           noticeRenderData.signatureType
         );
       }
-      if (matchingCustomForm) {
+      if (matchingCustomForm && !knownCustomFlatFormLayout) {
         data = await withCustomFormInputsAlignedToLines(data);
       }
       openPdfInNewTab(data, previewWindow);

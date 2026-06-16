@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase';
 import PDFFormEditor from '@/app/components/PDFFormEditor';
 import { isCaTempAgreementCustomFormTitle } from '@/app/lib/temp-agreement';
 import { getTempAgreementSignaturePlacement } from '@/app/lib/temp-agreement-signature-placement';
+import { getKnownCustomFlatFormLayout } from '@/app/lib/custom-flat-form-layout';
 
 type FormMeta = {
   id: string;
@@ -402,18 +403,19 @@ export default function EmployeeFormPage() {
       if (!session) { router.push('/login'); return; }
 
       const isTempAgreementForm = isTempAgreementTitle(meta?.title);
+      const knownFlatFormLayout = getKnownCustomFlatFormLayout(meta?.title);
       let finalBytes = currentPdfBytesRef.current;
       let signatureDataUrl: string | null = null;
       if (meta?.requires_signature && hasSig && canvasRef.current) {
         signatureDataUrl = canvasRef.current.toDataURL('image/png');
-        if (!isTempAgreementForm) {
+        if (!isTempAgreementForm && !knownFlatFormLayout) {
           finalBytes = await embedSignatureIntoPdf(finalBytes, signatureDataUrl);
         }
       }
-      if (meta?.allow_date_input && formDate) {
+      if (meta?.allow_date_input && formDate && !knownFlatFormLayout) {
         finalBytes = await embedDateIntoPdf(finalBytes, formDate);
       }
-      if (meta?.allow_print_name && printName.trim()) {
+      if (meta?.allow_print_name && printName.trim() && !knownFlatFormLayout) {
         finalBytes = await embedPrintNameIntoPdf(finalBytes, printName.trim());
       }
 
@@ -436,7 +438,7 @@ export default function EmployeeFormPage() {
       const json = await res.json();
       if (!res.ok) throw new Error(json.error || 'Failed to save');
 
-      if (isTempAgreementForm && signatureDataUrl) {
+      if ((isTempAgreementForm || knownFlatFormLayout) && signatureDataUrl) {
         const signatureRes = await fetch('/api/form-signatures/save', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },

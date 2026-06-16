@@ -4,7 +4,9 @@
       "Read(//tmp/**)",
       "Bash(echo \"Exit: $?\")",
       "PowerShell($out = npx tsc --noEmit -p tsconfig.json 2>&1; $out | Select-String -Pattern \"timesheet\",\"event-export\"; \"---total errors---\"; \\($out | Select-String -Pattern \"error TS\"\\).Count)",
-      "PowerShell($out = npx tsc --noEmit -p tsconfig.json 2>&1; $out | Select-String -Pattern \"event-export\"; \"---total errors---\"; \\($out | Select-String -Pattern \"error TS\"\\).Count)"
+      "PowerShell($out = npx tsc --noEmit -p tsconfig.json 2>&1; $out | Select-String -Pattern \"event-export\"; \"---total errors---\"; \\($out | Select-String -Pattern \"error TS\"\\).Count)",
+      "Bash(node scripts/diag-filled.mjs)",
+      "PowerShell(git add -A)"
     ]
   }
 }

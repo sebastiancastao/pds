@@ -44,6 +44,7 @@ export async function GET() {
       field.addToPage(firstPage, {
         ...options,
         rotate: degrees(0),
+        borderWidth: 0,
       });
       const widgets = field.acroField.getWidgets();
       if (widgets.length > 0) {

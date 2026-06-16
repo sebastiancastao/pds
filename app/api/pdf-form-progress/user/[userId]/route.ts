@@ -14,6 +14,16 @@ import {
   HOME_VENUE_SIGNATURE_RECT,
   stampHomeVenueAssignmentLayout,
 } from '@/app/lib/home-venue-pdf-layout';
+import {
+  getKnownCustomFlatFormLayout,
+  renderKnownCustomFlatForm,
+} from '@/app/lib/custom-flat-form-layout';
+import {
+  detectStateTaxCodeFromPdf,
+  drawStateTaxSignature,
+  prepareStateTaxFieldsForExport,
+  resolveStateTaxCode,
+} from '@/app/lib/state-tax-pdf-layout';
 
 // Disable caching and increase body size limit for large PDFs
 export const dynamic = 'force-dynamic';
@@ -580,6 +590,24 @@ const formatDateLabel = (value?: string | null) => {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleDateString('en-US');
+};
+
+const formatLongDate = (value?: string | null) => {
+  const trimmed = (value || '').trim();
+  const match = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsed = match
+    ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+    : trimmed
+      ? new Date(trimmed)
+      : new Date();
+
+  if (Number.isNaN(parsed.getTime())) return trimmed;
+
+  return parsed.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
 };
 
 const formatSignatureDateLine = (signedAt?: string | null, fallbackUpdatedAt?: string | null) => {
@@ -1496,7 +1524,7 @@ async function ensureEmployeeHandbookFieldsVisible(
 }
 
 const CACHE_DIR = join(process.cwd(), 'tmp', 'pdf-cache');
-const MERGED_PDF_CACHE_VERSION = '2026-06-14-home-venue-layout-2';
+const MERGED_PDF_CACHE_VERSION = '2026-06-15-state-tax-layout-1';
 
 async function ensureCacheDirectory() {
   try {
@@ -1633,7 +1661,7 @@ export async function GET(
     // Retrieve all form progress for the user
     const { data: allForms, error } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('form_name, form_data, updated_at')
+      .select('form_name, form_data, form_date, updated_at')
       .eq('user_id', userId)
       .order('updated_at', { ascending: false }); // Most recent first
 
@@ -1856,7 +1884,18 @@ export async function GET(
 
     if (useFormSignatures) {
       const sigFetchStart = Date.now();
-      const formIds = Array.from(new Set(formsToProcess.map((form) => form.form_name).filter(Boolean)));
+      const formIds = Array.from(
+        new Set(
+          formsToProcess.flatMap((form) => {
+            const customForm = resolveCustomForm(form.form_name || '');
+            return [
+              form.form_name,
+              customForm?.id ? `custom-form-${customForm.id}` : null,
+              customForm?.title || null,
+            ].filter((formId): formId is string => Boolean(formId));
+          })
+        )
+      );
       if (formIds.length > 0) {
         const tableCandidates =
           signatureSource === 'forms_signature'
@@ -2059,10 +2098,13 @@ export async function GET(
         }
 
         const pdfBytes = Buffer.from(base64Data, 'base64');
-        const formPdf = await PDFDocument.load(pdfBytes);
+        let formPdf = await PDFDocument.load(pdfBytes);
 
         const normalizedFormName = normalizedFormKey;
         const formNameLower = (form.form_name || '').toLowerCase();
+        let stateTaxCode =
+          resolveStateTaxCode(form.form_name, normalizedUserState) ||
+          detectStateTaxCodeFromPdf(formPdf);
         const isCaliforniaTempEmploymentAgreement =
           normalizedFormName === 'temp-employment-agreement' &&
           (normalizedUserState === 'ca' || normalizedUserState === 'california');
@@ -2071,14 +2113,52 @@ export async function GET(
         let signatureSourceForm = directFormKey;
 
         if (useFormSignatures) {
+          const customSignatureKey = customForm?.id ? `custom-form-${customForm.id}` : null;
           signatureForForm =
-            signatureByForm.get(directFormKey) || signatureByForm.get(normalizedFormName) || null;
+            signatureByForm.get(directFormKey) ||
+            signatureByForm.get(normalizedFormName) ||
+            (customSignatureKey ? signatureByForm.get(customSignatureKey) : null) ||
+            (customForm?.title ? signatureByForm.get(customForm.title) : null) ||
+            null;
           if (signatureForForm) {
-            signatureSourceForm = signatureByForm.has(directFormKey) ? directFormKey : normalizedFormName;
+            signatureSourceForm = signatureByForm.has(directFormKey)
+              ? directFormKey
+              : customSignatureKey && signatureByForm.has(customSignatureKey)
+                ? customSignatureKey
+                : customForm?.title && signatureByForm.has(customForm.title)
+                  ? customForm.title
+                  : normalizedFormName;
           }
         } else if (legacySignature) {
           signatureForForm = legacySignature;
           signatureSourceForm = 'legacy-background-check';
+        }
+
+        const knownCustomFlatFormLayout = customForm
+          ? getKnownCustomFlatFormLayout(
+              customForm.title,
+              customForm.storagePath,
+              form.form_name,
+            )
+          : null;
+
+        if (knownCustomFlatFormLayout) {
+          const templateBytes = await loadCustomFormTemplateBytes(customForm?.storagePath);
+          const renderedBytes = await renderKnownCustomFlatForm({
+            savedPdfBytes: new Uint8Array(pdfBytes),
+            templateBytes,
+            layout: knownCustomFlatFormLayout,
+            employeeName: targetUserFullName,
+            venueName: targetUserHomeVenueName,
+            dateText: formatLongDate(form.form_date || form.updated_at),
+            signatureData: signatureForForm?.signature_data || null,
+            signatureType: signatureForForm?.signature_type || null,
+          });
+          formPdf = await PDFDocument.load(renderedBytes);
+        }
+
+        if (stateTaxCode) {
+          await prepareStateTaxFieldsForExport(formPdf, stateTaxCode);
         }
 
         let noticeSignatureDateFont: PDFFont | null = null;
@@ -2393,7 +2473,8 @@ export async function GET(
         }
 
         // Rebuild the home-venue assignment data/signature layout.
-        const isHomeVenueAssignment = formNameLower.includes('home-venue-assignment');
+        const isHomeVenueAssignment =
+          !knownCustomFlatFormLayout && formNameLower.includes('home-venue-assignment');
         if (isHomeVenueAssignment) {
           try {
             const formUpdatedAt = form.updated_at ? new Date(form.updated_at) : new Date();
@@ -2519,8 +2600,22 @@ export async function GET(
           }
         }
 
+        let stateTaxSignaturePlaced = false;
+        if (signatureForForm?.signature_data && stateTaxCode) {
+          stateTaxSignaturePlaced = await drawStateTaxSignature({
+            pdfDoc: formPdf,
+            stateCode: stateTaxCode,
+            signatureData: signatureForForm.signature_data,
+            signatureType: signatureForForm.signature_type || null,
+          });
+        }
+
         // If signature exists, embed it on the target page(s)
-        if (signatureForForm?.signature_data) {
+        if (
+          signatureForForm?.signature_data &&
+          !knownCustomFlatFormLayout &&
+          !stateTaxSignaturePlaced
+        ) {
           const sigStart = Date.now();
           const pages = formPdf.getPages();
           const pageCount = pages.length;
