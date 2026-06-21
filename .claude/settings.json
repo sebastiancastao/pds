@@ -12,7 +12,11 @@
       "Bash(node scripts/explore-nte-pdf.cjs)",
       "Bash(node scripts/extract-missing-phones.cjs)",
       "Bash(node scripts/backfill-profile-phones.cjs --dry-run)",
-      "Bash(node scripts/backfill-profile-phones.cjs)"
+      "Bash(node scripts/backfill-profile-phones.cjs)",
+      "mcp__claude_ai_Supabase__list_edge_functions",
+      "mcp__claude_ai_Supabase__list_extensions",
+      "mcp__claude_ai_Supabase__get_project_url",
+      "mcp__claude_ai_Supabase__get_publishable_keys"
     ]
   }
 }

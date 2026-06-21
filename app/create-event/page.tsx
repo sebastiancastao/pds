@@ -352,6 +352,7 @@ function CreateEventPageInner() {
                 </div>
               </div>
 
+              {form.event_type !== "special" && (
               <div className="mt-4 flex items-center gap-3 bg-amber-50 p-4 rounded-xl border border-amber-100">
                 <input
                   id="ends_next_day"
@@ -365,9 +366,11 @@ function CreateEventPageInner() {
                   Event ends on the next day
                 </label>
               </div>
+              )}
             </div>
 
-            {/* Revenue Share Section */}
+            {/* Revenue Share Section (not applicable to Non Event Time Sheets) */}
+            {form.event_type !== "special" && (
             <div className="pt-4 border-t border-slate-100">
               <h3 className="text-lg font-semibold text-slate-800 mb-4">Revenue Share</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -439,6 +442,7 @@ function CreateEventPageInner() {
                 </div>
               </div>
             </div>
+            )}
 
             {/* Status Section */}
             <div className="pt-4 border-t border-slate-100">

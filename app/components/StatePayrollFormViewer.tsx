@@ -3364,7 +3364,7 @@ function I9UploadSlot({
       <div style={{ marginBottom: 8, color: '#666' }}>
         {uploadingDoc === documentType ? 'Uploading…' : 'Click to upload or drag & drop'}
       </div>
-      <div style={{ fontSize: 12, color: '#888' }}>JPG, PNG, WEBP, or PDF (max 10MB)</div>
+      <div style={{ fontSize: 12, color: '#888' }}>JPG, PNG, WEBP, or PDF (max 4.5MB)</div>
     </label>
   );
 }

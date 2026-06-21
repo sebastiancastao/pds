@@ -36,7 +36,9 @@ const ALLOWED_MIME = [
   'application/pdf',
 ];
 
-const MAX_BYTES = 10 * 1024 * 1024; // 10MB
+// Vercel Serverless Functions cap the request body at 4.5 MB; a larger file is
+// rejected by the platform before this handler runs, so enforce the real limit here.
+const MAX_BYTES = Math.floor(4.5 * 1024 * 1024); // 4.5MB
 
 function sanitizeFilename(name: string) {
   return name.replace(/[^\w.\-]+/g, '_');
@@ -103,7 +105,7 @@ export async function POST(request: NextRequest) {
     if (file.size > MAX_BYTES) {
       console.error('[I9_UPLOAD] File too large:', file.size, 'Max:', MAX_BYTES);
       return NextResponse.json(
-        { error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 10MB.` },
+        { error: `File too large: ${(file.size / 1024 / 1024).toFixed(2)}MB. Maximum size is 4.5MB.` },
         { status: 400 }
       );
     }
