@@ -9,6 +9,7 @@ import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } fr
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
 import { supabase } from "@/lib/supabase";
 import { getTimezoneForState } from "@/lib/timezones";
+import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
 
 type EventItem = {
   id: string;
@@ -19,6 +20,7 @@ type EventItem = {
   city: string | null;
   state: string | null;
   event_date: string;
+  end_date?: string | null;
   start_time: string;
   end_time: string;
   ends_next_day?: boolean;
@@ -880,6 +882,7 @@ export default function EventDashboardPage() {
     city: "",
     state: "",
     event_date: "",
+    end_date: "",
     start_time: "",
     end_time: "",
     ends_next_day: false,
@@ -895,6 +898,7 @@ export default function EventDashboardPage() {
   });
   const currentEventType = form.event_type === "special" ? "special" : event?.event_type === "special" ? "special" : "normal";
   const hideSalesAndMerchandiseForEvent = currentEventType === "special";
+  const maxSpecialEndDate = form.event_type === "special" ? getMaxNonEventEndDate(form.event_date || "") : null;
   const dashboardTabs: Array<[TabType, string, string]> = [
     ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
     ...(!hideSalesAndMerchandiseForEvent
@@ -1168,6 +1172,7 @@ export default function EventDashboardPage() {
           city: eventData.city || "",
           state: eventData.state || "",
           event_date: eventData.event_date || "",
+          end_date: eventData.end_date || "",
           start_time: eventData.start_time || "",
           end_time: eventData.end_time || "",
           ends_next_day: Boolean(eventData.ends_next_day),
@@ -3306,6 +3311,18 @@ export default function EventDashboardPage() {
       return;
     }
 
+    // Non Event Time Sheets may span several days: validate the optional end date
+    if (form.event_type === "special" && form.end_date && form.end_date < form.event_date) {
+      setMessage("End Date must be on or after the Start Date");
+      setSubmitting(false);
+      return;
+    }
+    if (form.event_type === "special" && form.end_date && maxSpecialEndDate && form.end_date > maxSpecialEndDate) {
+      setMessage(`Non Event Time Sheets cannot span more than ${MAX_NON_EVENT_TIMESHEET_DAYS} days.`);
+      setSubmitting(false);
+      return;
+    }
+
     try {
       const payload = {
         ...form,
@@ -4835,7 +4852,9 @@ export default function EventDashboardPage() {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-semibold text-gray-700 mb-2">Event Date *</label>
+                    <label className="block text-sm font-semibold text-gray-700 mb-2">
+                      {form.event_type === "special" ? "Start Date *" : "Event Date *"}
+                    </label>
                     <input
                       name="event_date"
                       value={form.event_date}
@@ -4845,6 +4864,21 @@ export default function EventDashboardPage() {
                       className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
                     />
                   </div>
+                  {form.event_type === "special" && (
+                    <div>
+                      <label className="block text-sm font-semibold text-gray-700 mb-2">End Date</label>
+                      <input
+                        name="end_date"
+                        value={form.end_date || ""}
+                        onChange={handleChange}
+                        type="date"
+                        min={form.event_date || undefined}
+                        max={maxSpecialEndDate || undefined}
+                        className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all duration-200 bg-white hover:border-gray-400"
+                      />
+                      <p className="text-xs text-gray-500 mt-2">Leave blank for a single day. Max span: {MAX_NON_EVENT_TIMESHEET_DAYS} days inclusive.</p>
+                    </div>
+                  )}
                 </div>
               </div>
 
