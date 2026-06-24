@@ -65,7 +65,7 @@ function parsePacificMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return t === "hour" && v === "24" ? "00" : v; };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
