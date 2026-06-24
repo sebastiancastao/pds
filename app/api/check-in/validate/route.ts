@@ -186,12 +186,18 @@ export async function POST(req: NextRequest) {
         }
 
         const now = Date.now();
-        console.log("[validate] now:", new Date(now).toISOString(), "| windowOpen:", new Date(windowOpenMs).toISOString(), "| windowClose:", new Date(windowCloseMs).toISOString(), "| dateStr:", dateStr, "| start:", eventData.start_time, "| end:", eventData.end_time, "| ends_next_day:", eventData.ends_next_day);
+        // Only enforce the window when it could actually be computed. If an event's
+        // stored times are malformed (parseEventMs -> NaN), skip the gate instead of
+        // crashing (NaN.toISOString) or wrongly blocking every worker for the event.
+        const windowComputable = Number.isFinite(windowOpenMs) && Number.isFinite(windowCloseMs);
+        if (!windowComputable) {
+          console.warn("[validate] Could not compute check-in window for event", eventId, "| start:", eventData.start_time, "| end:", eventData.end_time);
+        }
 
-        if (now < windowOpenMs) {
+        if (windowComputable && now < windowOpenMs) {
           return jsonError("Check-in is not open yet. Check-in opens 3 hours before the event starts.", 403);
         }
-        if (now > windowCloseMs) {
+        if (windowComputable && now > windowCloseMs) {
           return jsonError("Check-in is closed. This event has already passed.", 403);
         }
       }
