@@ -73,7 +73,7 @@ function parseEventMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return t === "hour" && v === "24" ? "00" : v; };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -320,7 +320,15 @@ export async function POST(req: NextRequest) {
             windowCloseMs = eventStartMs + 4 * 60 * 60 * 1000;
           }
 
-          if (itemTimestampMs < windowOpenMs) {
+          // Only enforce the window when it could actually be computed. If an event's
+          // stored times are malformed (parseEventMs -> NaN), skip the gate instead of
+          // silently bypassing it via NaN comparisons.
+          const windowComputable = Number.isFinite(windowOpenMs) && Number.isFinite(windowCloseMs);
+          if (!windowComputable) {
+            console.warn("[sync] Could not compute check-in window for event", item.eventId, "| start:", eventData.start_time, "| end:", eventData.end_time);
+          }
+
+          if (windowComputable && itemTimestampMs < windowOpenMs) {
             results.push({
               id: item.id,
               success: false,
@@ -329,7 +337,7 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          if (itemTimestampMs > windowCloseMs) {
+          if (windowComputable && itemTimestampMs > windowCloseMs) {
             results.push({
               id: item.id,
               success: false,

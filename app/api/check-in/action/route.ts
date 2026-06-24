@@ -62,7 +62,7 @@ function parseEventMs(dateStr: string, timeStr: string): number {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: false,
   }).formatToParts(new Date(naiveUtcMs));
-  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return v === "24" ? "00" : v; };
+  const get = (t: string) => { const v = parts.find(p => p.type === t)?.value ?? "00"; return t === "hour" && v === "24" ? "00" : v; };
   const pacificAsUtcMs = Date.parse(`${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}Z`);
   return naiveUtcMs + (naiveUtcMs - pacificAsUtcMs);
 }
@@ -307,10 +307,18 @@ export async function POST(req: NextRequest) {
         }
 
         const now = Date.now();
-        if (now < windowOpenMs) {
+        // Only enforce the window when it could actually be computed. If an event's
+        // stored times are malformed (parseEventMs -> NaN), skip the gate instead of
+        // silently bypassing it via NaN comparisons.
+        const windowComputable = Number.isFinite(windowOpenMs) && Number.isFinite(windowCloseMs);
+        if (!windowComputable) {
+          console.warn("[action] Could not compute check-in window for event", eventId, "| start:", eventData.start_time, "| end:", eventData.end_time);
+        }
+
+        if (windowComputable && now < windowOpenMs) {
           return jsonError("Check-in is not open yet. Check-in opens 3 hours before the event starts.", 403);
         }
-        if (now > windowCloseMs) {
+        if (windowComputable && now > windowCloseMs) {
           return jsonError("Check-in is closed. This event has already passed.", 403);
         }
       }
