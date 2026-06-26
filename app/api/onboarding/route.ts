@@ -500,15 +500,6 @@ export async function GET(req: NextRequest) {
 
       // State detection: prefer explicit state-prefixed forms, then profile state, then CA.
       const userProgressEntries = formProgressByUser.get(profile.user_id) || [];
-      const mostRecentNonStageEntry = userProgressEntries.reduce<{ form_name: string; updated_at: string } | null>(
-        (latest, entry) => {
-          if (STAGE_MARKERS.includes(entry.form_name)) return latest;
-          if (!latest) return entry;
-          return new Date(entry.updated_at).getTime() > new Date(latest.updated_at).getTime() ? entry : latest;
-        },
-        null
-      );
-      const lastUploadedIsBackground = !!mostRecentNonStageEntry?.form_name?.toLowerCase().includes('background');
       let detectedState = normalizeProfileStateCode(profile?.state) || "ca";
       for (const progress of userProgressEntries) {
         if (STAGE_MARKERS.includes(progress.form_name)) continue;
@@ -601,15 +592,6 @@ export async function GET(req: NextRequest) {
         effectiveFormsCompleted = totalFormsForUser;
         effectiveCompletedForms = stateFormList.map((form) => `${detectedState}-${form.id}`);
         effectiveCompletedFormIds = new Set(stateFormList.map((form) => form.id));
-      }
-
-      // Business rule: if the most recently uploaded document is a background form,
-      // show onboarding progress as 0%.
-      if (lastUploadedIsBackground) {
-        effectiveLatestFormProgress = null;
-        effectiveFormsCompleted = 0;
-        effectiveCompletedForms = [];
-        effectiveCompletedFormIds = new Set<string>();
       }
 
       const missingStateForms = stateFormList.filter((form) => !effectiveCompletedFormIds.has(form.id));
