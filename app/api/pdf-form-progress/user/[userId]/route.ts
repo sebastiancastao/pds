@@ -670,6 +670,44 @@ const formatSignatureDateValue = (signedAt?: string | null, fallbackUpdatedAt?: 
   return formatted;
 };
 
+const US_STATE_ABBR_BY_NAME: Record<string, string> = {
+  alabama: 'AL', alaska: 'AK', arizona: 'AZ', arkansas: 'AR', california: 'CA',
+  colorado: 'CO', connecticut: 'CT', delaware: 'DE', 'district of columbia': 'DC',
+  florida: 'FL', georgia: 'GA', hawaii: 'HI', idaho: 'ID', illinois: 'IL',
+  indiana: 'IN', iowa: 'IA', kansas: 'KS', kentucky: 'KY', louisiana: 'LA',
+  maine: 'ME', maryland: 'MD', massachusetts: 'MA', michigan: 'MI', minnesota: 'MN',
+  mississippi: 'MS', missouri: 'MO', montana: 'MT', nebraska: 'NE', nevada: 'NV',
+  'new hampshire': 'NH', 'new jersey': 'NJ', 'new mexico': 'NM', 'new york': 'NY',
+  'north carolina': 'NC', 'north dakota': 'ND', ohio: 'OH', oklahoma: 'OK',
+  oregon: 'OR', pennsylvania: 'PA', 'rhode island': 'RI', 'south carolina': 'SC',
+  'south dakota': 'SD', tennessee: 'TN', texas: 'TX', utah: 'UT', vermont: 'VT',
+  virginia: 'VA', washington: 'WA', 'west virginia': 'WV', wisconsin: 'WI', wyoming: 'WY',
+};
+
+/**
+ * Resolves a profile state value (e.g. "CA" or "California") to a 2-letter code
+ * that exists in a PDF dropdown's option list. Returns null when it can't be
+ * matched, so we never stamp an invalid value onto the form.
+ */
+function resolveStateDropdownCode(rawState: string | null | undefined, options: string[]): string | null {
+  const raw = (rawState || '').toString().trim();
+  if (!raw) return null;
+
+  const optionSet = new Set(
+    (options || []).map((option) => option.trim().toUpperCase()).filter(Boolean)
+  );
+  if (optionSet.size === 0) return null;
+
+  const upper = raw.toUpperCase();
+  if (upper.length === 2 && optionSet.has(upper)) return upper;
+
+  const mapped = US_STATE_ABBR_BY_NAME[raw.toLowerCase()];
+  if (mapped && optionSet.has(mapped)) return mapped;
+
+  if (optionSet.has(upper)) return upper;
+  return null;
+}
+
 /**
  * Checks if a field name indicates it's a birthdate field.
  */
@@ -2512,6 +2550,42 @@ export async function GET(
                   } catch (fallbackError) {
                     console.warn('[PDF_FORMS] Failed to backfill attestation print name:', error, fallbackError);
                   }
+                }
+              }
+
+              // I-9 Section 1 "State" is a dropdown. Older submissions never
+              // captured it (the editor couldn't write dropdown fields), so the
+              // saved PDF leaves it blank. Backfill it from the employee's profile
+              // state when empty, so the downloaded I-9 prints a State.
+              if (normalizedFormName === 'i9' && targetProfile?.state) {
+                try {
+                  const stateField = pdfForm.getField('State') as any;
+                  if (stateField && typeof stateField.getSelected === 'function') {
+                    const currentSelection = (stateField.getSelected?.() || [])
+                      .map((selected: string) => (selected || '').trim())
+                      .filter(Boolean)
+                      .join('');
+                    if (!currentSelection) {
+                      const stateOptions =
+                        typeof stateField.getOptions === 'function' ? stateField.getOptions() : [];
+                      const stateCode = resolveStateDropdownCode(targetProfile.state, stateOptions);
+                      if (stateCode) {
+                        stateField.select(stateCode);
+                        console.log(
+                          `[PDF_FORMS] I-9 State backfilled from profile: "${targetProfile.state}" -> "${stateCode}"`
+                        );
+                      } else {
+                        console.warn(
+                          `[PDF_FORMS] Could not map profile state "${targetProfile.state}" to an I-9 dropdown option`
+                        );
+                      }
+                    }
+                  }
+                } catch (stateError) {
+                  console.warn(
+                    '[PDF_FORMS] Failed to backfill I-9 State from profile:',
+                    (stateError as Error).message
+                  );
                 }
               }
 
