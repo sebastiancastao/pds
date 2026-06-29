@@ -449,6 +449,14 @@
   padding: 1.25rem;
 }
 
+.apple-calendar-wrapper-expanded .fc .fc-daygrid-day-frame {
+  min-height: clamp(8rem, 10vw, 10rem);
+}
+
+.apple-calendar-wrapper-expanded .fc .fc-daygrid-day-events {
+  min-height: clamp(5.5rem, 7vw, 7rem);
+}
+
 /* Override FullCalendar styles */
 .apple-calendar-wrapper .fc {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', sans-serif;
@@ -501,6 +509,30 @@
   font-size: 0.75rem;
   letter-spacing: 0.05em;
   padding: 0.75rem 0.5rem;
+}
+
+@media (max-width: 1024px) {
+  .apple-calendar-wrapper-expanded .fc .fc-daygrid-day-frame {
+    min-height: 7rem;
+  }
+
+  .apple-calendar-wrapper-expanded .fc .fc-daygrid-day-events {
+    min-height: 4.5rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .apple-calendar-wrapper-expanded {
+    padding: 0.875rem;
+  }
+
+  .apple-calendar-wrapper-expanded .fc .fc-daygrid-day-frame {
+    min-height: 5.5rem;
+  }
+
+  .apple-calendar-wrapper-expanded .fc .fc-daygrid-day-events {
+    min-height: 3rem;
+  }
 }
 
 /* Stat Cards - Modern Slick Design */

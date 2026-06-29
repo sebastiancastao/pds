@@ -874,7 +874,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   managerPhone: string;
   invitationToken: string;
 }): Promise<EmailResult> {
-  const { email, firstName, lastName, durationWeeks, eventCount, startDate, endDate, managerName, managerPhone, invitationToken } = data;
+  const { email, firstName, lastName, durationWeeks, startDate, endDate, managerName, managerPhone, invitationToken } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
 
   if (!isValidEmail(normalizedEmail)) {
@@ -1528,6 +1528,181 @@ export async function sendBackgroundCheckSubmissionNotification(data: {
       success: false,
       error: error.message || 'Failed to send background check notification',
     };
+  }
+}
+
+export async function sendHelpdeskTicketNotification(data: {
+  ticketNumber: string;
+  ticketDate: string;
+  urgency: string;
+  description: string;
+  submitterName: string;
+  submitterEmail: string;
+  submittedAt: string;
+}): Promise<EmailResult> {
+  const { ticketNumber, ticketDate, urgency, description, submitterName, submitterEmail, submittedAt } = data;
+
+  const urgencyColors: Record<string, string> = {
+    critical: '#dc2626',
+    high: '#ea580c',
+    medium: '#d97706',
+    low: '#16a34a',
+  };
+  const urgencyColor = urgencyColors[urgency.toLowerCase()] || '#6b7280';
+  const urgencyLabel = urgency.charAt(0).toUpperCase() + urgency.slice(1);
+
+  const emailSubject = `[${urgencyLabel}] New Helpdesk Ticket ${ticketNumber} - ${submitterName}`;
+  const emailBody = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${emailSubject}</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+
+          <!-- Header -->
+          <tr>
+            <td style="background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%); padding: 40px 30px; text-align: center;">
+              <h1 style="color: #ffffff; margin: 0; font-size: 26px;">New Helpdesk Ticket</h1>
+              <p style="color: #c0d8f0; margin: 10px 0 0 0; font-size: 16px;">A support ticket has been submitted and requires attention</p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding: 40px 30px;">
+
+              <!-- Ticket Details -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f8f9fa; border-radius: 8px; border: 2px solid #2d6a9f; margin: 0 0 30px 0;">
+                <tr>
+                  <td style="padding: 25px;">
+                    <h2 style="color: #1e3a5f; margin: 0 0 20px 0; font-size: 20px;">Ticket Details</h2>
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding: 8px 0; width: 140px;">
+                          <strong style="color: #555555;">Ticket Number:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="color: #1e3a5f; font-size: 16px; font-weight: bold;">${ticketNumber}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Date:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="color: #333333;">${ticketDate}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Urgency:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="display: inline-block; background-color: ${urgencyColor}; color: #ffffff; padding: 3px 12px; border-radius: 12px; font-size: 13px; font-weight: bold;">${urgencyLabel}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Submitted By:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="color: #333333;">${submitterName}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Email:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="color: #333333;">${submitterEmail}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding: 8px 0;">
+                          <strong style="color: #555555;">Submitted At:</strong>
+                        </td>
+                        <td style="padding: 8px 0;">
+                          <span style="color: #333333;">${submittedAt}</span>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Description -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f0f4ff; border-radius: 8px; border-left: 4px solid #2d6a9f; margin: 0 0 30px 0;">
+                <tr>
+                  <td style="padding: 20px;">
+                    <p style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 14px;"><strong>Description:</strong></p>
+                    <p style="color: #333333; margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap;">${description}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <!-- Action Link -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/hr/helpdesk"
+                       style="display: inline-block; background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
+                      View Helpdesk Tickets
+                    </a>
+                  </td>
+                </tr>
+              </table>
+
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
+              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
+                This notification was sent by PDS Time Keeping System
+              </p>
+              <p style="color: #999999; font-size: 11px; margin: 0;">
+                © ${new Date().getFullYear()} PDS. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+`.trim();
+
+  try {
+    const { data, error } = await sendResendEmail({
+      from: 'PDS Time Keeping <service@pdsportal.site>',
+      to: ['sebastiancastao379@gmail.com', 'jenvillar@1pds.net'],
+      subject: emailSubject,
+      html: emailBody,
+    });
+
+    if (error) {
+      console.error('❌ Resend error (helpdesk ticket notification):', error);
+      return { success: false, error: error.message };
+    }
+
+    console.log('✅ Helpdesk ticket notification email sent successfully!');
+    console.log(`   To: sebastiancastao379@gmail.com, jenvillar@1pds.net`);
+    console.log(`   Ticket: ${ticketNumber} | Urgency: ${urgencyLabel} | Submitter: ${submitterName}`);
+    console.log(`   Message ID: ${data?.id}`);
+
+    return { success: true, messageId: data?.id };
+  } catch (error: any) {
+    console.error('❌ Helpdesk ticket notification email failed:', error);
+    return { success: false, error: error.message || 'Failed to send helpdesk ticket notification' };
   }
 }
 
@@ -2741,180 +2916,5 @@ export async function sendCheckinLinkEmail(data: {
     return { success: true };
   } catch (error: any) {
     return { success: false, error: error.message || 'Failed to send check-in link email' };
-  }
-}
-
-export async function sendHelpdeskTicketNotification(data: {
-  ticketNumber: string;
-  ticketDate: string;
-  urgency: string;
-  description: string;
-  submitterName: string;
-  submitterEmail: string;
-  submittedAt: string;
-}): Promise<EmailResult> {
-  const { ticketNumber, ticketDate, urgency, description, submitterName, submitterEmail, submittedAt } = data;
-
-  const urgencyColors: Record<string, string> = {
-    critical: '#dc2626',
-    high: '#ea580c',
-    medium: '#d97706',
-    low: '#16a34a',
-  };
-  const urgencyColor = urgencyColors[urgency.toLowerCase()] || '#6b7280';
-  const urgencyLabel = urgency.charAt(0).toUpperCase() + urgency.slice(1);
-
-  const emailSubject = `[${urgencyLabel}] New Helpdesk Ticket ${ticketNumber} - ${submitterName}`;
-  const emailBody = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <title>${emailSubject}</title>
-</head>
-<body style="margin: 0; padding: 0; font-family: Arial, sans-serif; background-color: #f5f5f5;">
-  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f5f5f5; padding: 40px 0;">
-    <tr>
-      <td align="center">
-        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-
-          <!-- Header -->
-          <tr>
-            <td style="background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%); padding: 40px 30px; text-align: center;">
-              <h1 style="color: #ffffff; margin: 0; font-size: 26px;">New Helpdesk Ticket</h1>
-              <p style="color: #c0d8f0; margin: 10px 0 0 0; font-size: 16px;">A support ticket has been submitted and requires attention</p>
-            </td>
-          </tr>
-
-          <!-- Body -->
-          <tr>
-            <td style="padding: 40px 30px;">
-
-              <!-- Ticket Details -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f8f9fa; border-radius: 8px; border: 2px solid #2d6a9f; margin: 0 0 30px 0;">
-                <tr>
-                  <td style="padding: 25px;">
-                    <h2 style="color: #1e3a5f; margin: 0 0 20px 0; font-size: 20px;">Ticket Details</h2>
-                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
-                      <tr>
-                        <td style="padding: 8px 0; width: 140px;">
-                          <strong style="color: #555555;">Ticket Number:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="color: #1e3a5f; font-size: 16px; font-weight: bold;">${ticketNumber}</span>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 8px 0;">
-                          <strong style="color: #555555;">Date:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="color: #333333;">${ticketDate}</span>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 8px 0;">
-                          <strong style="color: #555555;">Urgency:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="display: inline-block; background-color: ${urgencyColor}; color: #ffffff; padding: 3px 12px; border-radius: 12px; font-size: 13px; font-weight: bold;">${urgencyLabel}</span>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 8px 0;">
-                          <strong style="color: #555555;">Submitted By:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="color: #333333;">${submitterName}</span>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 8px 0;">
-                          <strong style="color: #555555;">Email:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="color: #333333;">${submitterEmail}</span>
-                        </td>
-                      </tr>
-                      <tr>
-                        <td style="padding: 8px 0;">
-                          <strong style="color: #555555;">Submitted At:</strong>
-                        </td>
-                        <td style="padding: 8px 0;">
-                          <span style="color: #333333;">${submittedAt}</span>
-                        </td>
-                      </tr>
-                    </table>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Description -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #f0f4ff; border-radius: 8px; border-left: 4px solid #2d6a9f; margin: 0 0 30px 0;">
-                <tr>
-                  <td style="padding: 20px;">
-                    <p style="color: #1e3a5f; margin: 0 0 10px 0; font-size: 14px;"><strong>Description:</strong></p>
-                    <p style="color: #333333; margin: 0; font-size: 14px; line-height: 1.7; white-space: pre-wrap;">${description}</p>
-                  </td>
-                </tr>
-              </table>
-
-              <!-- Action Link -->
-              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin: 30px 0;">
-                <tr>
-                  <td align="center">
-                    <a href="${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/hr/helpdesk"
-                       style="display: inline-block; background: linear-gradient(135deg, #1e3a5f 0%, #2d6a9f 100%); color: #ffffff; text-decoration: none; padding: 15px 40px; border-radius: 6px; font-size: 16px; font-weight: bold;">
-                      View Helpdesk Tickets
-                    </a>
-                  </td>
-                </tr>
-              </table>
-
-            </td>
-          </tr>
-
-          <!-- Footer -->
-          <tr>
-            <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-top: 1px solid #e0e0e0;">
-              <p style="color: #777777; font-size: 12px; margin: 0 0 10px 0;">
-                This notification was sent by PDS Time Keeping System
-              </p>
-              <p style="color: #999999; font-size: 11px; margin: 0;">
-                © ${new Date().getFullYear()} PDS. All rights reserved.
-              </p>
-            </td>
-          </tr>
-
-        </table>
-      </td>
-    </tr>
-  </table>
-</body>
-</html>
-`.trim();
-
-  try {
-    const { data, error } = await sendResendEmail({
-      from: 'PDS Time Keeping <service@pdsportal.site>',
-      to: ['sebastiancastao379@gmail.com', 'jenvillar@1pds.net'],
-      subject: emailSubject,
-      html: emailBody,
-    });
-
-    if (error) {
-      console.error('❌ Resend error (helpdesk ticket notification):', error);
-      return { success: false, error: error.message };
-    }
-
-    console.log('✅ Helpdesk ticket notification email sent successfully!');
-    console.log(`   To: sebastiancastao379@gmail.com, jenvillar@1pds.net`);
-    console.log(`   Ticket: ${ticketNumber} | Urgency: ${urgencyLabel} | Submitter: ${submitterName}`);
-    console.log(`   Message ID: ${data?.id}`);
-
-    return { success: true, messageId: data?.id };
-  } catch (error: any) {
-    console.error('❌ Helpdesk ticket notification email failed:', error);
-    return { success: false, error: error.message || 'Failed to send helpdesk ticket notification' };
   }
 }

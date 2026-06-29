@@ -186,6 +186,8 @@ CREATE INDEX idx_time_entries_division ON public.time_entries(division);
 CREATE TABLE public.sick_leaves (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+  -- FK to public.events added after the events table is created (see below)
+  event_id UUID,
 
   start_date DATE NOT NULL,
   end_date DATE NOT NULL,
@@ -222,6 +224,7 @@ CREATE TABLE public.events (
   
   -- Timing
   event_date DATE NOT NULL,
+  end_date DATE,
   start_time TIME NOT NULL,
   end_time TIME NOT NULL,
   
@@ -248,6 +251,13 @@ CREATE TABLE public.events (
 CREATE INDEX idx_events_date ON public.events(event_date DESC);
 CREATE INDEX idx_events_venue ON public.events(venue);
 CREATE INDEX idx_events_created_by ON public.events(created_by);
+
+-- Link sick leave requests to the event they apply to (declared here because
+-- sick_leaves is created before events)
+ALTER TABLE public.sick_leaves
+  ADD CONSTRAINT sick_leaves_event_id_fkey
+  FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE SET NULL;
+CREATE INDEX idx_sick_leaves_event_id ON public.sick_leaves(event_id);
 
 -- ============================================
 -- Event Staff Assignments

@@ -34,6 +34,7 @@ interface FormField {
   page: number;
   value: string;
   widgetValue?: string;
+  options?: string[];
 }
 
 interface OverlayRect {
@@ -1042,11 +1043,27 @@ export default function PDFFormEditor({
           console.log(`  Field name: ${fieldName}`);
           let fieldType = 'text';
           let fieldValue = '';
+          let fieldOptions: string[] = [];
 
           if ('getText' in field) {
             fieldType = 'text';
             fieldValue = field.getText() || '';
             console.log(`  Field type: text, value: "${fieldValue}"`);
+          } else if ('getOptions' in field && 'select' in field) {
+            // Choice field (dropdown / combo box) — e.g. the I-9 "State" field.
+            fieldType = 'dropdown';
+            try {
+              const selected = field.getSelected?.() || [];
+              fieldValue = (Array.isArray(selected) ? selected[0] : selected) || '';
+            } catch {
+              fieldValue = '';
+            }
+            try {
+              fieldOptions = field.getOptions?.() || [];
+            } catch {
+              fieldOptions = [];
+            }
+            console.log(`  Field type: dropdown, value: "${fieldValue}", options: ${fieldOptions.length}`);
           } else if ('isChecked' in field) {
             fieldType = 'checkbox';
             const checked = field.isChecked();
@@ -1114,7 +1131,8 @@ export default function PDFFormEditor({
               rect: [rect.x, rect.y, rect.width, rect.height],
               page: pageIndex >= 0 ? pageIndex + 1 : 1,
               value,
-              widgetValue
+              widgetValue,
+              options: fieldOptions
             };
             console.log(`    Adding field:`, fieldData);
             fields.push(fieldData);
@@ -1257,6 +1275,18 @@ export default function PDFFormEditor({
         if ('setText' in field) {
           field.setText(value);
           console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
+        } else if ('select' in field && 'getOptions' in field) {
+          // Choice field (dropdown / combo box) — e.g. the I-9 "State" field.
+          try {
+            if (value && value.trim().length > 0) {
+              (field as any).select(value);
+            } else if (typeof (field as any).clear === 'function') {
+              (field as any).clear();
+            }
+            console.log(`[UPDATE FIELD] Dropdown updated: "${fieldName}" = "${value}"`);
+          } catch (selectErr) {
+            console.error(`[UPDATE FIELD] Failed to select "${value}" for dropdown "${fieldName}":`, selectErr);
+          }
         } else if ('check' in field || 'uncheck' in field) {
           if (value === 'false') {
             field.uncheck();
@@ -1554,6 +1584,27 @@ export default function PDFFormEditor({
                       accentColor: isMissingRequired ? '#d32f2f' : undefined
                     }}
                   />
+                ) : field.type === 'dropdown' ? (
+                  <select
+                    value={fieldValue}
+                    onChange={(e) => handleFieldChange(field.id, field.baseName, e.target.value)}
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      border: isMissingRequired ? '2px solid #d32f2f' : '1px solid rgba(0,0,255,0.3)',
+                      backgroundColor: isMissingRequired ? 'rgba(211,47,47,0.08)' : 'rgba(255,255,255,0.9)',
+                      fontSize: `${height * 0.6}px`,
+                      padding: '0 2px',
+                      boxSizing: 'border-box',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    {(field.options || []).map((opt, optIndex) => (
+                      <option key={`${field.id}-opt-${optIndex}`} value={opt}>
+                        {opt.trim() === '' ? '— Select —' : opt}
+                      </option>
+                    ))}
+                  </select>
                 ) : (
                   <input
                     type={isDateField ? 'date' : 'text'}

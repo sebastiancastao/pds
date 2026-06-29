@@ -12,6 +12,7 @@ type FormKey =
   | 'health-insurance'
   | 'time-of-hire'
   | 'attestation'
+  | 'meal-period-rest-break-acknowledgement'
   | 'employee-information'
   | 'fw4'
   | 'i9'
@@ -29,6 +30,10 @@ const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>>
   marketplace: { file: '15. health-insurance-marketplace-coverage-options-complete.pdf', downloadName: 'Marketplace_Notice.pdf' },
   'health-insurance': { file: '15. health-insurance-marketplace-coverage-options-complete.pdf', downloadName: 'Health_Insurance.pdf' },
   'time-of-hire': { file: '16_TimeOfHireNotice.pdf', downloadName: 'Time_of_Hire.pdf' },
+  'meal-period-rest-break-acknowledgement': {
+    file: 'PDS Meal Period and Rest Break Acknowledgement 2.23.2026.pdf',
+    downloadName: 'PDS_Meal_Period_And_Rest_Break_Acknowledgement.pdf',
+  },
   'employee-information': { file: 'employee information.pdf', downloadName: 'Employee_Information.pdf' },
   fw4: { file: 'fw4.pdf', downloadName: 'Federal_W4.pdf' },
   i9: { file: 'i-9.pdf', downloadName: 'I9.pdf' },
@@ -39,6 +44,7 @@ const FILE_MAP: Partial<Record<FormKey, { file: string; downloadName: string }>>
 
 const CA_STATE_TAX_FILE = { file: 'de4_State Tax Form.pdf', downloadName: 'State_Tax.pdf' };
 const ATTESTATION_SOURCE_FILE = 'PDS Attestation 2.23.2026.pdf';
+const MEAL_REST_ACK_SOURCE_FILE = 'PDS Meal Period and Rest Break Acknowledgement 2.23.2026.pdf';
 const ATTESTATION_NAME_FIELD = 'employee_attestation_name';
 const ATTESTATION_SIGNATURE_FIELD = 'employee_attestation_signature';
 const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
@@ -64,6 +70,7 @@ const PLACEHOLDER_TITLES: Record<FormKey, string> = {
   'health-insurance': 'Health Insurance',
   'time-of-hire': 'Time of Hire Notice',
   attestation: 'Timekeeping / Meal Period Attestation',
+  'meal-period-rest-break-acknowledgement': 'Meal Period and Rest Break Acknowledgement',
   'employee-information': 'Employee Information',
   fw4: 'Federal W-4',
   i9: 'I-9 Employment Verification',
@@ -338,6 +345,25 @@ export async function GET(request: NextRequest, { params }: { params: { form: st
       console.error('[PAYROLL-PACKET-COMMON ATTESTATION] PDF generation error:', error);
       return NextResponse.json(
         { error: 'Failed to generate attestation PDF', details: error.message },
+        { status: 500 },
+      );
+    }
+  }
+
+  if (formKey === 'meal-period-rest-break-acknowledgement') {
+    try {
+      const buffer = readRootPdf(MEAL_REST_ACK_SOURCE_FILE);
+      return new NextResponse(bufferToBodyInit(buffer), {
+        status: 200,
+        headers: {
+          ...PDF_HEADERS,
+          'Content-Disposition': 'inline; filename="PDS_Meal_Period_And_Rest_Break_Acknowledgement.pdf"',
+        },
+      });
+    } catch (error: any) {
+      console.error('[PAYROLL-PACKET-COMMON MEAL-REST-ACK] PDF generation error:', error);
+      return NextResponse.json(
+        { error: 'Failed to generate meal/rest acknowledgement PDF', details: error.message },
         { status: 500 },
       );
     }

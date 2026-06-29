@@ -83,11 +83,15 @@ function safeDecryptName(value: string | null | undefined): string {
   }
 }
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function buildRequestEmailHtml(params: {
   employeeName: string;
   employeeEmail: string;
   sickDate: string;
   durationHours: number;
+  eventLabel: string;
 }) {
   const dateLabel = new Date(`${params.sickDate}T00:00:00Z`).toLocaleDateString(
     "en-US",
@@ -120,6 +124,10 @@ function buildRequestEmailHtml(params: {
         <td style="padding: 6px 10px; font-weight: 600;">${params.employeeEmail || "Unknown"}</td>
       </tr>
       <tr>
+        <td style="padding: 6px 10px; color: #374151;">Event</td>
+        <td style="padding: 6px 10px; font-weight: 600;">${params.eventLabel}</td>
+      </tr>
+      <tr>
         <td style="padding: 6px 10px; color: #374151;">Date</td>
         <td style="padding: 6px 10px; font-weight: 600;">${dateLabel}</td>
       </tr>
@@ -148,6 +156,7 @@ export async function POST(req: NextRequest) {
     const sickDate = parseDateInput(body?.date);
     const durationHoursRaw = Number(body?.hours);
     const durationHours = Number(durationHoursRaw.toFixed(2));
+    const eventId = String(body?.event_id || "").trim();
 
     if (!sickDate) {
       return NextResponse.json(
@@ -163,6 +172,51 @@ export async function POST(req: NextRequest) {
     ) {
       return NextResponse.json(
         { error: "Hours must be a number greater than 0 and at most 24" },
+        { status: 400 }
+      );
+    }
+
+    if (!UUID_PATTERN.test(eventId)) {
+      return NextResponse.json(
+        { error: "Please select the event this sick leave applies to" },
+        { status: 400 }
+      );
+    }
+
+    const { data: eventRow, error: eventError } = await supabaseAdmin
+      .from("events")
+      .select("id, event_name, event_date, end_date, venue")
+      .eq("id", eventId)
+      .maybeSingle();
+
+    if (eventError) {
+      return NextResponse.json(
+        { error: eventError.message || "Failed to load the selected event" },
+        { status: 500 }
+      );
+    }
+
+    if (!eventRow) {
+      return NextResponse.json(
+        { error: "The selected event could not be found" },
+        { status: 400 }
+      );
+    }
+
+    const eventStartDate = parseDateInput(eventRow.event_date);
+    const eventEndDate = parseDateInput(eventRow.end_date) || eventStartDate;
+    if (
+      eventStartDate &&
+      eventEndDate &&
+      (sickDate < eventStartDate || sickDate > eventEndDate)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            eventEndDate !== eventStartDate
+              ? `The sick leave date must fall within the selected event (${eventStartDate} to ${eventEndDate})`
+              : `The sick leave date must match the selected event date (${eventStartDate})`,
+        },
         { status: 400 }
       );
     }
@@ -202,6 +256,7 @@ export async function POST(req: NextRequest) {
       .from("sick_leaves")
       .insert({
         user_id: authenticatedUserId,
+        event_id: eventRow.id,
         start_date: sickDate,
         end_date: sickDate,
         duration_hours: durationHours,
@@ -209,7 +264,7 @@ export async function POST(req: NextRequest) {
         reason: "Employee sick leave request from /employees profile page",
       })
       .select(
-        "id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at"
+        "id, event_id, start_date, end_date, duration_hours, status, reason, approved_at, approved_by, created_at"
       )
       .single();
 
@@ -220,12 +275,34 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    const insertedRecord = {
+      ...inserted,
+      event_name: eventRow.event_name ?? null,
+      event_date: eventRow.event_date ?? null,
+    };
+
+    const eventLabel = [
+      eventRow.event_name || "Unnamed event",
+      eventRow.event_date
+        ? new Date(`${eventRow.event_date}T00:00:00Z`).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+            timeZone: "UTC",
+          })
+        : null,
+      eventRow.venue || null,
+    ]
+      .filter(Boolean)
+      .join(" — ");
+
     const emailSubject = `Sick Leave Request - ${employeeName}`;
     const emailHtml = buildRequestEmailHtml({
       employeeName,
       employeeEmail,
       sickDate,
       durationHours,
+      eventLabel,
     });
 
     const emailResult = await sendEmail({
@@ -240,7 +317,7 @@ export async function POST(req: NextRequest) {
           error:
             emailResult.error ||
             "Request was saved but notification email could not be sent",
-          record: inserted,
+          record: insertedRecord,
         },
         { status: 500 }
       );
@@ -249,7 +326,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       {
         message: "Sick leave request submitted",
-        record: inserted,
+        record: insertedRecord,
       },
       { status: 201 }
     );

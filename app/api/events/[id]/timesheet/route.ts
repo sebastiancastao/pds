@@ -135,17 +135,18 @@ export async function GET(
       Boolean((event as any).ends_next_day) ||
       (startSec !== null && endSec !== null && endSec <= startSec);
     const eventTimezone = getTimezoneForState((event as any).state);
-    // Multi-day Non Event Time Sheets carry an end_date; scan every day in the range.
-    // Single-day events scan a 2-day local window so manual overnight edits remain
-    // visible while stale rows from older days for the same event_id are excluded.
-    let endDate = (event as any).end_date;
-    if (endDate && typeof endDate === 'string') {
-      endDate = endDate.split('T')[0];
-    }
-    const dayDiff = endDate ? daysBetween(date, endDate) : 0;
-    // (inclusive day count) + 1 buffer day to capture a final-day shift that ends past midnight
-    const daySpan = dayDiff > 0 ? dayDiff + 2 : 2;
-    const queryRange = getLocalDateRange(date, eventTimezone, daySpan);
+
+    // Multi-day events (end_date after event_date) record one isolated timesheet per day,
+    // so the scan window covers the full date range and totals include every day.
+    const endDate = normalizeEventDate((event as any).end_date);
+    const isMultiDay = Boolean(endDate && date && endDate > date);
+    const multiDayCount = isMultiDay
+      ? Math.round((Date.parse(endDate!) - Date.parse(date)) / 86400000) + 1
+      : 0;
+
+    // For single-day events, always scan a 2-day local window so manual overnight
+    // edits remain visible while stale rows from older days for the same event_id are excluded.
+    const queryRange = getLocalDateRange(date, eventTimezone, isMultiDay ? multiDayCount : 2);
     if (!queryRange) {
       return NextResponse.json({ error: 'Invalid event date/timezone' }, { status: 400 });
     }
@@ -253,6 +254,24 @@ export async function GET(
       managerEditSignatureData: string | null;
       managerEditedByName: string | null;
     }> = {};
+
+    // Per-day breakdown for multi-day events (one isolated timesheet per local day)
+    type TimesheetDayRow = {
+      date: string;
+      firstInDisplay: string;
+      lastOutDisplay: string;
+      meals: Array<{ startDisplay: string; endDisplay: string }>;
+      totalMs: number;
+    };
+    const daysByUser: Record<string, TimesheetDayRow[]> = {};
+    const dayKeyFormatter = isMultiDay
+      ? new Intl.DateTimeFormat('en-CA', {
+          timeZone: eventTimezone,
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit',
+        })
+      : null;
 
     // Parse notes like: "Manual edit by manager | Reason: ... | Signature: <uuid>"
     const parseEditNotes = (notes: string) => {
@@ -366,9 +385,89 @@ export async function GET(
         }
       }
 
+      // Multi-day totals are returned net of meals: the client cannot derive them
+      // from first-in/last-out spans because those cross overnight gaps.
+      if (isMultiDay) {
+        let mealMsTotal = 0;
+        let currentMealStart: string | null = null;
+        for (const entry of userEntries) {
+          if (entry.action === 'meal_start') {
+            if (!currentMealStart) currentMealStart = entry.timestamp;
+          } else if (entry.action === 'meal_end') {
+            if (currentMealStart) {
+              const duration = new Date(entry.timestamp).getTime() - new Date(currentMealStart).getTime();
+              if (duration > 0) mealMsTotal += duration;
+              currentMealStart = null;
+            }
+          }
+        }
+        totals[uid] = Math.max(totals[uid] - mealMsTotal, 0);
+      }
+
+      if (isMultiDay && dayKeyFormatter) {
+        const entriesByDay: Record<string, any[]> = {};
+        for (const entry of userEntries) {
+          const entryMs = new Date(entry.timestamp).getTime();
+          if (!Number.isFinite(entryMs)) continue;
+          const dayKey = dayKeyFormatter.format(new Date(entryMs));
+          if (!entriesByDay[dayKey]) entriesByDay[dayKey] = [];
+          entriesByDay[dayKey].push(entry);
+        }
+
+        daysByUser[uid] = Object.keys(entriesByDay)
+          .sort()
+          .map((dayKey) => {
+            const dayEntries = entriesByDay[dayKey];
+            const dayClockIns = dayEntries.filter((e) => e.action === 'clock_in');
+            const dayClockOuts = dayEntries.filter((e) => e.action === 'clock_out');
+            const dayMealStarts = dayEntries.filter((e) => e.action === 'meal_start');
+            const dayMealEnds = dayEntries.filter((e) => e.action === 'meal_end');
+
+            let dayGrossMs = 0;
+            let openClockIn: number | null = null;
+            for (const entry of dayEntries) {
+              const entryMs = new Date(entry.timestamp).getTime();
+              if (!Number.isFinite(entryMs)) continue;
+              if (entry.action === 'clock_in') {
+                if (openClockIn === null) openClockIn = entryMs;
+              } else if (entry.action === 'clock_out' && openClockIn !== null) {
+                dayGrossMs += Math.max(entryMs - openClockIn, 0);
+                openClockIn = null;
+              }
+            }
+
+            let dayMealMs = 0;
+            let openMeal: number | null = null;
+            for (const entry of dayEntries) {
+              const entryMs = new Date(entry.timestamp).getTime();
+              if (!Number.isFinite(entryMs)) continue;
+              if (entry.action === 'meal_start') {
+                if (openMeal === null) openMeal = entryMs;
+              } else if (entry.action === 'meal_end' && openMeal !== null) {
+                dayMealMs += Math.max(entryMs - openMeal, 0);
+                openMeal = null;
+              }
+            }
+
+            return {
+              date: dayKey,
+              firstInDisplay: dayClockIns[0] ? formatIsoToHHMM(dayClockIns[0].timestamp, eventTimezone) : '',
+              lastOutDisplay: dayClockOuts.length
+                ? formatIsoToHHMM(dayClockOuts[dayClockOuts.length - 1].timestamp, eventTimezone)
+                : '',
+              meals: dayMealStarts.slice(0, 3).map((mealStart: any, index: number) => ({
+                startDisplay: formatIsoToHHMM(mealStart.timestamp, eventTimezone),
+                endDisplay: dayMealEnds[index] ? formatIsoToHHMM(dayMealEnds[index].timestamp, eventTimezone) : '',
+              })),
+              totalMs: Math.max(dayGrossMs - dayMealMs, 0),
+            };
+          });
+      }
+
       // AUTO-DETECT MEAL BREAKS: Analyze gaps between work intervals
+      // (skipped for multi-day events, where gaps between days are overnight, not meals)
       const hasExplicitMeals = mealStarts.length > 0 || mealEnds.length > 0;
-      if (!hasExplicitMeals && workIntervals.length >= 2) {
+      if (!hasExplicitMeals && !isMultiDay && workIntervals.length >= 2) {
         workIntervals.sort((a, b) => a.start.getTime() - b.start.getTime());
 
         const gaps: Array<{ start: Date; end: Date }> = [];
@@ -462,10 +561,13 @@ export async function GET(
     return NextResponse.json({
       totals,
       spans,
+      multiDay: isMultiDay,
+      days: isMultiDay ? daysByUser : undefined,
       summary: {
         totalWorkers: userIds.length,
         totalEntriesFound: entries?.length || 0,
-        dateQueried: date
+        dateQueried: date,
+        endDateQueried: isMultiDay ? endDate : date,
       }
     });
   } catch (err: any) {
@@ -485,6 +587,11 @@ type TimesheetSpanPayload = {
   secondMealEnd?: string;
   thirdMealStart?: string;
   thirdMealEnd?: string;
+};
+
+type TimelineEntry = {
+  action: string;
+  timestamp: string | null;
 };
 
 const toEventIso = (eventDate: string, hhmm?: string) => {
@@ -514,6 +621,55 @@ const normalizeEventDate = (dateValue?: string | null) => {
   if (!dateValue) return null;
   return dateValue.split("T")[0];
 };
+
+function eventAllowsOvernight(event: {
+  start_time?: string | null;
+  end_time?: string | null;
+  ends_next_day?: boolean | null;
+}) {
+  if (Boolean(event.ends_next_day)) return true;
+  const startSeconds = timeToSeconds(event.start_time);
+  const endSeconds = timeToSeconds(event.end_time);
+  return startSeconds !== null && endSeconds !== null && endSeconds <= startSeconds;
+}
+
+function getNextDayDate(dateStr: string) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const next = new Date(y, m - 1, d + 1);
+  return [
+    next.getFullYear(),
+    String(next.getMonth() + 1).padStart(2, "0"),
+    String(next.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function validateTimelineWithinEventWindow(
+  timeline: TimelineEntry[],
+  event: {
+    start_time?: string | null;
+    end_time?: string | null;
+    ends_next_day?: boolean | null;
+  },
+  eventDate: string,
+  eventTimezone: string
+): string | null {
+  const clockIn = timeline.find((entry) => entry.action === "clock_in");
+  const clockOut = [...timeline].reverse().find((entry) => entry.action === "clock_out");
+  const allowOvernight = eventAllowsOvernight(event);
+
+  if (clockIn?.timestamp && event.start_time) {
+    const eventStartIso = toZonedIso(eventDate, event.start_time, eventTimezone);
+    if (eventStartIso) {
+      const clockInMs = new Date(clockIn.timestamp).getTime();
+      const eventStartMs = new Date(eventStartIso).getTime();
+      if (Number.isFinite(clockInMs) && Number.isFinite(eventStartMs) && clockInMs < eventStartMs) {
+        return "Clock in time cannot be before the event start time.";
+      }
+    }
+  }
+
+  return null;
+}
 
 export async function PUT(
   req: NextRequest,
@@ -613,7 +769,7 @@ export async function PUT(
 
     const { data: event, error: eventError } = await supabaseAdmin
       .from("events")
-      .select("event_date, state")
+      .select("event_date, end_date, start_time, end_time, ends_next_day, state")
       .eq("id", eventId)
       .maybeSingle();
     if (eventError) {
@@ -623,7 +779,17 @@ export async function PUT(
     if (!eventDate) {
       return NextResponse.json({ error: "Event date is missing" }, { status: 400 });
     }
+    const eventEndDate = normalizeEventDate((event as any)?.end_date);
+    if (eventEndDate && eventEndDate > eventDate) {
+      // This editor rebuilds a single day's timeline from all event-bound entries,
+      // which would collapse a multi-day event into one day.
+      return NextResponse.json(
+        { error: "This event spans multiple days. Edit each day from the worker's time sheet page instead." },
+        { status: 400 }
+      );
+    }
     const eventTimezone = getTimezoneForState(event?.state);
+    const allowOvernight = eventAllowsOvernight(event || {});
 
     const { data: targetUser, error: targetUserError } = await supabaseAdmin
       .from("users")
@@ -646,7 +812,7 @@ export async function PUT(
     const useMeal2 = !!(meal2Start && meal2End);
     const useMeal3 = !!(meal3Start && meal3End);
 
-    const timeline = [
+    const timeline: TimelineEntry[] = [
       { action: "clock_in", timestamp: toZonedIso(eventDate, spans.firstIn, eventTimezone) },
       ...(useMeal1
         ? [
@@ -675,6 +841,12 @@ export async function PUT(
       const prevMs = new Date(String(timeline[i - 1].timestamp)).getTime();
       const currMs = new Date(String(timeline[i].timestamp)).getTime();
       if (currMs <= prevMs) {
+        if (!allowOvernight) {
+          return NextResponse.json(
+            { error: "Times must stay on the event date unless the event runs overnight." },
+            { status: 400 }
+          );
+        }
         timeline[i].timestamp = new Date(currMs + 24 * 60 * 60 * 1000).toISOString();
       }
     }
@@ -697,7 +869,12 @@ export async function PUT(
       }
     }
 
-    const dayRange = getLocalDateRange(eventDate, eventTimezone, 2);
+    const windowError = validateTimelineWithinEventWindow(timeline, event || {}, eventDate, eventTimezone);
+    if (windowError) {
+      return NextResponse.json({ error: windowError }, { status: 400 });
+    }
+
+    const dayRange = getLocalDateRange(eventDate, eventTimezone, allowOvernight ? 2 : 1);
     if (!dayRange) {
       return NextResponse.json({ error: "Invalid event date/timezone" }, { status: 400 });
     }

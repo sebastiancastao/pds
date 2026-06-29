@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import MealWaiver6HourNYPage from '../meal-waiver-6hour/page';
 import MealWaiver10to12NYPage from '../meal-waiver-10-12/page';
 import { FormSpec, StatePayrollFormViewerWithSuspense } from '@/app/components/StatePayrollFormViewer';
+import { supabase } from '@/lib/supabase';
 
 const NY_FORMS: FormSpec[] = [
   { id: 'adp-deposit', formId: 'adp-deposit', display: 'ADP Direct Deposit', requiresSignature: true },
@@ -72,6 +73,10 @@ const EMPLOYEE_INFO_STORAGE_KEY = 'ny-employee-information';
 
 function EmployeeInformationNYForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<EmployeeInfoState>({
     firstName: '',
@@ -111,7 +116,7 @@ function EmployeeInformationNYForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       alert('Please enter both first and last name.');
       return false;
@@ -132,8 +137,37 @@ function EmployeeInformationNYForm() {
     setSaving(true);
     try {
       localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
-      setTimeout(() => setSaving(false), 300); // small UX delay to show state change
-      alert('Employee information saved.');
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('You must be logged in to save employee information.');
+        setSaving(false);
+        return false;
+      }
+
+      const response = await fetch('/api/employee-information/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          ...form,
+          customFormId: customFormId || undefined,
+          targetUserId: targetUserId || undefined,
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Save error:', error);
+        alert(error.error || 'Failed to save employee information to database.');
+        setSaving(false);
+        return false;
+      }
+
+      setSaving(false);
+      alert('Employee information saved successfully.');
       return true;
     } catch (e) {
       console.error('Save error:', e);
@@ -144,14 +178,14 @@ function EmployeeInformationNYForm() {
   };
 
   const handleContinue = async () => {
-    const ok = handleSave();
+    const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-ny/form-viewer?form=attestation');
+      router.push(returnTo || '/payroll-packet-ny/form-viewer?form=attestation');
     }
   };
 
   const handleBack = () => {
-    router.push('/payroll-packet-ny/form-viewer?form=time-of-hire');
+    router.push(returnTo || '/payroll-packet-ny/form-viewer?form=time-of-hire');
   };
 
   const inputStyle = {

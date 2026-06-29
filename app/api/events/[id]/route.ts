@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { deleteEventAssociations } from "@/lib/event-associations";
 import { MAX_NON_EVENT_TIMESHEET_DAYS, getMaxNonEventEndDate } from "@/lib/non-event-timesheets";
+import { canUserAccessEventById } from "@/lib/event-access";
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -775,9 +776,9 @@ export async function DELETE(
     }
 
     const userRole = String(userData.role || "");
-    if (userRole !== "exec") {
+    if (userRole !== "exec" && userRole !== "manager") {
       return NextResponse.json(
-        { error: "Access denied. Only exec users can delete events." },
+        { error: "Access denied. Only exec or manager users can delete events." },
         { status: 403 }
       );
     }
@@ -795,6 +796,19 @@ export async function DELETE(
 
     if (!event) {
       return NextResponse.json({ error: "Event not found" }, { status: 404 });
+    }
+
+    if (userRole === "manager") {
+      const hasAccess = await canUserAccessEventById(supabaseAdmin, eventId, {
+        userId: user.id,
+        role: userRole,
+      });
+      if (!hasAccess) {
+        return NextResponse.json(
+          { error: "Access denied. You can only delete events at your assigned venues or events you are part of." },
+          { status: 403 }
+        );
+      }
     }
 
     await deleteEventAssociations(supabaseAdmin, eventId);

@@ -97,6 +97,7 @@ export async function GET(
         events (
           event_name,
           event_date,
+          end_date,
           start_time,
           venue,
           city,
@@ -120,6 +121,7 @@ export async function GET(
         events (
           event_name,
           event_date,
+          end_date,
           start_time,
           venue,
           city,
@@ -204,6 +206,7 @@ export async function GET(
         event_id: row.event_id,
         event_name: ev?.event_name ?? null,
         event_date: ev?.event_date ?? null,
+        end_date: ev?.end_date ?? null,
         start_time: ev?.start_time ?? null,
         venue: ev?.venue ?? null,
         city: ev?.city ?? null,
@@ -226,6 +229,7 @@ export async function GET(
         event_id: row.event_id,
         event_name: ev?.event_name ?? null,
         event_date: ev?.event_date ?? null,
+        end_date: ev?.end_date ?? null,
         start_time: loc?.call_time ?? ev?.start_time ?? null,
         venue: ev?.venue ?? null,
         city: ev?.city ?? null,

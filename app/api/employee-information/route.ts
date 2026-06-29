@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { encrypt, decrypt, isEncrypted } from '@/lib/encryption';
+import { markEmployeeInformationCustomFormComplete } from '@/lib/employee-information-custom-form';
+import { syncProfileFromEmployeeInformation } from '@/lib/employee-information-profile-sync';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
@@ -31,10 +33,27 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
+    const targetUserId = request.nextUrl.searchParams.get('targetUserId')?.trim() || '';
+    let lookupUserId = userData.user.id;
+
+    if (targetUserId && targetUserId !== userData.user.id) {
+      const { data: caller } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden: cannot view another user' }, { status: 403 });
+      }
+
+      lookupUserId = targetUserId;
+    }
+
     const { data, error } = await supabase
       .from(EMPLOYEE_INFORMATION_TABLE)
       .select('*')
-      .eq('user_id', userData.user.id)
+      .eq('user_id', lookupUserId)
       .single();
 
     if (error && error.code !== 'PGRST116') {
@@ -91,6 +110,8 @@ export async function POST(request: NextRequest) {
       emergency,
       acknowledgements,
       signature,
+      customFormId,
+      targetUserId,
     } = body || {};
 
     const requiredFields: { value: string | undefined; label: string }[] = [
@@ -133,8 +154,38 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to encrypt sensitive data' }, { status: 500 });
     }
 
+    let saveUserId = userData.user.id;
+    const normalizedTargetUserId = String(targetUserId || '').trim();
+    if (normalizedTargetUserId && normalizedTargetUserId !== userData.user.id) {
+      const { data: caller } = await supabase
+        .from('users')
+        .select('role')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+
+      if (!caller || !['exec', 'admin', 'hr', 'hr_admin'].includes(caller.role)) {
+        return NextResponse.json({ error: 'Forbidden: cannot save for another user' }, { status: 403 });
+      }
+
+      saveUserId = normalizedTargetUserId;
+    }
+
+    await syncProfileFromEmployeeInformation({
+      supabase,
+      userId: saveUserId,
+      input: {
+        firstName: personal.firstName,
+        lastName: personal.lastName,
+        phone: personal.phone,
+        address: personal.address,
+        city: personal.city,
+        state: personal.state,
+        zip: personal.zip,
+      },
+    });
+
     const payload = {
-      user_id: userData.user.id,
+      user_id: saveUserId,
       first_name: personal.firstName,
       last_name: personal.lastName,
       middle_initial: personal.middleInitial || null,
@@ -171,6 +222,22 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: missingTableMessage }, { status: 500 });
       }
       return NextResponse.json({ error: 'Failed to save employee information' }, { status: 500 });
+    }
+
+    if (customFormId) {
+      try {
+        await markEmployeeInformationCustomFormComplete({
+          customFormId,
+          supabase,
+          userId: saveUserId,
+        });
+      } catch (completionError: any) {
+        console.error('[EMPLOYEE-INFORMATION] Custom form completion error:', completionError);
+        return NextResponse.json(
+          { error: completionError?.message || 'Failed to mark custom form complete' },
+          { status: 500 },
+        );
+      }
     }
 
     return NextResponse.json({ info: data }, { status: 200 });

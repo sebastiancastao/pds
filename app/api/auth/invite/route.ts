@@ -41,9 +41,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (invites.length > 50) {
+    if (invites.length > 5000) {
       return NextResponse.json(
-        { error: 'Maximum 50 invites can be sent at once' },
+        { error: 'Maximum 5000 invites can be sent at once' },
         { status: 400 }
       );
     }

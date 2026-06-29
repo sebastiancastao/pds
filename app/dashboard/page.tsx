@@ -1048,7 +1048,7 @@ export default function DashboardPage() {
   };
 
   const openDeleteConfirmModal = (event: EventItem) => {
-    if (userRole !== "exec" || deletingEventId) return;
+    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
     setDeleteConfirmEvent(event);
   };
 
@@ -1056,7 +1056,7 @@ export default function DashboardPage() {
     if (!deleteConfirmEvent) return;
 
     const event = deleteConfirmEvent;
-    if (userRole !== "exec" || deletingEventId) return;
+    if ((userRole !== "exec" && userRole !== "manager") || deletingEventId) return;
 
     setDeletingEventId(event.id);
     setError("");
@@ -1625,7 +1625,7 @@ export default function DashboardPage() {
               )}
                 {error && <div className="apple-alert apple-alert-error">{error}</div>}
                 {!loading && !error && (
-                  <div className="apple-card apple-calendar-wrapper">
+                  <div className="apple-card apple-calendar-wrapper apple-calendar-wrapper-expanded">
                     <EventCalendar events={calendarEvents} onEventClick={(id) => { setSelectedCalendarEventId(id); setSelectedVenue("all"); setEventSearchQuery(""); setEventStartDate(""); setEventEndDate(""); }} />
                   </div>
                 )}
@@ -1849,7 +1849,7 @@ export default function DashboardPage() {
                           </Link>
                         </div>
                       </div>
-                      {userRole === "exec" && (
+                      {(userRole === "exec" || userRole === "manager") && (
                         <div className="mt-4 flex justify-end">
                           <button
                             onClick={() => openDeleteConfirmModal(ev)}

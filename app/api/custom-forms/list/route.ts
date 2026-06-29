@@ -3,12 +3,22 @@ import { createClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import { createRouteHandlerClient } from '@supabase/auth-helpers-nextjs';
 import { fetchAllCustomFormAssignments } from '@/lib/custom-form-assignments';
+import { getCustomFormViewerUrlFromStoragePath } from '@/lib/payroll-packet-custom-forms';
 
 export const dynamic = 'force-dynamic';
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+
+function decorateFormRecord(form: any) {
+  const viewerUrl = getCustomFormViewerUrlFromStoragePath(form.storage_path);
+  return {
+    ...form,
+    delivery_kind: viewerUrl ? 'viewer' : 'pdf',
+    viewer_url: viewerUrl,
+  };
+}
 
 export async function GET(request: NextRequest) {
   try {
@@ -39,7 +49,7 @@ export async function GET(request: NextRequest) {
 
     const { data: forms, error } = await adminClient
       .from('custom_pdf_forms')
-      .select('id, title, requires_signature, allow_date_input, allow_print_name, allow_venue_display, created_at, is_active, created_by, target_state, target_region')
+      .select('id, title, requires_signature, allow_date_input, allow_print_name, allow_venue_display, created_at, is_active, created_by, target_state, target_region, storage_path')
       .eq('is_active', true)
       .order('created_at', { ascending: false });
 
@@ -56,7 +66,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Failed to fetch forms', details: error.message }, { status: 500 });
     }
 
-    const allForms = forms ?? [];
+    const allForms = (forms ?? []).map(decorateFormRecord);
 
     // Execs, admins, and HR always see all forms regardless of assignments
     const { data: userRecord } = await adminClient

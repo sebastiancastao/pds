@@ -90,6 +90,46 @@ const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 const isAttestationFormId = (formId?: string | null) =>
   Boolean(formId && (formId === 'attestation' || formId.endsWith('-attestation')));
 
+const isUniformPolicyFormId = (formId?: string | null) =>
+  Boolean(formId && (formId === 'uniform-policy' || formId.endsWith('-uniform-policy')));
+
+const stampFooterDateOnPdf = async (pdfBytes: Uint8Array, date: string) => {
+  const match = date.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return pdfBytes;
+
+  const { PDFDocument, rgb, StandardFonts } = await import('pdf-lib');
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const lastPage = pdfDoc.getPages().at(-1);
+  if (!lastPage) return pdfBytes;
+
+  const [, year, month, day] = match;
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const formatted = new Date(Number(year), Number(month) - 1, Number(day)).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+  });
+
+  lastPage.drawRectangle({
+    x: 325,
+    y: 28,
+    width: 195,
+    height: 85,
+    color: rgb(1, 1, 1),
+    borderWidth: 0,
+  });
+  lastPage.drawText('Date', { x: 330, y: 104, size: 9, font, color: rgb(0.4, 0.4, 0.4) });
+  lastPage.drawText(formatted, { x: 330, y: 60, size: 11, font, color: rgb(0, 0, 0) });
+  lastPage.drawLine({
+    start: { x: 330, y: 38 },
+    end: { x: 510, y: 38 },
+    thickness: 0.5,
+    color: rgb(0.6, 0.6, 0.6),
+  });
+
+  return new Uint8Array(await pdfDoc.save());
+};
+
 const embedAttestationSignature = async (pdfBytes: Uint8Array, signatureData: string) => {
   const match = signatureData.match(/^data:image\/([a-zA-Z0-9.+-]+);base64,(.+)$/);
   const { PDFDocument, rgb } = await import('pdf-lib');
@@ -196,8 +236,17 @@ export default function StatePayrollFormViewer({
 }: StatePayrollFormViewerProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, forms);
-  const selectedForm = searchParams.get('form') || startFormId || firstFormId;
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
+  const requestedForm = searchParams.get('form') || startFormId || '';
+  const baseForms = forms && forms.length > 0 ? forms : DEFAULT_FORMS;
+  const singleCustomFormMode = Boolean(customFormId && requestedForm);
+  const scopedForms = singleCustomFormMode
+    ? baseForms.filter((form) => form.id === requestedForm)
+    : baseForms;
+  const effectiveForms = scopedForms.length > 0 ? scopedForms : baseForms;
+  const { config: formConfig, formOrder, firstFormId } = buildFormConfig(stateCode, effectiveForms);
+  const selectedForm = requestedForm || firstFormId;
   const asUser = searchParams.get('asUser') || undefined;
   const i9EntryPoint = normalizeI9EntryPoint(
     searchParams.get('entryPoint'),
@@ -261,6 +310,12 @@ export default function StatePayrollFormViewer({
     const params = new URLSearchParams({ form: formId });
     if (asUser) {
       params.set('asUser', asUser);
+    }
+    if (customFormId) {
+      params.set('customFormId', customFormId);
+    }
+    if (returnTo) {
+      params.set('returnTo', returnTo);
     }
     if (viewerEntryPoint) {
       params.set('entryPoint', viewerEntryPoint);
@@ -385,12 +440,18 @@ export default function StatePayrollFormViewer({
     loadI9Documents();
   }, [selectedForm]);
 
-  // Load signature for current form and reset canvas when form changes
   useEffect(() => {
-    // Reset last saved signature reference when form changes
     lastSavedSignatureRef.current = null;
+    setHealthInsuranceAcknowledged(false);
+    setUniformPolicyDate('');
+    setHomeVenueDate('');
+    setHomeVenuePrintName('');
+    setAttestationPrintName('');
+    setMissingRequiredFields([]);
+  }, [currentForm?.formId, selectedForm]);
 
-    // Load existing drawn signature for this form if it exists
+  // Load signature for current form and update the signature canvas
+  useEffect(() => {
     const signatureKey = currentForm?.formId || selectedForm;
     const savedSignature = signatures.get(signatureKey);
     if (savedSignature && savedSignature.startsWith('data:image')) {
@@ -422,15 +483,44 @@ export default function StatePayrollFormViewer({
         }
       }
     }
-
-    // Reset health insurance acknowledgment when form changes
-    setHealthInsuranceAcknowledged(false);
-    setUniformPolicyDate('');
-    setHomeVenueDate('');
-    setHomeVenuePrintName('');
-    setAttestationPrintName('');
-    setMissingRequiredFields([]);
   }, [currentForm?.formId, selectedForm, signatures]);
+
+  useEffect(() => {
+    if (selectedForm !== 'uniform-policy' || !currentForm?.formId) return;
+
+    let isCancelled = false;
+
+    const loadSavedUniformPolicyDate = async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) return;
+
+        const params = new URLSearchParams({ formName: currentForm.formId });
+        if (asUser) {
+          params.set('targetUserId', asUser);
+        }
+
+        const response = await fetch(`/api/pdf-form-progress/retrieve?${params.toString()}`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+          credentials: 'same-origin',
+        });
+        if (!response.ok) return;
+
+        const result = await response.json();
+        if (!isCancelled && typeof result?.formDate === 'string' && result.formDate) {
+          setUniformPolicyDate((currentValue) => currentValue || result.formDate);
+        }
+      } catch (error) {
+        console.warn('[UNIFORM POLICY] Failed to load saved date', error);
+      }
+    };
+
+    void loadSavedUniformPolicyDate();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [asUser, currentForm?.formId, selectedForm]);
 
   // Load venues when home-venue-assignment form is shown
   useEffect(() => {
@@ -578,6 +668,12 @@ export default function StatePayrollFormViewer({
         pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
       }
 
+      if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
+        pdfBytesToSave = await stampFooterDateOnPdf(pdfBytesToSave, uniformPolicyDate);
+        pdfBytesRef.current = pdfBytesToSave;
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       // Get session for authentication
       const { data: { session } } = await supabase.auth.getSession();
       console.log('[SAVE] Session check:', {
@@ -604,6 +700,9 @@ export default function StatePayrollFormViewer({
         ...(asUser ? { targetUserId: asUser } : {}),
         entryPoint: i9EntryPoint,
       };
+      if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
+        payload.formDate = uniformPolicyDate;
+      }
       // Only include i9 data if saving the i9 form
       if (formId.includes('i9') || (isCurrentForm && selectedForm === 'i9')) {
         payload.i9Mode = i9Mode;
@@ -623,6 +722,33 @@ export default function StatePayrollFormViewer({
       if (response.ok) {
         const result = await response.json();
         console.log('[SAVE] ✅ Save successful:', result);
+        if (singleCustomFormMode && customFormId && isCurrentForm) {
+          const customFormPayload: any = {
+            formName: `custom-form-${customFormId}`,
+            formData: base64,
+            ...(asUser ? { targetUserId: asUser } : {}),
+            entryPoint: i9EntryPoint,
+          };
+
+          if (isCurrentForm && isUniformPolicyFormId(formId) && uniformPolicyDate) {
+            customFormPayload.formDate = uniformPolicyDate;
+          }
+
+          const customFormResponse = await fetch('/api/pdf-form-progress/save', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+            },
+            credentials: 'same-origin',
+            body: JSON.stringify(customFormPayload),
+          });
+
+          if (!customFormResponse.ok) {
+            const customFormError = await customFormResponse.json().catch(() => null);
+            throw new Error(customFormError?.error || 'Failed to save custom form progress');
+          }
+        }
         if (isCurrentForm) {
           setSaveStatus('saved');
           setLastSaved(new Date());
@@ -834,6 +960,8 @@ export default function StatePayrollFormViewer({
     if (!asUser && selectedForm === 'home-venue-assignment') {
       if (!homeVenuePrintName.trim()) { alert('Please enter your printed name before continuing.'); return; }
       if (!homeVenueDate) { alert('Please enter a date before continuing.'); return; }
+      const savedHomeVenue = await handleSaveHomeVenue();
+      if (!savedHomeVenue) return;
     }
 
     if (selectedForm === 'attestation' && pdfBytesRef.current) {
@@ -2418,6 +2546,11 @@ export default function StatePayrollFormViewer({
       await saveSignatureToDatabase(currentSignature);
     }
 
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     if (currentForm?.next) {
       router.push(buildViewerUrl(currentForm.next));
     } else {
@@ -2455,6 +2588,11 @@ export default function StatePayrollFormViewer({
   };
 
   const handleBack = () => {
+    if (singleCustomFormMode) {
+      router.push(returnTo || (asUser ? `/hr/employees/${asUser}` : '/employee'));
+      return;
+    }
+
     const currentIndex = formOrder.indexOf(selectedForm);
     if (currentIndex > 0) {
       const prevForm = formOrder[currentIndex - 1];
@@ -2841,7 +2979,11 @@ export default function StatePayrollFormViewer({
                 <input
                   type="date"
                   value={uniformPolicyDate}
-                  onChange={(e) => setUniformPolicyDate(e.target.value)}
+                  onChange={(e) => {
+                    const nextValue = e.target.value;
+                    setUniformPolicyDate(nextValue);
+                    handleFieldChange('uniform-policy-date', 'uniform-policy-date', nextValue);
+                  }}
                   style={{
                     padding: '10px 14px',
                     fontSize: '15px',

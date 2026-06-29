@@ -86,7 +86,7 @@ export async function GET(request: NextRequest) {
     // form_name (different submissions), the most recent one is returned.
     const { data, error } = await supabaseAdmin
       .from('pdf_form_progress')
-      .select('form_data, updated_at')
+      .select('form_data, updated_at, form_date')
       .eq('user_id', retrieveUserId)
       .eq('form_name', formName)
       .order('updated_at', { ascending: false })
@@ -129,7 +129,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       found: true,
       formData: base64Data,
-      updatedAt: data.updated_at
+      updatedAt: data.updated_at,
+      formDate: data.form_date || null,
     }, { status: 200 });
   } catch (error: any) {
     console.error('Retrieve PDF form progress error:', error);

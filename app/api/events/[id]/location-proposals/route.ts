@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
 import { canUserAccessEventById } from "@/lib/event-access";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, isEncrypted } from "@/lib/encryption";
 import { sendVenueProposalAlertEmail } from "@/lib/email";
 
 export const dynamic = "force-dynamic";
@@ -35,6 +35,7 @@ type ProposalRow = {
 
 function safeDecrypt(value: string | null | undefined): string {
   if (!value) return "";
+  if (!isEncrypted(value)) return value;
   try {
     return decrypt(value);
   } catch {

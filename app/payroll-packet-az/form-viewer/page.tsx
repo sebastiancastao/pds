@@ -73,6 +73,10 @@ const EMPLOYEE_INFO_STORAGE_KEY = 'az-employee-information';
 
 function EmployeeInformationAZForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const customFormId = searchParams.get('customFormId')?.trim() || '';
+  const targetUserId = searchParams.get('asUser')?.trim() || '';
+  const returnTo = searchParams.get('returnTo')?.trim() || '';
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<EmployeeInfoState>({
     firstName: '',
@@ -108,7 +112,7 @@ function EmployeeInformationAZForm() {
     setForm((prev) => ({ ...prev, [key]: value }));
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!form.firstName.trim() || !form.lastName.trim()) {
       alert('Please enter both first and last name.');
       return false;
@@ -121,12 +125,48 @@ function EmployeeInformationAZForm() {
       alert('Please provide a phone number and email.');
       return false;
     }
+    if (!form.ssn.trim()) {
+      alert('Please provide your Social Security Number.');
+      return false;
+    }
 
     setSaving(true);
     try {
-      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(form));
-      setTimeout(() => setSaving(false), 300);
-      alert('Employee information saved.');
+      const nextForm = { ...form, startDate: form.startDate || new Date().toISOString().split('T')[0] };
+      setForm(nextForm);
+
+      localStorage.setItem(EMPLOYEE_INFO_STORAGE_KEY, JSON.stringify(nextForm));
+
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        alert('You must be logged in to save employee information.');
+        setSaving(false);
+        return false;
+      }
+
+      const response = await fetch('/api/employee-information/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`
+        },
+        body: JSON.stringify({
+          ...nextForm,
+          customFormId: customFormId || undefined,
+          targetUserId: targetUserId || undefined,
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('Save error:', error);
+        alert(error.error || 'Failed to save employee information to database.');
+        setSaving(false);
+        return false;
+      }
+
+      setSaving(false);
+      alert('Employee information saved successfully.');
       return true;
     } catch (e) {
       console.error('Save error:', e);
@@ -137,14 +177,14 @@ function EmployeeInformationAZForm() {
   };
 
   const handleContinue = async () => {
-    const ok = handleSave();
+    const ok = await handleSave();
     if (ok) {
-      router.push('/payroll-packet-az/form-viewer?form=attestation');
+      router.push(returnTo || '/payroll-packet-az/form-viewer?form=attestation');
     }
   };
 
   const handleBack = () => {
-    router.push('/payroll-packet-az/form-viewer?form=time-of-hire');
+    router.push(returnTo || '/payroll-packet-az/form-viewer?form=time-of-hire');
   };
 
   const handleLogout = async () => {

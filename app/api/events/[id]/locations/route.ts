@@ -68,73 +68,6 @@ function normalizeCallTime(
   };
 }
 
-type AvailabilityDay = {
-  date: string;
-  available: boolean;
-};
-
-function normalizeAvailabilityPayload(payload: unknown): AvailabilityDay[] {
-  if (Array.isArray(payload)) {
-    return payload.filter((day: any) => day && typeof day.date === "string");
-  }
-
-  if (payload && typeof payload === "object") {
-    return Object.entries(payload as Record<string, unknown>)
-      .filter(([date]) => typeof date === "string")
-      .map(([date, available]) => ({
-        date,
-        available: available === true,
-      }));
-  }
-
-  return [];
-}
-
-function normalizeDateKey(value: unknown): string {
-  const raw = String(value ?? "").trim();
-  if (!raw) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return "";
-  return parsed.toISOString().slice(0, 10);
-}
-
-async function getAvailableVendorIdsForEventDate(eventDateValue: unknown): Promise<Set<string>> {
-  const eventDateKey = normalizeDateKey(eventDateValue);
-  if (!eventDateKey) return new Set<string>();
-
-  const { data: invitations, error: invitationsError } = await supabaseAdmin
-    .from("vendor_invitations")
-    .select("vendor_id, availability, invitation_type, status, responded_at")
-    .or("invitation_type.eq.bulk,invitation_type.is.null")
-    .eq("status", "accepted")
-    .not("responded_at", "is", null)
-    .not("availability", "is", null);
-
-  if (invitationsError) {
-    throw new Error(invitationsError.message);
-  }
-
-  const availableVendorIds = new Set<string>();
-  for (const invitation of invitations || []) {
-    const vendorId = normalizeText((invitation as any)?.vendor_id);
-    if (!vendorId) continue;
-
-    const availability = normalizeAvailabilityPayload((invitation as any)?.availability);
-    const isAvailableOnEventDate = availability.some((day: any) => {
-      const dayDateKey = normalizeDateKey(day?.date);
-      return dayDateKey === eventDateKey && day?.available === true;
-    });
-
-    if (isAvailableOnEventDate) {
-      availableVendorIds.add(vendorId);
-    }
-  }
-
-  return availableVendorIds;
-}
-
 async function getAuthedUser(req: NextRequest) {
   const supabase = createRouteHandlerClient({ cookies });
   const { data: { user } } = await supabase.auth.getUser();
@@ -439,38 +372,6 @@ export async function PUT(
         }
         if (!eventForDate) {
           return NextResponse.json({ error: "Event not found" }, { status: 404 });
-        }
-
-        const availableVendorIds = await getAvailableVendorIdsForEventDate(eventForDate.event_date);
-
-        const { data: teamMembersForEvent, error: teamMembersError } = await supabaseAdmin
-          .from("event_teams")
-          .select("vendor_id")
-          .eq("event_id", eventId)
-          .in("vendor_id", uniqueMemberIds);
-
-        if (teamMembersError) {
-          return NextResponse.json({ error: teamMembersError.message }, { status: 500 });
-        }
-
-        const validSet = new Set<string>(
-          (teamMembersForEvent || [])
-            .map((row) => normalizeText(row.vendor_id))
-            .filter(Boolean)
-        );
-        currentMemberIds.forEach((vendorId) => validSet.add(vendorId));
-        availableVendorIds.forEach((vendorId) => validSet.add(vendorId));
-
-        const invalidIds = uniqueMemberIds.filter((id) => !validSet.has(id));
-        if (invalidIds.length > 0) {
-          return NextResponse.json(
-            {
-              error:
-                "Some users are not on this event team and are not currently available for this event date.",
-              invalidIds,
-            },
-            { status: 400 }
-          );
         }
 
         const { data: assignmentsInOtherLocations, error: assignmentsInOtherLocationsError } =

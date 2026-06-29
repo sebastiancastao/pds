@@ -180,6 +180,7 @@ export async function GET(
     let openMealStartMs: number | null = null;
     const meals: Array<{ start: string; end: string | null }> = [];
     const clockOutEntries: Array<{
+      entryId: string;
       formId: string;
       timestampMs: number;
       attestationAccepted: boolean | null;
@@ -204,6 +205,7 @@ export async function GET(
         const attestationAccepted = typeof rawAccepted === "boolean" ? rawAccepted : null;
         if (entryId) {
           clockOutEntries.push({
+            entryId,
             formId: `clock-out-${entryId}`,
             timestampMs: tsMs,
             attestationAccepted,
@@ -227,8 +229,25 @@ export async function GET(
     const latestClockOut = clockOutEntries
       .slice()
       .sort((a, b) => b.timestampMs - a.timestampMs)[0];
-    if (latestClockOut?.attestationAccepted === false) {
-      return jsonError("Clock-out attestation was rejected for this vendor.", 409);
+    const isRejectedAttestation = latestClockOut?.attestationAccepted === false;
+
+    // When the attestation was rejected, pull the rejection record (reason, notes,
+    // signature, timestamp) so it can be shown on the PDF.
+    let rejection: {
+      rejection_reason: string | null;
+      rejection_notes: string | null;
+      signature_data: string | null;
+      created_at: string | null;
+    } | null = null;
+    if (isRejectedAttestation && latestClockOut?.entryId) {
+      const { data: rejectionRow } = await supabaseAdmin
+        .from("attestation_rejections")
+        .select("rejection_reason, rejection_notes, signature_data, created_at")
+        .eq("time_entry_id", latestClockOut.entryId)
+        .eq("user_id", vendorId)
+        .order("created_at", { ascending: false })
+        .maybeSingle();
+      rejection = rejectionRow || null;
     }
 
     // Fetch attestation signatures and match to this event's clock-out rows.
@@ -311,10 +330,44 @@ export async function GET(
       y -= 12;
     };
 
+    const drawSignature = async (label: string, sigRaw: string) => {
+      const raw = (sigRaw || "").trim();
+      if (!raw) {
+        drawText(`${label} (missing)`, { size: 9, color: rgb(0.55, 0.1, 0.1) });
+        return;
+      }
+      const parsed = parseSignatureDataUrl(raw);
+      if (!parsed) {
+        drawText(`${label} ${raw}`, { size: 9 });
+        return;
+      }
+      try {
+        const embedded = parsed.format === "png"
+          ? await pdfDoc.embedPng(parsed.bytes)
+          : await pdfDoc.embedJpg(parsed.bytes);
+        const maxW = Math.min(280, pageWidth - leftMargin - rightMargin - 20);
+        const maxH = 80;
+        const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
+        const dw = embedded.width * scale;
+        const dh = embedded.height * scale;
+        ensureSpace(dh + 20);
+        page.drawText(label, { x: leftMargin, y, size: 9, font, color: rgb(0.35, 0.35, 0.35) });
+        y -= 12;
+        page.drawImage(embedded, { x: leftMargin, y: y - dh, width: dw, height: dh });
+        y -= dh + 10;
+      } catch {
+        drawText(`${label} (failed to render image)`, { size: 9, color: rgb(0.55, 0.1, 0.1) });
+      }
+    };
+
     // Header
     drawText("Clock-Out Attestation", { font: boldFont, size: 18, color: rgb(0.04, 0.18, 0.48) });
     y -= 4;
     drawText(`Generated: ${formatDateTime(new Date().toISOString())}`, { size: 9, color: rgb(0.4, 0.4, 0.4) });
+    if (isRejectedAttestation) {
+      y -= 4;
+      drawText("STATUS: REJECTED", { font: boldFont, size: 11, color: rgb(0.7, 0.1, 0.1) });
+    }
     y -= 10;
     drawLine();
 
@@ -365,40 +418,35 @@ export async function GET(
       y -= 6;
 
       // Signature image
-      const sigRaw = (att.signature_data || "").trim();
-      if (!sigRaw) {
-        drawText("Signature: (missing)", { size: 9, color: rgb(0.55, 0.1, 0.1) });
+      await drawSignature("Signature:", att.signature_data || "");
+    }
+
+    // Rejection details — shown when the worker rejected the clock-out attestation.
+    if (isRejectedAttestation) {
+      y -= 10;
+      drawLine();
+      drawText("Rejection Details", { font: boldFont, size: 13, color: rgb(0.7, 0.1, 0.1) });
+      y -= 4;
+      if (!rejection) {
+        drawText("This clock-out attestation was rejected, but no rejection record was found.", {
+          size: 9, color: rgb(0.55, 0.1, 0.1),
+        });
       } else {
-        const parsed = parseSignatureDataUrl(sigRaw);
-        if (parsed) {
-          try {
-            const embedded = parsed.format === "png"
-              ? await pdfDoc.embedPng(parsed.bytes)
-              : await pdfDoc.embedJpg(parsed.bytes);
-
-            const maxW = Math.min(280, pageWidth - leftMargin - rightMargin - 20);
-            const maxH = 80;
-            const scale = Math.min(maxW / embedded.width, maxH / embedded.height, 1);
-            const dw = embedded.width * scale;
-            const dh = embedded.height * scale;
-
-            ensureSpace(dh + 20);
-            page.drawText("Signature:", { x: leftMargin, y, size: 9, font, color: rgb(0.35, 0.35, 0.35) });
-            y -= 12;
-            page.drawImage(embedded, { x: leftMargin, y: y - dh, width: dw, height: dh });
-            y -= dh + 10;
-          } catch {
-            drawText("Signature: (failed to render image)", { size: 9, color: rgb(0.55, 0.1, 0.1) });
-          }
-        } else {
-          drawText(`Signature (${att.signature_type || "text"}): ${sigRaw}`, { size: 9 });
+        drawText(`Rejected At: ${rejection.created_at ? formatDateTime(rejection.created_at) : "--"}`, {
+          size: 9, color: rgb(0.35, 0.35, 0.35),
+        });
+        drawText(`Reason: ${rejection.rejection_reason || "--"}`, { size: 10, font: boldFont });
+        if (rejection.rejection_notes && rejection.rejection_notes.trim()) {
+          drawText(`Notes: ${rejection.rejection_notes.trim()}`, { size: 9 });
         }
+        y -= 6;
+        await drawSignature("Rejection Signature:", rejection.signature_data || "");
       }
     }
 
     const pdfBytes = await pdfDoc.save();
     const safeName = vendorName.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const filename = `attestation-${safeName}-${eventDate}.pdf`;
+    const filename = `attestation${isRejectedAttestation ? "-rejected" : ""}-${safeName}-${eventDate}.pdf`;
 
     return new NextResponse(Buffer.from(pdfBytes), {
       headers: {

@@ -56,7 +56,10 @@ export async function POST(req: NextRequest) {
     const venue_share_percent = body.venue_share_percent === undefined || body.venue_share_percent === "" ? 0 : Number(body.venue_share_percent);
     const pds_share_percent = body.pds_share_percent === undefined || body.pds_share_percent === "" ? 0 : Number(body.pds_share_percent);
     const commission_pool = body.commission_pool === undefined || body.commission_pool === "" ? null : Number(body.commission_pool);
-    const ends_next_day = body.ends_next_day === undefined ? false : Boolean(body.ends_next_day);
+    // Derive ends_next_day from the dates when an end date is provided (YYYY-MM-DD strings compare lexicographically)
+    const ends_next_day = end_date && event_date
+      ? end_date > event_date
+      : (body.ends_next_day === undefined ? false : Boolean(body.ends_next_day));
     const is_active = body.is_active === undefined ? true : Boolean(body.is_active);
 
     // Debug output for all incoming data
@@ -68,6 +71,7 @@ export async function POST(req: NextRequest) {
       city,
       state,
       event_date,
+      end_date,
       start_time,
       end_time,
       ends_next_day,
@@ -85,7 +89,7 @@ export async function POST(req: NextRequest) {
     }
 
     // A multi-day Non Event Time Sheet's end date cannot precede its start date
-    if (end_date && end_date < event_date) {
+    if (end_date && event_date && end_date < event_date) {
       console.error('Event creation: end_date before event_date');
       return NextResponse.json({ error: "end_date must be on or after event_date" }, { status: 400 });
     }
