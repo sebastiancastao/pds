@@ -118,6 +118,18 @@ const fallbackSickLeaveStatusStyle = "bg-gray-100 text-gray-700 border-gray-200"
 const emptySickLeavePeriod: SickLeavePeriodFilter = { start: "", end: "" };
 const PAYROLL_DIRTY_STORAGE_KEY = "pds-payroll-data-dirty-at";
 
+const isNonEventPayrollEvent = (eventLike?: any): boolean =>
+  (eventLike?.event_type || eventLike?.eventType || eventLike?.type || "")
+    .toString()
+    .trim()
+    .toLowerCase() === "special";
+
+const isHourlyPayrollEvent = (eventLike?: any, paymentLike?: any): boolean =>
+  isNonEventPayrollEvent(eventLike) ||
+  eventLike?.isSanDiegoHourly === true ||
+  paymentLike?.isSanDiegoHourly === true ||
+  isSanDiegoRegion(eventLike);
+
 function HRDashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -774,7 +786,8 @@ function HRDashboardContent() {
   }, [isAuthorized, loadEmployees, loadBackgroundChecks, loadRegions]);
 
   // Payments loader (aligned with Global Calendar payments tab)
-  const loadPaymentsData = useCallback(async () => {
+  const loadPaymentsData = useCallback(async (options?: { nonEventOnly?: boolean }) => {
+    const nonEventOnly = options?.nonEventOnly === true;
     setLoadingPayments(true);
     setPaymentsError("");
     setPaymentsByVenue([]);
@@ -807,8 +820,22 @@ function HRDashboardContent() {
         return;
       }
       let filtered = allEvents as any[];
-      if (paymentsStartDate) filtered = filtered.filter(e => !e.event_date || e.event_date >= paymentsStartDate);
-      if (paymentsEndDate) filtered = filtered.filter(e => !e.event_date || e.event_date <= paymentsEndDate);
+      if (nonEventOnly) {
+        // Non-event retrieval: only special-type records whose date span overlaps the selected period.
+        // Strict period filter (no permissive "undated" pass-through) so it shows only the period selected.
+        filtered = filtered.filter((e: any) => {
+          if (!isNonEventPayrollEvent(e)) return false;
+          const spanStart = e.event_date;
+          if (!spanStart) return false; // exclude undated non-event records
+          const spanEnd = e.end_date && e.end_date >= spanStart ? e.end_date : spanStart;
+          if (paymentsStartDate && spanEnd < paymentsStartDate) return false;
+          if (paymentsEndDate && spanStart > paymentsEndDate) return false;
+          return true;
+        });
+      } else {
+        if (paymentsStartDate) filtered = filtered.filter(e => !e.event_date || e.event_date >= paymentsStartDate);
+        if (paymentsEndDate) filtered = filtered.filter(e => !e.event_date || e.event_date <= paymentsEndDate);
+      }
       console.log('[HR PAYMENTS] filtered events', { count: filtered.length, start: paymentsStartDate, end: paymentsEndDate });
       const filteredEventIds = filtered.map((e: any) => e.id).filter(Boolean);
       const eventIds = filteredEventIds.join(',');
@@ -935,8 +962,10 @@ function HRDashboardContent() {
           ? Math.max(persistedAdjustedGrossRaw, 0)
           : Math.max(totalSales - tax - eventFees + eventOtherIncome, 0);
         const isEventSD = isSanDiegoRegion(eventInfo);
+        const isNonEventPayroll = isNonEventPayrollEvent(eventInfo);
+        const isHourlyPayroll = isEventSD || isNonEventPayroll;
         const commissionPoolPercent =
-          isEventSD ? 0 :
+          isHourlyPayroll ? 0 :
           Number(eventInfo.commission_pool ?? eventPaymentSummary.commission_pool_percent ?? 0) || 0;
         const eventCommissionDollarsRaw =
           adjustedGrossAmount * commissionPoolPercent;
@@ -1001,7 +1030,11 @@ function HRDashboardContent() {
                     console.warn('[HR PAYMENTS] Unable to load timesheet totals for commission-per-vendor fallback', { eventId, error: e });
                   }
                 }
-                const commissionPerVendor = vendorsWithHours > 0 ? (eventCommissionDollars / vendorsWithHours) : 0;
+                const commissionPerVendor = isHourlyPayroll
+                  ? 0
+                  : vendorsWithHours > 0
+                    ? (eventCommissionDollars / vendorsWithHours)
+                    : 0;
 
                 // Map team members to payment format with zeros
                 const teamPayments = sortPaymentsAlphabetically(
@@ -1042,6 +1075,7 @@ function HRDashboardContent() {
                   date: eventInfo.event_date,
                   event_type: eventInfo.event_type || 'normal',
                   isSanDiegoHourly: isEventSD,
+                  isNonEventHourly: isNonEventPayroll,
                   commissionPerVendor,
                   vendorsWithHours,
                   state: eventInfo.state,
@@ -1070,6 +1104,7 @@ function HRDashboardContent() {
             date: eventInfo.event_date,
             event_type: eventInfo.event_type || 'normal',
             isSanDiegoHourly: isEventSD,
+            isNonEventHourly: isNonEventPayroll,
             commissionPerVendor: 0,
             vendorsWithHours: 0,
             state: eventInfo.state,
@@ -1101,7 +1136,7 @@ function HRDashboardContent() {
         const memberCount = Array.isArray(vendorPayments) ? vendorPayments.length : 0;
 
         // Commission pool in dollars — prefer calculated, fall back to stored commission_pool_dollars, then total_commissions
-        const commissionPoolDollars = isEventSD
+        const commissionPoolDollars = isHourlyPayroll
           ? 0
           : eventCommissionDollars > 0
           ? eventCommissionDollars
@@ -1172,7 +1207,7 @@ function HRDashboardContent() {
             const isTrailers = (memberDivision || "").toString().toLowerCase().trim() === "trailers";
             const _divDisplay = normalizeDivision(memberDivision);
             const _isExplicitNonVendorDisplay = _divDisplay !== '' && !isVendorDivision(_divDisplay);
-            const commissionShare = (isEventSD || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
+            const commissionShare = (isHourlyPayroll || _isExplicitNonVendorDisplay) ? 0 : Number(commissionSharesByUser[paymentUserId] || 0);
 
             const priorWeeklyHours = (isAZorNY || isEventSD) ? (weeklyHoursMap[eventId]?.[payment.user_id] || 0) : 0;
             const isWeeklyOT = isAZorNY && (priorWeeklyHours + actualHours) > 40;
@@ -1207,6 +1242,17 @@ function HRDashboardContent() {
               extAmtOnRegRate = sanDiegoBreakdown.totalPay;
               totalFinalCommissionAmt = sanDiegoBreakdown.totalPay;
               loadedRate = sanDiegoBreakdown.blendedRate;
+              commissionAmt = 0;
+            } else if (isNonEventPayroll) {
+              regularHours = roundedPayrollHours;
+              overtimeHours = 0;
+              overtimePay = 0;
+              doubletimeHours = 0;
+              doubletimePay = 0;
+              regularPay = extAmtOnRegRateNonAzNy;
+              extAmtOnRegRate = regularPay;
+              totalFinalCommissionAmt = regularPay;
+              loadedRate = roundedPayrollHours > 0 ? regularPay / roundedPayrollHours : baseRate;
               commissionAmt = 0;
             } else if (isAZorNY) {
               // Preliminary commission (CA formula on non-OT ext amt) used only to compute loaded rate for weekly OT
@@ -1259,7 +1305,7 @@ function HRDashboardContent() {
                 ? (totalFinalCommissionAmt + adjustmentAmount)
                 : totalFinalCommissionAmt;
             const minLoadedRate = ['NY', 'WI', 'NV', 'AZ'].includes(eventState) ? 25.92 : 28.5;
-            loadedRate = isEventSD
+            loadedRate = isHourlyPayroll
               ? (roundedPayrollHours > 0 ? totalFinalCommissionAmt / roundedPayrollHours : baseRate)
               : roundedPayrollHours > 0
                 ? Math.max(minLoadedRate, totalFinalCommissionForLoadedRate / roundedPayrollHours)
@@ -1274,7 +1320,7 @@ function HRDashboardContent() {
               ? Number(tipsSharesByUser[paymentUserId] || 0)
               : Number(payment.tips || 0);
 
-            const restBreak = getRestBreakAmount(actualHours, eventState, isEventSD);
+            const restBreak = getRestBreakAmount(actualHours, eventState, isHourlyPayroll);
             const totalPay = totalFinalCommissionAmt + tips + restBreak;
             const finalPay = totalPay + adjustmentAmount;
             return {
@@ -1311,6 +1357,7 @@ function HRDashboardContent() {
               restBreak,
               totalGrossPay: finalPay,
               isSanDiegoHourly: isEventSD,
+              isNonEventHourly: isNonEventPayroll,
             };
           })
         );
@@ -1318,7 +1365,7 @@ function HRDashboardContent() {
 
         const eventTotal = eventPayments.reduce((sum: number, p: any) => sum + Number(p.finalPay || 0), 0);
         const eventHours = eventPayments.reduce((sum: number, p: any) => sum + p.actualHours, 0);
-        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isEventSD ? 0 : Number(p.restBreak || 0)), 0);
+        const eventTotalRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayroll ? 0 : Number(p.restBreak || 0)), 0);
         const eventTotalOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const vendorsWithHoursByDivision = eventPayments.reduce((count: number, p: any) => {
           const hours = Number(p.actualHours || 0);
@@ -1339,6 +1386,7 @@ function HRDashboardContent() {
           date: eventInfo.event_date,
           event_type: eventInfo.event_type || 'normal',
           isSanDiegoHourly: isEventSD,
+          isNonEventHourly: isNonEventPayroll,
           commissionPerVendor,
           vendorsWithHours,
           state: eventInfo.state,
@@ -1582,7 +1630,9 @@ function HRDashboardContent() {
   }, [adjustments, reimbursementAmounts, adjustmentTypes, supabase, paymentsByVenue]);
 
   const payPeriodCommission = useMemo(() => {
-    const events = paymentsByVenue.flatMap((venue) => venue.events || []);
+    const events = paymentsByVenue
+      .flatMap((venue) => venue.events || [])
+      .filter((event: any) => !isNonEventPayrollEvent(event));
     return computePayPeriodCommission({
       events: events.map((event: any) => ({
         eventId: (event?.id || "").toString(),
@@ -1635,7 +1685,7 @@ function HRDashboardContent() {
     const regRate = Number(payment?.regRate ?? event?.baseRate ?? 0);
     const hours = Number(payment?.actualHours || 0);
     const isTrailers = (payment?.division || "").toString().toLowerCase().trim() === "trailers";
-    const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+    const isHourlyEvent = isHourlyPayrollEvent(event, payment);
     const regularHours = Number(payment?.regularHours || 0);
     const regularPay = Number(payment?.regularPay || 0);
     const overtimeHours = Number(payment?.overtimeHours || 0);
@@ -1643,7 +1693,7 @@ function HRDashboardContent() {
     const doubletimeHours = Number(payment?.doubletimeHours || 0);
     const doubletimePay = Number(payment?.doubletimePay || 0);
 
-    if (isEventSD) {
+    if (isHourlyEvent) {
       const hourlyPay = regularPay + overtimePay + doubletimePay;
       return {
         rateInEffect: hours > 0 ? (hourlyPay / hours) : Number(payment?.loadedRate ?? regRate),
@@ -1735,7 +1785,6 @@ function HRDashboardContent() {
 
   const getDisplayedEventTotals = useCallback((event: any) => {
     const payments: any[] = Array.isArray(event?.payments) ? event.payments : [];
-    const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
     const eventHours = payments.reduce((sum: number, payment: any) => {
       return sum + Number(payment?.actualHours || 0);
     }, 0);
@@ -1767,7 +1816,7 @@ function HRDashboardContent() {
       return sum + getDisplayedPaymentBreakdown(event, payment).commissionPaidTotal;
     }, 0);
     const totalTips = payments.reduce((sum: number, payment: any) => sum + Number(payment?.tips || 0), 0);
-    const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isEventSD ? 0 : Number(payment?.restBreak || 0)), 0);
+    const totalRestBreak = payments.reduce((sum: number, payment: any) => sum + (isHourlyPayrollEvent(event, payment) ? 0 : Number(payment?.restBreak || 0)), 0);
     const totalReimbursement = payments.reduce((sum: number, payment: any) => {
       const stateVal = reimbursementAmounts[event.id]?.[payment.userId];
       return sum + (stateVal !== undefined ? Number(stateVal || 0) : Number(payment?.reimbursementAmount || 0));
@@ -1833,12 +1882,9 @@ function HRDashboardContent() {
   }) => {
     const result = vendor.events.reduce((totals, { event, payment }) => {
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
-      const isEventSD =
-        event?.isSanDiegoHourly === true ||
-        payment?.isSanDiegoHourly === true ||
-        isSanDiegoRegion(event);
+      const isHourlyEvent = isHourlyPayrollEvent(event, payment);
       const tips = Number(payment?.tips || 0);
-      const restBreak = isEventSD ? 0 : Number(payment?.restBreak || 0);
+      const restBreak = isHourlyEvent ? 0 : Number(payment?.restBreak || 0);
       const other = Number(payment?.adjustmentAmount || 0);
       const approval = getMileageApproval(event.id, payment.userId);
       const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
@@ -1852,18 +1898,18 @@ function HRDashboardContent() {
       const sickPay = sickHours > 0 ? sickHours * breakdown.rateInEffect : 0;
 
       totals.totalHours += Number(payment?.actualHours || 0);
-      totals.totalRegularHours += isEventSD ? breakdown.regularHours : 0;
-      totals.totalRegularPay += isEventSD ? breakdown.regularPay : 0;
-      totals.totalOvertimeHours += isEventSD ? breakdown.overtimeHours : 0;
-      totals.totalOvertimePay += isEventSD ? breakdown.overtimePay : 0;
-      totals.totalDoubletimeHours += isEventSD ? breakdown.doubletimeHours : 0;
-      totals.totalDoubletimePay += isEventSD ? breakdown.doubletimePay : 0;
+      totals.totalRegularHours += isHourlyEvent ? breakdown.regularHours : 0;
+      totals.totalRegularPay += isHourlyEvent ? breakdown.regularPay : 0;
+      totals.totalOvertimeHours += isHourlyEvent ? breakdown.overtimeHours : 0;
+      totals.totalOvertimePay += isHourlyEvent ? breakdown.overtimePay : 0;
+      totals.totalDoubletimeHours += isHourlyEvent ? breakdown.doubletimeHours : 0;
+      totals.totalDoubletimePay += isHourlyEvent ? breakdown.doubletimePay : 0;
       const stateReimb = reimbursementAmounts[event.id]?.[payment.userId];
       const stateOther = adjustments[event.id]?.[payment.userId];
       const rowReimbursement = stateReimb !== undefined ? Number(stateReimb || 0) : Number(payment?.reimbursementAmount || 0);
       const rowOther = stateOther !== undefined ? Number(stateOther || 0) : Number(payment?.otherAmount || 0);
-      totals.totalCommissionPay += isEventSD ? 0 : breakdown.commissionPay;
-      totals.totalVariableIncentive += isEventSD ? 0 : breakdown.variableIncentive;
+      totals.totalCommissionPay += isHourlyEvent ? 0 : breakdown.commissionPay;
+      totals.totalVariableIncentive += isHourlyEvent ? 0 : breakdown.variableIncentive;
       totals.totalCommissionPaid += breakdown.commissionPaidTotal;
       totals.totalTips += tips;
       totals.totalRestBreak += restBreak;
@@ -2027,8 +2073,8 @@ function HRDashboardContent() {
       state: string | null,
       payment: any
     ) => {
-      const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-      const hideRest = isEventSD;
+      const isHourlyEvent = isHourlyPayrollEvent(event, payment);
+      const hideRest = isHourlyEvent;
       const breakdown = getDisplayedPaymentBreakdown(event, payment);
       const regRate = breakdown.regRate;
       const loadedRate = breakdown.rateInEffect;
@@ -2056,7 +2102,7 @@ function HRDashboardContent() {
         adjustmentAmt +
         mileagePay +
         travelPayExport;
-      const category = isEventSD
+      const category = isHourlyEvent
         ? 'Hourly'
         : travelPayExport > 0
           ? 'Commission - Travel Pay'
@@ -2075,8 +2121,8 @@ function HRDashboardContent() {
         'Rate in Effect': formatPayrollMoney(loadedRate),
         'Hours': hoursHHMM,
         'Hours in Decimal': hoursInDecimal,
-        'Commission Pay': isEventSD ? 0 : Number(displayedCommissionPay.toFixed(3)),
-        'Variable Incentive': isEventSD ? 0 : Number(variableIncentive.toFixed(2)),
+        'Commission Pay': isHourlyEvent ? 0 : Number(displayedCommissionPay.toFixed(3)),
+        'Variable Incentive': isHourlyEvent ? 0 : Number(variableIncentive.toFixed(2)),
         'Tips': Number(roundToThreeDecimals(tips).toFixed(3)),
         'Rest Break': hideRest ? 'N/A' : Number(roundUpThousandsToNextHundred(restBreak).toFixed(2)),
         'Mileage Miles': !exportApproval.mileage ? 0 : (mileageMiles !== null ? mileageMiles : 'N/A'),
@@ -2089,7 +2135,7 @@ function HRDashboardContent() {
         'Total Gross Pay': Number(roundUpThousandsToNextHundred(totalGrossPay).toFixed(2)),
       };
 
-      if (!isEventSD) return baseRow;
+      if (!isHourlyEvent) return baseRow;
 
       return {
         ...baseRow,
@@ -2198,8 +2244,8 @@ function HRDashboardContent() {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
           return sum + breakdown.commissionPaidTotal;
         }, 0);
-        const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
-        const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isEventSD ? 0 : Number(p.restBreak || 0)), 0);
+        const isHourlyEvent = isHourlyPayrollEvent(event);
+        const totalDisplayedRestBreak = eventPayments.reduce((sum: number, p: any) => sum + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)), 0);
         const totalDisplayedOther = eventPayments.reduce((sum: number, p: any) => sum + Number(p.adjustmentAmount || 0), 0);
         const totalDisplayedTravelPay = eventPayments.reduce((sum: number, p: any) => {
           const approval = getMileageApproval(event.id, p.userId);
@@ -2216,7 +2262,7 @@ function HRDashboardContent() {
         }, 0);
         const totalDisplayedGrossPay = eventPayments.reduce((sum: number, p: any) => {
           const breakdown = getDisplayedPaymentBreakdown(event, p);
-          return sum + breakdown.commissionPaidTotal + getDisplayedTips(event, p) + (isEventSD ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
+          return sum + breakdown.commissionPaidTotal + getDisplayedTips(event, p) + (isHourlyPayrollEvent(event, p) ? 0 : Number(p.restBreak || 0)) + Number(p.adjustmentAmount || 0);
         }, 0) + totalDisplayedMileagePay + totalDisplayedTravelPay;
 
         summaryRows.push({
@@ -2227,8 +2273,8 @@ function HRDashboardContent() {
           'Date': event.date || '',
           'Hours': formatHoursHHMM(Number(event.eventHours || 0)),
           'Adjusted Gross Amount': Number(Number(event.adjustedGrossAmount || 0).toFixed(2)),
-          'Total Commission': Number(Number(event.commissionDollars || 0).toFixed(3)),
-          'Commission per Vendor': Number(roundToThreeDecimals(Number(event.commissionPerVendor || 0)).toFixed(3)),
+        'Total Commission': isHourlyEvent ? 0 : Number(Number(event.commissionDollars || 0).toFixed(3)),
+        'Commission per Vendor': isHourlyEvent ? 0 : Number(roundToThreeDecimals(Number(event.commissionPerVendor || 0)).toFixed(3)),
           'Vendors w/ Hours': Number(event.vendorsWithHours || 0),
           'Total Tips': Number(Number(event.totalTips || 0).toFixed(3)),
           'Total Rest Break': Number(Number(totalDisplayedRestBreak).toFixed(2)),
@@ -2316,15 +2362,15 @@ function HRDashboardContent() {
       venueGroup.events.forEach((event: any) => {
         const eventPayments = Array.isArray(event.payments) ? event.payments : [];
         eventPayments.forEach((payment: any) => {
-          const isEventSD = event?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+          const isHourlyEvent = isHourlyPayrollEvent(event, payment);
           const breakdown = getDisplayedPaymentBreakdown(event, payment);
           const loadedRate = breakdown.rateInEffect;
           const hoursInDecimal = roundHoursToTwoDecimals(breakdown.hours);
-          const commPay = isEventSD ? 0 : Number(breakdown.commissionPay.toFixed(3));
-          const varIncentive = isEventSD ? 0 : Number(breakdown.variableIncentive.toFixed(2));
+          const commPay = isHourlyEvent ? 0 : Number(breakdown.commissionPay.toFixed(3));
+          const varIncentive = isHourlyEvent ? 0 : Number(breakdown.variableIncentive.toFixed(2));
           const tipsRaw = getDisplayedTips(event, payment);
           const tips = Number(roundToThreeDecimals(tipsRaw).toFixed(3));
-          const restBreak = isEventSD ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
+          const restBreak = isHourlyEvent ? 'N/A' : Number(roundUpThousandsToNextHundred(Number(payment.restBreak || 0)).toFixed(2));
           const mileageMiles = (mileageByEvent[event.id] || {})[payment.userId]?.miles ?? null;
           const rawMileagePay = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
           const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
@@ -2336,7 +2382,7 @@ function HRDashboardContent() {
           const other = Number(roundUpThousandsToNextHundred(Number(payment.otherAmount ?? 0)).toFixed(2));
           const adjAmtBve = reimbursementBve + other;
           const totalGrossPay = Number(roundUpThousandsToNextHundred(
-            breakdown.commissionPaidTotal + tipsRaw + (isEventSD ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
+            breakdown.commissionPaidTotal + tipsRaw + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + adjAmtBve + mileagePay + travelPay
           ).toFixed(2));
           bveTotals.hoursDecimal += hoursInDecimal;
           bveTotals.commissionPay += commPay;
@@ -2420,7 +2466,7 @@ function HRDashboardContent() {
     };
 
     appendDetailSheet('Vendor Payments', vendorRows);
-    appendDetailSheet('Hourly Users', hourlyRows, ['Commission Pay']);
+    appendDetailSheet('Hourly Users', hourlyRows, ['Commission Pay', 'Variable Incentive']);
     appendDetailSheet('Comm Travel Pay', commissionTravelRows);
     appendDetailSheet('Comm No Travel', commissionNoTravelRows);
     if (byVenueEventRows.length > 0) {
@@ -3904,7 +3950,7 @@ function HRDashboardContent() {
                 </div>
               </div>
               <div className="mt-4 flex flex-wrap gap-3">
-                <button onClick={loadPaymentsData} className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`} disabled={loadingPayments}>
+                <button onClick={() => void loadPaymentsData()} className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`} disabled={loadingPayments}>
                   {loadingPayments ? 'Loading…' : 'Load Payments'}
                 </button>
                 <button onClick={saveAllAdjustments} className={`apple-button ${savingAdjustment ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={savingAdjustment}>
@@ -3913,8 +3959,15 @@ function HRDashboardContent() {
                 <button onClick={exportPaymentsToExcel} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
                   Export to Excel
                 </button>
+                <button
+                  onClick={() => void loadPaymentsData({ nonEventOnly: true })}
+                  className={`apple-button ${loadingPayments ? 'apple-button-disabled' : 'apple-button-primary'}`}
+                  disabled={loadingPayments}
+                >
+                  {loadingPayments ? 'Loading…' : 'Retrieve Non-Event Payroll'}
+                </button>
                 <button onClick={exportNonEventPayroll} className={`apple-button ${paymentsByVenue.length === 0 ? 'apple-button-disabled' : 'apple-button-secondary'}`} disabled={paymentsByVenue.length === 0}>
-                  Non Event
+                  Export Non-Event Hourly
                 </button>
                 <button onClick={() => void exportSalariedPayroll()} className="apple-button apple-button-secondary">
                   Salaried Export
@@ -4485,11 +4538,11 @@ function HRDashboardContent() {
                 paymentsByVendor.map(vendor => {
                   const vendorTotals = getDisplayedVendorTotals(vendor);
                   const vendorDisplayedTotal = vendorTotals.totalGross;
-                  const vendorHasSanDiegoEvents = vendor.events.some(({ event }) => event?.isSanDiegoHourly === true || isSanDiegoRegion(event));
-                  const vendorHasNonSanDiegoEvents = vendor.events.some(({ event }) => !(event?.isSanDiegoHourly === true || isSanDiegoRegion(event)));
-                  const showVendorHourlyColumns = vendorHasSanDiegoEvents;
-                  const showVendorCommissionColumns = vendorHasNonSanDiegoEvents;
-                  const showVendorRestBreakColumn = vendorHasNonSanDiegoEvents;
+                  const vendorHasHourlyEvents = vendor.events.some(({ event, payment }) => isHourlyPayrollEvent(event, payment));
+                  const vendorHasCommissionEvents = vendor.events.some(({ event, payment }) => !isHourlyPayrollEvent(event, payment));
+                  const showVendorHourlyColumns = vendorHasHourlyEvents;
+                  const showVendorCommissionColumns = vendorHasCommissionEvents;
+                  const showVendorRestBreakColumn = vendorHasCommissionEvents;
                   const formatVendorMoney = (amount: number) => formatExactMoney(amount);
 
                   return (
@@ -4540,7 +4593,7 @@ function HRDashboardContent() {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {vendor.events.map(({ event, venue, city, state, payment }, idx) => {
                               const breakdown = getDisplayedPaymentBreakdown(event, payment);
-                              const isEventSD = event?.isSanDiegoHourly === true || payment?.isSanDiegoHourly === true || isSanDiegoRegion(event);
+                              const isHourlyEvent = isHourlyPayrollEvent(event, payment);
                               const loadedRate = breakdown.rateInEffect;
                               const _mp = Number((mileageByEvent[event.id] || {})[payment.userId]?.mileagePay || 0);
                               const diffMiles = (mileageByEvent[event.id] || {})[payment.userId]?.differentialMiles ?? null;
@@ -4556,7 +4609,7 @@ function HRDashboardContent() {
                               const currentAdjustmentTypeLabel = getOtherAdjustmentTypeLabel(currentAdjustmentType);
                               const sickHours = Number((sickHoursByEvent[event.id] || {})[payment.userId] || 0);
                               const sickPay = sickHours > 0 ? sickHours * loadedRate : 0;
-                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isEventSD ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay + sickPay;
+                              const rowTotal = breakdown.commissionPaidTotal + Number(payment.tips || 0) + (isHourlyEvent ? 0 : Number(payment.restBreak || 0)) + Number(payment.adjustmentAmount || 0) + mileagePay + travelPay + sickPay;
                               const eventHref = `/event-dashboard/${event.id}?tab=hr${paymentsStartDate ? `&periodStart=${encodeURIComponent(paymentsStartDate)}` : ''}${paymentsEndDate ? `&periodEnd=${encodeURIComponent(paymentsEndDate)}` : ''}`;
                               return (
                                 <tr key={`${event.id}-${idx}`} className="hover:bg-gray-50">
@@ -4569,17 +4622,17 @@ function HRDashboardContent() {
                                   {showVendorHourlyColumns && (
                                     <>
                                       <td className="px-4 py-2 text-sm text-right text-gray-900">
-                                        {isEventSD
+                                        {isHourlyEvent
                                           ? `${formatHoursDecimal(breakdown.regularHours)}h / $${formatVendorMoney(breakdown.regularPay)}`
                                           : '—'}
                                       </td>
                                       <td className="px-4 py-2 text-sm text-right text-orange-600">
-                                        {isEventSD
+                                        {isHourlyEvent
                                           ? `${formatHoursDecimal(breakdown.overtimeHours)}h / $${formatVendorMoney(breakdown.overtimePay)}`
                                           : '—'}
                                       </td>
                                       <td className="px-4 py-2 text-sm text-right text-rose-600">
-                                        {isEventSD
+                                        {isHourlyEvent
                                           ? `${formatHoursDecimal(breakdown.doubletimeHours)}h / $${formatVendorMoney(breakdown.doubletimePay)}`
                                           : '—'}
                                       </td>
@@ -4587,13 +4640,13 @@ function HRDashboardContent() {
                                   )}
                                   {showVendorCommissionColumns && (
                                     <>
-                                      <td className="px-4 py-2 text-sm text-right text-blue-600">{isEventSD ? '—' : `$${formatVendorMoney(breakdown.commissionPay)}`}</td>
+                                      <td className="px-4 py-2 text-sm text-right text-blue-600">{isHourlyEvent ? '—' : `$${formatVendorMoney(breakdown.commissionPay)}`}</td>
                                       <td className="px-4 py-2 text-sm text-right text-gray-400">—</td>
                                     </>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-orange-600">${formatVendorMoney(Number(payment.tips || 0))}</td>
                                   {showVendorRestBreakColumn && (
-                                    <td className="px-4 py-2 text-sm text-right text-green-600">{isEventSD ? '—' : `$${formatVendorMoney(Number(payment.restBreak || 0))}`}</td>
+                                    <td className="px-4 py-2 text-sm text-right text-green-600">{isHourlyEvent ? '—' : `$${formatVendorMoney(Number(payment.restBreak || 0))}`}</td>
                                   )}
                                   <td className="px-4 py-2 text-sm text-right text-blue-600">
                                     {_mp > 0 ? (
@@ -4905,14 +4958,14 @@ function HRDashboardContent() {
                                         <thead className="bg-gray-50">
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
-                                            const hideRest = isEventSD;
+                                            const isHourlyEvent = isHourlyPayrollEvent(ev);
+                                            const hideRest = isHourlyEvent;
                                             const showOT = st === "AZ" || st === "NY";
                                             return (
                                               <tr>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Employee</th>
                                                 <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Reg Rate</th>
-                                                {isEventSD ? (
+                                                {isHourlyEvent ? (
                                                   <>
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Hours</th>
                                                     <th className="p-2 text-left text-xs font-medium text-gray-500 uppercase">Regular Time</th>
@@ -4965,8 +5018,8 @@ function HRDashboardContent() {
                                               </td>
                                               {(() => {
                                                 const st = normalizeState(ev.state || v.state);
-                                                const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
-                                                const hideRest = isEventSD;
+                                                const isHourlyEvent = isHourlyPayrollEvent(ev, p);
+                                                const hideRest = isHourlyEvent;
                                                 const showOT = st === "AZ" || st === "NY";
 
                                                 const breakdown = getDisplayedPaymentBreakdown(ev, p);
@@ -5006,7 +5059,7 @@ function HRDashboardContent() {
                                                 return (
                                                   <>
                                                     <td className="p-2 text-sm">${formatPayrollMoney(regRate)}/hr</td>
-                                                    {isEventSD ? (
+                                                    {isHourlyEvent ? (
                                                       <>
                                                         <td className="p-2 text-sm">{renderCombinedHours(hours, sickHours, "left")}</td>
                                                         <td className="p-2 text-sm text-gray-900">{`${formatHoursDecimal(breakdown.regularHours)}h / $${formatPayrollMoney(breakdown.regularPay)}`}</td>
@@ -5137,15 +5190,15 @@ function HRDashboardContent() {
                                           ))}
                                           {(() => {
                                             const st = normalizeState(ev.state || v.state);
-                                            const isEventSD = ev?.isSanDiegoHourly === true || isSanDiegoRegion(ev);
-                                            const hideRest = isEventSD;
+                                            const isHourlyEvent = isHourlyPayrollEvent(ev);
+                                            const hideRest = isHourlyEvent;
                                             const showOT = st === "AZ" || st === "NY";
                                             const eventTotals = getDisplayedEventTotals(ev);
                                             return (
                                               <tr style={{ backgroundColor: '#e5e7eb' }} className="font-semibold text-sm border-t-2 border-gray-400">
                                                 <td className="p-2 uppercase tracking-wide">Total</td>
                                                 <td className="p-2"></td>
-                                                {isEventSD ? (
+                                                {isHourlyEvent ? (
                                                   <>
                                                     <td className="p-2">{renderCombinedHours(eventTotals.eventHours, eventTotals.totalSickHours, "left")}</td>
                                                     <td className="p-2 text-gray-900">{`${formatHoursDecimal(eventTotals.totalRegularHours)}h / $${formatPayrollMoney(eventTotals.totalRegularPay)}`}</td>

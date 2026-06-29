@@ -18,6 +18,11 @@ function CreateEventPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const returnTo = searchParams?.get("returnTo") || "dashboard";
+  const initialEventType =
+    searchParams?.get("eventType") === "special" ||
+    searchParams?.get("type") === "non-event"
+      ? "special"
+      : "normal";
 
   const [form, setForm] = useState({
     event_name: "",
@@ -35,7 +40,7 @@ function CreateEventPageInner() {
     pds_share_percent: "",
     commission_pool: "",
     is_active: true,
-    event_type: "normal"
+    event_type: initialEventType
   });
   const [venues, setVenues] = useState<Venue[]>([]);
   const [submitting, setSubmitting] = useState(false);
