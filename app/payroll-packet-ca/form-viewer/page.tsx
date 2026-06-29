@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
 import { I9_ENTRY_POINTS, normalizeI9EntryPoint } from '@/lib/i9-proxy-audit';
+import { I9_SSN_FIELD_NAME, I9_STATE_FIELD_NAME, isValidI9Ssn, sanitizeI9Ssn } from '@/lib/i9-fields';
 
 // Dynamically import PDFFormEditor to avoid SSR issues
 const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
@@ -336,6 +337,29 @@ function FormViewerContent() {
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
+  const isI9FormId = (formId: string) => formId === 'i9' || formId.endsWith('-i9');
+
+  const sanitizeI9PdfBytesForSave = async (pdfBytes: Uint8Array, formId: string) => {
+    if (!isI9FormId(formId)) return pdfBytes;
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const form = pdfDoc.getForm();
+      const ssnField = form.getTextField(I9_SSN_FIELD_NAME);
+      const currentValue = ssnField.getText() || '';
+      const sanitizedValue = sanitizeI9Ssn(currentValue);
+
+      if (currentValue === sanitizedValue) return pdfBytes;
+
+      ssnField.setText(sanitizedValue);
+      return new Uint8Array(await pdfDoc.save());
+    } catch (error) {
+      console.warn('[SAVE] Failed to sanitize I-9 SSN before saving', error);
+      return pdfBytes;
+    }
+  };
+
   // Handle field change - trigger auto-save after debounce
   const handleFieldChange = () => {
     if (autoSaveTimerRef.current) {
@@ -369,7 +393,12 @@ function FormViewerContent() {
         setSaveStatus('saving');
       }
 
-      let pdfBytesToSave = pdfBytes;
+      let pdfBytesToSave = await sanitizeI9PdfBytesForSave(pdfBytes, formId);
+      if (pdfBytesToSave !== pdfBytes) {
+        pdfBytesRef.current = pdfBytesToSave;
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       if (isCurrentForm && formId === 'adp-deposit' && currentSignature) {
         const lastEmbedded = embeddedSignatureByFormRef.current.get(formId);
         if (lastEmbedded !== currentSignature) {
@@ -1300,10 +1329,11 @@ function FormViewerContent() {
           { name: 'First Name Given Name', page: 1, friendly: 'First Name (Given Name)' },
           { name: 'Address Street Number and Name', page: 1, friendly: 'Address (Street Number and Name)' },
           { name: 'City or Town', page: 1, friendly: 'City or Town' },
+          { name: I9_STATE_FIELD_NAME, page: 1, friendly: 'State' },
           { name: 'ZIP Code', page: 1, friendly: 'ZIP Code' },
           { name: 'Date of Birth mmddyyyy', page: 1, friendly: 'Date of Birth (mm/dd/yyyy)' },
           { name: "Today's Date mmddyyy", page: 1, friendly: "Today's Date (mm/dd/yyyy)" },
-          { name: 'US Social Security Number', page: 1, friendly: 'U.S. Social Security Number' },
+          { name: I9_SSN_FIELD_NAME, page: 1, friendly: 'U.S. Social Security Number' },
           { name: 'Employees E-mail Address', page: 1, friendly: "Employee's Email Address" },
           { name: 'Telephone Number', page: 1, friendly: "Employee's Telephone Number" }
         ];
@@ -1332,6 +1362,23 @@ function FormViewerContent() {
               setValidationError(`Please fill in the required field: "${fieldInfo.friendly}" on page ${fieldInfo.page} of the PDF`);
               setEmptyFieldPage(fieldInfo.page);
               void handleManualSave();
+
+              setTimeout(() => {
+                const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);
+                if (canvas) {
+                  canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                } else {
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }
+              }, 100);
+
+              return;
+            }
+
+            if (fieldInfo.name === I9_SSN_FIELD_NAME && !isValidI9Ssn(value)) {
+              setMissingRequiredFields([fieldInfo.name]);
+              setValidationError('Please enter a 9-digit U.S. Social Security Number using numbers only, with no dashes or special characters.');
+              setEmptyFieldPage(fieldInfo.page);
 
               setTimeout(() => {
                 const canvas = document.querySelector(`canvas[data-page-number="${fieldInfo.page}"]`);

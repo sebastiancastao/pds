@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
+import { I9_SSN_FIELD_NAME, I9_SSN_LENGTH, sanitizeI9Ssn } from '@/lib/i9-fields';
 
 // Declare PDF.js types on window
 declare global {
@@ -217,6 +218,32 @@ const isAttestationForm = (formId: string) =>
 const ATTESTATION_DATE_FIELD = 'employee_attestation_date';
 
 const isDateInputField = (fieldName: string) => fieldName === ATTESTATION_DATE_FIELD;
+
+const isI9SsnField = (formId: string, fieldName: string) =>
+  isI9Form(formId) && fieldName === I9_SSN_FIELD_NAME;
+
+const sanitizeFieldValue = (formId: string, fieldName: string, value: string) =>
+  isI9SsnField(formId, fieldName) ? sanitizeI9Ssn(value) : value;
+
+const sanitizeI9PdfFields = (pdfDoc: any, formId: string) => {
+  if (!isI9Form(formId)) return false;
+
+  try {
+    const form = pdfDoc.getForm();
+    const ssnField = form.getTextField(I9_SSN_FIELD_NAME);
+    const currentValue = ssnField.getText() || '';
+    const sanitizedValue = sanitizeI9Ssn(currentValue);
+
+    if (currentValue !== sanitizedValue) {
+      ssnField.setText(sanitizedValue);
+      return true;
+    }
+  } catch (err) {
+    console.warn('[I9] Unable to sanitize SSN field', err);
+  }
+
+  return false;
+};
 
 const formatPdfDateToInputValue = (value: string) => {
   const trimmed = value.trim();
@@ -739,7 +766,12 @@ export default function PDFFormEditor({
 
                 try {
                   if (typeof (savedField as any).getText === 'function' && typeof (targetField as any).setText === 'function') {
-                    (targetField as any).setText((savedField as any).getText() || '');
+                    const savedValue = sanitizeFieldValue(
+                      formId,
+                      fieldName,
+                      (savedField as any).getText() || '',
+                    );
+                    (targetField as any).setText(savedValue);
                     copiedCount++;
                   } else if (typeof (savedField as any).isChecked === 'function') {
                     const checked = (savedField as any).isChecked();
@@ -786,6 +818,7 @@ export default function PDFFormEditor({
       }
       ensureAdpNetAmountCheckboxes(pdfLibDoc, formId);
       applyWiNoticeToEmployeeDefaults(pdfLibDoc, formId);
+      const didSanitizeI9PdfFields = sanitizeI9PdfFields(pdfLibDoc, formId);
       pdfLibDocRef.current = pdfLibDoc;
 
       // Load with PDF.js for rendering - use UNPKG CDN
@@ -998,7 +1031,7 @@ export default function PDFFormEditor({
 
       // Provide initial PDF bytes
       console.log('Step 10: Saving initial PDF bytes...');
-      const initialPdfBytes = usedSavedBytesForLoad && savedPdfBytes
+      const initialPdfBytes = usedSavedBytesForLoad && savedPdfBytes && !didApplyAssignedVenue && !didSanitizeI9PdfFields
         ? savedPdfBytes
         : await pdfLibDoc.save();
       console.log('Initial PDF bytes saved, size:', initialPdfBytes.length);
@@ -1228,6 +1261,7 @@ export default function PDFFormEditor({
 
   const handleFieldChange = useCallback(
     (fieldId: string, fieldName: string, value: string, widgetValue?: string) => {
+    const sanitizedValue = sanitizeFieldValue(formId, fieldName, value);
     const mirrorFieldName = getMirroredFieldName(
       formId,
       fieldName,
@@ -1240,18 +1274,18 @@ export default function PDFFormEditor({
 
     setFieldValues((prev) => {
       const newValues = new Map(prev);
-      newValues.set(fieldId, value);
+      newValues.set(fieldId, sanitizedValue);
       if (mirrorFields.length > 0) {
         for (const mirrorField of mirrorFields) {
-          newValues.set(mirrorField.id, value);
+          newValues.set(mirrorField.id, sanitizedValue);
         }
       }
       return newValues;
     });
 
-    const updates: FieldUpdate[] = [{ fieldName, value, widgetValue }];
+    const updates: FieldUpdate[] = [{ fieldName, value: sanitizedValue, widgetValue }];
     if (mirrorFields.length > 0 && mirrorFieldName) {
-      updates.push({ fieldName: mirrorFieldName, value });
+      updates.push({ fieldName: mirrorFieldName, value: sanitizedValue });
     }
       updatePDFFields(updates);
 
@@ -1269,36 +1303,37 @@ export default function PDFFormEditor({
       const form = pdfLibDocRef.current.getForm();
       for (const update of updates) {
         const { fieldName, value, widgetValue } = update;
-        console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${value}"`);
+        const sanitizedValue = sanitizeFieldValue(formId, fieldName, value);
+        console.log(`[UPDATE FIELD] Updating field "${fieldName}" with value "${sanitizedValue}"`);
         const field = form.getField(fieldName);
 
         if ('setText' in field) {
-          field.setText(value);
-          console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${value}"`);
+          field.setText(sanitizedValue);
+          console.log(`[UPDATE FIELD] Text field updated: "${fieldName}" = "${sanitizedValue}"`);
         } else if ('select' in field && 'getOptions' in field) {
           // Choice field (dropdown / combo box) — e.g. the I-9 "State" field.
           try {
-            if (value && value.trim().length > 0) {
-              (field as any).select(value);
+            if (sanitizedValue && sanitizedValue.trim().length > 0) {
+              (field as any).select(sanitizedValue);
             } else if (typeof (field as any).clear === 'function') {
               (field as any).clear();
             }
-            console.log(`[UPDATE FIELD] Dropdown updated: "${fieldName}" = "${value}"`);
+            console.log(`[UPDATE FIELD] Dropdown updated: "${fieldName}" = "${sanitizedValue}"`);
           } catch (selectErr) {
-            console.error(`[UPDATE FIELD] Failed to select "${value}" for dropdown "${fieldName}":`, selectErr);
+            console.error(`[UPDATE FIELD] Failed to select "${sanitizedValue}" for dropdown "${fieldName}":`, selectErr);
           }
         } else if ('check' in field || 'uncheck' in field) {
-          if (value === 'false') {
+          if (sanitizedValue === 'false') {
             field.uncheck();
           } else if (widgetValue) {
             field.check(widgetValue);
-          } else if (value === 'true') {
+          } else if (sanitizedValue === 'true') {
             field.check();
           } else {
             field.check();
           }
           console.log(
-            `[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${value} (widget: ${widgetValue || 'default'})`
+            `[UPDATE FIELD] Checkbox updated: "${fieldName}" = ${sanitizedValue} (widget: ${widgetValue || 'default'})`
           );
         }
       }
@@ -1526,7 +1561,12 @@ export default function PDFFormEditor({
                 : fieldValue === 'true'
               : false;
             const isDateField = field.type !== 'checkbox' && isDateInputField(field.baseName);
-            const renderedValue = isDateField ? formatPdfDateToInputValue(fieldValue) : fieldValue;
+            const isSsnField = field.type !== 'checkbox' && isI9SsnField(formId, field.baseName);
+            const renderedValue = isDateField
+              ? formatPdfDateToInputValue(fieldValue)
+              : isSsnField
+                ? sanitizeI9Ssn(fieldValue)
+                : fieldValue;
             const isMissingRequired = Boolean(
               showRequiredFieldErrors &&
               requiredFieldNames?.includes(field.baseName) &&
@@ -1609,11 +1649,18 @@ export default function PDFFormEditor({
                   <input
                     type={isDateField ? 'date' : 'text'}
                     value={renderedValue}
+                    inputMode={isSsnField ? 'numeric' : undefined}
+                    pattern={isSsnField ? '\\d*' : undefined}
+                    maxLength={isSsnField ? I9_SSN_LENGTH : undefined}
                     onChange={(e) =>
                       handleFieldChange(
                         field.id,
                         field.baseName,
-                        isDateField ? formatDateInputToPdfValue(e.target.value) : e.target.value,
+                        isDateField
+                          ? formatDateInputToPdfValue(e.target.value)
+                          : isSsnField
+                            ? sanitizeI9Ssn(e.target.value)
+                            : e.target.value,
                       )
                     }
                     style={{

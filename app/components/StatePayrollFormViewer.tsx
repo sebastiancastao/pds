@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import dynamicImport from 'next/dynamic';
 import { supabase } from '@/lib/supabase';
 import { I9_ENTRY_POINTS, normalizeI9EntryPoint } from '@/lib/i9-proxy-audit';
+import { I9_SSN_FIELD_NAME, I9_STATE_FIELD_NAME, isValidI9Ssn, sanitizeI9Ssn } from '@/lib/i9-fields';
 import { stampHomeVenueAssignmentLayout } from '@/app/lib/home-venue-pdf-layout';
 
 const PDFFormEditor = dynamicImport(() => import('@/app/components/PDFFormEditor'), {
@@ -594,6 +595,29 @@ export default function StatePayrollFormViewer({
     console.log('[FORM VIEWER] pdfBytesRef.current updated');
   };
 
+  const isI9FormId = (formId: string) => formId === 'i9' || formId.endsWith('-i9');
+
+  const sanitizeI9PdfBytesForSave = async (pdfBytes: Uint8Array, formId: string) => {
+    if (!isI9FormId(formId)) return pdfBytes;
+
+    try {
+      const { PDFDocument } = await import('pdf-lib');
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const form = pdfDoc.getForm();
+      const ssnField = form.getTextField(I9_SSN_FIELD_NAME);
+      const currentValue = ssnField.getText() || '';
+      const sanitizedValue = sanitizeI9Ssn(currentValue);
+
+      if (currentValue === sanitizedValue) return pdfBytes;
+
+      ssnField.setText(sanitizedValue);
+      return new Uint8Array(await pdfDoc.save());
+    } catch (error) {
+      console.warn('[SAVE] Failed to sanitize I-9 SSN before saving', error);
+      return pdfBytes;
+    }
+  };
+
   const handleFieldChange = (fieldId: string, fieldName: string, value: string) => {
     const isChecked = value !== 'false' && value !== '';
     fieldChangeValuesRef.current.set(fieldName, isChecked);
@@ -653,7 +677,14 @@ export default function StatePayrollFormViewer({
         setSaveStatus('saving');
       }
 
-      let pdfBytesToSave = pdfBytes;
+      let pdfBytesToSave = await sanitizeI9PdfBytesForSave(pdfBytes, formId);
+      if (pdfBytesToSave !== pdfBytes) {
+        if (isCurrentForm) {
+          pdfBytesRef.current = pdfBytesToSave;
+        }
+        pdfBytesByFormRef.current.set(formId, pdfBytesToSave);
+      }
+
       if (isCurrentForm && isAttestationFormId(formId) && attestationPrintName.trim()) {
         pdfBytesToSave = await syncAttestationPrintNameToPdf(pdfBytesToSave);
         pdfBytesRef.current = pdfBytesToSave;
@@ -2240,9 +2271,10 @@ export default function StatePayrollFormViewer({
             { name: 'First Name Given Name from Section 1', friendly: 'First Name', type: 'text' },
             { name: 'Address Street Number and Name', friendly: 'Address', type: 'text' },
             { name: 'City or Town', friendly: 'City or Town', type: 'text' },
+            { name: I9_STATE_FIELD_NAME, friendly: 'State', type: 'dropdown' },
             { name: 'ZIP Code', friendly: 'ZIP Code', type: 'text' },
             { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth', type: 'text' },
-            { name: 'US Social Security Number', friendly: 'U.S. Social Security Number', type: 'text' },
+            { name: I9_SSN_FIELD_NAME, friendly: 'U.S. Social Security Number', type: 'text' },
             { name: 'Employees E-mail Address', friendly: "Employee's Email Address", type: 'text' },
             { name: 'Telephone Number', friendly: "Employee's Telephone Number", type: 'text' },
             { name: "Today's Date mmddyyy", friendly: "Today's Date", type: 'text' },
@@ -2250,6 +2282,7 @@ export default function StatePayrollFormViewer({
 
           const missingFields: string[] = [];
           let firstMissing: { friendly: string; page: number } | null = null;
+          let firstMissingReason: 'missing' | 'invalidSsn' = 'missing';
 
           for (const fieldInfo of requiredFields) {
             try {
@@ -2268,6 +2301,17 @@ export default function StatePayrollFormViewer({
                 }
                 if (!firstMissing) {
                   firstMissing = { friendly: fieldInfo.friendly, page };
+                  firstMissingReason = 'missing';
+                }
+                missingFields.push(fieldInfo.name);
+              } else if (fieldInfo.name === I9_SSN_FIELD_NAME && !isValidI9Ssn(value)) {
+                const page = getFieldPage(field);
+                if (requireFirstPageOnly && page !== 1) {
+                  continue;
+                }
+                if (!firstMissing) {
+                  firstMissing = { friendly: fieldInfo.friendly, page };
+                  firstMissingReason = 'invalidSsn';
                 }
                 missingFields.push(fieldInfo.name);
               }
@@ -2277,7 +2321,9 @@ export default function StatePayrollFormViewer({
           }
 
           if (missingFields.length > 0 && firstMissing) {
-            const message = `Please fill in the required field: "${firstMissing.friendly}" on page ${firstMissing.page} of the PDF`;
+            const message = firstMissingReason === 'invalidSsn'
+              ? 'Please enter a 9-digit U.S. Social Security Number using numbers only, with no dashes or special characters.'
+              : `Please fill in the required field: "${firstMissing.friendly}" on page ${firstMissing.page} of the PDF`;
             setMissingRequiredFields(missingFields);
             setValidationError(message);
             setEmptyFieldPage(firstMissing.page);
@@ -2376,10 +2422,11 @@ export default function StatePayrollFormViewer({
             { name: 'First Name Given Name', friendly: 'First Name (Given Name)' },
             { name: 'Address Street Number and Name', friendly: 'Address (Street Number and Name)' },
             { name: 'City or Town', friendly: 'City or Town' },
+            { name: I9_STATE_FIELD_NAME, friendly: 'State' },
             { name: 'ZIP Code', friendly: 'ZIP Code' },
             { name: 'Date of Birth mmddyyyy', friendly: 'Date of Birth (mm/dd/yyyy)' },
             { name: "Today's Date mmddyyy", friendly: "Today's Date (mm/dd/yyyy)" },
-            { name: 'US Social Security Number', friendly: 'U.S. Social Security Number' },
+            { name: I9_SSN_FIELD_NAME, friendly: 'U.S. Social Security Number' },
             { name: 'Employees E-mail Address', friendly: "Employee's Email Address" },
             { name: 'Telephone Number', friendly: "Employee's Telephone Number" },
           ];
@@ -2411,6 +2458,31 @@ export default function StatePayrollFormViewer({
                   page = 1;
                 }
                 const message = `Please fill in the required field: "${fieldInfo.friendly}" on page ${page} of the PDF`;
+                setMissingRequiredFields([fieldInfo.name]);
+                setValidationError(message);
+                setEmptyFieldPage(page);
+
+                setTimeout(() => {
+                  const canvas = document.querySelector(`canvas[data-page-number="${page}"]`);
+                  if (canvas) {
+                    canvas.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  } else {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                  }
+                }, 100);
+
+                return;
+              }
+
+              if (fieldInfo.name === I9_SSN_FIELD_NAME && !isValidI9Ssn(value)) {
+                let page = 1;
+                try {
+                  const field = form.getField(fieldInfo.name) as any;
+                  page = getFieldPage(field);
+                } catch {
+                  page = 1;
+                }
+                const message = 'Please enter a 9-digit U.S. Social Security Number using numbers only, with no dashes or special characters.';
                 setMissingRequiredFields([fieldInfo.name]);
                 setValidationError(message);
                 setEmptyFieldPage(page);
