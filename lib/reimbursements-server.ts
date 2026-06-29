@@ -76,7 +76,7 @@ export async function uploadReimbursementReceipt(params: {
     throw new Error('Invalid receipt file type. Allowed: JPG, PNG, WEBP, PDF');
   }
   if (file.size > REIMBURSEMENT_MAX_BYTES) {
-    throw new Error('Receipt file is too large. Maximum size is 10 MB.');
+    throw new Error('Receipt file is too large. Maximum size is 4 mb.');
   }
 
   await ensureReimbursementBucket();

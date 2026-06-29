@@ -341,7 +341,7 @@ export default function UploadImagesPage() {
                   <>
                     <p style={{ fontWeight: 600, color: '#1d1d1f', margin: 0 }}>Drop image or click to browse</p>
                     <p style={{ color: '#6e6e73', margin: '0.2rem 0 0', fontSize: '0.8125rem' }}>
-                      PNG, JPG, WEBP, BMP, GIF, TIFF — max 10 MB
+                      PNG, JPG, WEBP, BMP, GIF, TIFF — max 4 mb
                     </p>
                   </>
                 )}

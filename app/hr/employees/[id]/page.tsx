@@ -2584,7 +2584,7 @@ export default function EmployeeProfilePage() {
                             <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
                               {i9Uploading === 'i9_list_a' ? 'Uploading…' : 'Click to upload List A document'}
                             </p>
-                            <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                            <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 4 mb</p>
                             <input type="file" className="hidden" accept="image/*,application/pdf"
                               onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_a', f); e.target.value = ''; }}
                               disabled={!!i9Uploading} />
@@ -2632,7 +2632,7 @@ export default function EmployeeProfilePage() {
                               <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
                                 {i9Uploading === 'i9_list_b' ? 'Uploading…' : 'Click to upload List B document'}
                               </p>
-                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 4 mb</p>
                               <input type="file" className="hidden" accept="image/*,application/pdf"
                                 onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_b', f); e.target.value = ''; }}
                                 disabled={!!i9Uploading} />
@@ -2678,7 +2678,7 @@ export default function EmployeeProfilePage() {
                               <p className="text-sm font-medium text-gray-500 group-hover:text-indigo-600 transition-colors">
                                 {i9Uploading === 'i9_list_c' ? 'Uploading…' : 'Click to upload List C document'}
                               </p>
-                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 10 MB</p>
+                              <p className="text-xs text-gray-400 mt-1">JPG, PNG, WEBP, or PDF — max 4 mb</p>
                               <input type="file" className="hidden" accept="image/*,application/pdf"
                                 onChange={e => { const f = e.target.files?.[0]; if (f) uploadI9Document('i9_list_c', f); e.target.value = ''; }}
                                 disabled={!!i9Uploading} />

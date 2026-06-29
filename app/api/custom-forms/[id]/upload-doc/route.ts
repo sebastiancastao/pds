@@ -8,7 +8,7 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const I9_BUCKET = 'i9-documents';
 
 const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'application/pdf'];
-const MAX_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_BYTES = 10 * 1024 * 1024; // 4 mb
 
 // List A/B/C slot → i9_documents table column prefix
 const SLOT_COL_MAP: Record<string, 'additional_doc' | 'drivers_license' | 'ssn_document'> = {
@@ -61,7 +61,7 @@ export async function POST(
       return NextResponse.json({ error: 'Invalid file type. Allowed: JPG, PNG, WEBP, PDF' }, { status: 400 });
     }
     if (file.size > MAX_BYTES) {
-      return NextResponse.json({ error: 'File too large. Maximum 10 MB.' }, { status: 400 });
+      return NextResponse.json({ error: 'File too large. Maximum 4 mb.' }, { status: 400 });
     }
 
     const colPrefix = SLOT_COL_MAP[slot];

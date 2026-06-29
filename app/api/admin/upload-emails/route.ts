@@ -17,7 +17,7 @@ const supabaseAnon = createClient(
 );
 
 const BUCKET = "email-list-images";
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 4 mb
 const ACCEPTED_MIME = ["image/png", "image/jpeg", "image/webp", "image/bmp", "image/gif", "image/tiff"];
 const allowedRoles = new Set(["admin", "exec", "hr", "hr_admin", "manager", "supervisor", "finance"]);
 
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
 
   if (!file) return NextResponse.json({ error: "No file provided" }, { status: 400 });
   if (!userId) return NextResponse.json({ error: "userId is required" }, { status: 400 });
-  if (file.size > MAX_FILE_SIZE) return NextResponse.json({ error: "File exceeds 10 MB" }, { status: 400 });
+  if (file.size > MAX_FILE_SIZE) return NextResponse.json({ error: "File exceeds 4 mb" }, { status: 400 });
 
   const mime = file.type || "";
   const isImage =

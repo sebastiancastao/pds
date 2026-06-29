@@ -904,7 +904,7 @@ export default function EmployeeFormPage() {
             )}
           </div>
 
-          <p className="text-xs text-gray-400 mt-3">Accepted: JPG, PNG, WEBP, PDF — max 10 MB each</p>
+          <p className="text-xs text-gray-400 mt-3">Accepted: JPG, PNG, WEBP, PDF — max 4 mb each</p>
         </div>
       </div>}
 

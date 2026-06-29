@@ -469,7 +469,7 @@ function VerifyMFAContent() {
         </div>
 
         {/* Google Authenticator Download */}
-        <div className="relative z-10 mb-8">
+        <div className="relative z-4 mb-8">
           <div className="bg-white/10 backdrop-blur-sm rounded-xl p-6 border border-white/20">
             <div className="flex items-center gap-4 mb-4">
               <img
