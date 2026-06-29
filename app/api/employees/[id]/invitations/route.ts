@@ -91,6 +91,7 @@ export async function GET(
         id,
         event_id,
         status,
+        stand_leader,
         confirmation_token,
         created_at,
         events (
@@ -212,6 +213,7 @@ export async function GET(
         location_name: null,
         assigned_at: row.created_at,
         confirmation_token: row.confirmation_token ?? null,
+        stand_leader: row.stand_leader === true,
       };
     });
 
@@ -232,6 +234,7 @@ export async function GET(
         source: "location" as const,
         location_name: loc?.name ?? null,
         assigned_at: row.created_at,
+        stand_leader: false,
       };
     });
 
@@ -257,8 +260,13 @@ export async function GET(
       } else {
         const existingPriority = STATUS_PRIORITY[existing.status] ?? 0;
         const newPriority = STATUS_PRIORITY[inv.status] ?? 0;
+        // Stand leader is a team-level flag that must survive dedup regardless of
+        // which entry wins on status priority.
+        const standLeader = Boolean(existing.stand_leader || inv.stand_leader);
         if (newPriority > existingPriority) {
-          seen.set(inv.event_id, inv);
+          seen.set(inv.event_id, { ...inv, stand_leader: standLeader });
+        } else if (standLeader !== existing.stand_leader) {
+          seen.set(inv.event_id, { ...existing, stand_leader: standLeader });
         }
       }
     }

@@ -217,6 +217,7 @@ type EventInvitation = {
   location_name: string | null;
   assigned_at: string;
   confirmation_token?: string | null;
+  stand_leader?: boolean;
 };
 
 type SubmittedAvailabilityDay = {
@@ -398,6 +399,11 @@ export default function WorkerProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+
+  // ID of the currently logged-in user, used to detect when someone is viewing
+  // their own profile (stand-leader check-in is only offered on your own profile).
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const isOwnProfile = !!currentUserId && !!employeeId && currentUserId === employeeId;
 
   const renderTimeSheetAction = (
     eventId: string | null | undefined,
@@ -938,6 +944,17 @@ export default function WorkerProfilePage() {
       window.removeEventListener("keydown", handleKeyDown);
     };
   }, [isHelpdeskModalOpen]);
+
+  // Identify the logged-in user (to detect own-profile views)
+  useEffect(() => {
+    let cancelled = false;
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!cancelled) setCurrentUserId(session?.user?.id ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Fetch regions list
   useEffect(() => {
@@ -2758,6 +2775,16 @@ export default function WorkerProfilePage() {
                                   <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
                                   <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
                                   <td className="p-3 flex flex-wrap gap-1.5 items-center">
+                                    {isOwnProfile && inv.stand_leader && inv.status !== "declined" && (
+                                      <Link href={`/check-in?eventId=${encodeURIComponent(inv.event_id)}`}
+                                        title="You're a stand leader for this event — open check-in to check in the team"
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        Check in
+                                      </Link>
+                                    )}
                                     {inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") && (
                                       <Link href={`/team-confirmation/${inv.confirmation_token}`}
                                         className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors">

@@ -426,12 +426,14 @@ export async function PATCH(
     const body = await req.json().catch(() => ({}));
     const hasEventRoleInput = Object.prototype.hasOwnProperty.call(body, "eventRole");
     const hasTipsEligibleInput = Object.prototype.hasOwnProperty.call(body, "tipsEligible");
+    const hasStandLeaderInput = Object.prototype.hasOwnProperty.call(body, "standLeader");
     const requestedEventRole = hasEventRoleInput ? normalizeEventTeamRole(body?.eventRole) : null;
     const tipsEligible = body?.tipsEligible;
+    const standLeader = body?.standLeader;
 
-    if (!hasEventRoleInput && !hasTipsEligibleInput) {
+    if (!hasEventRoleInput && !hasTipsEligibleInput && !hasStandLeaderInput) {
       return NextResponse.json(
-        { error: "At least one of eventRole or tipsEligible must be provided" },
+        { error: "At least one of eventRole, tipsEligible, or standLeader must be provided" },
         { status: 400 }
       );
     }
@@ -445,6 +447,10 @@ export async function PATCH(
 
     if (hasTipsEligibleInput && typeof tipsEligible !== "boolean") {
       return NextResponse.json({ error: "tipsEligible must be a boolean" }, { status: 400 });
+    }
+
+    if (hasStandLeaderInput && typeof standLeader !== "boolean") {
+      return NextResponse.json({ error: "standLeader must be a boolean" }, { status: 400 });
     }
 
     const { data: event, error: eventError } = await supabaseAdmin
@@ -551,6 +557,33 @@ export async function PATCH(
       resolvedEventRole = requestedEventRole;
     }
 
+    let standLeaderPersisted = false;
+    let resolvedStandLeader: boolean | null = null;
+
+    if (hasStandLeaderInput) {
+      const { error: updateStandLeaderError } = await supabaseAdmin
+        .from("event_teams")
+        .update({
+          stand_leader: standLeader,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", memberId)
+        .eq("event_id", eventId);
+
+      if (updateStandLeaderError) {
+        if (isMissingColumnError(updateStandLeaderError, "stand_leader")) {
+          return NextResponse.json(
+            { error: "Database migration required before stand leaders can be assigned." },
+            { status: 409 }
+          );
+        }
+        return NextResponse.json({ error: updateStandLeaderError.message }, { status: 500 });
+      }
+
+      standLeaderPersisted = true;
+      resolvedStandLeader = standLeader;
+    }
+
     let tipsPersisted = false;
 
     if (hasTipsEligibleInput) {
@@ -568,7 +601,7 @@ export async function PATCH(
         tipsEligible,
       });
       tipsPersisted = result.persisted;
-    } else if (resolvedEventRole === "staff") {
+    } else if (hasEventRoleInput && resolvedEventRole === "staff") {
       const result = await persistTipsEligibility({
         eventId,
         vendorId,
@@ -587,7 +620,8 @@ export async function PATCH(
             ? tipsEligible
             : null
           : true,
-      persisted: tipsPersisted,
+      standLeader: resolvedStandLeader,
+      persisted: tipsPersisted || standLeaderPersisted,
     });
   } catch (error: any) {
     return NextResponse.json(

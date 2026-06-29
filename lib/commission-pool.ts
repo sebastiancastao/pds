@@ -28,6 +28,36 @@ export function isSanDiegoRegion(input: SanDiegoRegionInput | null | undefined):
   );
 }
 
+// Venues the app already treats as NorCal / SF Metro (see event-dashboard team tab).
+export const NORCAL_VENUE_KEYWORDS = [
+  "save mart",
+  "cow palace",
+  "oakland",
+  "golden 1 center",
+  "cal expo",
+];
+
+// True when an event belongs to the NorCal / "SF Metro" region. Detection mirrors
+// isSanDiegoRegion: region name, then known NorCal cities/venues.
+export function isNorCalRegion(input: SanDiegoRegionInput | null | undefined): boolean {
+  if (!input) return false;
+  const venue = normalizeText(input.venue);
+  const city = normalizeText(input.city);
+  const regionName = normalizeText(input.region_name || input.regionName);
+  return (
+    regionName.includes("norcal") ||
+    regionName.includes("sf metro") ||
+    regionName.includes("san francisco") ||
+    regionName.includes("bay area") ||
+    city === "san francisco" ||
+    city === "oakland" ||
+    city === "san jose" ||
+    city === "sacramento" ||
+    city === "daly city" ||
+    NORCAL_VENUE_KEYWORDS.some((keyword) => keyword.length > 0 && venue.includes(keyword))
+  );
+}
+
 export function getRegionFallbackCommissionPoolPercent(
   input: CommissionPoolFallbackInput | null | undefined
 ): number | null {

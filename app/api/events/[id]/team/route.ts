@@ -580,6 +580,7 @@ export async function GET(
       id,
       vendor_id,
       event_role,
+      stand_leader,
       status,
       created_at,
       users!event_teams_vendor_id_fkey (
@@ -602,6 +603,7 @@ export async function GET(
     const selectFieldsLegacy = `
       id,
       vendor_id,
+      stand_leader,
       status,
       created_at,
       users!event_teams_vendor_id_fkey (
@@ -881,6 +883,7 @@ export async function GET(
         event_role: normalizeEventTeamRole(
           eventRoleColumnAvailable ? (member as any)?.event_role : null
         ),
+        stand_leader: Boolean((member as any)?.stand_leader),
         distance,
         isOutOfVenue: memberUserId ? outOfVenueVendorIds.has(memberUserId) : false,
         has_attestation: hasSubmittedAttestation,

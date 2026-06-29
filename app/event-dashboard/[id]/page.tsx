@@ -3,7 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import Link from "next/link";
 import { useRouter, useParams, useSearchParams } from "next/navigation";
 import { distributePoolByHoursRule, shortShiftModeForDate } from "@/lib/payroll-distribution";
-import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion } from "@/lib/commission-pool";
+import { getRegionFallbackCommissionPoolPercent, isSanDiegoRegion, isNorCalRegion } from "@/lib/commission-pool";
 import { computePayPeriodCommission, isPeriodRateState } from "@/lib/pay-period-commission";
 import { buildLinkedCommissionDistribution, type LinkedCommissionEventInput } from "@/lib/linked-commission";
 import { computeSanDiegoHourlyBreakdown, SAN_DIEGO_BASE_RATE } from "@/lib/san-diego-payroll";
@@ -408,6 +408,7 @@ export default function EventDashboardPage() {
   const [uninvitingMemberId, setUninvitingMemberId] = useState<string | null>(null);
   const [savingTeamRoleMemberId, setSavingTeamRoleMemberId] = useState<string | null>(null);
   const [savingTeamTipsMemberId, setSavingTeamTipsMemberId] = useState<string | null>(null);
+  const [savingTeamStandLeaderMemberId, setSavingTeamStandLeaderMemberId] = useState<string | null>(null);
   const [addVendorSearch, setAddVendorSearch] = useState<string>("");
   const [addVendorState, setAddVendorState] = useState<string>("all");
   const [addVendorCity, setAddVendorCity] = useState<string>("all");
@@ -2037,6 +2038,42 @@ export default function EventDashboardPage() {
       setMessage(err?.message || "Failed to update tip eligibility");
     } finally {
       setSavingTeamTipsMemberId(null);
+    }
+  };
+
+  const handleUpdateTeamStandLeader = async (member: any, standLeader: boolean) => {
+    if (!eventId || !member?.id) return;
+
+    const currentStandLeader = Boolean(member?.stand_leader);
+    if (currentStandLeader === standLeader) return;
+
+    const memberName = getTeamMemberDisplayName(member);
+    setSavingTeamStandLeaderMemberId(member.id);
+    setMessage("");
+    try {
+      const token = await getSessionToken();
+      const res = await fetch(`/api/events/${eventId}/team/${member.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ standLeader }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Failed to update stand leader");
+      }
+
+      await loadTeam(false);
+      setMessage(
+        `Success: ${memberName} ${standLeader ? "is now a stand leader" : "is no longer a stand leader"} for this event.`
+      );
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to update stand leader");
+    } finally {
+      setSavingTeamStandLeaderMemberId(null);
     }
   };
 
@@ -3886,6 +3923,8 @@ export default function EventDashboardPage() {
   };
 
   const isEventSanDiego = isSanDiegoRegion({ city: event?.city, venue: event?.venue });
+  // Stand-leader assignment is only offered for NorCal / SF Metro events.
+  const isNorCalEvent = isNorCalRegion({ city: event?.city, venue: event?.venue, state: event?.state });
 
   const calculateHoursByState = (actualHours: number, _state: string): { regularHours: number; overtimeHours: number; doubletimeHours: number } => {
     if (isEventSanDiego) {
@@ -6064,6 +6103,11 @@ export default function EventDashboardPage() {
                               <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Tip Eligible
                               </th>
+                              {isNorCalEvent && (
+                                <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
+                                  Stand Leader
+                                </th>
+                              )}
                               <th className="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase keeping-wider">
                                 Invited On
                               </th>
@@ -6077,7 +6121,7 @@ export default function EventDashboardPage() {
                           <tbody className="bg-white divide-y divide-gray-200">
                             {filteredTeamListMembers.length === 0 ? (
                               <tr>
-                                <td colSpan={canUninviteTeamMember ? 8 : 7} className="px-3 py-8 text-center text-sm text-gray-500">
+                                <td colSpan={(canUninviteTeamMember ? 8 : 7) + (isNorCalEvent ? 1 : 0)} className="px-3 py-8 text-center text-sm text-gray-500">
                                   No team members match your search
                                 </td>
                               </tr>
@@ -6268,6 +6312,34 @@ export default function EventDashboardPage() {
                                       </div>
                                     )}
                                   </td>
+                                  {isNorCalEvent && (
+                                    <td className="px-3 py-3 whitespace-nowrap">
+                                      {!canManageTeam ? (
+                                        <span className={`text-sm font-medium ${member?.stand_leader ? "text-emerald-700" : "text-gray-400"}`}>
+                                          {member?.stand_leader ? "Stand Leader" : "—"}
+                                        </span>
+                                      ) : (
+                                        <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                                          <input
+                                            type="checkbox"
+                                            checked={Boolean(member?.stand_leader)}
+                                            onChange={(e) => {
+                                              void handleUpdateTeamStandLeader(member, e.target.checked);
+                                            }}
+                                            disabled={savingTeamStandLeaderMemberId === member.id}
+                                            className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-60"
+                                          />
+                                          <span className="text-sm text-gray-700">
+                                            {savingTeamStandLeaderMemberId === member.id
+                                              ? "Saving..."
+                                              : member?.stand_leader
+                                                ? "Stand Leader"
+                                                : "Make leader"}
+                                          </span>
+                                        </label>
+                                      )}
+                                    </td>
+                                  )}
                                   <td className="px-3 py-3 whitespace-nowrap text-sm text-gray-500">
                                     {new Date(member.created_at).toLocaleDateString("en-US", {
                                       year: "numeric",
