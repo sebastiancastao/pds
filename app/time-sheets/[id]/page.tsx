@@ -380,15 +380,38 @@ function computePreview(
     };
   }
 
+  const MAX_MEAL_MINUTES = 30;
   let mealMinutes = 0;
   if (form.firstMealStart && form.lastMealEnd) {
-    mealMinutes += Math.max(0, resolvedMinutes[2] - resolvedMinutes[1]);
+    const meal1Minutes = Math.max(0, resolvedMinutes[2] - resolvedMinutes[1]);
+    if (meal1Minutes > MAX_MEAL_MINUTES) {
+      return {
+        isComplete: false,
+        error: `Meal 1 cannot exceed ${MAX_MEAL_MINUTES} minutes.`,
+        mealMs: 0,
+        totalMs: 0,
+        totalMsWithAdminResponse: 0,
+        overnight,
+      };
+    }
+    mealMinutes += meal1Minutes;
   }
 
   if (form.secondMealStart && form.secondMealEnd) {
     const meal2StartIndex = form.firstMealStart && form.lastMealEnd ? 3 : 1;
     const meal2EndIndex = meal2StartIndex + 1;
-    mealMinutes += Math.max(0, resolvedMinutes[meal2EndIndex] - resolvedMinutes[meal2StartIndex]);
+    const meal2Minutes = Math.max(0, resolvedMinutes[meal2EndIndex] - resolvedMinutes[meal2StartIndex]);
+    if (meal2Minutes > MAX_MEAL_MINUTES) {
+      return {
+        isComplete: false,
+        error: `Meal 2 cannot exceed ${MAX_MEAL_MINUTES} minutes.`,
+        mealMs: 0,
+        totalMs: 0,
+        totalMsWithAdminResponse: 0,
+        overnight,
+      };
+    }
+    mealMinutes += meal2Minutes;
   }
 
   const totalMs = Math.max(0, (totalWindowMinutes - mealMinutes) * 60 * 1000);
@@ -1112,95 +1135,6 @@ export default function TimeSheetsPage() {
                   </div>
                 </dl>
               </div>
-
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Need a Correction?</h3>
-                {payload.editRequest ? (
-                  <>
-                    <div
-                      className={`mt-3 inline-flex rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${
-                        payload.editRequest.status === "rejected"
-                          ? "border-red-200 bg-red-50 text-red-700"
-                          : payload.editRequest.status === "approved"
-                            ? "border-blue-200 bg-blue-50 text-blue-700"
-                            : "border-amber-200 bg-amber-50 text-amber-700"
-                      }`}
-                    >
-                      {payload.editRequest.status === "in_review"
-                        ? "Edit Request In Review"
-                        : payload.editRequest.status === "approved"
-                          ? "Edit Request Approved"
-                          : payload.editRequest.status === "rejected"
-                            ? "Edit Request Rejected"
-                            : "Edit Request Submitted"}
-                    </div>
-                    <p className="mt-3 text-sm text-slate-600">
-                      {payload.editRequest.status === "rejected"
-                        ? "The most recent correction request was reviewed on "
-                        : "A correction request was sent on "}
-                      {payload.editRequest.createdAt
-                        ? new Date(payload.editRequest.createdAt).toLocaleString()
-                        : "this timesheet"}.
-                    </p>
-                    {payload.editRequest.requestReason && (
-                      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                        {payload.editRequest.requestReason}
-                      </div>
-                    )}
-                    {payload.editRequest.status === "rejected" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditRequestModalOpen(true);
-                          setEditRequestReason("");
-                          setEditRequestError("");
-                        }}
-                        className="mt-5 inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                      >
-                        Request Again
-                      </button>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <p className="mt-2 text-sm text-slate-600">
-                      This timesheet is attested and locked. Submit an edit request if a manager or exec needs to review and reopen it.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditRequestModalOpen(true);
-                        setEditRequestReason("");
-                        setEditRequestError("");
-                      }}
-                      className="mt-5 inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                    >
-                      Request Edit
-                    </button>
-                  </>
-                )}
-              </div>
-
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Next Step</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  Your time and attestation are stored. If something needs to change, a manager or exec can update the event timesheet.
-                </p>
-                <div className="mt-5 flex flex-wrap gap-3">
-                  <Link
-                    href="/dashboard"
-                    className="inline-flex items-center rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800"
-                  >
-                    Back to Dashboard
-                  </Link>
-                  <Link
-                    href={`/event-dashboard/${payload.event.id}`}
-                    className="inline-flex items-center rounded-xl border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                  >
-                    Open Event
-                  </Link>
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -1673,13 +1607,6 @@ export default function TimeSheetsPage() {
                   </div>
                 </dl>
               </div>
-
-              <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
-                <h3 className="text-lg font-semibold text-slate-900">Important</h3>
-                <p className="mt-2 text-sm text-slate-600">
-                  The attestation step stores your signature using the same clock-out attestation record used elsewhere in the system.
-                </p>
-              </div>
             </div>
           </div>
         )}
@@ -1706,10 +1633,6 @@ export default function TimeSheetsPage() {
               </div>
 
               <div className="space-y-4 px-6 py-5">
-                <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  This attested timesheet will stay locked until a manager or exec reviews the request.
-                </div>
-
                 <div>
                   <label className="mb-2 block text-sm font-medium text-slate-700">
                     Reason for edit <span className="text-red-500">*</span>
