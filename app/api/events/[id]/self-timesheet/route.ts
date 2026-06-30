@@ -25,6 +25,7 @@ const TIMESHEET_WRITE_ROLES = new Set([
   "supervisor3",
   "exec",
 ]);
+const SELF_SUBMIT_ROLES = new Set(["worker"]);
 
 const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -718,9 +719,6 @@ export async function PUT(
     }
 
     const requester = await loadRequester(user.id);
-    if (!TIMESHEET_WRITE_ROLES.has(requester.role)) {
-      return jsonError("Only managers, supervisors, and execs can submit this timesheet.", 403);
-    }
 
     const eventId = String(params.id || "").trim();
     if (!eventId) {
@@ -737,6 +735,13 @@ export async function PUT(
 
     // Support submitting for another team member
     const targetUserId = String(body?.targetUserId || user.id).trim() || user.id;
+    const canSubmit =
+      TIMESHEET_WRITE_ROLES.has(requester.role) ||
+      (SELF_SUBMIT_ROLES.has(requester.role) && targetUserId === user.id);
+    if (!canSubmit) {
+      return jsonError("Only managers, supervisors, execs, or the assigned worker can submit this timesheet.", 403);
+    }
+
     const targetRequester = targetUserId !== user.id ? await loadRequester(targetUserId) : requester;
 
     if (!signature.startsWith("data:image/png;base64,")) {
