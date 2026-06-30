@@ -487,6 +487,22 @@ export default function EventDashboardPage() {
       }
     >
   >({});
+  // Per-day breakdown for multi-day non-events (one isolated timesheet per local
+  // day). The API collapses firstIn/lastOut into a single span, which would hide
+  // the individual days, so we keep the day rows separately to render below.
+  const [timesheetDays, setTimesheetDays] = useState<
+    Record<
+      string,
+      Array<{
+        date: string;
+        firstInDisplay: string;
+        lastOutDisplay: string;
+        meals: Array<{ startDisplay: string; endDisplay: string }>;
+        totalMs: number;
+      }>
+    >
+  >({});
+  const [timesheetMultiDay, setTimesheetMultiDay] = useState(false);
   const [managerEditDetailsOpen, setManagerEditDetailsOpen] = useState(false);
   const [managerEditDetails, setManagerEditDetails] = useState<{
     editorName: string;
@@ -2951,6 +2967,15 @@ export default function EventDashboardPage() {
     return `${hh}:${String(mm).padStart(2, "0")}`;
   };
 
+  // Format a YYYY-MM-DD day key (from the multi-day breakdown) as e.g. "Sat, Jun 28".
+  const formatTimesheetDayLabel = (dateStr: string): string => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((dateStr || "").slice(0, 10));
+    if (!m) return dateStr || "";
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (Number.isNaN(d.getTime())) return dateStr || "";
+    return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  };
+
   const buildPaymentExportRows = (): Record<string, string | number>[] => {
     const eventState = event?.state?.toUpperCase()?.trim() || "CA";
     const baseRate = isEventSanDiego ? SAN_DIEGO_BASE_RATE : getBaseRateForState(eventState);
@@ -3285,6 +3310,8 @@ export default function EventDashboardPage() {
         const data = await res.json();
         setTimesheetTotals(data.totals || {});
         setTimesheetSpans(data.spans || {});
+        setTimesheetDays(data.days || {});
+        setTimesheetMultiDay(Boolean(data.multiDay));
         setTimesheetLoaded(true);
       } else {
         const errorText = await res.text();
@@ -7183,6 +7210,99 @@ export default function EventDashboardPage() {
               const secondMealEnd    = span.secondMealEndDisplay || isoToEventHHMM(span.secondMealEnd);
               const thirdMealStart   = span.thirdMealStartDisplay || isoToEventHHMM(span.thirdMealStart);
               const thirdMealEnd     = span.thirdMealEndDisplay || isoToEventHHMM(span.thirdMealEnd);
+
+              // Multi-day non-events (special timesheets spanning several days) record one
+              // isolated timesheet per day. The collapsed firstIn/lastOut span would hide the
+              // individual days, so render a read-only per-day breakdown instead of a single
+              // editable row. (Editing multi-day timesheets is done from the worker's page.)
+              const memberDays = timesheetDays[uid];
+              if (timesheetMultiDay && memberDays && memberDays.length > 0) {
+                const midColSpan = 6 + (showThirdMeal ? 2 : 0);
+                const dayCellCls = "px-1 py-1 text-xs text-gray-700 whitespace-nowrap";
+                return (
+                  <React.Fragment key={m.id}>
+                    {/* Worker summary row — total across all days */}
+                    <tr className="bg-blue-50/40 hover:bg-blue-50/70">
+                      <td className="px-3 py-1.5 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${
+                              span.lastOut ? "bg-red-500" : span.firstIn ? "bg-green-500" : "bg-gray-300"
+                            }`}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <div className="font-medium text-xs text-gray-900 truncate max-w-[130px]">
+                                {firstName} {lastName}
+                              </div>
+                              {isTimesheetManager && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-100 text-indigo-800 border border-indigo-200 leading-none">
+                                  Event Manager
+                                </span>
+                              )}
+                              {isTimesheetSupervisor && (
+                                <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-violet-100 text-violet-800 border border-violet-200 leading-none">
+                                  Event Supervisor
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap gap-x-1.5 gap-y-0.5 mt-0.5">
+                              <span className={`text-xs font-medium ${attestationStatusClass}`}>
+                                {attestationStatusLabel}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      {applyGateOffset && (
+                        <td className="px-1 py-1.5 text-xs text-gray-400 text-center">—</td>
+                      )}
+                      <td colSpan={midColSpan} className="px-2 py-1.5 text-xs text-gray-500 italic">
+                        {memberDays.length} day{memberDays.length === 1 ? "" : "s"} — daily breakdown below
+                      </td>
+                      <td className="px-1 py-1.5 font-medium whitespace-nowrap">
+                        {formatHoursFromMs(getDisplayedWorkedMs(uid))}
+                      </td>
+                      <td className="px-2 py-1.5 text-right whitespace-nowrap">
+                        <Link
+                          href={`/time-sheets/${eventId}?userId=${encodeURIComponent(uid)}`}
+                          className="text-gray-600 hover:text-gray-800 font-medium text-xs"
+                        >
+                          View Timesheet
+                        </Link>
+                      </td>
+                    </tr>
+                    {/* One read-only row per day */}
+                    {memberDays.map((day) => (
+                      <tr key={`${uid}-${day.date}`} className="bg-gray-50/60 hover:bg-gray-100/60">
+                        <td className="px-3 py-1 pl-8 whitespace-nowrap text-xs text-gray-600">
+                          <span className="text-gray-400 mr-1">↳</span>
+                          {formatTimesheetDayLabel(day.date)}
+                        </td>
+                        {applyGateOffset && (
+                          <td className="px-1 py-1 text-xs text-gray-300 text-center">—</td>
+                        )}
+                        <td className={dayCellCls}>{day.firstInDisplay || "—"}</td>
+                        <td className={dayCellCls}>{day.meals[0]?.startDisplay || "—"}</td>
+                        <td className={dayCellCls}>{day.meals[0]?.endDisplay || "—"}</td>
+                        <td className={dayCellCls}>{day.meals[1]?.startDisplay || "—"}</td>
+                        <td className={dayCellCls}>{day.meals[1]?.endDisplay || "—"}</td>
+                        {showThirdMeal && (
+                          <td className={dayCellCls}>{day.meals[2]?.startDisplay || "—"}</td>
+                        )}
+                        {showThirdMeal && (
+                          <td className={dayCellCls}>{day.meals[2]?.endDisplay || "—"}</td>
+                        )}
+                        <td className={dayCellCls}>{day.lastOutDisplay || "—"}</td>
+                        <td className="px-1 py-1 text-xs font-medium whitespace-nowrap">
+                          {formatHoursFromMs(day.totalMs)}
+                        </td>
+                        <td className="px-2 py-1"></td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                );
+              }
 
               const isEditing = canEditTimesheets && editingTimesheetUserId === uid;
 
