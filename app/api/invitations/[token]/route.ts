@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { sendNonEventTimesheetLinkEmail } from "@/lib/email";
+import { safeDecrypt } from "@/lib/encryption";
 import { getUserRegion, type Region } from "@/lib/geocoding";
 
 const supabaseAdmin = createClient(
@@ -8,6 +10,18 @@ const supabaseAdmin = createClient(
 );
 
 const INVITATION_WINDOW_DAYS = 42;
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app";
+
+const getSingleRelation = <T>(value: T | T[] | null | undefined): T | null => {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
+};
+
+const buildAppUrl = (path: string): string => {
+  const base = APP_URL.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
+};
 
 const normalizeDateKey = (value: unknown): string => {
   const raw = String(value ?? "").trim();
@@ -459,10 +473,143 @@ export async function POST(
       console.warn('vendor_availability upsert failed (non-fatal):', e);
     }
 
+    let timesheetPath: string | null = null;
+    let timesheetUrl: string | null = null;
+    let nonEventTimesheetConfirmed = false;
+    let timesheetEmailSent = false;
+
+    if (newStatus === "accepted" && invitation.event_id && invitation.vendor_id) {
+      const { data: event, error: eventError } = await supabaseAdmin
+        .from("events")
+        .select("id, created_by, event_name, event_date, start_time, venue, event_type")
+        .eq("id", invitation.event_id)
+        .maybeSingle();
+
+      if (eventError) {
+        console.error("Error loading event for non-event timesheet confirmation:", eventError);
+        return NextResponse.json(
+          { error: "Availability saved, but failed to load the non-event time sheet." },
+          { status: 500 }
+        );
+      }
+
+      if (event?.event_type === "special") {
+        const assignedBy = invitation.invited_by || event.created_by || invitation.vendor_id;
+        const nowIso = new Date().toISOString();
+        timesheetPath = `/time-sheets/${event.id}`;
+        timesheetUrl = buildAppUrl(timesheetPath);
+
+        const { data: existingTeam, error: existingTeamError } = await supabaseAdmin
+          .from("event_teams")
+          .select("id, status")
+          .eq("event_id", event.id)
+          .eq("vendor_id", invitation.vendor_id)
+          .maybeSingle();
+
+        if (existingTeamError) {
+          console.error("Error checking existing non-event team member:", existingTeamError);
+          return NextResponse.json(
+            { error: "Availability saved, but failed to confirm the non-event time sheet assignment." },
+            { status: 500 }
+          );
+        }
+
+        const shouldSendTimesheetEmail =
+          !existingTeam || String(existingTeam.status || "").toLowerCase() !== "confirmed";
+
+        if (existingTeam?.id) {
+          const { error: updateTeamError } = await supabaseAdmin
+            .from("event_teams")
+            .update({
+              status: "confirmed",
+              confirmation_token: null,
+              updated_at: nowIso,
+            })
+            .eq("id", existingTeam.id);
+
+          if (updateTeamError) {
+            console.error("Error confirming existing non-event team member:", updateTeamError);
+            return NextResponse.json(
+              { error: "Availability saved, but failed to confirm the non-event time sheet assignment." },
+              { status: 500 }
+            );
+          }
+        } else {
+          const { error: insertTeamError } = await supabaseAdmin
+            .from("event_teams")
+            .insert({
+              event_id: event.id,
+              vendor_id: invitation.vendor_id,
+              assigned_by: assignedBy,
+              status: "confirmed",
+              confirmation_token: null,
+              created_at: nowIso,
+            });
+
+          if (insertTeamError) {
+            console.error("Error adding non-event team member as confirmed:", insertTeamError);
+            return NextResponse.json(
+              { error: "Availability saved, but failed to add you to the non-event time sheet." },
+              { status: 500 }
+            );
+          }
+        }
+
+        nonEventTimesheetConfirmed = true;
+
+        if (shouldSendTimesheetEmail && timesheetUrl) {
+          try {
+            const { data: vendorUser, error: vendorUserError } = await supabaseAdmin
+              .from("users")
+              .select(`
+                id,
+                email,
+                profiles (
+                  first_name,
+                  last_name
+                )
+              `)
+              .eq("id", invitation.vendor_id)
+              .maybeSingle();
+
+            if (vendorUserError) {
+              console.error("Error loading vendor for non-event timesheet link email:", vendorUserError);
+            } else if (vendorUser?.email) {
+              const profile = getSingleRelation((vendorUser as any).profiles);
+              const emailResult = await sendNonEventTimesheetLinkEmail({
+                email: String(vendorUser.email),
+                firstName: profile?.first_name ? safeDecrypt(String(profile.first_name)) : "",
+                lastName: profile?.last_name ? safeDecrypt(String(profile.last_name)) : "",
+                eventName: event.event_name || "Non Event Time Sheet",
+                eventDate: event.event_date || null,
+                eventStartTime: event.start_time || null,
+                venue: event.venue || null,
+                timesheetUrl,
+              });
+
+              if (!emailResult.success) {
+                console.error("Non-event timesheet link email failed:", emailResult.error);
+              } else {
+                timesheetEmailSent = true;
+              }
+            }
+          } catch (emailError) {
+            console.error("Non-event timesheet link email error:", emailError);
+          }
+        }
+      }
+    }
+
     return NextResponse.json({
       success: true,
-      message: 'Availability saved successfully',
-      status: newStatus
+      message: nonEventTimesheetConfirmed
+        ? "Availability saved. You have been added to the non-event time sheet as confirmed."
+        : "Availability saved successfully",
+      status: newStatus,
+      nonEventTimesheetConfirmed,
+      timesheetPath,
+      timesheetUrl,
+      timesheetEmailSent,
     }, { status: 200 });
 
   } catch (error: any) {

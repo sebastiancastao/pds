@@ -77,6 +77,15 @@ function formatResendError(error: any): string {
   return statusCode ? `[${statusCode}] ${message}` : message;
 }
 
+function escapeHtml(input: unknown): string {
+  return String(input ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Send temporary password email to new user
  * 
@@ -2766,6 +2775,183 @@ export async function sendNonEventTimesheetCreatedNotification(data: {
     return { success: true, messageId: result?.id };
   } catch (error: any) {
     return { success: false, error: error.message || 'Failed to send non-event time sheet notification' };
+  }
+}
+
+export async function sendNonEventTimesheetLinkEmail(data: {
+  email: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  eventName: string;
+  eventDate?: string | null;
+  eventStartTime?: string | null;
+  venue?: string | null;
+  timesheetUrl: string;
+}): Promise<EmailResult> {
+  const {
+    email,
+    firstName,
+    lastName,
+    eventName,
+    eventDate,
+    eventStartTime,
+    venue,
+    timesheetUrl,
+  } = data;
+
+  const normalizedEmail = (email || '').toString().trim().toLowerCase();
+  if (!isValidEmail(normalizedEmail)) {
+    return {
+      success: false,
+      error: `Invalid recipient email: ${email || 'missing'}`,
+    };
+  }
+
+  const formatDate = (value?: string | null): string => {
+    if (!value) return 'Date TBD';
+    const normalized = String(value).trim();
+    const ymd = normalized.slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(ymd)) {
+      const [yearRaw, monthRaw, dayRaw] = ymd.split('-');
+      const localDate = new Date(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw));
+      return localDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      });
+    }
+
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return normalized;
+    return parsed.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+  };
+
+  const formatTime = (value?: string | null): string => {
+    if (!value) return '';
+    const normalized = String(value).trim();
+    const hhmm = normalized.match(/^(\d{1,2}):(\d{2})(?::\d{2})?$/);
+    if (hhmm) {
+      const hour = Number(hhmm[1]);
+      const minute = Number(hhmm[2]);
+      if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+        const d = new Date();
+        d.setHours(hour, minute, 0, 0);
+        return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      }
+    }
+
+    const parsed = new Date(normalized);
+    if (Number.isNaN(parsed.getTime())) return normalized;
+    return parsed.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  };
+
+  const name = [firstName, lastName]
+    .map((part) => String(part || '').trim())
+    .filter(Boolean)
+    .join(' ') || 'there';
+  const safeEventName = escapeHtml(eventName || 'Non Event Time Sheet');
+  const safeName = escapeHtml(name);
+  const safeDate = escapeHtml(formatDate(eventDate));
+  const safeTime = escapeHtml(formatTime(eventStartTime));
+  const safeVenue = escapeHtml(venue || 'PDS');
+  const safeUrl = escapeHtml(timesheetUrl);
+  const subject = `Your Non Event Time Sheet Link - ${eventName || 'PDS'}`;
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;padding:0;font-family:Arial,sans-serif;background-color:#f5f5f5;">
+  <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f5f5f5;padding:40px 0;">
+    <tr>
+      <td align="center">
+        <table cellpadding="0" cellspacing="0" border="0" width="600" style="background-color:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#0f766e 0%,#115e59 100%);padding:36px 30px;text-align:center;">
+              <h1 style="color:#ffffff;margin:0;font-size:26px;">Non Event Time Sheet</h1>
+              <p style="color:#ccfbf1;margin:10px 0 0 0;font-size:15px;">You have been added and confirmed</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:36px 30px;">
+              <p style="color:#333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">Hello <strong>${safeName}</strong>,</p>
+              <p style="color:#333;font-size:16px;line-height:1.6;margin:0 0 20px 0;">
+                Your availability was accepted and you have been added to this non-event time sheet as confirmed. Use the link below to open your time sheet.
+              </p>
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color:#f8fafc;border-radius:8px;border:2px solid #0f766e;margin:20px 0;">
+                <tr>
+                  <td style="padding:24px;">
+                    <table cellpadding="0" cellspacing="0" border="0" width="100%">
+                      <tr>
+                        <td style="padding:8px 0;color:#555;font-size:14px;"><strong>Time Sheet:</strong></td>
+                        <td style="padding:8px 0;text-align:right;color:#333;font-size:14px;">${safeEventName}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 0;color:#555;font-size:14px;"><strong>Date:</strong></td>
+                        <td style="padding:8px 0;text-align:right;color:#333;font-size:14px;">${safeDate}${safeTime ? ` at ${safeTime}` : ''}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:8px 0;color:#555;font-size:14px;"><strong>Venue:</strong></td>
+                        <td style="padding:8px 0;text-align:right;color:#333;font-size:14px;">${safeVenue}</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+              </table>
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:28px 0 8px 0;">
+                <tr>
+                  <td align="center">
+                    <a href="${safeUrl}" style="display:inline-block;background:linear-gradient(135deg,#0f766e 0%,#115e59 100%);color:#ffffff;text-decoration:none;padding:15px 40px;border-radius:6px;font-size:16px;font-weight:bold;">
+                      Open Your Time Sheet
+                    </a>
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding-top:14px;">
+                    <p style="color:#666;font-size:13px;margin:0;">
+                      Or copy and paste this link:<br>
+                      <a href="${safeUrl}" style="color:#0f766e;text-decoration:none;word-break:break-all;">${safeUrl}</a>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f8f9fa;padding:20px 30px;text-align:center;">
+              <p style="color:#888;font-size:12px;margin:0;">PDS Time Keeping</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+
+  try {
+    const { data: result, error } = await sendResendEmail({
+      from: EVENTS_FROM,
+      to: normalizedEmail,
+      subject,
+      html,
+    });
+
+    if (error) {
+      return { success: false, error: formatResendError(error), errorName: (error as any).name };
+    }
+
+    return { success: true, messageId: result?.id };
+  } catch (error: any) {
+    return { success: false, error: error.message || 'Failed to send non-event time sheet link email' };
   }
 }
 

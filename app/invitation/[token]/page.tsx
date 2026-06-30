@@ -44,6 +44,12 @@ type InvitationPayload = {
   regionEventsByDate?: Record<string, InvitationEvent[]>;
 };
 
+type SaveAvailabilityResponse = {
+  nonEventTimesheetConfirmed?: boolean;
+  timesheetPath?: string | null;
+  timesheetUrl?: string | null;
+};
+
 const DEFAULT_DAY_COUNT = 42;
 
 const normalizeDateKey = (value: string | null | undefined): string => {
@@ -112,6 +118,7 @@ export default function InvitationPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>("");
   const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [successTimesheetLink, setSuccessTimesheetLink] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) return;
@@ -120,6 +127,7 @@ export default function InvitationPage() {
     setDays(initial);
     setInvitation(null);
     setEventsByDate({});
+    setSuccessTimesheetLink(null);
 
     fetch(`/api/invitations/${encodeURIComponent(token)}`)
       .then(async (res) => {
@@ -208,8 +216,13 @@ export default function InvitationPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ availability: days })
       });
-      const data = await res.json();
+      const data: SaveAvailabilityResponse & { error?: string } = await res.json();
       if (!res.ok) throw new Error(data?.error || "Save failed");
+      setSuccessTimesheetLink(
+        data?.nonEventTimesheetConfirmed
+          ? data.timesheetPath || data.timesheetUrl || null
+          : null
+      );
       setShowSuccessModal(true);
     } catch (err: any) {
       setMessage(err?.message || "Error saving availability.");
@@ -565,6 +578,23 @@ export default function InvitationPage() {
                 )}
                 . Thank you!
               </p>
+
+              {successTimesheetLink && (
+                <div className="mb-6">
+                  <p className="text-sm text-gray-600 mb-3">
+                    You have been added and confirmed for this Non Event Time Sheet.
+                  </p>
+                  <a
+                    href={successTimesheetLink}
+                    className="group w-full inline-flex items-center justify-center px-8 py-4 text-base font-semibold text-white bg-gradient-to-r from-blue-600 to-blue-700 rounded-xl shadow-lg shadow-blue-500/30 hover:shadow-xl hover:shadow-blue-500/40 hover:from-blue-700 hover:to-blue-800 transform hover:-translate-y-0.5 transition-all duration-200"
+                  >
+                    <svg className="w-5 h-5 mr-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Open Your Time Sheet
+                  </a>
+                </div>
+              )}
 
               <button
                 onClick={() => setShowSuccessModal(false)}
