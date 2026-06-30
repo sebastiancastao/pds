@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
 const ADMIN_RESPONSE_ENTRY_PROCESSING_MS = 30 * 60 * 1000;
-const ALLOWED_ROLES = new Set([
+const TIMESHEET_WRITE_ROLES = new Set([
   "manager",
   "supervisor",
   "supervisor2",
@@ -595,9 +595,6 @@ export async function GET(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
-      return jsonError("Only managers, supervisors, and execs can access this page.", 403);
-    }
 
     const eventId = String(params.id || "").trim();
     if (!eventId) {
@@ -627,7 +624,7 @@ export async function GET(
 
     // Load team members on the initial request (no ?userId param) so the page can populate the selector
     let teamMembers: Array<{ id: string; name: string; role: string }> = [];
-    if (!url.searchParams.get("userId")) {
+    if (!url.searchParams.get("userId") && TIMESHEET_WRITE_ROLES.has(requester.role)) {
       const { data: teamRows } = await supabaseAdmin
         .from("event_teams")
         .select("vendor_id")
@@ -721,7 +718,7 @@ export async function PUT(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
+    if (!TIMESHEET_WRITE_ROLES.has(requester.role)) {
       return jsonError("Only managers, supervisors, and execs can submit this timesheet.", 403);
     }
 
@@ -1047,7 +1044,7 @@ export async function PATCH(
     }
 
     const requester = await loadRequester(user.id);
-    if (!ALLOWED_ROLES.has(requester.role)) {
+    if (!TIMESHEET_WRITE_ROLES.has(requester.role)) {
       return jsonError("Only managers, supervisors, and execs can save timesheets.", 403);
     }
 

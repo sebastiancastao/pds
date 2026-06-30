@@ -137,9 +137,40 @@ export async function POST(req: NextRequest) {
 
     const workerId = codeRecord.target_user_id;
 
-    // Block check-in if the worker is not a confirmed team member, or if it's too early
+    // Get the worker's current time-keeping status before applying check-in-only gates.
+    // Workers who are already clocked in must be able to validate and clock out after the event window closes.
+    const { data: lastClockAction } = await supabaseAdmin
+      .from("time_entries")
+      .select("action, timestamp")
+      .eq("user_id", workerId)
+      .in("action", ["clock_in", "clock_out"])
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const isClockedIn = !!lastClockAction && lastClockAction.action === "clock_in";
+
+    const { data: lastAction } = await supabaseAdmin
+      .from("time_entries")
+      .select("action, timestamp")
+      .eq("user_id", workerId)
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const isOnMeal = !!lastAction && lastAction.action === "meal_start";
+
+    let status: "not_clocked_in" | "clocked_in" | "on_meal" = "not_clocked_in";
+    if (isClockedIn && isOnMeal) {
+      status = "on_meal";
+    } else if (isClockedIn) {
+      status = "clocked_in";
+    }
+
+    // Block new check-ins if the worker is not confirmed on the event team, or if it's outside the event window.
+    // Do not block validation for clock-out: the action route already restricts the event window to clock_in only.
     console.log("[validate] eventId from request:", eventId);
-    if (isValidUuid(eventId)) {
+    if (status === "not_clocked_in" && isValidUuid(eventId)) {
       const [{ data: teamRecord }, { data: eventData }] = await Promise.all([
         supabaseAdmin
           .from("event_teams")
@@ -202,7 +233,7 @@ export async function POST(req: NextRequest) {
         }
       }
     } else {
-      console.log("[validate] NO eventId in request — window check skipped");
+      console.log("[validate] worker already clocked in - check-in window skipped for checkout");
     }
 
     // Get worker profile name
@@ -219,38 +250,6 @@ export async function POST(req: NextRequest) {
       lastName = decryptProfileNamePart(profile.last_name, workerId);
     }
     const displayName = [firstName, lastName].filter(Boolean).join(" ") || "User";
-
-    // Get the worker's current time-keeping status
-    // Check last clock action (clock_in or clock_out)
-    const { data: lastClockAction } = await supabaseAdmin
-      .from("time_entries")
-      .select("action, timestamp")
-      .eq("user_id", workerId)
-      .in("action", ["clock_in", "clock_out"])
-      .order("timestamp", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const isClockedIn = !!lastClockAction && lastClockAction.action === "clock_in";
-
-    // Check last overall action for meal status
-    const { data: lastAction } = await supabaseAdmin
-      .from("time_entries")
-      .select("action, timestamp")
-      .eq("user_id", workerId)
-      .order("timestamp", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    const isOnMeal = !!lastAction && lastAction.action === "meal_start";
-
-    // Determine status
-    let status: "not_clocked_in" | "clocked_in" | "on_meal" = "not_clocked_in";
-    if (isClockedIn && isOnMeal) {
-      status = "on_meal";
-    } else if (isClockedIn) {
-      status = "clocked_in";
-    }
 
     // Get clock-in time if active
     let clockedInAt: string | null = null;
