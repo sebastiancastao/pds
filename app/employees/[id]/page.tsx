@@ -1,7 +1,7 @@
 // app/employees/[id]/page.tsx
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { KnowYourRightsNoticeSection } from "@/components/KnowYourRightsNoticeSection";
@@ -399,6 +399,10 @@ export default function WorkerProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  // Tracks an in-flight confirm/decline response for a team invitation (keyed by invitation id).
+  const [respondingInvitationId, setRespondingInvitationId] = useState<string | null>(null);
+  // Per-invitation feedback shown inline after a confirm/decline attempt (keyed by invitation id).
+  const [invitationFeedback, setInvitationFeedback] = useState<Record<string, { type: "error" | "success"; text: string }>>({});
 
   // ID of the currently logged-in user, used to detect when someone is viewing
   // their own profile (stand-leader check-in is only offered on your own profile).
@@ -463,6 +467,50 @@ export default function WorkerProfilePage() {
         View Timesheet
       </Link>
     );
+  };
+
+  // Confirm or decline a team invitation directly from the Events Recap so the
+  // employee can respond to an event cue without leaving their profile.
+  const respondToInvitation = async (
+    inv: EventInvitation,
+    action: "confirm" | "decline"
+  ) => {
+    if (!inv.confirmation_token || respondingInvitationId) return;
+    setRespondingInvitationId(inv.id);
+    setInvitationFeedback((prev) => {
+      const next = { ...prev };
+      delete next[inv.id];
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/team-confirmation/${inv.confirmation_token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Unable to record your response. Please try again.");
+      }
+      const newStatus = (data?.status as string) || (action === "confirm" ? "confirmed" : "declined");
+      setEventInvitations((prev) =>
+        prev.map((row) => (row.id === inv.id ? { ...row, status: newStatus } : row))
+      );
+      setInvitationFeedback((prev) => ({
+        ...prev,
+        [inv.id]: {
+          type: "success",
+          text: action === "confirm" ? "Attendance confirmed." : "Marked as declined.",
+        },
+      }));
+    } catch (err: any) {
+      setInvitationFeedback((prev) => ({
+        ...prev,
+        [inv.id]: { type: "error", text: err?.message || "Something went wrong." },
+      }));
+    } finally {
+      setRespondingInvitationId(null);
+    }
   };
 
   const [invitationsLoading, setInvitationsLoading] = useState(false);
@@ -2725,6 +2773,156 @@ export default function WorkerProfilePage() {
                     if (!entriesByEvent.has(key)) entriesByEvent.set(key, []);
                     entriesByEvent.get(key)!.push(e);
                   });
+
+                  // Split invitations into upcoming vs. past based on the event date
+                  // (end date if present, else start date). Undated invitations are
+                  // treated as upcoming so their confirm/decline actions stay available.
+                  const todayKey = (() => {
+                    const now = new Date();
+                    const y = now.getFullYear();
+                    const m = String(now.getMonth() + 1).padStart(2, "0");
+                    const d = String(now.getDate()).padStart(2, "0");
+                    return `${y}-${m}-${d}`;
+                  })();
+                  const eventDateKey = (value?: string | null): string | null => {
+                    if (!value) return null;
+                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+                  };
+                  const isUpcomingInvitation = (inv: EventInvitation): boolean => {
+                    const key = eventDateKey(inv.end_date) ?? eventDateKey(inv.event_date);
+                    if (!key) return true; // undated → keep it actionable
+                    return key >= todayKey;
+                  };
+                  const upcomingInvitations = eventInvitations.filter(isUpcomingInvitation);
+                  const pastInvitations = eventInvitations.filter((inv) => !isUpcomingInvitation(inv));
+                  const nonEventCount = (entriesByEvent.get("__none__") ?? []).length;
+                  const hasPastRows =
+                    pastInvitations.length > 0 || orphanedPerEvents.length > 0 || nonEventCount > 0;
+
+                  // Renders an invitation event row plus its time-entry sub-rows.
+                  // Confirm/Decline only appear when `showResponseButtons` is true
+                  // (upcoming events) — you can't confirm attendance for a past event.
+                  const renderInvitationRow = (inv: EventInvitation, showResponseButtons: boolean) => {
+                    const agg = perEventMap.get(inv.event_id);
+                    const eventEntries = entriesByEvent.get(inv.event_id) ?? [];
+                    // When a pending invitation still needs a confirm/decline response,
+                    // hide the timesheet action — there's nothing to attest yet.
+                    const hasResponseButtons =
+                      showResponseButtons &&
+                      inv.source === "team" &&
+                      !!inv.confirmation_token &&
+                      (inv.status === "pending_confirmation" || inv.status === "pending");
+                    return (
+                      <Fragment key={`inv-${inv.source}-${inv.id}`}>
+                        {/* Event row */}
+                        <tr className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                          <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
+                          <td className="p-3 text-gray-700 text-sm">
+                            <div>{formatEventDate(inv.event_date)}</div>
+                            {formatEventTime(inv.start_time) && (
+                              <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
+                            )}
+                          </td>
+                          <td className="p-3 text-gray-600 text-sm">
+                            {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                          </td>
+                          <td className="p-3">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                              inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
+                              : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
+                              : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
+                              : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                            }`}>
+                              {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                            </span>
+                          </td>
+                          <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
+                          <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
+                          <td className="p-3 flex flex-wrap gap-1.5 items-center">
+                            {isOwnProfile && inv.stand_leader && inv.status !== "declined" && (
+                              <Link href={`/check-in?eventId=${encodeURIComponent(inv.event_id)}`}
+                                title="You're a stand leader for this event — open check-in to check in the team"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Check in
+                              </Link>
+                            )}
+                            {hasResponseButtons && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={respondingInvitationId === inv.id}
+                                  onClick={() => respondToInvitation(inv, "confirm")}
+                                  title={isOwnProfile ? "Confirm your attendance for this event" : "Confirm attendance for this employee"}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  {respondingInvitationId === inv.id ? "Saving…" : "Confirm"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={respondingInvitationId === inv.id}
+                                  onClick={() => respondToInvitation(inv, "decline")}
+                                  title={isOwnProfile ? "Decline this event" : "Decline this event for this employee"}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                  Decline
+                                </button>
+                              </span>
+                            )}
+                            {inv.status === "declined" && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                {isOwnProfile ? "You declined" : "Declined"}
+                              </span>
+                            )}
+                            {!hasResponseButtons && renderTimeSheetAction(
+                              inv.event_id,
+                              agg?.timesheet_attestation_status,
+                              agg?.timesheet_edit_request_status,
+                              inv.event_name || inv.event_id
+                            )}
+                            {invitationFeedback[inv.id] && (
+                              <span className={`w-full text-xs ${invitationFeedback[inv.id].type === "error" ? "text-red-600" : "text-green-600"}`}>
+                                {invitationFeedback[inv.id].text}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                        {/* Time entry sub-rows */}
+                        {eventEntries.map(e => (
+                          <tr key={`entry-${e.id}`} className="bg-gray-50 border-t border-gray-100">
+                            <td className="pl-8 pr-3 py-2">
+                              <span className="text-gray-400 text-xs">↳ Shift</span>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="text-xs text-gray-500 font-medium">Clock In</div>
+                              <div className="text-xs text-gray-800">{formatDateTime(e.clock_in, inv.state)}</div>
+                            </td>
+                            <td className="px-3 py-2">
+                              <div className="text-xs text-gray-500 font-medium">Clock Out</div>
+                              <div className="text-xs text-gray-800">{formatDateTime(e.clock_out, inv.state)}</div>
+                            </td>
+                            <td className="px-3 py-2" />
+                            <td className="px-3 py-2" />
+                            <td className="px-3 py-2 text-gray-900 text-xs font-medium">
+                              {e.duration_hours != null ? formatHours(e.duration_hours) : "—"}
+                            </td>
+                            <td className="px-3 py-2" />
+                          </tr>
+                        ))}
+                      </Fragment>
+                    );
+                  };
+
                   return (
                     <div className="overflow-x-auto">
                       <table className="w-full">
@@ -2745,85 +2943,24 @@ export default function WorkerProfilePage() {
                               <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>
                           )}
-                          {eventInvitations.map((inv) => {
-                            const agg = perEventMap.get(inv.event_id);
-                            const eventEntries = entriesByEvent.get(inv.event_id) ?? [];
-                            return (
-                              <>
-                                {/* Event row */}
-                                <tr key={`inv-${inv.source}-${inv.id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
-                                  <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
-                                  <td className="p-3 text-gray-700 text-sm">
-                                    <div>{formatEventDate(inv.event_date)}</div>
-                                    {formatEventTime(inv.start_time) && (
-                                      <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
-                                    )}
-                                  </td>
-                                  <td className="p-3 text-gray-600 text-sm">
-                                    {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
-                                  </td>
-                                  <td className="p-3">
-                                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
-                                      inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
-                                      : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
-                                      : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
-                                      : "bg-yellow-50 text-yellow-700 border-yellow-200"
-                                    }`}>
-                                      {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
-                                    </span>
-                                  </td>
-                                  <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
-                                  <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
-                                  <td className="p-3 flex flex-wrap gap-1.5 items-center">
-                                    {isOwnProfile && inv.stand_leader && inv.status !== "declined" && (
-                                      <Link href={`/check-in?eventId=${encodeURIComponent(inv.event_id)}`}
-                                        title="You're a stand leader for this event — open check-in to check in the team"
-                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors">
-                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        Check in
-                                      </Link>
-                                    )}
-                                    {inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") && (
-                                      <Link href={`/team-confirmation/${inv.confirmation_token}`}
-                                        className="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-medium bg-blue-600 text-white hover:bg-blue-700 transition-colors">
-                                        Confirm Participation
-                                      </Link>
-                                    )}
-                                    {renderTimeSheetAction(
-                                      inv.event_id,
-                                      agg?.timesheet_attestation_status,
-                                      agg?.timesheet_edit_request_status,
-                                      inv.event_name || inv.event_id
-                                    )}
-                                  </td>
-                                </tr>
-                                {/* Time entry sub-rows */}
-                                {eventEntries.map(e => (
-                                  <tr key={`entry-${e.id}`} className="bg-gray-50 border-t border-gray-100">
-                                    <td className="pl-8 pr-3 py-2">
-                                      <span className="text-gray-400 text-xs">↳ Shift</span>
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <div className="text-xs text-gray-500 font-medium">Clock In</div>
-                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_in, inv.state)}</div>
-                                    </td>
-                                    <td className="px-3 py-2">
-                                      <div className="text-xs text-gray-500 font-medium">Clock Out</div>
-                                      <div className="text-xs text-gray-800">{formatDateTime(e.clock_out, inv.state)}</div>
-                                    </td>
-                                    <td className="px-3 py-2" />
-                                    <td className="px-3 py-2" />
-                                    <td className="px-3 py-2 text-gray-900 text-xs font-medium">
-                                      {e.duration_hours != null ? formatHours(e.duration_hours) : "—"}
-                                    </td>
-                                    <td className="px-3 py-2" />
-                                  </tr>
-                                ))}
-                              </>
-                            );
-                          })}
+                          {/* Upcoming events — confirm/decline cues live here */}
+                          {upcomingInvitations.length > 0 && (
+                            <tr className="bg-blue-50 border-t border-blue-100">
+                              <td colSpan={7} className="px-3 py-2 text-xs font-bold uppercase keeping-wide text-blue-700">
+                                Upcoming Events
+                              </td>
+                            </tr>
+                          )}
+                          {upcomingInvitations.map((inv) => renderInvitationRow(inv, true))}
+                          {/* Past events — recorded history, no confirm/decline actions */}
+                          {hasPastRows && (
+                            <tr className="bg-gray-100 border-t border-gray-200">
+                              <td colSpan={7} className="px-3 py-2 text-xs font-bold uppercase keeping-wide text-gray-500">
+                                Past Events
+                              </td>
+                            </tr>
+                          )}
+                          {pastInvitations.map((inv) => renderInvitationRow(inv, false))}
                           {/* Events with time entries but no formal team invitation (e.g. manually entered via self-timesheet) */}
                           {orphanedPerEvents.map((ev) => {
                             const eventEntries = entriesByEvent.get(ev.event_id!) ?? [];

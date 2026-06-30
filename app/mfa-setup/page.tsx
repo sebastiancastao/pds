@@ -72,9 +72,16 @@ export default function MFASetupPage() {
             console.warn('[MFA Setup] Failed to clean up onboarding stage:', cleanupErr);
           }
 
+          // MFA setup completed and a TOTP code was verified → treat the user as
+          // MFA-verified for this session so the onboarding pages (background check,
+          // register, payroll packet) are accessible without an extra round-trip.
+          sessionStorage.setItem('mfa_verified', 'true');
+          localStorage.setItem('mfa_verified', 'true');
+          sessionStorage.removeItem('mfa_checkpoint');
+
           const { data: userRow } = await (supabase
             .from('users')
-            .select('role')
+            .select('role, background_check_completed')
             .eq('id', user.id)
             .single() as any);
           const role = (userRow?.role || '').toString().trim().toLowerCase();
@@ -84,8 +91,15 @@ export default function MFASetupPage() {
             router.push('/hr-dashboard');
           } else if (role === 'exec') {
             router.push('/global-calendar');
-          } else if (role === 'worker') {
-            router.push('/register');
+          } else if (role === 'worker' || role === 'vendor' || role === 'employee') {
+            // NEW WORKFLOW (worker roles): password → MFA setup → background → onboarding.
+            if (userRow?.background_check_completed === true) {
+              // Background check already done → continue to onboarding.
+              router.push('/register');
+            } else {
+              // Complete the background check before onboarding.
+              router.push('/background-checks-form');
+            }
           } else {
             router.push('/');
           }

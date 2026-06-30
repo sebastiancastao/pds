@@ -21,6 +21,7 @@ const EVENT_SELECT = `
   id,
   event_name,
   event_date,
+  end_date,
   start_time,
   end_time,
   created_at,
@@ -97,15 +98,19 @@ export async function POST(req: NextRequest) {
     if (!ALLOWED_ROLES.includes(role)) return NextResponse.json({ error: 'Access denied' }, { status: 403 });
 
     const body = await req.json();
-    const { event_name, event_date, start_time, end_time, venue_id } = body;
+    const { event_name, event_date, end_date, start_time, end_time, venue_id } = body;
 
     if (!event_name || !event_date || !venue_id) {
       return NextResponse.json({ error: "event_name, event_date, and venue_id are required" }, { status: 400 });
     }
 
+    if (end_date && end_date < event_date) {
+      return NextResponse.json({ error: "end_date cannot be before event_date" }, { status: 400 });
+    }
+
     const { data, error } = await supabaseAdmin
       .from("planned_calendar_events")
-      .insert({ event_name, event_date, start_time: start_time || null, end_time: end_time || null, venue_id })
+      .insert({ event_name, event_date, end_date: end_date || null, start_time: start_time || null, end_time: end_time || null, venue_id })
       .select(EVENT_SELECT)
       .single();
 
@@ -148,15 +153,19 @@ export async function PATCH(req: NextRequest) {
     if (!id) return NextResponse.json({ error: "id is required" }, { status: 400 });
 
     const body = await req.json();
-    const { event_name, event_date, venue_id } = body;
+    const { event_name, event_date, end_date, venue_id } = body;
 
     if (!event_name || !event_date || !venue_id) {
       return NextResponse.json({ error: "event_name, event_date, and venue_id are required" }, { status: 400 });
     }
 
+    if (end_date && end_date < event_date) {
+      return NextResponse.json({ error: "end_date cannot be before event_date" }, { status: 400 });
+    }
+
     const { data, error } = await supabaseAdmin
       .from("planned_calendar_events")
-      .update({ event_name, event_date, venue_id, updated_at: new Date().toISOString() })
+      .update({ event_name, event_date, end_date: end_date || null, venue_id, updated_at: new Date().toISOString() })
       .eq("id", id)
       .select(EVENT_SELECT)
       .single();

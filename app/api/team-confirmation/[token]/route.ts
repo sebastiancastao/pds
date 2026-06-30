@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, safeDecrypt } from "@/lib/encryption";
+import { sendNonEventTimesheetLinkEmail } from "@/lib/email";
 
 export const dynamic = 'force-dynamic';
 
@@ -8,6 +9,14 @@ const supabaseAdmin = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
+
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app";
+
+const buildAppUrl = (path: string): string => {
+  const base = APP_URL.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
+};
 
 function normalizeEventDate(value: unknown): string {
   const normalized = String(value ?? "").trim();
@@ -250,6 +259,60 @@ export async function POST(
     }
 
     console.log('✅ Successfully updated status to:', newStatus);
+
+    // For Non Event Time Sheets (event_type === "special"), email the vendor a
+    // link to their time sheet once they confirm their team invitation.
+    if (action === 'confirm') {
+      try {
+        const { data: event, error: eventError } = await supabaseAdmin
+          .from('events')
+          .select('id, event_name, event_date, start_time, venue, event_type')
+          .eq('id', teamInvitation.event_id)
+          .maybeSingle();
+
+        if (eventError) {
+          console.error('Error loading event for non-event timesheet email:', eventError);
+        } else if (event?.event_type === 'special') {
+          const { data: vendorUser, error: vendorUserError } = await supabaseAdmin
+            .from('users')
+            .select(`
+              id,
+              email,
+              profiles (
+                first_name,
+                last_name
+              )
+            `)
+            .eq('id', teamInvitation.vendor_id)
+            .maybeSingle();
+
+          if (vendorUserError) {
+            console.error('Error loading vendor for non-event timesheet email:', vendorUserError);
+          } else if (vendorUser?.email) {
+            const profile = Array.isArray((vendorUser as any).profiles)
+              ? (vendorUser as any).profiles[0]
+              : (vendorUser as any).profiles;
+
+            const emailResult = await sendNonEventTimesheetLinkEmail({
+              email: String(vendorUser.email),
+              firstName: profile?.first_name ? safeDecrypt(String(profile.first_name)) : '',
+              lastName: profile?.last_name ? safeDecrypt(String(profile.last_name)) : '',
+              eventName: event.event_name || 'Non Event Time Sheet',
+              eventDate: event.event_date || null,
+              eventStartTime: event.start_time || null,
+              venue: event.venue || null,
+              timesheetUrl: buildAppUrl(`/time-sheets/${event.id}`),
+            });
+
+            if (!emailResult.success) {
+              console.error('Non-event timesheet link email failed (team confirmation):', emailResult.error);
+            }
+          }
+        }
+      } catch (emailError) {
+        console.error('Non-event timesheet link email error (team confirmation):', emailError);
+      }
+    }
 
     return NextResponse.json({
       success: true,

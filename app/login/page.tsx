@@ -192,27 +192,11 @@ export default function LoginPage() {
             return;
           }
 
+          // NOTE: Background check approval no longer gates login.
+          // Workers complete their background check AFTER setting a password and
+          // configuring MFA (password → MFA setup → background → onboarding).
           if (!bgCheckResult.approved) {
-            console.log('[LOGIN DEBUG] ❌ vendor_background_checks.background_check_completed = false');
-
-            // Check users.background_check_completed to see if they submitted forms
-            if (currentUserData?.background_check_completed === true) {
-              // User submitted forms (users.background_check_completed = true)
-              // but vendor hasn't approved yet (vendor_background_checks.background_check_completed = false)
-              // → Block login
-              console.log('[LOGIN DEBUG] 🚫 Blocking login - users.background_check_completed = true but vendor not approved');
-
-              // Sign out the user
-              await supabase.auth.signOut();
-
-              setError('Your background check is pending approval.\n\nPlease wait until your background check has been approved by an administrator before logging in.\n\nYou will receive an email notification once approved.');
-              setIsLoading(false);
-              return;
-            }
-
-            // users.background_check_completed = false → User hasn't submitted forms yet
-            // Allow login to fill them out
-            console.log('[LOGIN DEBUG] ✅ users.background_check_completed = false - allowing login to fill forms');
+            console.log('[LOGIN DEBUG] Background check not approved yet - approval is no longer required to log in');
           } else {
             console.log('[LOGIN DEBUG] ✅ vendor_background_checks.background_check_completed = true - approved');
           }
@@ -419,6 +403,12 @@ export default function LoginPage() {
           console.log('[LOGIN DEBUG] ⚠️ User is HR/Exec/Finance - skipping background check requirement');
           console.log('[LOGIN DEBUG] Setting backgroundCheckCompleted to true for login flow');
           // Continue with normal flow as if background check is completed
+        } else if (userRole === 'worker' || userRole === 'vendor' || userRole === 'employee') {
+          // NEW WORKFLOW (worker roles): password → MFA setup → background → onboarding.
+          // Defer the background check until AFTER the worker has set a password and
+          // configured MFA. The MFA setup / verify-mfa steps route them to
+          // /background-checks-form once MFA is complete.
+          console.log('[LOGIN DEBUG] Worker role - deferring background check until after MFA setup');
         } else {
           // users.background_check_completed = false → User hasn't submitted forms yet
           // Allow them to fill out background check forms

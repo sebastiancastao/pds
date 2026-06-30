@@ -38,7 +38,7 @@ export default function Home() {
     // Check if user has temporary password and get role
     const { data: userData } = await (supabase
       .from('users')
-      .select('is_temporary_password, must_change_password, role')
+      .select('is_temporary_password, must_change_password, role, background_check_completed')
       .eq('id', user.id)
       .single() as any);
 
@@ -108,6 +108,14 @@ export default function Home() {
     }
 
     if (userRole === 'worker') {
+      // NEW WORKFLOW (worker roles): password → MFA setup → background → onboarding.
+      // Background check must be completed before onboarding.
+      if (userData?.background_check_completed !== true) {
+        console.log('[DEBUG] Home - Worker background check not completed, redirecting to /background-checks-form');
+        router.push('/background-checks-form');
+        return;
+      }
+
       // Workers should not access Time Keeping until onboarding is approved.
       // If onboarding isn't approved, route them to the appropriate onboarding stage instead.
       try {

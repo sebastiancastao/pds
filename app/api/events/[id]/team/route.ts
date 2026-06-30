@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { createRouteHandlerClient } from "@supabase/auth-helpers-nextjs";
-import { sendTeamConfirmationEmail, sendTeamBuildingNotification, sendAddConfirmUsageNotification } from "@/lib/email";
+import { sendTeamConfirmationEmail, sendTeamBuildingNotification, sendAddConfirmUsageNotification, sendNonEventTimesheetLinkEmail } from "@/lib/email";
 import { getVenueBccEmails } from "@/lib/venue-bcc";
 import { decrypt, safeDecrypt } from "@/lib/encryption";
 import { calculateDistanceMiles } from "@/lib/geocoding";
@@ -22,6 +22,13 @@ const supabaseAnon = createClient(
 );
 
 const ATTESTATION_TIME_MATCH_WINDOW_MS = 15 * 60 * 1000;
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || "https://pds-murex.vercel.app";
+
+const buildAppUrl = (path: string): string => {
+  const base = APP_URL.replace(/\/+$/, "");
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${base}${normalizedPath}`;
+};
 
 const isMissingRelationError = (error: any): boolean => {
   const code = String(error?.code || "").trim();
@@ -154,7 +161,7 @@ export async function POST(
     // Verify event exists and user owns it
     const { data: event, error: eventError } = await supabaseAdmin
       .from('events')
-      .select('id, created_by, event_name, event_date, start_time, venue')
+      .select('id, created_by, event_name, event_date, start_time, venue, event_type')
       .eq('id', eventId)
       .single();
 
@@ -371,6 +378,37 @@ export async function POST(
         eventStartTime: formatEventStartTime((event as any).start_time),
         vendorNames: notifyVendorNames,
       }).catch(err => console.error('❌ Add+Confirm usage notification failed:', err));
+    }
+
+    // For Non Event Time Sheets (event_type === "special"), email each newly
+    // added+confirmed vendor a link to their time sheet.
+    if (shouldAutoConfirm && (event as any).event_type === 'special') {
+      const timesheetUrl = buildAppUrl(`/time-sheets/${eventId}`);
+      for (const vendor of newVendorsForNotify) {
+        const vendorEmail = String(vendor?.email || '').trim();
+        if (!vendorEmail) continue;
+
+        const firstName = vendor.profiles?.first_name ? safeDecrypt(String(vendor.profiles.first_name)) : '';
+        const lastName = vendor.profiles?.last_name ? safeDecrypt(String(vendor.profiles.last_name)) : '';
+
+        const emailResult = await sendNonEventTimesheetLinkEmail({
+          email: vendorEmail,
+          firstName,
+          lastName,
+          eventName: event.event_name || 'Non Event Time Sheet',
+          eventDate: event.event_date || null,
+          eventStartTime: (event as any).start_time || null,
+          venue: (event as any).venue || null,
+          timesheetUrl,
+        }).catch((err) => {
+          console.error('❌ Non-event timesheet link email error (add+confirm):', err);
+          return { success: false } as { success: boolean };
+        });
+
+        if (!emailResult?.success) {
+          console.error(`❌ Non-event timesheet link email failed (add+confirm) for ${vendorEmail}`);
+        }
+      }
     }
 
     if (shouldAutoConfirm) {

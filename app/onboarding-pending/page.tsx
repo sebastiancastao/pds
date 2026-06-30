@@ -27,8 +27,6 @@ export default function OnboardingPendingPage() {
   const [userFirstName, setUserFirstName] = useState<string>('');
   const [userLastName, setUserLastName] = useState<string>('');
   const [userId, setUserId] = useState<string>('');
-  const [requestingEdit, setRequestingEdit] = useState(false);
-  const [editRequestSent, setEditRequestSent] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
 
   useEffect(() => {
@@ -116,46 +114,6 @@ export default function OnboardingPendingPage() {
   const handleCheckAgain = () => {
     setLoading(true);
     checkOnboardingStatus();
-  };
-
-  const handleRequestEditPermission = async () => {
-    console.log('[Onboarding Pending] Request edit permission clicked:', { userEmail, userFirstName, userLastName, userId });
-
-    if (!userEmail || !userFirstName || !userId) {
-      alert('Missing user information. Please refresh the page and try again.');
-      return;
-    }
-
-    setRequestingEdit(true);
-
-    try {
-      const response = await fetch('/api/onboarding/request-edit-permission', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userEmail,
-          userFirstName,
-          userLastName,
-          userId,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (result.success) {
-        setEditRequestSent(true);
-        alert('Your edit request has been sent successfully! The admin will review your request and grant you permission to edit your submission.');
-      } else {
-        alert(`Failed to send edit request: ${result.error || 'Unknown error'}`);
-      }
-    } catch (error) {
-      console.error('Error requesting edit permission:', error);
-      alert('An error occurred while sending your request. Please try again.');
-    } finally {
-      setRequestingEdit(false);
-    }
   };
 
   const downloadFromUrl = (url: string, filename: string) => {
@@ -488,51 +446,6 @@ export default function OnboardingPendingPage() {
               </li>
             </ul>
           </div>
-
-          {/* Edit Request Section */}
-          {editRequestSent ? (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
-              <div className="flex items-center">
-                <svg className="w-6 h-6 text-green-600 mr-3" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                </svg>
-                <div>
-                  <h3 className="text-sm font-semibold text-green-900">Edit Request Sent</h3>
-                  <p className="text-sm text-green-700 mt-1">
-                    Your request has been sent to the admin. You will be notified when permission is granted.
-                  </p>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-purple-50 border border-purple-200 rounded-lg p-6 mb-6">
-              <h3 className="text-sm font-semibold text-purple-900 mb-2">
-                Need to make changes?
-              </h3>
-              <p className="text-sm text-purple-700 mb-4">
-                If you need to edit your submission, you can request permission from the admin.
-              </p>
-              <button
-                onClick={handleRequestEditPermission}
-                disabled={requestingEdit}
-                className="w-full bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center justify-center gap-2"
-              >
-                {requestingEdit ? (
-                  <>
-                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    Sending Request...
-                  </>
-                ) : (
-                  <>
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                    Request Editing Permission
-                  </>
-                )}
-              </button>
-            </div>
-          )}
 
           <div className="mb-6">
             <button

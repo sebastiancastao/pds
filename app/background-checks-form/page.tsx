@@ -877,9 +877,15 @@ export default function BackgroundChecksForm() {
 
       setSaveStatus('saved');
 
-      // Show success message and redirect to login
+      // NEW WORKFLOW (worker roles): password → MFA setup → background → onboarding.
+      // Background check approval is no longer required, so workers continue straight
+      // to onboarding. Other roles return to login to resume their own flow.
       alert('Background check forms submitted successfully!');
-      router.push('/login');
+      if (userRole === 'worker' || userRole === 'vendor' || userRole === 'employee') {
+        router.push('/register');
+      } else {
+        router.push('/login');
+      }
 
     } catch (error) {
       console.error('[BACKGROUND CHECK] Error:', error);

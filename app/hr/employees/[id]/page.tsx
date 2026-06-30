@@ -205,6 +205,7 @@ type EventInvitation = {
   event_id: string;
   event_name: string | null;
   event_date: string | null;
+  end_date?: string | null;
   start_time: string | null;
   venue: string | null;
   city: string | null;
@@ -365,6 +366,54 @@ export default function EmployeeProfilePage() {
   const [eventInvitations, setEventInvitations] = useState<EventInvitation[]>([]);
   const [submittedAvailability, setSubmittedAvailability] = useState<SubmittedAvailabilityDay[]>([]);
   const [availabilityLastSubmittedAt, setAvailabilityLastSubmittedAt] = useState<string | null>(null);
+  // Tracks an in-flight confirm/decline response for a team invitation (keyed by invitation id).
+  const [respondingInvitationId, setRespondingInvitationId] = useState<string | null>(null);
+  // Per-invitation feedback shown inline after a confirm/decline attempt (keyed by invitation id).
+  const [invitationFeedback, setInvitationFeedback] = useState<Record<string, { type: "error" | "success"; text: string }>>({});
+
+  // Confirm or decline a team invitation directly from the Events Recap so an
+  // event cue can be answered without leaving the employee profile.
+  const respondToInvitation = async (
+    inv: EventInvitation,
+    action: "confirm" | "decline"
+  ) => {
+    if (!inv.confirmation_token || respondingInvitationId) return;
+    setRespondingInvitationId(inv.id);
+    setInvitationFeedback((prev) => {
+      const next = { ...prev };
+      delete next[inv.id];
+      return next;
+    });
+    try {
+      const res = await fetch(`/api/team-confirmation/${inv.confirmation_token}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data?.error || "Unable to record the response. Please try again.");
+      }
+      const newStatus = (data?.status as string) || (action === "confirm" ? "confirmed" : "declined");
+      setEventInvitations((prev) =>
+        prev.map((row) => (row.id === inv.id ? { ...row, status: newStatus } : row))
+      );
+      setInvitationFeedback((prev) => ({
+        ...prev,
+        [inv.id]: {
+          type: "success",
+          text: action === "confirm" ? "Attendance confirmed." : "Marked as declined.",
+        },
+      }));
+    } catch (err: any) {
+      setInvitationFeedback((prev) => ({
+        ...prev,
+        [inv.id]: { type: "error", text: err?.message || "Something went wrong." },
+      }));
+    } finally {
+      setRespondingInvitationId(null);
+    }
+  };
   const [regionEvents, setRegionEvents] = useState<{ id: string; event_name: string | null; event_date: string | null; start_time: string | null; venue: string | null; city: string | null; state: string | null }[]>([]);
   const [refreshTick, setRefreshTick] = useState(0);
   const [invitationsLoading, setInvitationsLoading] = useState(false);
@@ -2298,6 +2347,109 @@ export default function EmployeeProfilePage() {
                   </div>
                 ) : (() => {
                   const perEventMap = new Map((summary?.per_event ?? []).map(r => [r.event_id, r]));
+
+                  // Split invitations into upcoming vs. past based on the event date
+                  // (end date if present, else start date). Undated invitations are
+                  // treated as upcoming so their confirm/decline actions stay available.
+                  const todayKey = (() => {
+                    const now = new Date();
+                    const y = now.getFullYear();
+                    const m = String(now.getMonth() + 1).padStart(2, "0");
+                    const d = String(now.getDate()).padStart(2, "0");
+                    return `${y}-${m}-${d}`;
+                  })();
+                  const eventDateKey = (value?: string | null): string | null => {
+                    if (!value) return null;
+                    const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+                    return match ? `${match[1]}-${match[2]}-${match[3]}` : null;
+                  };
+                  const isUpcomingInvitation = (inv: EventInvitation): boolean => {
+                    const key = eventDateKey(inv.end_date) ?? eventDateKey(inv.event_date);
+                    if (!key) return true; // undated → keep it actionable
+                    return key >= todayKey;
+                  };
+                  const upcomingInvitations = eventInvitations.filter(isUpcomingInvitation);
+                  const pastInvitations = eventInvitations.filter((inv) => !isUpcomingInvitation(inv));
+
+                  // Renders a single invitation row. Confirm/Decline only appear when
+                  // `showResponseButtons` is true (upcoming events) — you can't confirm
+                  // attendance for an event that already happened.
+                  const renderInvitationRow = (inv: EventInvitation, showResponseButtons: boolean) => {
+                    const agg = perEventMap.get(inv.event_id);
+                    return (
+                      <tr key={`inv-${inv.source}-${inv.id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
+                        <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
+                        <td className="p-3 text-gray-700 text-sm">
+                          <div>{formatEventDate(inv.event_date)}</div>
+                          {formatEventTime(inv.start_time) && (
+                            <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
+                          )}
+                        </td>
+                        <td className="p-3 text-gray-600 text-sm">
+                          {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
+                        </td>
+                        <td className="p-3">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
+                            inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
+                            : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
+                            : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
+                            : "bg-yellow-50 text-yellow-700 border-yellow-200"
+                          }`}>
+                            {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
+                          </span>
+                        </td>
+                        <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
+                        <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
+                        <td className="p-3">
+                          <div className="flex flex-wrap gap-1.5 items-center">
+                            {showResponseButtons && inv.source === "team" && inv.confirmation_token && (inv.status === "pending_confirmation" || inv.status === "pending") && (
+                              <span className="inline-flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={respondingInvitationId === inv.id}
+                                  onClick={() => respondToInvitation(inv, "confirm")}
+                                  title="Confirm attendance for this employee"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                                  </svg>
+                                  {respondingInvitationId === inv.id ? "Saving…" : "Confirm"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={respondingInvitationId === inv.id}
+                                  onClick={() => respondToInvitation(inv, "decline")}
+                                  title="Decline this event for this employee"
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors">
+                                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                  </svg>
+                                  Decline
+                                </button>
+                              </span>
+                            )}
+                            {inv.status === "declined" && (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-red-200 bg-red-50 text-red-700">
+                                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                                Declined
+                              </span>
+                            )}
+                            {!showResponseButtons && inv.status !== "declined" && (
+                              <span className="text-gray-300 text-xs">—</span>
+                            )}
+                            {invitationFeedback[inv.id] && (
+                              <span className={`w-full text-xs ${invitationFeedback[inv.id].type === "error" ? "text-red-600" : "text-green-600"}`}>
+                                {invitationFeedback[inv.id].text}
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  };
+
                   return (
                     <div className="overflow-x-auto">
                       <table className="w-full">
@@ -2309,43 +2461,33 @@ export default function EmployeeProfilePage() {
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Status</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Shifts</th>
                             <th className="text-left p-3 font-semibold text-gray-700 text-sm">Hours</th>
+                            <th className="text-left p-3 font-semibold text-gray-700 text-sm">Action</th>
                           </tr>
                         </thead>
                         <tbody>
                           {eventInvitations.length === 0 && (
                             <tr>
-                              <td colSpan={6} className="p-6 text-center text-gray-500">No event invitations yet.</td>
+                              <td colSpan={7} className="p-6 text-center text-gray-500">No event invitations yet.</td>
                             </tr>
                           )}
-                          {eventInvitations.map((inv) => {
-                            const agg = perEventMap.get(inv.event_id);
-                            return (
-                              <tr key={`inv-${inv.source}-${inv.id}`} className="border-t border-gray-200 bg-white hover:bg-gray-50 transition-colors">
-                                <td className="p-3 font-semibold text-gray-900">{inv.event_name || inv.event_id}</td>
-                                <td className="p-3 text-gray-700 text-sm">
-                                  <div>{formatEventDate(inv.event_date)}</div>
-                                  {formatEventTime(inv.start_time) && (
-                                    <div className="text-gray-400 text-xs">{formatEventTime(inv.start_time)}</div>
-                                  )}
-                                </td>
-                                <td className="p-3 text-gray-600 text-sm">
-                                  {[inv.venue, inv.city, inv.state].filter(Boolean).join(", ") || "—"}
-                                </td>
-                                <td className="p-3">
-                                  <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium border ${
-                                    inv.status === "confirmed" ? "bg-green-50 text-green-700 border-green-200"
-                                    : inv.status === "declined" ? "bg-red-50 text-red-700 border-red-200"
-                                    : inv.status === "completed" ? "bg-gray-100 text-gray-600 border-gray-200"
-                                    : "bg-yellow-50 text-yellow-700 border-yellow-200"
-                                  }`}>
-                                    {inv.status.charAt(0).toUpperCase() + inv.status.slice(1)}
-                                  </span>
-                                </td>
-                                <td className="p-3 text-gray-900 text-sm font-medium">{agg?.shifts ?? 0}</td>
-                                <td className="p-3 text-gray-900 text-sm font-medium">{formatHours(agg?.hours ?? 0)}</td>
-                              </tr>
-                            );
-                          })}
+                          {/* Upcoming events — confirm/decline cues live here */}
+                          {upcomingInvitations.length > 0 && (
+                            <tr className="bg-blue-50 border-t border-blue-100">
+                              <td colSpan={7} className="px-3 py-2 text-xs font-bold uppercase keeping-wide text-blue-700">
+                                Upcoming Events
+                              </td>
+                            </tr>
+                          )}
+                          {upcomingInvitations.map((inv) => renderInvitationRow(inv, true))}
+                          {/* Past events — recorded history, no confirm/decline actions */}
+                          {pastInvitations.length > 0 && (
+                            <tr className="bg-gray-100 border-t border-gray-200">
+                              <td colSpan={7} className="px-3 py-2 text-xs font-bold uppercase keeping-wide text-gray-500">
+                                Past Events
+                              </td>
+                            </tr>
+                          )}
+                          {pastInvitations.map((inv) => renderInvitationRow(inv, false))}
                         </tbody>
                       </table>
                     </div>

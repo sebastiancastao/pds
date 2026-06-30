@@ -33,6 +33,7 @@ type PlannedEvent = {
   id: string;
   event_name: string;
   event_date: string;
+  end_date: string | null;
   start_time: string;
   end_time: string | null;
   created_at: string;
@@ -50,6 +51,21 @@ const fmtDate = (d: string): string => {
   });
 };
 
+// FullCalendar treats the `end` of an all-day event as exclusive, so a multi-day
+// event ending on (and including) end_date needs end set to the day after.
+const exclusiveEnd = (d: string): string => {
+  const [year, month, day] = d.split("-").map(Number);
+  const next = new Date(year, month - 1, day + 1);
+  const y = next.getFullYear();
+  const m = String(next.getMonth() + 1).padStart(2, "0");
+  const dd = String(next.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+};
+
+// Inclusive date range label, e.g. "Mon, Jun 1, 2026 – Wed, Jun 3, 2026".
+const fmtDateRange = (start: string, end: string | null): string =>
+  end && end !== start ? `${fmtDate(start)} – ${fmtDate(end)}` : fmtDate(start);
+
 export default function PlannedCalendarPage() {
   const router = useRouter();
 
@@ -63,7 +79,7 @@ export default function PlannedCalendarPage() {
   const [error, setError] = useState("");
 
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [form, setForm] = useState({ event_name: "", event_date: "", venue_id: "" });
+  const [form, setForm] = useState({ event_name: "", event_date: "", end_date: "", venue_id: "" });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -71,7 +87,7 @@ export default function PlannedCalendarPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [editEvent, setEditEvent] = useState<PlannedEvent | null>(null);
-  const [editForm, setEditForm] = useState({ event_name: "", event_date: "", venue_id: "" });
+  const [editForm, setEditForm] = useState({ event_name: "", event_date: "", end_date: "", venue_id: "" });
   const [editSaving, setEditSaving] = useState(false);
   const [editFormError, setEditFormError] = useState("");
 
@@ -152,7 +168,11 @@ export default function PlannedCalendarPage() {
 
   const handleCreate = async () => {
     if (!form.event_name.trim() || !form.event_date || !form.venue_id) {
-      setFormError("All fields are required.");
+      setFormError("Event name, start date, and venue are required.");
+      return;
+    }
+    if (form.end_date && form.end_date < form.event_date) {
+      setFormError("End date cannot be before the start date.");
       return;
     }
     setSaving(true);
@@ -172,7 +192,7 @@ export default function PlannedCalendarPage() {
         throw new Error(body.error ?? "Failed to create event");
       }
       setShowCreateModal(false);
-      setForm({ event_name: "", event_date: "", venue_id: "" });
+      setForm({ event_name: "", event_date: "", end_date: "", venue_id: "" });
       await fetchEvents();
       setAlertModal({ title: "Event Created", message: "The planned event was added successfully.", type: "success" });
     } catch (err: any) {
@@ -184,14 +204,18 @@ export default function PlannedCalendarPage() {
 
   const openEdit = (ev: PlannedEvent) => {
     setEditEvent(ev);
-    setEditForm({ event_name: ev.event_name, event_date: ev.event_date, venue_id: ev.venue.id });
+    setEditForm({ event_name: ev.event_name, event_date: ev.event_date, end_date: ev.end_date ?? "", venue_id: ev.venue.id });
     setEditFormError("");
   };
 
   const handleEdit = async () => {
     if (!editEvent) return;
     if (!editForm.event_name.trim() || !editForm.event_date || !editForm.venue_id) {
-      setEditFormError("All fields are required.");
+      setEditFormError("Event name, start date, and venue are required.");
+      return;
+    }
+    if (editForm.end_date && editForm.end_date < editForm.event_date) {
+      setEditFormError("End date cannot be before the start date.");
       return;
     }
     setEditSaving(true);
@@ -251,7 +275,9 @@ export default function PlannedCalendarPage() {
       ev.event_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       ev.venue.venue_name.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesVenue = filterVenue === "all" || ev.venue.id === filterVenue;
-    const matchesPeriodStart = !periodStart || ev.event_date >= periodStart;
+    // Range-overlap: a multi-day event matches when any of its days fall in the period.
+    const evEnd = ev.end_date ?? ev.event_date;
+    const matchesPeriodStart = !periodStart || evEnd >= periodStart;
     const matchesPeriodEnd = !periodEnd || ev.event_date <= periodEnd;
     return matchesSearch && matchesVenue && matchesPeriodStart && matchesPeriodEnd;
   });
@@ -330,6 +356,8 @@ export default function PlannedCalendarPage() {
                 id: ev.id,
                 title: `${ev.event_name} · ${ev.venue.venue_name}`,
                 start: ev.event_date,
+                // end is exclusive in FullCalendar; only set it for multi-day events.
+                end: ev.end_date && ev.end_date !== ev.event_date ? exclusiveEnd(ev.end_date) : undefined,
                 allDay: true,
                 color: selectedCalendarEventId && selectedCalendarEventId !== ev.id ? "#c4b5fd" : "#7c3aed",
               }))}
@@ -471,7 +499,7 @@ export default function PlannedCalendarPage() {
                     <svg className="w-4 h-4 text-gray-400 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    {fmtDate(ev.event_date)}
+                    {fmtDateRange(ev.event_date, ev.end_date)}
                   </span>
                 </div>
 
@@ -520,14 +548,31 @@ export default function PlannedCalendarPage() {
                 />
               </div>
 
-              <div>
-                <label className="apple-label">Date</label>
-                <input
-                  type="date"
-                  value={form.event_date}
-                  onChange={(e) => setForm((f) => ({ ...f, event_date: e.target.value }))}
-                  className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="apple-label">Start Date</label>
+                  <input
+                    type="date"
+                    value={form.event_date}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      event_date: e.target.value,
+                      // Keep end_date consistent: clear it if it now precedes the start.
+                      end_date: f.end_date && f.end_date < e.target.value ? "" : f.end_date,
+                    }))}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label">End Date <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input
+                    type="date"
+                    value={form.end_date}
+                    min={form.event_date || undefined}
+                    onChange={(e) => setForm((f) => ({ ...f, end_date: e.target.value }))}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
               </div>
 
               <div>
@@ -597,14 +642,30 @@ export default function PlannedCalendarPage() {
                 />
               </div>
 
-              <div>
-                <label className="apple-label">Date</label>
-                <input
-                  type="date"
-                  value={editForm.event_date}
-                  onChange={(e) => setEditForm((f) => ({ ...f, event_date: e.target.value }))}
-                  className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="apple-label">Start Date</label>
+                  <input
+                    type="date"
+                    value={editForm.event_date}
+                    onChange={(e) => setEditForm((f) => ({
+                      ...f,
+                      event_date: e.target.value,
+                      end_date: f.end_date && f.end_date < e.target.value ? "" : f.end_date,
+                    }))}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
+                <div>
+                  <label className="apple-label">End Date <span className="text-gray-400 font-normal">(optional)</span></label>
+                  <input
+                    type="date"
+                    value={editForm.end_date}
+                    min={editForm.event_date || undefined}
+                    onChange={(e) => setEditForm((f) => ({ ...f, end_date: e.target.value }))}
+                    className="w-full px-4 py-2.5 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                </div>
               </div>
 
               <div>
