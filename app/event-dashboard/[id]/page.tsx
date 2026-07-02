@@ -284,14 +284,9 @@ export default function EventDashboardPage() {
     userRole === "supervisor" ||
     userRole === "supervisor3";
   const isNonEventTimesheet = event?.event_type === "special";
-  const normalizedEventVenue = event?.venue?.toLowerCase() || "";
-  const isRestrictedAddConfirmVenue = ["save mart", "cow palace", "oakland", "golden 1 center", "cal expo"].some(
-    (venueName) => normalizedEventVenue.includes(venueName)
-  );
   const canUseImmediateTeamAdd =
     canManageTeam &&
-    (isNonEventTimesheet || userRole === "exec") &&
-    (isNonEventTimesheet || !isRestrictedAddConfirmVenue);
+    (isNonEventTimesheet || userRole === "exec");
   const markPayrollDataDirty = () => {
     if (typeof window === "undefined") return;
     try {
