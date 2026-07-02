@@ -653,21 +653,12 @@ function validateTimelineWithinEventWindow(
   eventDate: string,
   eventTimezone: string
 ): string | null {
-  const clockIn = timeline.find((entry) => entry.action === "clock_in");
-  const clockOut = [...timeline].reverse().find((entry) => entry.action === "clock_out");
-  const allowOvernight = eventAllowsOvernight(event);
-
-  if (clockIn?.timestamp && event.start_time) {
-    const eventStartIso = toZonedIso(eventDate, event.start_time, eventTimezone);
-    if (eventStartIso) {
-      const clockInMs = new Date(clockIn.timestamp).getTime();
-      const eventStartMs = new Date(eventStartIso).getTime();
-      if (Number.isFinite(clockInMs) && Number.isFinite(eventStartMs) && clockInMs < eventStartMs) {
-        return "Clock in time cannot be before the event start time.";
-      }
-    }
-  }
-
+  // Manual exec/manager timesheet edits are deliberate, signed corrections that
+  // record what actually happened. Workers routinely clock in a few minutes before
+  // the scheduled start time, so we do NOT reject a clock-in that precedes
+  // event.start_time. The timeline is already validated for strict chronological
+  // order (and constrained to the event's local day window elsewhere), which is the
+  // guardrail that actually matters here.
   return null;
 }
 
