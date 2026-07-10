@@ -119,7 +119,7 @@ type BackgroundCheck = {
   updated_at: string;
 };
 
-const BULK_AVAILABILITY_DURATION_WEEKS = 6;
+const BULK_AVAILABILITY_DURATION_MONTHS = 4;
 const EventCalendar = dynamic(
   () => import("@/components/event-calendar").then((mod) => mod.EventCalendar),
   {
@@ -1209,7 +1209,7 @@ export default function DashboardPage() {
           "Content-Type": "application/json",
           ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
         },
-        body: JSON.stringify({ vendorIds: Array.from(selectedVendors), durationWeeks: BULK_AVAILABILITY_DURATION_WEEKS }),
+        body: JSON.stringify({ vendorIds: Array.from(selectedVendors), durationMonths: BULK_AVAILABILITY_DURATION_MONTHS }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -2563,7 +2563,7 @@ export default function DashboardPage() {
             <div className="apple-modal-header">
               <div>
                 <h2 className="text-2xl font-semibold text-gray-900">Calendar Availability Request</h2>
-                <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 6 weeks</p>
+                <p className="text-gray-600 text-sm mt-1">Ask vendors for their availability over the next 4 months</p>
               </div>
               <button onClick={closeVendorModal} className="apple-close-button">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -2611,7 +2611,7 @@ export default function DashboardPage() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                     <div className="text-sm text-gray-700">
-                      <div className="font-semibold mb-1">6-Week Work Period</div>
+                      <div className="font-semibold mb-1">4-Month Work Period</div>
                       <div className="text-xs text-gray-600">We'll invite selected vendors to share availability</div>
                     </div>
                   </div>

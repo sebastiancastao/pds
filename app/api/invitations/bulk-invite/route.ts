@@ -17,7 +17,7 @@ const supabaseAnon = createClient(
 );
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const DEFAULT_AVAILABILITY_DURATION_WEEKS = 6;
+const DEFAULT_AVAILABILITY_DURATION_MONTHS = 4;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isValidEmail = (email: string) => EMAIL_REGEX.test(email.trim());
@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
     // Get request body
     const body = await req.json();
     const { vendorIds } = body;
-    const durationWeeks = DEFAULT_AVAILABILITY_DURATION_WEEKS;
+    const durationMonths = DEFAULT_AVAILABILITY_DURATION_MONTHS;
 
     if (!vendorIds || !Array.isArray(vendorIds) || vendorIds.length === 0) {
       return NextResponse.json({ error: 'Vendor IDs are required' }, { status: 400 });
@@ -112,7 +112,11 @@ export async function POST(req: NextRequest) {
     // Calculate invitation period
     const startDate = new Date();
     const endDate = new Date();
-    endDate.setDate(endDate.getDate() + (durationWeeks * 7));
+    endDate.setMonth(endDate.getMonth() + durationMonths);
+    // duration_weeks column stores the window length in weeks
+    const durationWeeks = Math.round(
+      (endDate.getTime() - startDate.getTime()) / (7 * 24 * 60 * 60 * 1000)
+    );
 
     // Send invitations sequentially to avoid provider burst rate limiting (429)
     let successes = 0;
@@ -170,7 +174,7 @@ export async function POST(req: NextRequest) {
             email: normalizedEmail,
             firstName,
             lastName,
-            durationWeeks,
+            durationMonths,
             eventCount: events?.length || 0,
             startDate: startDate.toLocaleDateString('en-US', {
               weekday: 'long',

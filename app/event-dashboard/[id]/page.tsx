@@ -2718,10 +2718,6 @@ export default function EventDashboardPage() {
 
       for (const loc of eventLocations) {
         const assignedIds = locationAssignments[loc.id] || [];
-        const assignedIdSet = new Set(assignedIds);
-        const assignedMembers = sortedTeamMembers.filter((member: any) =>
-          assignedIdSet.has(getTeamMemberId(member))
-        );
         const locationCallTimeLabel =
           formatCallTimeLabel(loc.call_time) ||
           formatCallTimeLabel(event?.start_time) ||
@@ -2746,7 +2742,7 @@ export default function EventDashboardPage() {
           }
         }
 
-        if (assignedMembers.length === 0) {
+        if (assignedIds.length === 0) {
           ensureSpace(18);
           drawLine("No vendors assigned.", regularFont, 10, rgb(0.45, 0.45, 0.45));
           y -= 6;
@@ -2756,8 +2752,9 @@ export default function EventDashboardPage() {
         ensureSpace(18);
         drawLine("Assigned Vendors:", boldFont, 10, rgb(0.15, 0.15, 0.15));
 
-        for (const member of assignedMembers) {
-          const profile = member?.users?.profiles;
+        for (const memberId of assignedIds) {
+          const member = locationAssignableMemberById.get(memberId);
+          const profile = member?.profiles;
           const firstName = profile?.first_name || "";
           const lastName = profile?.last_name || "";
           const fullName = `${firstName} ${lastName}`.trim();
@@ -2791,6 +2788,108 @@ export default function EventDashboardPage() {
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
       setMessage("Locations PDF exported successfully.");
+    } catch (err: any) {
+      setMessage(err?.message || "Failed to export locations");
+    }
+  };
+
+  const handleExportLocationsExcel = async () => {
+    try {
+      if (eventLocations.length === 0) {
+        setMessage("No locations to export.");
+        return;
+      }
+
+      const eventName = (event?.event_name || "Event").trim();
+      const dateLabel = event?.event_date ? String(event.event_date).slice(0, 10) : "N/A";
+
+      const rows: Record<string, string>[] = [];
+      let totalAssigned = 0;
+
+      for (const loc of eventLocations) {
+        const assignedIds = locationAssignments[loc.id] || [];
+        const locationCallTimeLabel =
+          formatCallTimeLabel(loc.call_time) ||
+          formatCallTimeLabel(event?.start_time) ||
+          "Not set";
+
+        if (assignedIds.length === 0) {
+          rows.push({
+            Station: loc.name,
+            "Call Time": locationCallTimeLabel,
+            Notes: loc.notes || "",
+            Vendor: "No vendors assigned",
+          });
+          continue;
+        }
+
+        totalAssigned += assignedIds.length;
+        for (const memberId of assignedIds) {
+          const member = locationAssignableMemberById.get(memberId);
+          const profile = member?.profiles;
+          const fullName = `${profile?.first_name || ""} ${profile?.last_name || ""}`.trim();
+          rows.push({
+            Station: loc.name,
+            "Call Time": locationCallTimeLabel,
+            Notes: loc.notes || "",
+            Vendor: fullName || "Unknown Vendor",
+          });
+        }
+      }
+
+      const XLSX = await import("xlsx");
+      const workbook = XLSX.utils.book_new();
+
+      const summaryRows = [
+        {
+          "Event Name": eventName,
+          "Event Date": dateLabel,
+          "Total Locations": eventLocations.length,
+          "Assigned Vendors": totalAssigned,
+          "Exported At": new Date().toLocaleString("en-US"),
+        },
+      ];
+
+      const summarySheet = XLSX.utils.json_to_sheet(summaryRows);
+      const locationsSheet = XLSX.utils.json_to_sheet(rows);
+
+      summarySheet["!cols"] = [
+        { wch: 30 },
+        { wch: 14 },
+        { wch: 16 },
+        { wch: 16 },
+        { wch: 24 },
+      ];
+
+      locationsSheet["!cols"] = [
+        { wch: 28 },
+        { wch: 14 },
+        { wch: 40 },
+        { wch: 28 },
+      ];
+
+      XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+      XLSX.utils.book_append_sheet(workbook, locationsSheet, "Locations");
+
+      const fileBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+      const blob = new Blob([fileBuffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      const today = new Date().toISOString().slice(0, 10);
+      const safeEventName = (eventName || "event")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, "");
+
+      link.href = url;
+      link.download = `${safeEventName || "event"}-locations-${today}.xlsx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      setMessage("Locations Excel exported successfully.");
     } catch (err: any) {
       setMessage(err?.message || "Failed to export locations");
     }
@@ -6461,13 +6560,22 @@ export default function EventDashboardPage() {
                       : `Call Time${assignedLocationRecipientCount > 0 ? ` (${assignedLocationRecipientCount})` : ""}`}
                   </button>
                   {userRole === "exec" && (
-                    <button
-                      onClick={handleExportLocations}
-                      disabled={loadingLocations || eventLocations.length === 0}
-                      className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
-                    >
-                      Export
-                    </button>
+                    <>
+                      <button
+                        onClick={handleExportLocations}
+                        disabled={loadingLocations || eventLocations.length === 0}
+                        className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                      >
+                        Export PDF
+                      </button>
+                      <button
+                        onClick={handleExportLocationsExcel}
+                        disabled={loadingLocations || eventLocations.length === 0}
+                        className="bg-slate-700 hover:bg-slate-800 text-white font-semibold py-2 px-4 rounded transition disabled:bg-gray-400"
+                      >
+                        Export Excel
+                      </button>
+                    </>
                   )}
                   <button
                     onClick={loadLocations}

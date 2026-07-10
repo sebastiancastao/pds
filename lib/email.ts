@@ -875,7 +875,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   email: string;
   firstName: string;
   lastName: string;
-  durationWeeks: number;
+  durationMonths: number;
   eventCount: number;
   startDate: string;
   endDate: string;
@@ -883,7 +883,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   managerPhone: string;
   invitationToken: string;
 }): Promise<EmailResult> {
-  const { email, firstName, lastName, durationWeeks, startDate, endDate, managerName, managerPhone, invitationToken } = data;
+  const { email, firstName, lastName, durationMonths, startDate, endDate, managerName, managerPhone, invitationToken } = data;
   const normalizedEmail = (email || "").toString().trim().toLowerCase();
 
   if (!isValidEmail(normalizedEmail)) {
@@ -896,7 +896,7 @@ export async function sendVendorBulkInvitationEmail(data: {
   // Build invitation URL with token
   const invitationUrl = `${process.env.NEXT_PUBLIC_APP_URL || 'https://pds-murex.vercel.app'}/invitation/${invitationToken}`;
 
-  const emailSubject = `Calendar Request: ${durationWeeks}-Week Event Series`;
+  const emailSubject = `Calendar Request: ${durationMonths}-Month Event Series`;
   const emailBody = `
 <!DOCTYPE html>
 <html>
@@ -915,7 +915,7 @@ export async function sendVendorBulkInvitationEmail(data: {
           
             <td style="background: linear-gradient(135deg, #007AFF 0%, #0051D5 100%); padding: 50px 40px; text-align: center;">
               <h1 style="color: #ffffff; margin: 0; font-size: 32px; font-weight: 600; letter-spacing: -0.5px;">🎉 Calendar Request</h1>
-              <p style="color: rgba(255, 255, 255, 0.9); margin: 12px 0 0 0; font-size: 18px; font-weight: 400;">${durationWeeks}-Week Event Series</p>
+              <p style="color: rgba(255, 255, 255, 0.9); margin: 12px 0 0 0; font-size: 18px; font-weight: 400;">${durationMonths}-Month Event Series</p>
             </td>
           </tr>
 
@@ -927,7 +927,7 @@ export async function sendVendorBulkInvitationEmail(data: {
               </p>
 
               <p style="color: #1d1d1f; font-size: 17px; line-height: 1.6; margin: 0 0 24px 0; font-weight: 400;">
-                Please share your availabity for the next ${durationWeeks} weeks! Please provide your schedule. You will hear from us if any opportunities are available.
+                Please share your availabity for the next ${durationMonths} months! Please provide your schedule. You will hear from us if any opportunities are available.
               </p>
 
               <!-- Opportunity Details Box -->
@@ -942,7 +942,7 @@ export async function sendVendorBulkInvitationEmail(data: {
                           <span style="color: #6b7280; font-size: 15px; font-weight: 500;">Duration:</span>
                         </td>
                         <td style="padding: 10px 0; text-align: right;">
-                          <span style="color: #1d1d1f; font-size: 17px; font-weight: 600;">${durationWeeks} Weeks</span>
+                          <span style="color: #1d1d1f; font-size: 17px; font-weight: 600;">${durationMonths} Months</span>
                         </td>
                       </tr>
                       <tr>
@@ -1009,7 +1009,7 @@ export async function sendVendorBulkInvitationEmail(data: {
                     <p style="color: #1e40af; margin: 0 0 12px 0; font-size: 15px; font-weight: 600;">📝 Next Steps:</p>
                     <ol style="color: #1e40af; margin: 0; padding-left: 20px; font-size: 15px; line-height: 1.7;">
                       <li style="margin-bottom: 8px;">Click "Confirm Your Availability" above</li>
-                      <li style="margin-bottom: 8px;">Review the ${durationWeeks}-week period and mark your available dates</li>
+                      <li style="margin-bottom: 8px;">Review the ${durationMonths}-month period and mark your available dates</li>
                       <li style="margin-bottom: 8px;">Add any scheduling notes or preferences</li>
                       <li style="margin-bottom: 0;">Submit to confirm your interest</li>
                     </ol>
@@ -1077,7 +1077,7 @@ export async function sendVendorBulkInvitationEmail(data: {
 
     console.log('✅ Bulk vendor invitation sent successfully!');
     console.log(`   To: ${email}`);
-    console.log(`   Duration: ${durationWeeks} weeks`);
+    console.log(`   Duration: ${durationMonths} months`);
     console.log(`   Message ID: ${data?.id}`);
 
     return {
