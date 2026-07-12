@@ -146,18 +146,6 @@ type PDFForm = {
   form_date: string | null;
 };
 
-type LatestFormEdit = {
-  userId: string;
-  formId: string;
-  formDisplayName: string;
-  action: string;
-  editedAt: string | null;
-  editorUserId: string | null;
-  editorName: string | null;
-  editorEmail: string | null;
-  editorRole: string | null;
-};
-
 const isTempAgreementPdfForm = (form: Pick<PDFForm, "form_name" | "display_name">) =>
   isTempAgreementFormRecord(form);
 
@@ -355,9 +343,6 @@ export default function EmployeeProfilePage() {
   const [versionHistoryEntries, setVersionHistoryEntries] = useState<PDFFormHistoryEntry[]>([]);
   const [versionHistoryLoading, setVersionHistoryLoading] = useState(false);
   const [versionHistoryError, setVersionHistoryError] = useState('');
-  const [formEditsLoading, setFormEditsLoading] = useState(false);
-  const [formEditHistory, setFormEditHistory] = useState<LatestFormEdit[]>([]);
-  const [formEditHistoryError, setFormEditHistoryError] = useState<string>('');
   const [showActivateModal, setShowActivateModal] = useState(false);
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
@@ -654,49 +639,6 @@ export default function EmployeeProfilePage() {
 
     loadPDFForms();
   }, [employee?.id, refreshTick]);
-
-  useEffect(() => {
-    if (!employeeId) return;
-
-    const loadFormEditHistory = async () => {
-      setFormEditsLoading(true);
-      setFormEditHistoryError('');
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.access_token) {
-          throw new Error('No session found');
-        }
-
-        const response = await fetch(`/api/hr/employees/form-edits?userId=${encodeURIComponent(employeeId)}`, {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
-          cache: "no-store",
-        });
-
-        let result: any = null;
-        try {
-          result = await response.json();
-        } catch {
-          result = null;
-        }
-
-        if (!response.ok) {
-          throw new Error(result?.error || 'Failed to load form edit history');
-        }
-
-        setFormEditHistory(result?.recentEdits || []);
-      } catch (error: any) {
-        console.error("Error loading form edit history:", error);
-        setFormEditHistory([]);
-        setFormEditHistoryError(error.message || 'Failed to load form edit history');
-      } finally {
-        setFormEditsLoading(false);
-      }
-    };
-
-    loadFormEditHistory();
-  }, [employeeId, refreshTick]);
 
   // Fetch custom forms filtered by employee's state and direct assignments
   useEffect(() => {
@@ -2985,59 +2927,6 @@ export default function EmployeeProfilePage() {
                         </div>
                       </div>
                     )}
-                  </div>
-                )}
-              </div>
-            </section>
-
-            <section className="mb-8">
-              <h2 className="text-2xl font-semibold text-gray-900 keeping-tight mb-3">HR Form Edit History</h2>
-              <div className="apple-card p-6">
-                {formEditsLoading ? (
-                  <div className="flex items-center justify-center py-8">
-                    <div className="apple-spinner" />
-                    <span className="ml-3 text-gray-600">Loading form edit history...</span>
-                  </div>
-                ) : formEditHistoryError ? (
-                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-amber-800">
-                    {formEditHistoryError}
-                  </div>
-                ) : formEditHistory.length === 0 ? (
-                  <div className="text-center py-8">
-                    <svg className="w-16 h-16 mx-auto text-gray-300 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    <p className="text-gray-500 font-medium">No HR form edits recorded yet</p>
-                    <p className="text-sm text-gray-400 mt-1">Edits made from HR employee pages will appear here.</p>
-                  </div>
-                ) : (
-                  <div className="space-y-4">
-                    {formEditHistory.map((edit, index) => (
-                      <div
-                        key={`${edit.userId}-${edit.formId}-${edit.editedAt}-${index}`}
-                        className="rounded-xl border border-slate-200 bg-slate-50 p-4"
-                      >
-                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                          <div>
-                            <div className="text-sm font-semibold text-slate-900">{edit.formDisplayName}</div>
-                            <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{edit.action}</div>
-                          </div>
-                          <div className="text-sm text-slate-600">
-                            {formatDateTime(edit.editedAt, employee?.state)}
-                          </div>
-                        </div>
-                        <div className="mt-3 grid gap-2 text-sm text-slate-700 md:grid-cols-2">
-                          <div>
-                            <span className="font-medium text-slate-900">Edited by:</span>{' '}
-                            {edit.editorName || edit.editorEmail || edit.editorUserId || 'Unknown'}
-                          </div>
-                          <div>
-                            <span className="font-medium text-slate-900">Role:</span>{' '}
-                            {edit.editorRole || '-'}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
                   </div>
                 )}
               </div>
