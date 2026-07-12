@@ -910,10 +910,11 @@ export default function EventDashboardPage() {
   });
   const currentEventType = form.event_type === "special" ? "special" : event?.event_type === "special" ? "special" : "normal";
   const hideSalesAndMerchandiseForEvent = currentEventType === "special";
+  const hideSalesAndMerchandise = hideSalesAndMerchandiseForEvent || userRole === "supervisor2";
   const maxSpecialEndDate = form.event_type === "special" ? getMaxNonEventEndDate(form.event_date || "") : null;
   const dashboardTabs: Array<[TabType, string, string]> = [
     ["edit", "Edit Event", "M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"],
-    ...(!hideSalesAndMerchandiseForEvent
+    ...(!hideSalesAndMerchandise
       ? ([
           ["sales", "Sales", "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"],
           ["merchandise", "Merchandise", "M16 11V7a4 4 0 00-8 0v4M5 9h14l1 12H4L5 9z"],
@@ -1062,11 +1063,11 @@ export default function EventDashboardPage() {
   }, [activeTab, eventId, editingTimesheetUserId]);
 
   useEffect(() => {
-    if (!hideSalesAndMerchandiseForEvent) return;
+    if (!hideSalesAndMerchandise) return;
     if (activeTab === "sales" || activeTab === "merchandise") {
       setActiveTab("edit");
     }
-  }, [activeTab, hideSalesAndMerchandiseForEvent]);
+  }, [activeTab, hideSalesAndMerchandise]);
 
   // Auto-save adjustments/reimbursements when they change on HR tab
   useEffect(() => {
@@ -5252,7 +5253,7 @@ export default function EventDashboardPage() {
           )}
 
           {/* SALES TAB */}
-          {activeTab === "sales" && !hideSalesAndMerchandiseForEvent && (
+          {activeTab === "sales" && !hideSalesAndMerchandise && (
             <div className="space-y-8">
               <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
                 <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
@@ -5590,7 +5591,7 @@ export default function EventDashboardPage() {
           )}
 
           {/* MERCH TAB */}
-          {activeTab === "merchandise" && !hideSalesAndMerchandiseForEvent && (
+          {activeTab === "merchandise" && !hideSalesAndMerchandise && (
             <div className="space-y-8">
               <div className="flex items-center justify-between">
                 <h2 className="text-2xl font-bold text-gray-900 flex items-center gap-2">

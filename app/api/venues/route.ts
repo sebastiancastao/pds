@@ -65,14 +65,12 @@ export async function POST(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const {
-      venue_name,
-      city,
-      state,
-      full_address,
-      latitude,
-      longitude
-    } = body;
+    const { full_address, latitude, longitude } = body;
+    // Trim name/city/state: events.venue is matched against venue_name by exact
+    // string, so stray whitespace here silently breaks event visibility.
+    const venue_name = typeof body.venue_name === 'string' ? body.venue_name.trim() : body.venue_name;
+    const city = typeof body.city === 'string' ? body.city.trim() : body.city;
+    const state = typeof body.state === 'string' ? body.state.trim() : body.state;
 
     // Validation
     if (!venue_name || !city || !state) {
@@ -207,7 +205,12 @@ export async function PATCH(request: NextRequest) {
 
     // Parse request body
     const body = await request.json();
-    const { id, venue_name, city, state, full_address, latitude, longitude } = body;
+    const { id, full_address, latitude, longitude } = body;
+    // Trim name/city/state: events.venue is matched against venue_name by exact
+    // string, so stray whitespace here silently breaks event visibility.
+    const venue_name = typeof body.venue_name === 'string' ? body.venue_name.trim() : body.venue_name;
+    const city = typeof body.city === 'string' ? body.city.trim() : body.city;
+    const state = typeof body.state === 'string' ? body.state.trim() : body.state;
 
     if (!id) {
       return NextResponse.json({ error: 'Venue ID is required' }, { status: 400 });

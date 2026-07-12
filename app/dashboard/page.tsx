@@ -1603,6 +1603,7 @@ export default function DashboardPage() {
                       <div className="apple-stat-sublabel">scheduled ahead</div>
                     </div>
                   </div>
+                  {userRole !== "supervisor2" && (
                   <div className="apple-stat-card apple-stat-card-green">
                     <div className="apple-stat-icon apple-stat-icon-green">
                       <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1615,6 +1616,7 @@ export default function DashboardPage() {
                       <div className="apple-stat-sublabel">total revenue</div>
                     </div>
                   </div>
+                  )}
                 </div>
               </section>
             )}
